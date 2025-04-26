@@ -2,37 +2,211 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Autumn Chat</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    /* ------------ Basic Resets ------------ */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ------------ Modals ------------ */
+    .modal-backdrop {
+      position: fixed; top:0; left:0; width:100%; height:100%;
+      background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal {
+      background: #fff; border-radius: 8px; padding: 1.5rem; max-width: 400px; width: 90%;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    .modal h2 { margin-bottom: 1rem; font-size: 1.25rem; }
+    .modal p { margin-bottom: 1rem; line-height: 1.4; }
+    .modal button { margin-top: 1rem; padding: 0.5rem 1rem; border:none; border-radius:4px; cursor:pointer; }
+    .modal input { width:100%; padding:0.5rem; margin:0.5rem 0; }
+
+    /* ------------ Chat Layout ------------ */
+    #chat-container {
+      flex: 1; display: flex; flex-direction: column; background: #f5f5f5;
+    }
+    #chat-history {
+      flex: 1; overflow-y: auto; padding: 1rem;
+    }
+    .date-group {
+      margin: 1rem 0;
+    }
+    .date-header {
+      font-size: 0.9rem; color: #666; cursor: pointer;
+      margin-bottom: 0.5rem;
+    }
+    .messages { display: none; } /* collapsed by default */
+    .messages.open { display: block; }
+
+    .message {
+      max-width: 70%; margin-bottom: 0.75rem; padding: 0.75rem 1rem;
+      border-radius: 16px; line-height: 1.4;
+      position: relative;
+    }
+    .from-autumn { background: #007BFF; color: #fff; align-self: flex-start; border-bottom-left-radius: 4px; }
+    .from-user   { background: #e0e0e0; color: #000; align-self: flex-end; border-bottom-right-radius: 4px; }
+
+    /* ------------ Input Area ------------ */
+    #chat-form {
+      display: flex; align-items: center; padding: 0.5rem; background: #fff;
+      border-top: 1px solid #ddd;
+    }
+    #file-upload {
+      margin-right: 0.5rem;
+    }
+    #speech-btn {
+      margin: 0 0.5rem; font-size: 1.2rem;
+      background: none; border: none; cursor: pointer;
+    }
+    #chat-input {
+      flex: 1; padding: 0.5rem 0.75rem; border: 1px solid #ccc; border-radius: 20px;
+      margin-right: 0.5rem;
+    }
+    #send-btn {
+      padding: 0.5rem 1rem; border:none; background:#007BFF; color:#fff; border-radius:4px; cursor:pointer;
+    }
+  </style>
 </head>
 <body>
-  <!-- Privacy Modal -->
-  <div id="privacy-modal" class="modal">
-    <div class="modal-content">
+
+  <!-- Privacy Policy Modal -->
+  <div id="privacy-backdrop" class="modal-backdrop">
+    <div class="modal">
       <h2>Privacy Policy</h2>
       <p>
-        Before using Autumn for the first time, please
-        <a href="https://www.dartmeadow.com/privacy-policy" target="_blank">review our Privacy Policy</a>.
+        Before using Autumn, please review our
+        <a href="https://www.dartmeadow.com/privacy-policy" target="_blank">Privacy Policy</a>.
       </p>
       <button id="accept-privacy">I Agree</button>
     </div>
   </div>
 
-  <!-- Chat Container -->
+  <!-- Login / Signup Modal -->
+  <div id="login-backdrop" class="modal-backdrop">
+    <div class="modal">
+      <h2>Welcome to Autumn</h2>
+      <p>Create an account or continue as guest:</p>
+      <input type="text" id="name" placeholder="Your Name (optional)" />
+      <input type="email" id="email" placeholder="Email Address" />
+      <input type="text" id="username" placeholder="Username" />
+      <button id="signup-btn">Sign Up</button>
+      <button id="guest-btn" style="background:#6c757d;color:#fff;">Continue as Guest</button>
+    </div>
+  </div>
+
+  <!-- Main Chat Container -->
   <div id="chat-container">
-    <div id="chat-history"></div>
+    <div id="chat-history">
+      <!--
+        JavaScript will inject date-grouped chat like:
+        <div class="date-group">
+          <div class="date-header">Today</div>
+          <div class="messages open">
+            <div class="message from-autumn">Hello!</div>
+            <div class="message from-user">Hi Autumn!</div>
+          </div>
+        </div>
+      -->
+    </div>
+
     <form id="chat-form">
-      <input type="file" id="file-upload" />
-      <input
-        type="text"
-        id="chat-input"
-        placeholder="Type a message…"
-        autocomplete="off"
-      />
-      <button type="submit">Send</button>
+      <input type="file" id="file-upload" title="Attach a file" />
+      <button type="button" id="speech-btn" title="Speak"><span role="img">🎤</span></button>
+      <input type="text" id="chat-input" placeholder="Type your message…" autocomplete="off" />
+      <button type="submit" id="send-btn">Send</button>
     </form>
   </div>
 
+  <script>
+    // ---------- Modal Logic ----------
+    document.addEventListener('DOMContentLoaded', ()=>{
+      // Privacy agreement
+      if (!localStorage.getItem('autumn_privacy_accepted')) {
+        document.getElementById('privacy-backdrop').style.display = 'flex';
+      } else {
+        showLogin();
+      }
+      document.getElementById('accept-privacy').onclick = ()=>{
+        localStorage.setItem('autumn_privacy_accepted','1');
+        document.getElementById('privacy-backdrop').style.display = 'none';
+        showLogin();
+      };
+
+      // Login / guest
+      function showLogin(){
+        if (!localStorage.getItem('autumn_user')) {
+          document.getElementById('login-backdrop').style.display = 'flex';
+        } else {
+          initChat();
+        }
+      }
+      document.getElementById('signup-btn').onclick = async ()=>{
+        const name = document.getElementById('name').value;
+        const email = document.getElementById('email').value;
+        const username = document.getElementById('username').value;
+        // TODO: POST to your /login endpoint and handle JWT/session
+        // await fetch('/login', { method:'POST', body: JSON.stringify({name,email,username}) });
+        localStorage.setItem('autumn_user', JSON.stringify({name,email,username}));
+        document.getElementById('login-backdrop').style.display='none';
+        initChat();
+      };
+      document.getElementById('guest-btn').onclick = ()=>{
+        localStorage.setItem('autumn_user', JSON.stringify({ guest:true }));
+        document.getElementById('login-backdrop').style.display='none';
+        initChat();
+      };
+    });
+
+    // ---------- Chat Logic Placeholders ----------
+    function initChat(){
+      // Load existing history from server or localStorage
+      // render messages via addDateGroup(...)
+    }
+
+    // Collapse/expand date groups
+    document.addEventListener('click', e=>{
+      if (e.target.matches('.date-header')){
+        e.target.nextElementSibling.classList.toggle('open');
+      }
+    });
+
+    // Sending a message
+    document.getElementById('chat-form').onsubmit = e=>{
+      e.preventDefault();
+      const text = document.getElementById('chat-input').value.trim();
+      if (!text) return;
+      appendMessage('user', text);
+      document.getElementById('chat-input').value = '';
+      // TODO: send to Autumn API, then appendMessage('autumn', reply)
+    };
+
+    // Append a message under "Today" for demo
+    function appendMessage(who, text){
+      let todayGroup = document.querySelector('.date-group[data-date="today"]');
+      if (!todayGroup) {
+        todayGroup = document.createElement('div');
+        todayGroup.className = 'date-group';
+        todayGroup.dataset.date = 'today';
+        todayGroup.innerHTML = '<div class="date-header">Today</div><div class="messages open"></div>';
+        document.getElementById('chat-history').append(todayGroup);
+      }
+      const bubble = document.createElement('div');
+      bubble.className = 'message ' + (who==='autumn' ? 'from-autumn' : 'from-user');
+      bubble.textContent = text;
+      todayGroup.querySelector('.messages').append(bubble);
+      bubble.scrollIntoView({behavior:'smooth'});
+    }
+
+    // Speech-to-text stub
+    document.getElementById('speech-btn').onclick = ()=>{
+      // TODO: hook up Web Speech API
+      alert('Speech to text not implemented yet.');
+    };
+  </script>
   <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>
