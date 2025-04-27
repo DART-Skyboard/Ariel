@@ -278,10 +278,29 @@ body > * {
   label {
     margin: 8px;
   }
+  
+#floatingMenuIcon {
+
+  position: fixed;  /* or absolute, if you’d rather position relative to a positioned parent */
+  top: 0;
+  left: 0;
+  margin: 25px;     /* now it will sit 25px in from the top-left corner */
+  /* remove display:flex unless you actually need it inside the icon itself */
+}
+#floatingMenu {
+
+  position: fixed;  /* or absolute, if you’d rather position relative to a positioned parent */
+  top: 40px;
+  left: 25px;
+       /* now it will sit 25px in from the top-left corner */
+  /* remove display:flex unless you actually need it inside the icon itself */
+}
 </style>
 </head>
 
 <body>
+
+
     <!-- full‐screen video background -->
   <video id="bgvid" autoplay muted loop playsinline>
     <source src="https://video.wixstatic.com/video/91a2cc_0e2f087051c94920bd13b43aa343bad6/1080p/mp4/file.mp4" type="video/mp4">
@@ -377,7 +396,43 @@ body > * {
       </div>
     </div>
   </div>
-
+  <!-- floating settings menu -->
+<div id="floatingMenu" style="display:none;">
+  <img id="floatingMenuIcon"
+       src="https://cdn.iconscout.com/icon/free/png-256/user-1648810-1401302.png"
+       alt="⚙️"
+       style="width:32px;height:32px;cursor:pointer;" />
+  <div id="userMenuDropdown" style="
+      display:none;
+      position: absolute;
+      top: 40px; left: 0;
+      background: dimgray;
+      color: #fff;
+      padding: 8px;
+      border-radius: 5px;
+      min-width: 175px;
+  ">
+    <p><strong id="menuName"></strong></p>
+    <p id="menuEmail" style="font-size:0.9em;"></p>
+    <button onclick="logout()" style="
+      display:block; width:100%; margin:4px 0;
+      background: deepskyblue; border:none; padding:6px; color:#fff;
+      border-radius:5px; cursor:pointer;
+    ">Log Out</button>
+    <button onclick="deleteAccount()" style="
+      display:block; width:100%; margin:4px 0;
+      background: deepskyblue; border:none; padding:6px; color:#fff;
+      border-radius:5px; cursor:pointer;
+    ">Delete Account</button>
+  </div>
+</div>
+<script>
+  document.getElementById('floatingMenuIcon')
+    .addEventListener('click', ()=>{
+      let dd = document.getElementById('userMenuDropdown');
+      dd.style.display = dd.style.display==='block' ? 'none':'block';
+  });
+</script>
   <!-- Main Chat -->
   <div id="chatContainer">
     <div class="container">
@@ -448,7 +503,7 @@ body > * {
   <br>
 
 </div>
-
+AKfycby0SvAgjk2nyoxixJAJrjJIWAnhruHc8w-4qDjRlK693vB87J8D986R8W4txHb41jlIsA
 <script>
     ;(function() {
       const policy      = document.getElementById('policyContent');
@@ -679,6 +734,96 @@ function animate() {
 }
 
 window.onload = init;
+// Menu Begin 
+
+  const GS_URL = 'AKfycby0SvAgjk2nyoxixJAJrjJIWAnhruHc8w-4qDjRlK693vB87J8D986R8W4txHb41jlIsA';
+
+  // simple sessionStorage wrapper
+  function saveUser(u){
+    sessionStorage.setItem('user', JSON.stringify(u));
+  }
+  function getUser(){
+    return JSON.parse(sessionStorage.getItem('user')||'null');
+  }
+  function clearUser(){
+    sessionStorage.removeItem('user');
+  }
+
+  // after login or create: initialize UI
+  function onUserReady(u){
+    saveUser(u);
+    // hide the modal & show chat
+    document.getElementById('privacyModal').style.display = 'none';
+    document.getElementById('chatContainer').style.display = 'flex';
+    // populate the floating menu
+    document.getElementById('menuName').innerText  = u.name;
+    document.getElementById('menuEmail').innerText = u.email;
+    document.getElementById('floatingMenu').style.display = 'block';
+  }
+
+  // Create Account handler
+  document.getElementById('createBtn').onclick = async()=>{
+    let form = new URLSearchParams({
+      action:'create',
+      username: document.getElementById('signupUsername').value,
+      name:     document.getElementById('signupName').value,
+      email:    document.getElementById('signupEmail').value,
+      password: document.getElementById('signupPassword').value
+    });
+    let res = await fetch(GS_URL, {method:'POST',body:form});
+    let j   = await res.json();
+    if(j.ok) return onUserReady(j);
+    alert(j.error);
+  };
+
+  // Login handler
+  document.getElementById('loginBtn').onclick = async()=>{
+    let url = GS_URL
+            + '?action=login'
+            + '&username='+encodeURIComponent(document.getElementById('loginUsername').value)
+            + '&password='+encodeURIComponent(document.getElementById('loginPassword').value);
+    let res = await fetch(url);
+    let j   = await res.json();
+    if(j.ok) return onUserReady(j);
+    alert(j.error);
+  };
+
+  // Continue as Guest
+  document.getElementById('continueBtn').onclick = ()=>{
+    onUserReady({name:'Guest',email:'',username:'__guest__'});
+  };
+
+  // Logout
+  function logout(){
+    clearUser();
+    alert('You are now logged out');
+    window.location.reload();
+  }
+
+  // Delete Account
+  function deleteAccount(){
+    let u = getUser();
+    if(!u || !u.username) return;
+    fetch(GS_URL + '?action=delete&username=' + encodeURIComponent(u.username))
+      .then(r=>r.json())
+      .then(j=>{
+        if(j.ok){
+          clearUser();
+          alert('Account deletion successful');
+          window.location.reload();
+        }
+      });
+  }
+
+  // onLoad: if already logged in, skip modal
+  window.addEventListener('DOMContentLoaded', ()=>{
+    let u = getUser();
+    if(u){
+      onUserReady(u);
+    }
+  });
+
+
 </script>
 </body>
 </html>
