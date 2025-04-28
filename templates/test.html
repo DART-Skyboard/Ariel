@@ -529,6 +529,8 @@ body > * {
 </div>
 
 <script>
+let GS_URL = ''; // declared early
+
     ;(function() {
       const policy      = document.getElementById('policyContent');
       const sentinel    = document.getElementById('policyEnd');
@@ -757,21 +759,39 @@ function animate() {
 window.onload = init;
 // Menu Begin 
 
-  const GS_URL = 'https://script.google.com/macros/s/AKfycby0SvAgjk2nyoxixJAJrjJIWAnhruHc8w-4qDjRlK693vB87J8D986R8W4txHb41jlIsA/exec';
 
+// Environment Auto-Detect and GS_URL Setup
 
-  // simple sessionStorage wrapper
-  function saveUser(u){
-    sessionStorage.setItem('user', JSON.stringify(u));
-  }
-  function getUser(){
-    return JSON.parse(sessionStorage.getItem('user')||'null');
-  }
-  function clearUser(){
-    sessionStorage.removeItem('user');
-  }
-  
-  // Update Create Account handler
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+  console.log('%cRunning in LOCALHOST mode', 'color: orange; font-weight: bold;');
+  GS_URL = 'https://script.google.com/macros/s/AKfycbw18tsRn9pdYlLqaM54BVrTOivRxvq-HQjyxPCK22bsDoepGH_PYrPcMGSkLxe53Gcwbg/exec';
+} else {
+  console.log('%cRunning in PRODUCTION mode', 'color: deepskyblue; font-weight: bold;');
+  GS_URL = 'https://script.google.com/macros/s/AKfycbw18tsRn9pdYlLqaM54BVrTOivRxvq-HQjyxPCK22bsDoepGH_PYrPcMGSkLxe53Gcwbg/exec';
+}
+
+// Session Storage Functions
+function saveUser(u) {
+  sessionStorage.setItem('user', JSON.stringify(u));
+}
+function getUser() {
+  return JSON.parse(sessionStorage.getItem('user') || 'null');
+}
+function clearUser() {
+  sessionStorage.removeItem('user');
+}
+
+// After Login/Create, Initialize UI
+function onUserReady(u) {
+  saveUser(u);
+  document.getElementById('privacyModal').style.display = 'none';
+  document.getElementById('chatContainer').style.display = 'flex';
+  document.getElementById('menuName').innerText = u.name;
+  document.getElementById('menuEmail').innerText = u.email;
+  document.getElementById('floatingMenu').style.display = 'block';
+}
+
+// Create Account
 async function createAccount() {
   const form = new URLSearchParams({
     action: 'create',
@@ -780,20 +800,66 @@ async function createAccount() {
     email: document.getElementById('signupEmail').value,
     password: document.getElementById('signupPassword').value
   });
-  const res = await fetch(`https://script.google.com/macros/s/${GS_URL}/exec`, { method: 'POST', body: form });
-  const j = await res.json();
-  if (j.ok) return onUserReady(j);
-  alert(j.error);
+
+  try {
+    const res = await fetch(GS_URL, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form
+    });
+
+    if (!res.ok) throw new Error(`HTTP error! Status: ${res.status}`);
+
+    const text = await res.text();
+    console.log('Raw server response:', text);
+    const j = JSON.parse(text);
+
+    if (j.ok) {
+      console.log('%cConnected to Autumn Ash Reflex server successfully!', 'color: limegreen; font-weight: bold;');
+      onUserReady(j);
+    } else {
+      console.error('Server responded with error:', j.error || 'Unknown error');
+      alert(j.error || 'Server returned an error.');
+    }
+  } catch (error) {
+    console.error('Fetch error:', error);
+    alert('Connection error. Check console.');
+  }
 }
-// Update Login handler
+
+// Login
 async function login() {
-  const url = `https://script.google.com/macros/s/${GS_URL}/exec?action=login&username=${encodeURIComponent(document.getElementById('loginUsername').value)}&password=${encodeURIComponent(document.getElementById('loginPassword').value)}`;
+  const url = `${GS_URL}?action=login&username=${encodeURIComponent(document.getElementById('loginUsername').value)}&password=${encodeURIComponent(document.getElementById('loginPassword').value)}`;
   const res = await fetch(url);
   const j = await res.json();
   if (j.ok) return onUserReady(j);
   alert(j.error);
 }
-// Corrected Change Email handler
+
+// Delete Account
+async function deleteAccount() {
+  const u = getUser();
+  if (!u || !u.username) return;
+  const res = await fetch(`${GS_URL}?action=delete&username=${encodeURIComponent(u.username)}`);
+  const j = await res.json();
+  if (j.ok) {
+    clearUser();
+    alert('Account deleted successfully');
+    window.location.reload();
+  } else {
+    alert(j.error || 'Account deletion failed.');
+  }
+}
+
+// Logout
+function logout() {
+  clearUser();
+  alert('Logged out successfully.');
+  window.location.reload();
+}
+
+// Change Email
 async function changeEmail() {
   const u = getUser();
   const form = new URLSearchParams({
@@ -802,20 +868,26 @@ async function changeEmail() {
     currentPassword: document.getElementById('currentEmailPwd').value,
     newEmail: document.getElementById('newEmail').value
   });
-  const res = await fetch(GS_URL, { method: 'POST', body: form });
+
+  const res = await fetch(GS_URL, {
+    method: 'POST',
+    mode: 'cors',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form
+  });
+
   const j = await res.json();
   if (j.ok) {
     u.email = form.get('newEmail');
     saveUser(u);
     document.getElementById('menuEmail').innerText = u.email;
-    alert('Email changed successfully');
-    document.getElementById('accountSettingsSection').style.display = 'none';
+    alert('Email updated successfully.');
   } else {
-    alert(j.error || 'Failed to change email');
+    alert(j.error || 'Email change failed.');
   }
 }
 
-// Corrected Change Password handler
+// Change Password
 async function changePassword() {
   const u = getUser();
   const form = new URLSearchParams({
@@ -824,102 +896,38 @@ async function changePassword() {
     currentPassword: document.getElementById('currentPwd').value,
     newPassword: document.getElementById('newPwd').value
   });
-  const res = await fetch(GS_URL, { method: 'POST', body: form });
-  const j = await res.json();
-  if (j.ok) {
-    alert('Password changed successfully');
-    document.getElementById('accountSettingsSection').style.display = 'none';
-  } else {
-    alert(j.error || 'Failed to change password');
-  }
-}
 
-  // after login or create: initialize UI
-  function onUserReady(u){
-    saveUser(u);
-    // hide the modal & show chat
-    document.getElementById('privacyModal').style.display = 'none';
-    document.getElementById('chatContainer').style.display = 'flex';
-    // populate the floating menu
-    document.getElementById('menuName').innerText  = u.name;
-    document.getElementById('menuEmail').innerText = u.email;
-    document.getElementById('floatingMenu').style.display = 'block';
-  }
-
-  // Create Account handler
-  document.getElementById('createBtn').onclick = async()=>{
-    let form = new URLSearchParams({
-      action:'create',
-      username: document.getElementById('signupUsername').value,
-      name:     document.getElementById('signupName').value,
-      email:    document.getElementById('signupEmail').value,
-      password: document.getElementById('signupPassword').value
-    });
-    let res = await fetch(GS_URL, {method:'POST',body:form});
-    let j   = await res.json();
-    if(j.ok) return onUserReady(j);
-    alert(j.error);
-  };
-
-  // Login handler
-  document.getElementById('loginBtn').onclick = async()=>{
-    let url = GS_URL
-            + '?action=login'
-            + '&username='+encodeURIComponent(document.getElementById('loginUsername').value)
-            + '&password='+encodeURIComponent(document.getElementById('loginPassword').value);
-    let res = await fetch(url);
-    let j   = await res.json();
-    if(j.ok) return onUserReady(j);
-    alert(j.error);
-  };
-
-  // Continue as Guest
-  document.getElementById('continueBtn').onclick = ()=>{
-    onUserReady({name:'Guest',email:'',username:'__guest__'});
-  };
-
-  // Toggle settings section
-  document.getElementById('accountSettingsBtn').addEventListener('click', () => {
-    const sec = document.getElementById('accountSettingsSection');
-    sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
+  const res = await fetch(GS_URL, {
+    method: 'POST',
+    mode: 'cors',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form
   });
-  
 
-  // Logout
-  function logout(){
-    clearUser();
-    alert('You are now logged out');
-    window.location.reload();
-  }
-
-// Update Delete Account handler
-async function deleteAccount() {
-  const u = getUser();
-  if (!u || !u.username) return;
-  const res = await fetch(`https://script.google.com/macros/s/${GS_URL}/exec?action=delete&username=${encodeURIComponent(u.username)}`);
   const j = await res.json();
   if (j.ok) {
-    clearUser();
-    alert('Account deletion successful');
-    window.location.reload();
+    alert('Password changed successfully.');
   } else {
-    alert(j.error || 'Account deletion failed');
+    alert(j.error || 'Password change failed.');
   }
 }
 
-// Bind updated handlers explicitly
+// Connect Buttons to Functions
 document.getElementById('createBtn').onclick = createAccount;
 document.getElementById('loginBtn').onclick = login;
 document.getElementById('continueBtn').onclick = () => onUserReady({ name: 'Guest', email: '', username: '__guest__' });
+document.getElementById('accountSettingsBtn').addEventListener('click', () => {
+  const sec = document.getElementById('accountSettingsSection');
+  sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
+});
 
-
-  // onLoad: if already logged in, skip modal
-  window.addEventListener('DOMContentLoaded', ()=>{
-    let u = getUser();
-    if(u){
-      onUserReady(u);
-    }
-  });
+// Auto-login if already stored
+window.addEventListener('DOMContentLoaded', () => {
+  const u = getUser();
+  if (u) {
+    onUserReady(u);
+  }
+});
 
 
 </script>
