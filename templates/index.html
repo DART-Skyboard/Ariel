@@ -757,7 +757,8 @@ function animate() {
 window.onload = init;
 // Menu Begin 
 
-  const GS_URL = 'AKfycby0SvAgjk2nyoxixJAJrjJIWAnhruHc8w-4qDjRlK693vB87J8D986R8W4txHb41jlIsA';
+  const GS_URL = 'https://script.google.com/macros/s/AKfycby0SvAgjk2nyoxixJAJrjJIWAnhruHc8w-4qDjRlK693vB87J8D986R8W4txHb41jlIsA/exec';
+
 
   // simple sessionStorage wrapper
   function saveUser(u){
@@ -769,6 +770,69 @@ window.onload = init;
   function clearUser(){
     sessionStorage.removeItem('user');
   }
+  
+  // Update Create Account handler
+async function createAccount() {
+  const form = new URLSearchParams({
+    action: 'create',
+    username: document.getElementById('signupUsername').value,
+    name: document.getElementById('signupName').value,
+    email: document.getElementById('signupEmail').value,
+    password: document.getElementById('signupPassword').value
+  });
+  const res = await fetch(`https://script.google.com/macros/s/${GS_URL}/exec`, { method: 'POST', body: form });
+  const j = await res.json();
+  if (j.ok) return onUserReady(j);
+  alert(j.error);
+}
+// Update Login handler
+async function login() {
+  const url = `https://script.google.com/macros/s/${GS_URL}/exec?action=login&username=${encodeURIComponent(document.getElementById('loginUsername').value)}&password=${encodeURIComponent(document.getElementById('loginPassword').value)}`;
+  const res = await fetch(url);
+  const j = await res.json();
+  if (j.ok) return onUserReady(j);
+  alert(j.error);
+}
+// Corrected Change Email handler
+async function changeEmail() {
+  const u = getUser();
+  const form = new URLSearchParams({
+    action: 'changeEmail',
+    username: u.username,
+    currentPassword: document.getElementById('currentEmailPwd').value,
+    newEmail: document.getElementById('newEmail').value
+  });
+  const res = await fetch(GS_URL, { method: 'POST', body: form });
+  const j = await res.json();
+  if (j.ok) {
+    u.email = form.get('newEmail');
+    saveUser(u);
+    document.getElementById('menuEmail').innerText = u.email;
+    alert('Email changed successfully');
+    document.getElementById('accountSettingsSection').style.display = 'none';
+  } else {
+    alert(j.error || 'Failed to change email');
+  }
+}
+
+// Corrected Change Password handler
+async function changePassword() {
+  const u = getUser();
+  const form = new URLSearchParams({
+    action: 'changePassword',
+    username: u.username,
+    currentPassword: document.getElementById('currentPwd').value,
+    newPassword: document.getElementById('newPwd').value
+  });
+  const res = await fetch(GS_URL, { method: 'POST', body: form });
+  const j = await res.json();
+  if (j.ok) {
+    alert('Password changed successfully');
+    document.getElementById('accountSettingsSection').style.display = 'none';
+  } else {
+    alert(j.error || 'Failed to change password');
+  }
+}
 
   // after login or create: initialize UI
   function onUserReady(u){
@@ -820,52 +884,6 @@ window.onload = init;
     sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
   });
   
-  // Change Email handler
-  async function changeEmail() {
-    const u = getUser();
-    const currentPwd = document.getElementById('currentEmailPwd').value;
-    const newEmail = document.getElementById('newEmail').value;
-    const form = new URLSearchParams({
-      action: 'changeEmail',
-      username: u.username,
-      currentEmail: u.email,
-      currentPassword: currentPwd,
-      newEmail: newEmail
-    });
-    const res = await fetch(GS_URL, { method: 'POST', body: form });
-    const j = await res.json();
-    if (j.ok) {
-      u.email = newEmail;
-      saveUser(u);
-      document.getElementById('menuEmail').innerText = newEmail;
-      alert('Email changed successfully');
-      document.getElementById('accountSettingsSection').style.display = 'none';
-    } else {
-      alert(j.error || 'Failed to change email');
-    }
-  }
-  
-  // Change Password handler
-  async function changePassword() {
-    const u = getUser();
-    const currentPwd = document.getElementById('currentPwd').value;
-    const newPwd = document.getElementById('newPwd').value;
-    const form = new URLSearchParams({
-      action: 'changePassword',
-      username: u.username,
-      currentEmail: u.email,
-      currentPassword: currentPwd,
-      newPassword: newPwd
-    });
-    const res = await fetch(GS_URL, { method: 'POST', body: form });
-    const j = await res.json();
-    if (j.ok) {
-      alert('Password changed successfully');
-      document.getElementById('accountSettingsSection').style.display = 'none';
-    } else {
-      alert(j.error || 'Failed to change password');
-    }
-  }
 
   // Logout
   function logout(){
@@ -874,20 +892,26 @@ window.onload = init;
     window.location.reload();
   }
 
-  // Delete Account
-  function deleteAccount(){
-    let u = getUser();
-    if(!u || !u.username) return;
-    fetch(GS_URL + '?action=delete&username=' + encodeURIComponent(u.username))
-      .then(r=>r.json())
-      .then(j=>{
-        if(j.ok){
-          clearUser();
-          alert('Account deletion successful');
-          window.location.reload();
-        }
-      });
+// Update Delete Account handler
+async function deleteAccount() {
+  const u = getUser();
+  if (!u || !u.username) return;
+  const res = await fetch(`https://script.google.com/macros/s/${GS_URL}/exec?action=delete&username=${encodeURIComponent(u.username)}`);
+  const j = await res.json();
+  if (j.ok) {
+    clearUser();
+    alert('Account deletion successful');
+    window.location.reload();
+  } else {
+    alert(j.error || 'Account deletion failed');
   }
+}
+
+// Bind updated handlers explicitly
+document.getElementById('createBtn').onclick = createAccount;
+document.getElementById('loginBtn').onclick = login;
+document.getElementById('continueBtn').onclick = () => onUserReady({ name: 'Guest', email: '', username: '__guest__' });
+
 
   // onLoad: if already logged in, skip modal
   window.addEventListener('DOMContentLoaded', ()=>{
