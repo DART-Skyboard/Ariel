@@ -1,4 +1,5 @@
-![1000018950]([https://github.com/user-attachments/assets/504012e2-52a9-431e-904e-1718ceedc177](https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/Ariel.png))
+![ArielButton](https://github.com/user-attachments/assets/0d2c0ec6-8a65-41cf-ad61-196f07de4b4b)
+
 
 
 | Ariel NPU |
