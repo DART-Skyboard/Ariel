@@ -346,7 +346,6 @@ margin: 25px;     /* now it will sit 25px in from the top-left corner */
   justify-content: center;
   z-index: 3;
 }
-/* Avatar circle + popup container */
 .avatar-placeholder {
   width: 100px;
   height: 100px;
@@ -356,42 +355,48 @@ margin: 25px;     /* now it will sit 25px in from the top-left corner */
   position: relative;
   cursor: pointer;
 }
+
 .avatar-placeholder img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  display: block;
 }
 
-/* The hidden popup of selectable avatars */
 .avatar-selection-popup {
-  display: none;
+  display: none;              /* hidden by default */
   position: absolute;
   top: 110px;
   left: 50%;
   transform: translateX(-50%);
-  width: 220px;
-  max-height: 300px;
-  overflow-y: auto;
   background: rgba(0,0,0,0.8);
   padding: 10px;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  flex-wrap: wrap;
-  gap: 5px;
   z-index: 1000;
+  
+  /* grid _template_, but no display grid here! */
+  grid-template-columns: repeat(auto-fill, 50px);
+  grid-auto-rows: 50px;
+  gap: 8px;
 }
+
+/* only when we add the “active” class will it pop open */
+.avatar-selection-popup.active {
+  display: grid;
+}
+
+
 .avatar-selection-popup img {
-  width: 50px;
-  height: 50px;
-  margin: 5px;
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   object-fit: cover;
   cursor: pointer;
-  transition: transform 0.2s;
+  transition: transform .15s;
 }
+
 .avatar-selection-popup img:hover {
-  transform: scale(1.1);
+  transform: scale(1.2);
 }
 
 </style>
@@ -497,10 +502,7 @@ margin: 25px;     /* now it will sit 25px in from the top-left corner */
   </div>
 <div id="header">
   <div id="floatingMenu" style="display:none;">
-    <img id="floatingMenuIcon"
-         src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/templates/avatars/default.png"
-         alt="⚙️"
-         style="width:50px;height:50px;cursor:pointer;" />
+   
     <div id="userMenuDropdown" style="
   display: none;
   position: fixed;
@@ -521,12 +523,13 @@ margin: 25px;     /* now it will sit 25px in from the top-left corner */
   pointer-events: auto;
 touch-action: manipulation;
     ">
-      <!-- Avatar placeholder + selection popup -->
-  <div class="avatar-placeholder" id="avatarPlaceholder">
-    <img src="avatars/default.png" id="userAvatar" alt="User Avatar">
-    <div id="avatarSelectionPopup" class="avatar-selection-popup"></div>
-  </div>
-
+      <div class="avatar-placeholder" id="avatarPlaceholder">
+        <img src="static/avatars/default.png" id="userAvatar" alt="User Avatar">
+      </div>
+      
+      <!-- the popup — note it’s initially empty -->
+      <div id="avatarSelectionPopup" class="avatar-selection-popup"></div>
+      
   <p><strong id="menuName"></strong></p>
 
     <p><strong id="menuName"></strong></p>
@@ -1102,50 +1105,56 @@ function showBanner(message, type = 'info') {
 }
 
 
-// 1) Toggle popup visibility on hover
 const avatarPlaceholder = document.getElementById('avatarPlaceholder');
 const avatarPopup       = document.getElementById('avatarSelectionPopup');
 
-avatarPlaceholder.addEventListener('mouseenter', ()=> avatarPopup.style.display = 'flex');
-avatarPlaceholder.addEventListener('mouseleave', ()=> avatarPopup.style.display = 'none');
-avatarPopup.addEventListener('mouseenter',       ()=> avatarPopup.style.display = 'flex');
-avatarPopup.addEventListener('mouseleave',       ()=> avatarPopup.style.display = 'none');
+avatarPlaceholder.addEventListener('click', () => {
+  avatarPopup.classList.toggle('active');
+});
 
-// 2) Load all images from the avatars folder
-function loadAvatars() {
-  fetch('avatars/')
-    .then(res => res.text())
-    .then(html => {
-      const doc   = new DOMParser().parseFromString(html, 'text/html');
-      const links = [...doc.querySelectorAll('a')]
-                      .map(a => a.href.split('/').pop())
-                      .filter(name => /\.(jpe?g|png|gif)$/i.test(name));
+const userAvatarImg     = document.getElementById('userAvatar');
+const menuIcon          = document.getElementById('floatingMenuIcon');
 
-      links.forEach(name => {
-        const img = document.createElement('img');
-        img.src   = 'avatars/' + name;
-        img.addEventListener('click', () => {
-          document.getElementById('userAvatar').src = img.src;
-          avatarPopup.style.display = 'none';
-          // persist choice
-          const u = getUser() || {};
-          u.avatar = img.src;
-          saveUser(u);
-        });
-        avatarPopup.appendChild(img);
-      });
-    })
-    .catch(err => console.warn('Could not load avatars:', err));
+const AVATAR_FILES = [
+  'default.png',
+  'dart.png',
+  // …
+];
+
+function buildAvatarGrid() {
+  avatarPopup.innerHTML = '';
+  AVATAR_FILES.forEach(fn => {
+    const img = document.createElement('img');
+    img.src = `/static/avatars/${fn}`;      // <— correct static path
+    img.title = fn;
+    img.addEventListener('click', () => {
+      document.getElementById('userAvatar').src        = img.src;
+      document.getElementById('floatingMenuIcon').src  = img.src;
+      sessionStorage.setItem('userAvatar', img.src);
+      avatarPopup.classList.remove('active');
+    });
+    avatarPopup.appendChild(img);
+  });
 }
 
-// 3) On page load: populate popup & restore saved avatar
-window.addEventListener('DOMContentLoaded', () => {
-  loadAvatars();
-  const u = getUser();
-  if (u && u.avatar) {
-    document.getElementById('userAvatar').src = u.avatar;
+// 3) TOGGLE POPUP ON CLICK
+avatarPlaceholder.addEventListener('click', () => {
+  if (avatarPopup.style.display === 'grid') {
+    avatarPopup.style.display = 'none';
+  } else {
+    avatarPopup.style.display = 'grid';
   }
 });
+
+window.addEventListener('DOMContentLoaded', () => {
+  buildAvatarGrid();
+  const saved = sessionStorage.getItem('userAvatar');
+  if (saved) {
+    document.getElementById('userAvatar').src       = saved;
+    document.getElementById('floatingMenuIcon').src = saved;
+  }
+});
+
 
 </script>
 </body>
