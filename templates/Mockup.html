@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Node‑Link Canvas w/ Clickable Links</title>
+  <style>
+    /* --- Layout --- */
+    body { margin:0; font-family:sans-serif; background:#f0f0f0; }
+    .container { display:flex; height:100vh; }
+    .sidebar { width:200px; background:#222; color:#ddd; padding:16px; }
+    .chat-area { flex:1; border-left:1px solid #ccc; border-right:1px solid #ccc; display:flex; flex-direction:column; }
+    .chat-header { padding:16px; font-size:1.2em; border-bottom:1px solid #ccc; }
+    .chat-content { flex:1; padding:16px; }
+    .chat-input { padding:16px; background:#fff; border-top:1px solid #ccc; }
+    .chat-input textarea { width:100%; height:80px; padding:8px; border:1px solid #ccc; border-radius:4px; }
+    .chat-input .controls { margin-top:8px; }
+    .chat-input button { margin-right:8px; padding:8px 12px; border:none; border-radius:4px; background:#eee; cursor:pointer; }
+    .chat-input button:hover { background:#ddd; }
+
+    /* --- Node palette --- */
+    .control-panel { width:340px; padding:16px; display:flex; flex-direction:column; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .toolbar .draggable {
+      width:50px; height:50px;
+      border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:grab;
+    }
+
+    /* --- Canvas & icon bar --- */
+    .circuit-container { flex:1; background:#fff; border:1px solid #ccc; border-radius:8px;
+                        display:flex; flex-direction:column; overflow:hidden; }
+    .canvas-controls {
+      display:flex; justify-content:space-around;
+      background:#fafafa; border-bottom:1px solid #ddd;
+      padding:4px 0;
+    }
+    .canvas-controls button {
+      width:32px; height:32px;
+      background:transparent; border:none; border-radius:4px;
+      font-size:18px; color:#444; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      transition: background .2s, color .2s;
+    }
+    .canvas-controls button.active { background:#09f; color:#fff; }
+    .canvas-scroll { flex:1; overflow:auto; position:relative; }
+
+    /* --- Pan/zoom area --- */
+    .panzoom {
+      position:relative;
+      width:2000px; height:2000px;
+      transform-origin:0 0;
+      transform:scale(1);
+    }
+    /* **Allow clicks on the SVG and its polylines** */
+    .panzoom svg {
+      position:absolute; top:0; left:0;
+      width:100%; height:100%;
+      pointer-events:auto;
+    }
+    svg polyline {
+      stroke:#000; stroke-width:4; fill:none; cursor:pointer;
+      pointer-events:all;
+      transition: stroke .2s;
+    }
+
+    /* --- Nodes & link highlight --- */
+    .node {
+      position:absolute;
+      width:50px; height:50px;
+      border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:pointer; user-select:none;
+      transition: box-shadow .2s;
+    }
+    .node.selected { box-shadow: 0 0 0 4px gold; }
+    svg polyline.selected { stroke:gold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <h2>Autumn</h2>
+      <p>Ash Canvas</p></div>
+
+    <!-- Chat area -->
+    <div class="chat-area">
+      <div class="chat-header">What's on your mind today?</div>
+      <div class="chat-content">
+      
+        <p style="color:#666;margin-top:16px;">Ask anything…</p>
+      </div>
+      <div class="chat-input">
+        <textarea placeholder="Type your message…"></textarea>
+        <div class="controls">
+          <button>Search</button>
+          <button>Arc Edge</button>
+          <button>Create Media</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Node palette and canvas -->
+    <div class="control-panel">
+      <div class="toolbar">
+        <div class="draggable" draggable="true" data-type="M">M</div>
+        <div class="draggable" draggable="true" data-type="P">P</div>
+        <div class="draggable" draggable="true" data-type="E">E</div>
+        <div class="draggable" draggable="true" data-type="H">H</div>
+        <div class="draggable" draggable="true" data-type="S">S</div>
+        <div class="draggable" draggable="true" data-type="K">K</div>
+        <div class="draggable" draggable="true" data-type="R">R</div>
+      </div>
+
+      <!-- Canvas + Icon Bar -->
+      <div class="circuit-container">
+        <div class="canvas-controls">
+          <button id="linkBtn"    title="Link 🔗">🔗</button>
+          <button id="unlinkBtn"  title="Unlink ❌">❌</button>
+          <button id="undoBtn"    title="Undo ↶">↶</button>
+          <button id="redoBtn"    title="Redo ↷">↷</button>
+          <button id="zoomIn"     title="Zoom +">➕</button>
+          <button id="zoomOut"    title="Zoom -">➖</button>
+          <button id="clearCanvas"title="Clear 🗑️">🗑️</button>
+        </div>
+        <div class="canvas-scroll">
+          <div class="panzoom">
+            <svg xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    // Element refs
+    const draggables = document.querySelectorAll('.toolbar .draggable');
+    const linkBtn    = document.getElementById('linkBtn');
+    const unlinkBtn  = document.getElementById('unlinkBtn');
+    const zoomInBtn  = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const clearBtn   = document.getElementById('clearCanvas');
+    const undoBtn    = document.getElementById('undoBtn');
+    const redoBtn    = document.getElementById('redoBtn');
+    const container  = document.querySelector('.canvas-scroll');
+    const panzoom    = document.querySelector('.panzoom');
+    const svg        = panzoom.querySelector('svg');
+
+    // State & config
+    let linkMode     = false,
+        unlinkMode   = false,
+        startElement = null,
+        nodeCount    = 0,
+        linkCount    = 0,
+        scale        = 1;
+    const gridSize   = 60;
+    const undoStack  = [], redoStack = [];
+
+    // Undo/Redo helpers
+    function updateButtons(){
+      undoBtn.disabled = !undoStack.length;
+      redoBtn.disabled = !redoStack.length;
+    }
+    function pushAction(act){
+      undoStack.push(act);
+      redoStack.length = 0;
+      updateButtons();
+    }
+
+    // Highlight helper
+    function highlight(el,on){
+      if(el.tagName==='DIV')         el.classList.toggle('selected', on);
+      else if(el.tagName==='polyline') el.classList.toggle('selected', on);
+    }
+    function clearSelection(){
+      if(startElement){
+        highlight(startElement,false);
+        startElement = null;
+      }
+    }
+
+    // Link/Unlink toggles
+    linkBtn.onclick = ()=>{
+      linkMode = !linkMode;
+      if(linkMode && unlinkMode){
+        unlinkMode = false; unlinkBtn.classList.remove('active');
+      }
+      linkBtn.classList.toggle('active', linkMode);
+      clearSelection();
+    };
+    unlinkBtn.onclick = ()=>{
+      unlinkMode = !unlinkMode;
+      if(unlinkMode && linkMode){
+        linkMode = false; linkBtn.classList.remove('active');
+      }
+      unlinkBtn.classList.toggle('active', unlinkMode);
+      clearSelection();
+    };
+
+    // Zoom controls
+    zoomInBtn.onclick  = ()=>{ scale=Math.min(scale+0.2,3); panzoom.style.transform=`scale(${scale})`; };
+    zoomOutBtn.onclick = ()=>{ scale=Math.max(scale-0.2,0.4); panzoom.style.transform=`scale(${scale})`; };
+
+    // Clear canvas
+    clearBtn.onclick = ()=>{
+      panzoom.querySelectorAll('.node').forEach(n=>n.remove());
+      svg.querySelectorAll('polyline').forEach(l=>l.remove());
+      startElement = null; nodeCount = 0; linkCount = 0;
+      undoStack.length = redoStack.length = 0;
+      updateButtons();
+    };
+
+    // Undo / Redo
+    undoBtn.onclick = ()=>{
+      const act = undoStack.pop(); if(!act) return;
+      if(act.type==='create') act.el.remove();
+      else if(act.type==='delete'){
+        const pl = document.createElementNS(svg.namespaceURI,'polyline');
+        pl.setAttribute('points', act.points);
+        pl.id = act.id;
+        pl.dataset.a = act.a;
+        pl.dataset.b = act.b;
+        svg.appendChild(pl);
+        wireLink(pl);
+      }
+      redoStack.push(act);
+      updateButtons();
+    };
+    redoBtn.onclick = ()=>{
+      const act = redoStack.pop(); if(!act) return;
+      if(act.type==='create') svg.appendChild(act.el);
+      else if(act.type==='delete') act.el.remove();
+      undoStack.push(act);
+      updateButtons();
+    };
+
+    // Drag from palette
+    draggables.forEach(d=>{
+      d.ondragstart = e => e.dataTransfer.setData('text/plain', d.dataset.type);
+    });
+    container.ondragover = e => e.preventDefault();
+    container.ondrop = e => {
+      e.preventDefault();
+      const type = e.dataTransfer.getData('text/plain');
+      const rect     = container.getBoundingClientRect();
+      const rawX     = (e.clientX - rect.left + container.scrollLeft)/scale;
+      const rawY     = (e.clientY - rect.top  + container.scrollTop )/scale;
+      const x        = Math.round(rawX / gridSize) * gridSize;
+      const y        = Math.round(rawY / gridSize) * gridSize;
+      createNode(type,x,y);
+    };
+
+    // Create node + drag + click
+    function createNode(type,x,y){
+      const n = document.createElement('div');
+      n.className = 'node';
+      n.id        = 'n'+(++nodeCount);
+      n.textContent = type;
+      n.style.left = x+'px';
+      n.style.top  = y+'px';
+      panzoom.appendChild(n);
+
+      // click to select/link/unlink
+      n.onclick = e => {
+        e.stopPropagation();
+        if(unlinkMode) removeNodeLinks(n);
+        else if(linkMode) handleSelect(n);
+      };
+
+      // drag + grid snap + reroute
+      let dx,dy;
+      n.onpointerdown = e => {
+        if(linkMode||unlinkMode) return;
+        e.preventDefault();
+        const r = n.getBoundingClientRect();
+        dx = (e.clientX - r.left)/scale;
+        dy = (e.clientY - r.top )/scale;
+        n.setPointerCapture(e.pointerId);
+        n.onpointermove = drag;
+        n.onpointerup   = drop;
+      };
+      function drag(e){
+        const r  = container.getBoundingClientRect();
+        const rawX = (e.clientX - r.left + container.scrollLeft)/scale - dx;
+        const rawY = (e.clientY - r.top  + container.scrollTop )/scale - dy;
+        const nx  = Math.round(rawX / gridSize) * gridSize;
+        const ny  = Math.round(rawY / gridSize) * gridSize;
+        n.style.left = nx+'px';
+        n.style.top  = ny+'px';
+        rerouteLinks(n);
+      }
+      function drop(e){
+        n.releasePointerCapture(e.pointerId);
+        n.onpointermove = null;
+        n.onpointerup   = null;
+      }
+    }
+
+    // Remove all links touching a node
+    function removeNodeLinks(node){
+      svg.querySelectorAll('polyline').forEach(pl=>{
+        if(pl.dataset.a===node.id||pl.dataset.b===node.id){
+          pushAction({
+            type:   'delete',
+            id:     pl.id,
+            a:      pl.dataset.a,
+            b:      pl.dataset.b,
+            points: pl.getAttribute('points'),
+            el:     pl
+          });
+          pl.remove();
+        }
+      });
+    }
+
+    // Handle selecting for linking
+    function handleSelect(el){
+      if(!startElement){
+        startElement = el;
+        highlight(el,true);
+      } else if(startElement !== el){
+        highlight(el,true);
+        drawLinkGeneric(startElement, el);
+        highlight(startElement,false);
+        highlight(el,false);
+        startElement = null;
+      }
+    }
+
+    // Wire any new/existing polyline for clicks
+    function wireLink(pl){
+      pl.onclick = e=>{
+        e.stopPropagation();
+        if(unlinkMode){
+          pushAction({
+            type:   'delete',
+            id:     pl.id,
+            a:      pl.dataset.a,
+            b:      pl.dataset.b,
+            points: pl.getAttribute('points'),
+            el:     pl
+          });
+          pl.remove();
+        } else if(linkMode){
+          handleSelect(pl);
+        }
+      };
+    }
+
+    // Get endpoint coordinates for DIV or polyline
+    function getEndpoint(el){
+      if(el.tagName==='DIV'){
+        return [
+          parseFloat(el.style.left) + el.offsetWidth/2,
+          parseFloat(el.style.top ) + el.offsetHeight/2
+        ];
+      } else {
+        const pts = el.getAttribute('points')
+                      .split(' ')
+                      .map(s=>s.split(',').map(Number));
+        return pts[Math.floor(pts.length/2)];
+      }
+    }
+
+    // Build a grid blocking cells under every DIV node
+    function buildGrid(){
+      const w    = panzoom.offsetWidth,
+            h    = panzoom.offsetHeight,
+            cols = Math.ceil(w/gridSize),
+            rows = Math.ceil(h/gridSize);
+      const grid = Array.from({length:rows},()=>Array(cols).fill(0));
+      panzoom.querySelectorAll('.node').forEach(n=>{
+        const x  = parseFloat(n.style.left),
+              y  = parseFloat(n.style.top),
+              c0 = Math.floor(x/gridSize),
+              r0 = Math.floor(y/gridSize),
+              c1 = Math.floor((x+n.offsetWidth )/gridSize),
+              r1 = Math.floor((y+n.offsetHeight)/gridSize);
+        for(let r=r0; r<=r1; r++){
+          for(let c=c0; c<=c1; c++){
+            if(r>=0&&r<rows&&c>=0&&c<cols) grid[r][c]=1;
+          }
+        }
+      });
+      return {grid,rows,cols};
+    }
+
+    // BFS pathfind across that grid
+    function findPathPoints(P1,P2){
+      const [x1,y1] = P1, [x2,y2] = P2;
+      const {grid, rows, cols} = buildGrid();
+      const start = [ Math.floor(y1/gridSize), Math.floor(x1/gridSize) ];
+      const goal  = [ Math.floor(y2/gridSize), Math.floor(x2/gridSize) ];
+      const visited = Array.from({length:rows},()=>Array(cols).fill(false));
+      const prev    = Array.from({length:rows},()=>Array(cols).fill(null));
+      const q       = [start];
+      visited[start[0]][start[1]] = true;
+      const moves = [[1,0],[-1,0],[0,1],[0,-1]];
+
+      while(q.length){
+        const [r,c]=q.shift();
+        if(r===goal[0]&&c===goal[1]) break;
+        for(const [dr,dc] of moves){
+          const nr=r+dr, nc=c+dc;
+          if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
+          if(visited[nr][nc]||grid[nr][nc]===1) continue;
+          visited[nr][nc]=true;
+          prev[nr][nc]=[r,c];
+          q.push([nr,nc]);
+        }
+      }
+
+      const path=[]; let cur=goal;
+      while(cur){
+        path.push(cur);
+        cur=prev[cur[0]][cur[1]];
+      }
+      path.reverse();
+      return path.map(([r,c])=>[
+        c*gridSize + gridSize/2,
+        r*gridSize + gridSize/2
+      ]);
+    }
+
+    // Draw routed polyline between any two elements
+    function drawLinkGeneric(a,b){
+      const P1  = getEndpoint(a),
+            P2  = getEndpoint(b),
+            pts = findPathPoints(P1,P2);
+      if(pts.length<2) return;
+      const pl = document.createElementNS(svg.namespaceURI,'polyline');
+      pl.id        = 'l'+(++linkCount);
+      pl.dataset.a = a.id;
+      pl.dataset.b = b.id;
+      pl.setAttribute('points', pts.map(p=>p.join(',')).join(' '));
+      svg.appendChild(pl);
+      wireLink(pl);
+      pushAction({ type:'create', el:pl });
+    }
+
+    // When a node moves, reroute all its links
+    function rerouteLinks(node){
+      svg.querySelectorAll('polyline').forEach(pl=>{
+        if(pl.dataset.a===node.id||pl.dataset.b===node.id){
+          const a = document.getElementById(pl.dataset.a),
+                b = document.getElementById(pl.dataset.b);
+          pl.remove();
+          drawLinkGeneric(a,b);
+        }
+      });
+    }
+
+    // Wire up any existing <polyline> on load
+    svg.querySelectorAll('polyline').forEach(wireLink);
+    updateButtons();
+  })();
+  </script>
+</body>
+</html>
