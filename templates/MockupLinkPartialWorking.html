@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Autumn | Lead Edge Ash Tree Reflex</title>
+  <style>
+    body { margin:0; font-family:sans-serif; background:#f0f0f0; }
+    .container { display:flex; height:100vh; }
+    .sidebar { width:200px; background:#222; color:#ddd; padding:16px; }
+    .chat-area { flex:1; border-left:1px solid #ccc; border-right:1px solid #ccc; display:flex; flex-direction:column; }
+    .chat-header { padding:16px; font-size:1.2em; border-bottom:1px solid #ccc; }
+    .chat-content { flex:1; padding:16px; }
+    .chat-input { padding:16px; background:#fff; border-top:1px solid #ccc; }
+    .chat-input textarea { width:100%; height:80px; padding:8px; border:1px solid #ccc; border-radius:4px; }
+    .chat-input .controls { margin-top:8px; }
+    .chat-input button { margin-right:8px; padding:8px 12px; border:none; border-radius:4px; background:#eee; cursor:pointer; }
+    .chat-input button:hover { background:#ddd; }
+
+    .control-panel { width:340px; padding:16px; display:flex; flex-direction:column; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .toolbar .draggable {
+      width:50px; height:50px;
+      border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:grab;
+    }
+
+    /* Canvas: icon row + workspace */
+    .circuit-container { flex:1; background:#fff; border:1px solid #ccc; border-radius:8px; display:flex; flex-direction:column; overflow:hidden; }
+    .canvas-controls {
+      display:flex; justify-content:space-around;
+      background:#fafafa; border-bottom:1px solid #ddd;
+      padding:4px 0;
+    }
+    .canvas-controls button {
+      width:32px; height:32px;
+      background:transparent; border:none; border-radius:4px;
+      font-size:18px; color:#444; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      transition: background .2s, color .2s;
+    }
+    .canvas-controls button.active {
+      background:#09f; color:#fff;
+    }
+    .canvas-scroll { flex:1; overflow:auto; position:relative; }
+
+    .panzoom {
+      position:relative;
+      width:2000px; height:2000px;
+      transform-origin:0 0;
+      transform:scale(1);
+    }
+    .panzoom svg {
+      position:absolute; top:0; left:0;
+      width:100%; height:100%;
+      pointer-events:none;
+    }
+    .node {
+      position:absolute;
+      width:50px; height:50px;
+      border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:pointer;
+      user-select:none;
+    }
+    svg polyline {
+      stroke:#000; stroke-width:4; fill:none; cursor:pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+        <h2>Autumn</h2>
+        <p>Ash Canvas</p></div>
+
+    <div class="chat-area">
+      <div class="chat-header">What's on your mind today?</div>
+      <div class="chat-content">
+       
+        <p style="color:#666; margin-top:16px;">Ask anything…</p>
+      </div>
+      <div class="chat-input">
+        <textarea placeholder="Type your message…"></textarea>
+        <div class="controls">
+          <button>Search</button>
+          <button>Arc Edge</button>
+          <button>Create Media</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="control-panel">
+      <!-- draggable nodes -->
+      <div class="toolbar">
+        <div class="draggable" draggable="true" data-type="M">M</div>
+        <div class="draggable" draggable="true" data-type="P">P</div>
+        <div class="draggable" draggable="true" data-type="E">E</div>
+        <div class="draggable" draggable="true" data-type="H">H</div>
+        <div class="draggable" draggable="true" data-type="S">S</div>
+        <div class="draggable" draggable="true" data-type="K">K</div>
+        <div class="draggable" draggable="true" data-type="R">R</div>
+      </div>
+
+      <!-- icon toolbar -->
+      <div class="circuit-container">
+        <div class="canvas-controls">
+          <button id="linkBtn"    title="Link Mode 🔗">🔗</button>
+          <button id="unlinkBtn"  title="Unlink Mode ❌">❌</button>
+          <button id="undoBtn"    title="Undo ↶">↶</button>
+          <button id="redoBtn"    title="Redo ↷">↷</button>
+          <button id="zoomIn"     title="Zoom In ➕">➕</button>
+          <button id="zoomOut"    title="Zoom Out ➖">➖</button>
+          <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+        </div>
+        <div class="canvas-scroll">
+          <div class="panzoom">
+            <svg xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    const draggables = document.querySelectorAll('.toolbar .draggable');
+    const linkBtn    = document.getElementById('linkBtn');
+    const unlinkBtn  = document.getElementById('unlinkBtn');
+    const zoomInBtn  = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const clearBtn   = document.getElementById('clearCanvas');
+    const undoBtn    = document.getElementById('undoBtn');
+    const redoBtn    = document.getElementById('redoBtn');
+    const container  = document.querySelector('.canvas-scroll');
+    const panzoom    = document.querySelector('.panzoom');
+    const svg        = panzoom.querySelector('svg');
+
+    const gridSize   = 60;
+    let drawMode     = false, unlinkMode = false, startNode = null;
+    let nodeCounter  = 0, scale = 1;
+    const undoStack  = [], redoStack = [];
+
+    function updateButtons(){
+      undoBtn.disabled = !undoStack.length;
+      redoBtn.disabled = !redoStack.length;
+    }
+    function pushAction(act){
+      undoStack.push(act);
+      redoStack.length = 0;
+      updateButtons();
+    }
+
+    // Link/Unlink toggle with active highlight
+    linkBtn.onclick = ()=>{
+      drawMode = !drawMode;
+      if(drawMode && unlinkMode){ unlinkMode=false; unlinkBtn.classList.remove('active'); }
+      linkBtn.classList.toggle('active', drawMode);
+      if(!drawMode && startNode){ startNode.classList.remove('selected'); startNode=null; }
+    };
+    unlinkBtn.onclick = ()=>{
+      unlinkMode = !unlinkMode;
+      if(unlinkMode && drawMode){ drawMode=false; linkBtn.classList.remove('active'); }
+      unlinkBtn.classList.toggle('active', unlinkMode);
+    };
+
+    // Zoom
+    zoomInBtn.onclick  = ()=>{ scale=Math.min(scale+0.2,3); panzoom.style.transform=`scale(${scale})`; };
+    zoomOutBtn.onclick = ()=>{ scale=Math.max(scale-0.2,0.4); panzoom.style.transform=`scale(${scale})`; };
+
+    // Clear
+    clearBtn.onclick = ()=>{
+      panzoom.querySelectorAll('.node').forEach(n=>n.remove());
+      Array.from(svg.children).forEach(l=>l.remove());
+      startNode=null; nodeCounter=0;
+      undoStack.length=redoStack.length=0;
+      updateButtons();
+    };
+
+    // Undo/Redo
+    undoBtn.onclick = ()=>{
+      const act=undoStack.pop(); if(!act) return;
+      if(act.type==='create') act.pl.remove();
+      else if(act.type==='delete'){
+        const pl=document.createElementNS(svg.namespaceURI,'polyline');
+        pl.setAttribute('points',act.points);
+        pl.dataset.a=act.a; pl.dataset.b=act.b;
+        svg.appendChild(pl); attachLinkListener(pl);
+      }
+      redoStack.push(act); updateButtons();
+    };
+    redoBtn.onclick = ()=>{
+      const act=redoStack.pop(); if(!act) return;
+      if(act.type==='create') svg.appendChild(act.pl);
+      else if(act.type==='delete') act.pl.remove();
+      undoStack.push(act); updateButtons();
+    };
+
+    // Drag → Node creation
+    draggables.forEach(d=>{
+      d.ondragstart = e=> e.dataTransfer.setData('text/plain', d.dataset.type);
+    });
+    container.ondragover = e=> e.preventDefault();
+    container.ondrop = e=>{
+      e.preventDefault();
+      const type = e.dataTransfer.getData('text/plain');
+      const r=container.getBoundingClientRect();
+      const rawX=(e.clientX-r.left+container.scrollLeft)/scale;
+      const rawY=(e.clientY-r.top+container.scrollTop)/scale;
+      const x=Math.round(rawX/gridSize)*gridSize;
+      const y=Math.round(rawY/gridSize)*gridSize;
+      createNode(type,x,y);
+    };
+
+    // Node creation & drag
+    function createNode(type,x,y){
+      const n=document.createElement('div');
+      n.className='node'; n.id='n'+(++nodeCounter);
+      n.textContent=type; n.style.left=`${x}px`; n.style.top=`${y}px`;
+      panzoom.appendChild(n);
+      n.onclick = e=>{
+        e.stopPropagation();
+        if(unlinkMode){
+          Array.from(svg.children)
+            .filter(l=>l.dataset.a===n.id||l.dataset.b===n.id)
+            .forEach(l=>{
+              pushAction({type:'delete',a:l.dataset.a,b:l.dataset.b,points:l.getAttribute('points'),pl:l});
+              l.remove();
+            });
+          return;
+        }
+        if(!drawMode) return;
+        if(!startNode){ startNode=n; n.classList.add('selected'); }
+        else if(startNode!==n){
+          drawLink(startNode,n);
+          startNode.classList.remove('selected'); startNode=null;
+        }
+      };
+
+      // Drag snapping + real‑time link update
+      let offX, offY;
+      n.onpointerdown = e=>{
+        if(drawMode||unlinkMode) return;
+        e.preventDefault();
+        const rect=n.getBoundingClientRect();
+        offX=(e.clientX-rect.left)/scale;
+        offY=(e.clientY-rect.top)/scale;
+        n.setPointerCapture(e.pointerId);
+        n.onpointermove = drag;
+        n.onpointerup   = drop;
+      };
+      function drag(e){
+        const r=container.getBoundingClientRect();
+        const rawX=(e.clientX-r.left+container.scrollLeft)/scale-offX;
+        const rawY=(e.clientY-r.top+container.scrollTop)/scale-offY;
+        const x=Math.round(rawX/gridSize)*gridSize;
+        const y=Math.round(rawY/gridSize)*gridSize;
+        n.style.left=`${x}px`; n.style.top=`${y}px`;
+        updateLinks(n);
+      }
+      function drop(e){
+        n.releasePointerCapture(e.pointerId);
+        n.onpointermove=null; n.onpointerup=null;
+      }
+    }
+
+    // Smart routing blocking test includes existing link segments + nodes
+    function drawLink(a,b){
+      const xa=parseFloat(a.style.left)+25, ya=parseFloat(a.style.top)+25;
+      const xb=parseFloat(b.style.left)+25, yb=parseFloat(b.style.top)+25;
+      const pA=[[xa,ya],[xa,yb],[xb,yb]];
+      const pB=[[xa,ya],[xb,ya],[xb,yb]];
+      const useA=!isBlocked(pA,a,b);
+      const pts=(useA? pA: pB).map(p=>p.join(',')).join(' ');
+      const pl=document.createElementNS(svg.namespaceURI,'polyline');
+      pl.setAttribute('points',pts);
+      pl.dataset.a=a.id; pl.dataset.b=b.id;
+      svg.appendChild(pl);
+      attachLinkListener(pl);
+      pushAction({type:'create',pl});
+    }
+
+    function isBlocked(path,a,b){
+      // other nodes
+      const nodes=Array.from(panzoom.querySelectorAll('.node'))
+                        .filter(n=>n!==a&&n!==b)
+                        .map(n=>{
+                          const L=parseFloat(n.style.left),
+                                T=parseFloat(n.style.top);
+                          return {l:L,r:L+50,t:T,b:T+50};
+                        });
+      // existing links
+      const links=Array.from(svg.children).map(pl=>{
+        const pts=pl.getAttribute('points').split(' ').map(s=>s.split(',').map(Number));
+        return {segs:[[pts[0],pts[1]],[pts[1],pts[2]]]};
+      });
+
+      for(let i=0; i<path.length-1; i++){
+        const [x1,y1]=path[i], [x2,y2]=path[i+1];
+        const vert = x1===x2;
+        const minX=Math.min(x1,x2), maxX=Math.max(x1,x2);
+        const minY=Math.min(y1,y2), maxY=Math.max(y1,y2);
+
+        // node collision
+        for(const r of nodes){
+          if(vert){
+            if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) return true;
+          } else {
+            if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) return true;
+          }
+        }
+
+        // link collision
+        for(const lk of links){
+          for(const [[x3,y3],[x4,y4]] of lk.segs){
+            if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // segment intersection helper
+    function segmentsIntersect(ax,ay,bx,by,cx,cy,dx,dy){
+      const ccw=(px,py,qx,qy,rx,ry)=>(ry-py)*(qx-px) > (qy-py)*(rx-px);
+      return ccw(ax,ay,cx,cy,dx,dy)!==ccw(bx,by,cx,cy,dx,dy)
+          && ccw(ax,ay,bx,by,cx,cy)!==ccw(ax,ay,bx,by,dx,dy);
+    }
+
+    function attachLinkListener(pl){
+      pl.onclick = e=>{
+        e.stopPropagation();
+        if(unlinkMode){
+          pushAction({type:'delete',a:pl.dataset.a,b:pl.dataset.b,points:pl.getAttribute('points'),pl});
+          pl.remove();
+        }
+      };
+    }
+
+    function updateLinks(node){
+      Array.from(svg.children).forEach(pl=>{
+        if(pl.dataset.a===node.id||pl.dataset.b===node.id){
+          const na=document.getElementById(pl.dataset.a);
+          const nb=document.getElementById(pl.dataset.b);
+          const xa=parseFloat(na.style.left)+25, ya=parseFloat(na.style.top)+25;
+          const xb=parseFloat(nb.style.left)+25, yb=parseFloat(nb.style.top)+25;
+          const pA=[[xa,ya],[xa,yb],[xb,yb]];
+          const pB=[[xa,ya],[xb,ya],[xb,yb]];
+          const useA=!isBlocked(pA,na,nb);
+          pl.setAttribute('points',(useA? pA: pB).map(p=>p.join(',')).join(' '));
+        }
+      });
+    }
+
+    updateButtons();
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Autumn | Lead Edge Ash Tree Reflex</title>
+  <style>
+    body { margin:0; font-family:sans-serif; background:#f0f0f0; }
+    .container { display:flex; height:100vh; }
+    .sidebar { width:200px; background:#222; color:#ddd; padding:16px; }
+    .chat-area { flex:1; border-left:1px solid #ccc; border-right:1px solid #ccc; display:flex; flex-direction:column; }
+    .chat-header { padding:16px; font-size:1.2em; border-bottom:1px solid #ccc; }
+    .chat-content { flex:1; padding:16px; }
+    .chat-input { padding:16px; background:#fff; border-top:1px solid #ccc; }
+    .chat-input textarea { width:100%; height:80px; padding:8px; border:1px solid #ccc; border-radius:4px; }
+    .chat-input .controls { margin-top:8px; }
+    .chat-input button { margin-right:8px; padding:8px 12px; border:none; border-radius:4px; background:#eee; cursor:pointer; }
+    .chat-input button:hover { background:#ddd; }
+
+    .control-panel { width:340px; padding:16px; display:flex; flex-direction:column; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+    .toolbar .draggable {
+      width:50px; height:50px; border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:grab;
+    }
+
+    .circuit-container { flex:1; background:#fff; border:1px solid #ccc; border-radius:8px;
+                        display:flex; flex-direction:column; overflow:hidden; }
+    .canvas-controls {
+      display:flex; justify-content:space-around;
+      background:#fafafa; border-bottom:1px solid #ddd; padding:4px 0;
+    }
+    .canvas-controls button {
+      width:32px; height:32px; background:transparent; border:none; border-radius:4px;
+      font-size:18px; color:#444; cursor:pointer; display:flex; align-items:center; justify-content:center;
+      transition: background .2s, color .2s;
+    }
+    .canvas-controls button.active { background:#09f; color:#fff; }
+    .canvas-scroll { flex:1; overflow:auto; position:relative; }
+
+    .panzoom { position:relative; width:2000px; height:2000px; transform-origin:0 0; transform:scale(1); }
+    .panzoom svg {
+      position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:auto;
+    }
+    svg polyline {
+      stroke:#000; stroke-width:4; fill:none; cursor:pointer;
+      pointer-events:all; transition: stroke .2s;
+    }
+    .node {
+      position:absolute; width:50px; height:50px;
+      border:3px solid #09f; border-radius:6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:1.2em; font-weight:bold; color:#09f;
+      background:#fff; cursor:pointer; user-select:none;
+      transition: box-shadow .2s;
+    }
+    .node.selected { box-shadow:0 0 0 4px gold; }
+    svg polyline.selected { stroke:gold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+      <h2>Autumn</h2>
+      <p>Ash Canvas</p>
+    </div>
+    <div class="chat-area">
+      <div class="chat-header">What's on your mind today?</div>
+      <div class="chat-content">
+        <p style="color:#666;margin-top:16px;">Ask anything…</p>
+      </div>
+      <div class="chat-input">
+        <textarea placeholder="Type your message…"></textarea>
+        <div class="controls">
+          <button>Search</button>
+          <button>Arc Edge</button>
+          <button>Create Media</button>
+        </div>
+      </div>
+    </div>
+    <div class="control-panel">
+      <div class="toolbar">
+        <div class="draggable" draggable="true" data-type="M">M</div>
+        <div class="draggable" draggable="true" data-type="P">P</div>
+        <div class="draggable" draggable="true" data-type="E">E</div>
+        <div class="draggable" draggable="true" data-type="H">H</div>
+        <div class="draggable" draggable="true" data-type="S">S</div>
+        <div class="draggable" draggable="true" data-type="K">K</div>
+        <div class="draggable" draggable="true" data-type="R">R</div>
+      </div>
+      <div class="circuit-container">
+        <div class="canvas-controls">
+          <button id="linkBtn" title="Link 🔗">🔗</button>
+          <button id="unlinkBtn" title="Unlink ❌">❌</button>
+          <button id="undoBtn" title="Undo ↶">↶</button>
+          <button id="redoBtn" title="Redo ↷">↷</button>
+          <button id="zoomIn" title="Zoom +">➕</button>
+          <button id="zoomOut" title="Zoom -">➖</button>
+          <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+        </div>
+        <div class="canvas-scroll">
+          <div class="panzoom">
+            <svg xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    const draggables = document.querySelectorAll('.toolbar .draggable');
+    const linkBtn    = document.getElementById('linkBtn');
+    const unlinkBtn  = document.getElementById('unlinkBtn');
+    const zoomInBtn  = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const clearBtn   = document.getElementById('clearCanvas');
+    const undoBtn    = document.getElementById('undoBtn');
+    const redoBtn    = document.getElementById('redoBtn');
+    const container  = document.querySelector('.canvas-scroll');
+    const panzoom    = document.querySelector('.panzoom');
+    const svg        = panzoom.querySelector('svg');
+
+    let linkMode     = false,
+        unlinkMode   = false,
+        startElement = null,
+        nodeCount    = 0,
+        linkCount    = 0,
+        scale        = 1;
+    const gridSize = 60;
+
+    function highlight(el,on){
+      el.classList.toggle('selected', on);
+    }
+    function clearSelection(){
+      document.querySelectorAll('.node.selected, polyline.selected')
+        .forEach(e=>e.classList.remove('selected'));
+      startElement = null;
+    }
+
+    linkBtn.onclick = ()=>{
+      linkMode = !linkMode;
+      if(linkMode && unlinkMode) unlinkMode=false;
+      linkBtn.classList.toggle('active', linkMode);
+      unlinkBtn.classList.remove('active');
+      clearSelection();
+    };
+
+    unlinkBtn.onclick = ()=>{
+      unlinkMode = !unlinkMode;
+      if(unlinkMode && linkMode) linkMode=false;
+      unlinkBtn.classList.toggle('active', unlinkMode);
+      linkBtn.classList.remove('active');
+      clearSelection();
+    };
+
+    zoomInBtn.onclick  = ()=>{ scale=Math.min(scale+0.2,3); panzoom.style.transform=`scale(${scale})`; };
+    zoomOutBtn.onclick = ()=>{ scale=Math.max(scale-0.2,0.4); panzoom.style.transform=`scale(${scale})`; };
+
+    clearBtn.onclick = ()=>{
+      panzoom.querySelectorAll('.node').forEach(n=>n.remove());
+      svg.querySelectorAll('polyline').forEach(l=>l.remove());
+      clearSelection(); nodeCount=0; linkCount=0;
+    };
+
+    // BFS grid + pathfind
+    function buildGrid(){
+      const W=panzoom.offsetWidth, H=panzoom.offsetHeight;
+      const cols=Math.ceil(W/gridSize), rows=Math.ceil(H/gridSize);
+      const grid=Array.from({length:rows},()=>Array(cols).fill(0));
+      panzoom.querySelectorAll('.node').forEach(n=>{
+        const x=parseFloat(n.style.left), y=parseFloat(n.style.top);
+        const c0=Math.floor(x/gridSize), r0=Math.floor(y/gridSize);
+        const c1=Math.floor((x+n.offsetWidth)/gridSize),
+              r1=Math.floor((y+n.offsetHeight)/gridSize);
+        for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++){
+          if(r>=0&&r<rows&&c>=0&&c<cols) grid[r][c]=1;
+        }
+      });
+      return {grid,rows,cols};
+    }
+
+    function getEndpoint(el){
+      if(el.tagName==='DIV') return [
+        parseFloat(el.style.left)+el.offsetWidth/2,
+        parseFloat(el.style.top )+el.offsetHeight/2
+      ];
+      const pts=el.getAttribute('points')
+                    .split(' ')
+                    .map(s=>s.split(',').map(Number));
+      return pts[Math.floor(pts.length/2)];
+    }
+
+    function findPath(a,b){
+      const [ax,ay]=getEndpoint(a), [bx,by]=getEndpoint(b);
+      const {grid,rows,cols}=buildGrid();
+      const start=[Math.floor(ay/gridSize),Math.floor(ax/gridSize)];
+      const goal =[Math.floor(by/gridSize),Math.floor(bx/gridSize)];
+      const visited=Array.from({length:rows},()=>Array(cols).fill(false));
+      const prev   =Array.from({length:rows},()=>Array(cols).fill(null));
+      const q=[start]; visited[start[0]][start[1]]=true;
+      const moves=[[1,0],[-1,0],[0,1],[0,-1]];
+      while(q.length){
+        const [r,c]=q.shift();
+        if(r===goal[0]&&c===goal[1]) break;
+        for(const [dr,dc] of moves){
+          const nr=r+dr,nc=c+dc;
+          if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
+          if(visited[nr][nc]||grid[nr][nc]) continue;
+          visited[nr][nc]=true;
+          prev[nr][nc]=[r,c];
+          q.push([nr,nc]);
+        }
+      }
+      const path=[]; let cur=goal;
+      while(cur){ path.push(cur); cur=prev[cur[0]][cur[1]]; }
+      path.reverse();
+      return path.map(([r,c])=>[
+        c*gridSize+gridSize/2,
+        r*gridSize+gridSize/2
+      ]);
+    }
+
+    function wireLink(pl){
+      pl.onclick=e=>{
+        e.stopPropagation();
+        if(unlinkMode) pl.remove();
+        else if(linkMode) handleSelect(pl);
+      };
+    }
+
+    function handleSelect(el){
+      if(!startElement){ startElement=el; highlight(el,true); }
+      else if(startElement!==el){
+        highlight(el,true);
+        drawLinkSmart(startElement,el);
+        highlight(startElement,false);
+        highlight(el,false);
+        startElement=null;
+      }
+    }
+
+    function drawLinkSmart(a,b){
+      const pts=findPath(a,b);
+      if(pts.length<2) return;
+      const pl=document.createElementNS(svg.namespaceURI,'polyline');
+      pl.id='l'+(++linkCount);
+      pl.dataset.a=a.id; pl.dataset.b=b.id;
+      pl.setAttribute('points',pts.map(p=>p.join(',')).join(' '));
+      svg.appendChild(pl);
+      wireLink(pl);
+    }
+
+    function rerouteLinks(n){
+      svg.querySelectorAll('polyline').forEach(pl=>{
+        if(pl.dataset.a===n.id||pl.dataset.b===n.id){
+          const a=document.getElementById(pl.dataset.a);
+          const b=document.getElementById(pl.dataset.b);
+          const pts=findPath(a,b);
+          pl.setAttribute('points',pts.map(p=>p.join(',')).join(' '));
+        }
+      });
+    }
+
+    draggables.forEach(d=>{
+      d.ondragstart=e=>e.dataTransfer.setData('text/plain',d.dataset.type);
+    });
+    container.ondragover=e=>e.preventDefault();
+    container.ondrop=e=>{ e.preventDefault();
+      const type=e.dataTransfer.getData('text/plain');
+      const rect=container.getBoundingClientRect();
+      const rawX=(e.clientX-rect.left+container.scrollLeft)/scale;
+      const rawY=(e.clientY-rect.top +container.scrollTop)/scale;
+      const x=Math.round(rawX/gridSize)*gridSize;
+      const y=Math.round(rawY/gridSize)*gridSize;
+      createNode(type,x,y);
+    };
+
+    function createNode(type,x,y){
+      const n=document.createElement('div');
+      n.className='node'; n.id='n'+(++nodeCount);
+      n.textContent=type; n.style.left=x+'px'; n.style.top=y+'px';
+      panzoom.appendChild(n);
+      n.onclick=e=>{ e.stopPropagation(); if(unlinkMode) removeNodeLinks(n); else if(linkMode) handleSelect(n); };
+      enableDrag(n);
+    }
+
+    function enableDrag(n){
+      let dx,dy;
+      n.onpointerdown=e=>{
+        if(linkMode||unlinkMode) return;
+        e.preventDefault();
+        const r=n.getBoundingClientRect();
+        dx=(e.clientX-r.left)/scale; dy=(e.clientY-r.top)/scale;
+        n.setPointerCapture(e.pointerId);
+        n.onpointermove=drag; n.onpointerup=drop;
+      };
+      function drag(e){
+        const rect=container.getBoundingClientRect();
+        const rawX=(e.clientX-rect.left+container.scrollLeft)/scale-dx;
+        const rawY=(e.clientY-rect.top +container.scrollTop)/scale-dy;
+        const nx=Math.round(rawX/gridSize)*gridSize;
+        const ny=Math.round(rawY/gridSize)*gridSize;
+        n.style.left=nx+'px'; n.style.top=ny+'px';
+        rerouteLinks(n);
+      }
+      function drop(e){ n.releasePointerCapture(e.pointerId); n.onpointermove=null; n.onpointerup=null; }
+    }
+
+    function removeNodeLinks(n){
+      svg.querySelectorAll('polyline').forEach(pl=>{
+        if(pl.dataset.a===n.id||pl.dataset.b===n.id) pl.remove();
+      });
+    }
+
+    // initialize
+    svg.querySelectorAll('polyline').forEach(wireLink);
+  })();
+  </script>
+</body>
+</html>

@@ -366,65 +366,97 @@
       }
     }
 
-    // Build a grid blocking cells under every DIV node
-    function buildGrid(){
-      const w    = panzoom.offsetWidth,
-            h    = panzoom.offsetHeight,
-            cols = Math.ceil(w/gridSize),
-            rows = Math.ceil(h/gridSize);
-      const grid = Array.from({length:rows},()=>Array(cols).fill(0));
-      panzoom.querySelectorAll('.node').forEach(n=>{
-        const x  = parseFloat(n.style.left),
-              y  = parseFloat(n.style.top),
-              c0 = Math.floor(x/gridSize),
-              r0 = Math.floor(y/gridSize),
-              c1 = Math.floor((x+n.offsetWidth )/gridSize),
-              r1 = Math.floor((y+n.offsetHeight)/gridSize);
-        for(let r=r0; r<=r1; r++){
-          for(let c=c0; c<=c1; c++){
-            if(r>=0&&r<rows&&c>=0&&c<cols) grid[r][c]=1;
-          }
-        }
-      });
-      return {grid,rows,cols};
-    }
+    // Build a 2D occupancy grid marking every cell under a <div class="node"> as blocked
+function buildGrid() {
+  const W = panzoom.offsetWidth, H = panzoom.offsetHeight;
+  const cols = Math.ceil(W/gridSize), rows = Math.ceil(H/gridSize);
+  const grid = Array.from({length:rows}, ()=>Array(cols).fill(0));
 
-    // BFS pathfind across that grid
-    function findPathPoints(P1,P2){
-      const [x1,y1] = P1, [x2,y2] = P2;
-      const {grid, rows, cols} = buildGrid();
-      const start = [ Math.floor(y1/gridSize), Math.floor(x1/gridSize) ];
-      const goal  = [ Math.floor(y2/gridSize), Math.floor(x2/gridSize) ];
-      const visited = Array.from({length:rows},()=>Array(cols).fill(false));
-      const prev    = Array.from({length:rows},()=>Array(cols).fill(null));
-      const q       = [start];
-      visited[start[0]][start[1]] = true;
-      const moves = [[1,0],[-1,0],[0,1],[0,-1]];
-
-      while(q.length){
-        const [r,c]=q.shift();
-        if(r===goal[0]&&c===goal[1]) break;
-        for(const [dr,dc] of moves){
-          const nr=r+dr, nc=c+dc;
-          if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
-          if(visited[nr][nc]||grid[nr][nc]===1) continue;
-          visited[nr][nc]=true;
-          prev[nr][nc]=[r,c];
-          q.push([nr,nc]);
-        }
+  panzoom.querySelectorAll('.node').forEach(n => {
+    const x = parseFloat(n.style.left), y = parseFloat(n.style.top);
+    const c0 = Math.floor(x/gridSize), r0 = Math.floor(y/gridSize);
+    const c1 = Math.floor((x + n.offsetWidth)/gridSize);
+    const r1 = Math.floor((y + n.offsetHeight)/gridSize);
+    for(let r=r0; r<=r1; r++){
+      for(let c=c0; c<=c1; c++){
+        if (r>=0&&r<rows&&c>=0&&c<cols) grid[r][c] = 1;
       }
-
-      const path=[]; let cur=goal;
-      while(cur){
-        path.push(cur);
-        cur=prev[cur[0]][cur[1]];
-      }
-      path.reverse();
-      return path.map(([r,c])=>[
-        c*gridSize + gridSize/2,
-        r*gridSize + gridSize/2
-      ]);
     }
+  });
+
+  return {grid, rows, cols};
+}
+
+// BFS to find the shortest 4‑way path from cell of A to cell of B
+function findPath(A, B) {
+  // get pixel midpoints of A and B
+  const [ax, ay] = getEndpoint(A);
+  const [bx, by] = getEndpoint(B);
+
+  const {grid, rows, cols} = buildGrid();
+  const start = [Math.floor(ay/gridSize), Math.floor(ax/gridSize)];
+  const goal  = [Math.floor(by/gridSize), Math.floor(bx/gridSize)];
+
+  const visited = Array.from({length:rows}, ()=>Array(cols).fill(false));
+  const prev    = Array.from({length:rows}, ()=>Array(cols).fill(null));
+  const q = [start];
+  visited[start[0]][start[1]] = true;
+
+  const moves = [[1,0],[-1,0],[0,1],[0,-1]];
+
+  while (q.length) {
+    const [r,c] = q.shift();
+    if (r===goal[0] && c===goal[1]) break;
+    for (let [dr,dc] of moves) {
+      const nr = r+dr, nc = c+dc;
+      if (nr<0||nr>=rows||nc<0||nc>=cols) continue;
+      if (visited[nr][nc] || grid[nr][nc]===1) continue;
+      visited[nr][nc] = true;
+      prev[nr][nc] = [r,c];
+      q.push([nr,nc]);
+    }
+  }
+
+  // Reconstruct path of grid‐cell centers
+  let cur = goal, path = [];
+  while (cur) {
+    path.push(cur);
+    cur = prev[cur[0]][cur[1]];
+  }
+  path.reverse();
+
+  return path.map(([r,c])=>[
+    c*gridSize + gridSize/2,
+    r*gridSize + gridSize/2
+  ]);
+}
+
+// Replace drawLink() with this:
+function drawLinkSmart(a, b) {
+  const pts = findPath(a, b);
+  if (pts.length < 2) return;
+
+  const pl = document.createElementNS(svg.namespaceURI, 'polyline');
+  pl.setAttribute('points', pts.map(p=>p.join(',')).join(' '));
+  pl.dataset.a = a.id;
+  pl.dataset.b = b.id;
+  pl.classList.add('routed');
+  svg.appendChild(pl);
+  wireLink(pl);  // your click/unlink/branch handler
+}
+
+// And updateLinks() becomes:
+function updateLinksSmart(movedNode) {
+  svg.querySelectorAll('polyline').forEach(pl => {
+    if (pl.dataset.a===movedNode.id || pl.dataset.b===movedNode.id) {
+      const A = document.getElementById(pl.dataset.a);
+      const B = document.getElementById(pl.dataset.b);
+      const pts = findPath(A, B);
+      pl.setAttribute('points', pts.map(p=>p.join(',')).join(' '));
+    }
+  });
+}
+
 
     // Draw routed polyline between any two elements
     function drawLinkGeneric(a,b){
