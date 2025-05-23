@@ -65,8 +65,16 @@
       background:#fff; cursor:pointer;
       user-select:none;
     }
+    .node.selected {
+      background-color: yellow !important; /* Important to override existing background */
+    }
     svg polyline {
       stroke:#000; stroke-width:4; fill:none; cursor:pointer;
+    }
+    .dash-line {
+      stroke: red;
+      stroke-width: 2; /* Thinner than main line potentially */
+      stroke-dasharray: 3,3;
     }
 
     #home{
@@ -159,7 +167,7 @@ Home
 
     const gridSize   = 60;
     let drawMode     = false, unlinkMode = false, startNode = null;
-    let nodeCounter  = 0, scale = 1;
+    let nodeCounter  = 0, scale = 1, linkIdCounter = 0;
     const undoStack  = [], redoStack = [];
 
     function updateButtons(){
@@ -253,8 +261,11 @@ Home
         if(!drawMode) return;
         if(!startNode){ startNode=n; n.classList.add('selected'); }
         else if(startNode!==n){
+          n.classList.add('selected'); // Highlight second node
           drawLink(startNode,n);
-          startNode.classList.remove('selected'); startNode=null;
+          startNode.classList.remove('selected');
+          n.classList.remove('selected'); // Clear highlight from second node
+          startNode=null;
         }
       };
 
@@ -291,54 +302,85 @@ Home
       const xb=parseFloat(b.style.left)+25, yb=parseFloat(b.style.top)+25;
       const pA=[[xa,ya],[xa,yb],[xb,yb]];
       const pB=[[xa,ya],[xb,ya],[xb,yb]];
-      const useA=!isBlocked(pA,a,b);
-      const pts=(useA? pA: pB).map(p=>p.join(',')).join(' ');
+
+      let intersectedByPA = isBlocked(pA, a, b);
+      let intersectedByPB = isBlocked(pB, a, b);
+
+      let chosenPath;
+      let pathIntersectedNodes = [];
+
+      if (intersectedByPA !== null && intersectedByPA.length === 0) { // pA is clear of nodes and links
+          chosenPath = pA;
+          pathIntersectedNodes = [];
+      } else if (intersectedByPB !== null && intersectedByPB.length === 0) { // pB is clear of nodes and links
+          chosenPath = pB;
+          pathIntersectedNodes = [];
+      } else if (intersectedByPA !== null) { // pA is not hard-blocked (only intersects nodes)
+          chosenPath = pA;
+          pathIntersectedNodes = intersectedByPA;
+      } else if (intersectedByPB !== null) { // pB is not hard-blocked (only intersects nodes)
+          chosenPath = pB;
+          pathIntersectedNodes = intersectedByPB;
+      } else { // Both paths are hard-blocked by other links (or some other error)
+          chosenPath = pB; // Default to pB as per original logic
+          pathIntersectedNodes = []; // No dashes if hard-blocked by links
+      }
+      
+      const pts=chosenPath.map(p=>p.join(',')).join(' ');
       const pl=document.createElementNS(svg.namespaceURI,'polyline');
+      linkIdCounter++;
+      pl.id = 'link_' + linkIdCounter;
       pl.setAttribute('points',pts);
       pl.dataset.a=a.id; pl.dataset.b=b.id;
+      pl._intersectedNodes = pathIntersectedNodes; 
       svg.appendChild(pl);
       attachLinkListener(pl);
+      updateVisualDashes(pl); // New call
       pushAction({type:'create',pl});
     }
 
-    function isBlocked(path,a,b){
-      // other nodes
-      const nodes=Array.from(panzoom.querySelectorAll('.node'))
-                        .filter(n=>n!==a&&n!==b)
+    function isBlocked(path, sourceNode, targetNode){
+      let intersectedItemsList = []; // Now stores objects {node, segment}
+      const intermediateNodes=Array.from(panzoom.querySelectorAll('.node'))
+                        .filter(n=>n!==sourceNode&&n!==targetNode)
                         .map(n=>{
                           const L=parseFloat(n.style.left),
                                 T=parseFloat(n.style.top);
-                          return {l:L,r:L+50,t:T,b:T+50};
+                          return {node: n, id: n.id, l:L, r:L+50, t:T, b:T+50};
                         });
-      // existing links
-      const links=Array.from(svg.children).map(pl=>{
+      const existingLinks=Array.from(svg.children).filter(el => el.tagName === 'polyline').map(pl=>{
         const pts=pl.getAttribute('points').split(' ').map(s=>s.split(',').map(Number));
         return {segs:[[pts[0],pts[1]],[pts[1],pts[2]]]};
       });
 
       for(let i=0; i<path.length-1; i++){
-        const [x1,y1]=path[i], [x2,y2]=path[i+1];
+        const currentPathSegment = [path[i], path[i+1]];
+        const [x1,y1]=currentPathSegment[0], [x2,y2]=currentPathSegment[1]; 
         const vert = x1===x2;
         const minX=Math.min(x1,x2), maxX=Math.max(x1,x2);
         const minY=Math.min(y1,y2), maxY=Math.max(y1,y2);
 
-        // node collision
-        for(const r of nodes){
-          if(vert){
-            if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) return true;
-          } else {
-            if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) return true;
+        // Check for Link Collisions
+        for(const lk of existingLinks){
+          for(const [[x3,y3],[x4,y4]] of lk.segs){
+            if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return null; // Hard-blocked
           }
         }
-
-        // link collision
-        for(const lk of links){
-          for(const [[x3,y3],[x4,y4]] of lk.segs){
-            if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return true;
+        
+        // Check for Node Collisions
+        for(const r of intermediateNodes){
+          let intersects = false;
+          if(vert){ // Vertical path segment
+            if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) intersects = true;
+          } else { // Horizontal path segment
+            if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) intersects = true;
+          }
+          if(intersects && !intersectedItemsList.find(item => item.node.id === r.id)) {
+            intersectedItemsList.push({node: r.node, segment: currentPathSegment});
           }
         }
       }
-      return false;
+      return intersectedItemsList; // Return list of {node, segment}
     }
 
     // segment intersection helper
@@ -365,12 +407,112 @@ Home
           const nb=document.getElementById(pl.dataset.b);
           const xa=parseFloat(na.style.left)+25, ya=parseFloat(na.style.top)+25;
           const xb=parseFloat(nb.style.left)+25, yb=parseFloat(nb.style.top)+25;
+          
           const pA=[[xa,ya],[xa,yb],[xb,yb]];
           const pB=[[xa,ya],[xb,ya],[xb,yb]];
-          const useA=!isBlocked(pA,na,nb);
-          pl.setAttribute('points',(useA? pA: pB).map(p=>p.join(',')).join(' '));
+
+          let intersectedByPA_update = isBlocked(pA, na, nb); 
+          let intersectedByPB_update = isBlocked(pB, na, nb);
+          let chosenPath_update;
+          let pathIntersectedNodes_update = [];
+
+          if (intersectedByPA_update !== null && intersectedByPA_update.length === 0) {
+              chosenPath_update = pA;
+              pathIntersectedNodes_update = [];
+          } else if (intersectedByPB_update !== null && intersectedByPB_update.length === 0) {
+              chosenPath_update = pB;
+              pathIntersectedNodes_update = [];
+          } else if (intersectedByPA_update !== null) {
+              chosenPath_update = pA;
+              pathIntersectedNodes_update = intersectedByPA_update;
+          } else if (intersectedByPB_update !== null) {
+              chosenPath_update = pB;
+              pathIntersectedNodes_update = intersectedByPB_update;
+          } else {
+              chosenPath_update = pB;
+              pathIntersectedNodes_update = [];
+          }
+          pl.setAttribute('points', chosenPath_update.map(p => p.join(',')).join(' '));
+          pl._intersectedNodes = pathIntersectedNodes_update;
+          updateVisualDashes(pl); // New call
         }
       });
+    }
+
+    function updateVisualDashes(pl) {
+        let oldDashes = svg.querySelector('g.red-dashes[data-parent-link-id="' + pl.id + '"]');
+        if (oldDashes) {
+            oldDashes.remove();
+        }
+
+        if (!pl._intersectedNodes || pl._intersectedNodes.length === 0) {
+            return;
+        }
+
+        const dashGroup = document.createElementNS(svg.namespaceURI, 'g');
+        dashGroup.setAttribute('class', 'red-dashes');
+        dashGroup.setAttribute('data-parent-link-id', pl.id);
+
+        pl._intersectedNodes.forEach(item => {
+            const intersectedNode = item.node;
+            const lineSegment = item.segment; // [[x1,y1], [x2,y2]]
+            const nodeRect = { 
+                x: parseFloat(intersectedNode.style.left), 
+                y: parseFloat(intersectedNode.style.top), 
+                width: 50, 
+                height: 50 
+            };
+
+            const nodeCenterX = nodeRect.x + nodeRect.width / 2;
+            const nodeCenterY = nodeRect.y + nodeRect.height / 2;
+
+            // Simplified: Dashes are on the line segment, near the node boundary.
+            // This doesn't perfectly align with the node's visual edge if the line is diagonal,
+            // but it's a simpler calculation than precise intersection points.
+
+            const vx = lineSegment[1][0] - lineSegment[0][0];
+            const vy = lineSegment[1][1] - lineSegment[0][1];
+            const len = Math.sqrt(vx * vx + vy * vy);
+            if (len === 0) return; // Avoid division by zero for zero-length segments
+
+            const uvx = vx / len;
+            const uvy = vy / len;
+            const dashLen = 10; // Increased for visibility
+            const gap = 2; // Small gap from node edge
+
+            // Determine entry/exit based on which segment point is closer to node center
+            // This logic is still a bit rough for precise entry/exit on a specific segment of a multi-segment polyline.
+            // For a 2-segment polyline, this will mostly work as expected.
+
+            // Dash before node (along the segment towards the node)
+            const p_entry_dash_end_x = nodeCenterX - uvx * (nodeRect.width / 2 + gap);
+            const p_entry_dash_end_y = nodeCenterY - uvy * (nodeRect.height / 2 + gap);
+            const p_entry_dash_start_x = p_entry_dash_end_x - uvx * dashLen;
+            const p_entry_dash_start_y = p_entry_dash_end_y - uvy * dashLen;
+
+            // Dash after node (along the segment away from the node)
+            const p_exit_dash_start_x = nodeCenterX + uvx * (nodeRect.width / 2 + gap);
+            const p_exit_dash_start_y = nodeCenterY + uvy * (nodeRect.height / 2 + gap);
+            const p_exit_dash_end_x = p_exit_dash_start_x + uvx * dashLen;
+            const p_exit_dash_end_y = p_exit_dash_start_y + uvy * dashLen;
+
+            const dash1 = document.createElementNS(svg.namespaceURI, 'line');
+            dash1.setAttribute('x1', p_entry_dash_start_x);
+            dash1.setAttribute('y1', p_entry_dash_start_y);
+            dash1.setAttribute('x2', p_entry_dash_end_x);
+            dash1.setAttribute('y2', p_entry_dash_end_y);
+            dash1.setAttribute('class', 'dash-line');
+            dashGroup.appendChild(dash1);
+
+            const dash2 = document.createElementNS(svg.namespaceURI, 'line');
+            dash2.setAttribute('x1', p_exit_dash_start_x);
+            dash2.setAttribute('y1', p_exit_dash_start_y);
+            dash2.setAttribute('x2', p_exit_dash_end_x);
+            dash2.setAttribute('y2', p_exit_dash_end_y);
+            dash2.setAttribute('class', 'dash-line');
+            dashGroup.appendChild(dash2);
+        });
+        svg.appendChild(dashGroup);
     }
 
     updateButtons();
