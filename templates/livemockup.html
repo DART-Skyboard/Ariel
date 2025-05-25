@@ -136,7 +136,14 @@ Home
         </div>
         <div class="canvas-scroll">
           <div class="panzoom">
-            <svg xmlns="http://www.w3.org/2000/svg"></svg>
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="arrowhead" markerWidth="10" markerHeight="7" 
+                        refX="8" refY="3.5" orient="auto" fill="#000">
+                  <polygon points="0 0, 10 3.5, 0 7" />
+                </marker>
+              </defs>
+            </svg>
           </div>
         </div>
       </div>
@@ -159,7 +166,7 @@ Home
 
     const gridSize   = 60;
     let drawMode     = false, unlinkMode = false, startNode = null;
-    let nodeCounter  = 0, scale = 1;
+    let nodeCounter  = 0, scale = 1; // Ensure nodeCounter is initialized here
     const undoStack  = [], redoStack = [];
 
     function updateButtons(){
@@ -192,8 +199,10 @@ Home
     // Clear
     clearBtn.onclick = ()=>{
       panzoom.querySelectorAll('.node').forEach(n=>n.remove());
-      Array.from(svg.children).forEach(l=>l.remove());
-      startNode=null; nodeCounter=0;
+      Array.from(svg.children).forEach(l=> { // Clear only polylines, keep defs
+          if (l.tagName.toLowerCase() === 'polyline') l.remove();
+      });
+      startNode=null; nodeCounter=0; // Reset nodeCounter on clear
       undoStack.length=redoStack.length=0;
       updateButtons();
     };
@@ -205,6 +214,7 @@ Home
       else if(act.type==='delete'){
         const pl=document.createElementNS(svg.namespaceURI,'polyline');
         pl.setAttribute('points',act.points);
+        pl.setAttribute('marker-end', 'url(#arrowhead)'); // Ensure arrowhead is restored
         pl.dataset.a=act.a; pl.dataset.b=act.b;
         svg.appendChild(pl); attachLinkListener(pl);
       }
@@ -234,11 +244,24 @@ Home
     };
 
     // Node creation & drag
-    function createNode(type,x,y){
+    // Make createNode, drawLink, calculateFlowchartPath, updateLinks global for tests
+    window.createNode = function(type,x,y){ // Assign to window
       const n=document.createElement('div');
-      n.className='node'; n.id='n'+(++nodeCounter);
+      n.className='node'; n.id='n'+(++nodeCounter); // nodeCounter is from the outer scope
       n.textContent=type; n.style.left=`${x}px`; n.style.top=`${y}px`;
       panzoom.appendChild(n);
+
+      Array.from(svg.children).forEach(pl => {
+        if (pl.tagName.toLowerCase() === 'polyline' && pl.dataset.a && pl.dataset.b) { 
+          const na = document.getElementById(pl.dataset.a);
+          const nb = document.getElementById(pl.dataset.b);
+          if (na && nb) {
+            const pathPoints = window.calculateFlowchartPath(na, nb); // use window.
+            pl.setAttribute('points', pathPoints.map(p => p.join(',')).join(' '));
+          }
+        }
+      });
+
       n.onclick = e=>{
         e.stopPropagation();
         if(unlinkMode){
@@ -253,12 +276,11 @@ Home
         if(!drawMode) return;
         if(!startNode){ startNode=n; n.classList.add('selected'); }
         else if(startNode!==n){
-          drawLink(startNode,n);
+          window.drawLink(startNode,n); // use window.
           startNode.classList.remove('selected'); startNode=null;
         }
       };
 
-      // Drag snapping + real‑time link update
       let offX, offY;
       n.onpointerdown = e=>{
         if(drawMode||unlinkMode) return;
@@ -277,71 +299,75 @@ Home
         const x=Math.round(rawX/gridSize)*gridSize;
         const y=Math.round(rawY/gridSize)*gridSize;
         n.style.left=`${x}px`; n.style.top=`${y}px`;
-        updateLinks(n);
+        window.updateLinks(n); // use window.
       }
       function drop(e){
         n.releasePointerCapture(e.pointerId);
         n.onpointermove=null; n.onpointerup=null;
       }
+    }; // End of window.createNode
+
+    window.calculateFlowchartPath = function(sourceNode, targetNode) { // Assign to window
+      const sourceX = parseFloat(sourceNode.style.left) + 25;
+      const sourceY = parseFloat(sourceNode.style.top) + 25;
+      const targetX = parseFloat(targetNode.style.left) + 25;
+      const targetY = parseFloat(targetNode.style.top) + 25;
+
+      const pathHV = [[sourceX, sourceY], [targetX, sourceY], [targetX, targetY]];
+      const pathVH = [[sourceX, sourceY], [sourceX, targetY], [targetX, targetY]];
+
+      const path1Blocked = isPathNodeBlocked(pathHV, sourceNode, targetNode);
+      if (!path1Blocked) {
+        return pathHV;
+      }
+      const path2Blocked = isPathNodeBlocked(pathVH, sourceNode, targetNode);
+      if (!path2Blocked) {
+        return pathVH;
+      }
+      return pathHV;
+    }; // End of window.calculateFlowchartPath
+
+    function isPathNodeBlocked(path, ignoreNodeA, ignoreNodeB){ // Not assigned to window, used internally
+      const otherNodes = Array.from(panzoom.querySelectorAll('.node'))
+                        .filter(n => n !== ignoreNodeA && n !== ignoreNodeB)
+                        .map(n => {
+                          const L = parseFloat(n.style.left);
+                          const T = parseFloat(n.style.top);
+                          return { l: L, r: L + 50, t: T, b: T + 50 }; 
+                        });
+      for (let i = 0; i < path.length - 1; i++) {
+        const [x1, y1] = path[i];
+        const [x2, y2] = path[i+1];
+        const isVerticalSegment = x1 === x2;
+        const minX = Math.min(x1, x2);
+        const maxX = Math.max(x1, x2);
+        const minY = Math.min(y1, y2);
+        const maxY = Math.max(y1, y2);
+        for (const nodeRect of otherNodes) {
+          const overlapsX = maxX > nodeRect.l && minX < nodeRect.r; 
+          const overlapsY = maxY > nodeRect.t && minY < nodeRect.b; 
+          if (isVerticalSegment) {
+            if (x1 >= nodeRect.l && x1 <= nodeRect.r && overlapsY) return true;
+          } else { 
+            if (y1 >= nodeRect.t && y1 <= nodeRect.b && overlapsX) return true;
+          }
+        }
+      }
+      return false; 
     }
 
-    // Smart routing blocking test includes existing link segments + nodes
-    function drawLink(a,b){
-      const xa=parseFloat(a.style.left)+25, ya=parseFloat(a.style.top)+25;
-      const xb=parseFloat(b.style.left)+25, yb=parseFloat(b.style.top)+25;
-      const pA=[[xa,ya],[xa,yb],[xb,yb]];
-      const pB=[[xa,ya],[xb,ya],[xb,yb]];
-      const useA=!isBlocked(pA,a,b);
-      const pts=(useA? pA: pB).map(p=>p.join(',')).join(' ');
+    window.drawLink = function(a,b){ // Assign to window
+      const pathPoints = window.calculateFlowchartPath(a,b); // use window.
+      const pts = pathPoints.map(p=>p.join(',')).join(' ');
       const pl=document.createElementNS(svg.namespaceURI,'polyline');
       pl.setAttribute('points',pts);
+      pl.setAttribute('marker-end', 'url(#arrowhead)'); 
       pl.dataset.a=a.id; pl.dataset.b=b.id;
       svg.appendChild(pl);
       attachLinkListener(pl);
       pushAction({type:'create',pl});
-    }
+    }; // End of window.drawLink
 
-    function isBlocked(path,a,b){
-      // other nodes
-      const nodes=Array.from(panzoom.querySelectorAll('.node'))
-                        .filter(n=>n!==a&&n!==b)
-                        .map(n=>{
-                          const L=parseFloat(n.style.left),
-                                T=parseFloat(n.style.top);
-                          return {l:L,r:L+50,t:T,b:T+50};
-                        });
-      // existing links
-      const links=Array.from(svg.children).map(pl=>{
-        const pts=pl.getAttribute('points').split(' ').map(s=>s.split(',').map(Number));
-        return {segs:[[pts[0],pts[1]],[pts[1],pts[2]]]};
-      });
-
-      for(let i=0; i<path.length-1; i++){
-        const [x1,y1]=path[i], [x2,y2]=path[i+1];
-        const vert = x1===x2;
-        const minX=Math.min(x1,x2), maxX=Math.max(x1,x2);
-        const minY=Math.min(y1,y2), maxY=Math.max(y1,y2);
-
-        // node collision
-        for(const r of nodes){
-          if(vert){
-            if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) return true;
-          } else {
-            if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) return true;
-          }
-        }
-
-        // link collision
-        for(const lk of links){
-          for(const [[x3,y3],[x4,y4]] of lk.segs){
-            if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return true;
-          }
-        }
-      }
-      return false;
-    }
-
-    // segment intersection helper
     function segmentsIntersect(ax,ay,bx,by,cx,cy,dx,dy){
       const ccw=(px,py,qx,qy,rx,ry)=>(ry-py)*(qx-px) > (qy-py)*(rx-px);
       return ccw(ax,ay,cx,cy,dx,dy)!==ccw(bx,by,cx,cy,dx,dy)
@@ -358,23 +384,181 @@ Home
       };
     }
 
-    function updateLinks(node){
+    window.updateLinks = function(node){ // Assign to window
       Array.from(svg.children).forEach(pl=>{
         if(pl.dataset.a===node.id||pl.dataset.b===node.id){
+          if (pl.tagName.toLowerCase() !== 'polyline') return; // Skip non-polylines like <defs>
           const na=document.getElementById(pl.dataset.a);
           const nb=document.getElementById(pl.dataset.b);
-          const xa=parseFloat(na.style.left)+25, ya=parseFloat(na.style.top)+25;
-          const xb=parseFloat(nb.style.left)+25, yb=parseFloat(nb.style.top)+25;
-          const pA=[[xa,ya],[xa,yb],[xb,yb]];
-          const pB=[[xa,ya],[xb,ya],[xb,yb]];
-          const useA=!isBlocked(pA,na,nb);
-          pl.setAttribute('points',(useA? pA: pB).map(p=>p.join(',')).join(' '));
+          if (na && nb) { // Ensure both nodes still exist
+            const pathPoints = window.calculateFlowchartPath(na, nb); // use window.
+            pl.setAttribute('points', pathPoints.map(p => p.join(',')).join(' '));
+          }
         }
       });
-    }
+    }; // End of window.updateLinks
 
     updateButtons();
   })();
+  </script>
+  <script>
+  window.addEventListener('load', () => {
+  console.log('--- Starting Injected Tests ---');
+
+  const testResults = [];
+  let nodeCounterForTest = 0; // Use internal counter to predict node IDs
+
+  function logTest(description, passed, details = '') {
+    const result = `TEST [${passed ? 'PASS' : 'FAIL'}]: ${description}${details ? ` - Details: ${details}` : ''}`;
+    console.log(result);
+    testResults.push({ description, passed, details });
+  }
+
+  // Helper to get the next expected node ID
+  // This assumes we know the initial nodeCounter value from the main script or can infer it.
+  // For simplicity, we'll assume the main script's nodeCounter starts at 0 and increments BEFORE assigning ID.
+  // So, the first node created by main script is n1, second is n2 etc.
+  // Our test nodes will follow this sequence.
+  // We need to know what `nodeCounter` is *after* the main script runs but *before* our tests.
+  // Let's try to get it from the global scope if possible, or make an assumption.
+  // For this test, we'll assume our test nodes are the first ones if the canvas is cleared,
+  // or we'll just use the IDs returned by our own createNode calls.
+  // The main script's nodeCounter is not directly exposed.
+  // The `createNode` function in main script returns the node object.
+  // We'll rely on the `createNode` function from the main script.
+
+  // --- Initial State Checks ---
+  console.log('--- Running: Initial State Checks ---');
+  try {
+    const svgElement = document.querySelector('.panzoom svg');
+    logTest('SVG element exists', !!svgElement);
+
+    const markerElement = svgElement ? svgElement.querySelector('#arrowhead') : null;
+    logTest('Arrowhead marker #arrowhead exists within SVG', !!markerElement);
+    if (markerElement) {
+        logTest('Arrowhead marker has correct markerWidth', markerElement.getAttribute('markerWidth') === '10');
+        logTest('Arrowhead marker has correct markerHeight', markerElement.getAttribute('markerHeight') === '7');
+        logTest('Arrowhead marker has correct refX', markerElement.getAttribute('refX') === '8');
+        logTest('Arrowhead marker has correct refY', markerElement.getAttribute('refY') === '3.5');
+        logTest('Arrowhead marker has correct orient', markerElement.getAttribute('orient') === 'auto');
+        const polygon = markerElement.querySelector('polygon');
+        logTest('Arrowhead marker contains a polygon', !!polygon);
+        if (polygon) {
+            logTest('Arrowhead polygon has correct points', polygon.getAttribute('points') === '0 0, 10 3.5, 0 7');
+            logTest('Arrowhead polygon has correct fill', markerElement.getAttribute('fill') === '#000'); // Fill is on marker
+        }
+    }
+
+
+    logTest('typeof window.calculateFlowchartPath === "function"', typeof window.calculateFlowchartPath === 'function');
+    logTest('typeof window.drawLink === "function"', typeof window.drawLink === 'function');
+    logTest('typeof window.updateLinks === "function"', typeof window.updateLinks === 'function');
+    logTest('typeof window.createNode === "function"', typeof window.createNode === 'function'); // Assuming createNode is global
+    logTest('Undo button exists', !!document.getElementById('undoBtn'));
+    logTest('Redo button exists', !!document.getElementById('redoBtn'));
+    logTest('Clear button exists', !!document.getElementById('clearCanvas'));
+    
+    // Ensure canvas is clear for subsequent tests for predictability
+    if (document.getElementById('clearCanvas')) {
+        document.getElementById('clearCanvas').click(); 
+        console.log('Canvas cleared for subsequent tests.');
+    } else {
+        console.warn('Clear canvas button not found; tests might be affected by prior state.');
+    }
+    // Wait a moment for clearCanvas to take effect (if it has async parts, though it looks sync)
+    // Directly manipulating nodeCounter is tricky as it's scoped. We'll rely on createNode's return.
+
+  } catch (e) {
+    logTest('Initial State Checks block failed', false, e.toString());
+  }
+
+  // --- Simulated Node and Link Creation (Programmatic) ---
+  console.log('--- Running: Simulated Node and Link Creation ---');
+  let testNode1, testNode2, linkElement;
+  let n1_id_actual, n2_id_actual;
+
+  try {
+    // Programmatically call global createNode(type, x, y)
+    // The global createNode function in livemockup.html does not return the node or its ID directly.
+    // It appends 'n'+(++nodeCounter). We need to predict this.
+    // Let's modify our test to grab the nodes after creation.
+    
+    // Assuming nodeCounter is 0 after clearCanvas
+    window.createNode('T1', 100, 100); // Expected to be n1
+    testNode1 = document.getElementById('n1');
+    n1_id_actual = testNode1 ? testNode1.id : null;
+    logTest('Node 1 (T1) created and found by predicted ID n1', !!testNode1 && testNode1.textContent === 'T1');
+
+    window.createNode('T2', 300, 200); // Expected to be n2
+    testNode2 = document.getElementById('n2');
+    n2_id_actual = testNode2 ? testNode2.id : null;
+    logTest('Node 2 (T2) created and found by predicted ID n2', !!testNode2 && testNode2.textContent === 'T2');
+    
+    const nodesInPanzoom = document.querySelectorAll('.panzoom .node');
+    logTest('Two div.node elements are in panzoom', nodesInPanzoom.length === 2, `Found ${nodesInPanzoom.length}`);
+
+    if (testNode1 && testNode2) {
+      window.drawLink(testNode1, testNode2); // Use the actual node elements
+      
+      // Find the link - assumes only one link exists
+      linkElement = document.querySelector('.panzoom svg polyline');
+      logTest('SVG polyline created for link', !!linkElement);
+
+      if (linkElement) {
+        logTest('Polyline has dataset.a === n1_id_actual', linkElement.dataset.a === n1_id_actual, `Expected ${n1_id_actual}, got ${linkElement.dataset.a}`);
+        logTest('Polyline has dataset.b === n2_id_actual', linkElement.dataset.b === n2_id_actual, `Expected ${n2_id_actual}, got ${linkElement.dataset.b}`);
+        logTest('Polyline has marker-end attribute "url(#arrowhead)"', linkElement.getAttribute('marker-end') === 'url(#arrowhead)');
+        
+        const points = linkElement.getAttribute('points');
+        logTest('Polyline points attribute is non-empty', !!points && points.length > 0);
+        if (points) {
+          const numPairs = points.split(' ').length;
+          logTest('Polyline points attribute has at least 3 coordinate pairs', numPairs >= 3, `Found ${numPairs} pairs`);
+        }
+      }
+    } else {
+      logTest('Skipping link creation tests as nodes were not found', false);
+    }
+  } catch (e) {
+    logTest('Simulated Node and Link Creation block failed', false, e.toString());
+  }
+
+  // --- Undo/Redo Link Creation (Programmatic) ---
+  console.log('--- Running: Undo/Redo Link Creation ---');
+  try {
+    if (!linkElement || !linkElement.parentElement) { // Check if linkElement is valid and in DOM
+      logTest('Skipping Undo/Redo: Link from previous step not found or already removed.', false);
+    } else {
+      const undoBtn = document.getElementById('undoBtn');
+      const redoBtn = document.getElementById('redoBtn');
+      
+      if (!undoBtn || !redoBtn) {
+          logTest('Undo/Redo buttons not found', false);
+      } else {
+          const linkDatasetA = linkElement.dataset.a;
+          const linkDatasetB = linkElement.dataset.b;
+
+          undoBtn.onclick(); // Simulate undo
+          // Check if the specific link is gone. Query for it again.
+          const linkAfterUndo = document.querySelector(`.panzoom svg polyline[data-a="${linkDatasetA}"][data-b="${linkDatasetB}"]`);
+          logTest('Link removed from SVG after undo', !linkAfterUndo);
+
+          redoBtn.onclick(); // Simulate redo
+          const linkAfterRedo = document.querySelector(`.panzoom svg polyline[data-a="${linkDatasetA}"][data-b="${linkDatasetB}"]`);
+          logTest('Link restored in SVG after redo', !!linkAfterRedo);
+          if (linkAfterRedo) {
+            logTest('Restored link has marker-end attribute', linkAfterRedo.getAttribute('marker-end') === 'url(#arrowhead)');
+          }
+      }
+    }
+  } catch (e) {
+    logTest('Undo/Redo Link Creation block failed', false, e.toString());
+  }
+
+  console.log('--- Injected Tests Finished ---');
+  // In a real browser, you could send results to a server or display them.
+  // Here, they are just in the console.
+});
   </script>
 </body>
 </html>
