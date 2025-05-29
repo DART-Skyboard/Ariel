@@ -70,11 +70,7 @@
     }
     svg polyline {
       stroke:#000; stroke-width:4; fill:none; cursor:pointer;
-    }
-    .dash-line {
-      stroke: red;
-      stroke-width: 2; /* Thinner than main line potentially */
-      stroke-dasharray: 3,3;
+      marker-end: url(#arrowhead); /* Add this line */
     }
 
     #home{
@@ -144,7 +140,20 @@ Home
         </div>
         <div class="canvas-scroll">
           <div class="panzoom">
-            <svg xmlns="http://www.w3.org/2000/svg"></svg>
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arrowhead"
+                  viewBox="0 0 10 10"
+                  refX="10"
+                  refY="5"
+                  markerWidth="8"
+                  markerHeight="8"
+                  orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#000"/>
+                </marker>
+              </defs>
+            </svg>
           </div>
         </div>
       </div>
@@ -167,7 +176,7 @@ Home
 
     const gridSize   = 60;
     let drawMode     = false, unlinkMode = false, startNode = null;
-    let nodeCounter  = 0, scale = 1, linkIdCounter = 0;
+    let nodeCounter  = 0, scale = 1; // Removed linkIdCounter
     const undoStack  = [], redoStack = [];
 
     function updateButtons(){
@@ -209,19 +218,49 @@ Home
     // Undo/Redo
     undoBtn.onclick = ()=>{
       const act=undoStack.pop(); if(!act) return;
-      if(act.type==='create') act.pl.remove();
-      else if(act.type==='delete'){
-        const pl=document.createElementNS(svg.namespaceURI,'polyline');
-        pl.setAttribute('points',act.points);
-        pl.dataset.a=act.a; pl.dataset.b=act.b;
-        svg.appendChild(pl); attachLinkListener(pl);
+      if(act.type==='create') {
+        act.pl.remove(); // Remove the created polyline
+         // If the polyline had an ID, remove its associated visual groups
+        if (act.pl.id) {
+            const dashGroup = svg.querySelector('g.red-dashes[data-parent-link-id="' + act.pl.id + '"]');
+            if (dashGroup) dashGroup.remove();
+            const activeSegmentsGroup = svg.querySelector('g.active-segments[data-parent-link-id="' + act.pl.id + '"]');
+            if (activeSegmentsGroup) activeSegmentsGroup.remove();
+        }
+      } else if(act.type==='delete'){
+        const pl_recreated = document.createElementNS(svg.namespaceURI,'polyline');
+        pl_recreated.setAttribute('points',act.points);
+        pl_recreated.dataset.a = act['data-a']; // Use bracket notation
+        pl_recreated.dataset.b = act['data-b'];
+        if (act.id) { pl_recreated.id = act.id; } // Restore ID
+        svg.appendChild(pl_recreated);
+        attachLinkListener(pl_recreated);
+        // Note: updateVisualDashes would be needed if dashes/active states were complex and part of the undoable state
+        // For now, assuming they are redrawn correctly if the polyline is simply re-added.
+        
+        // The action for redo should be the original 'delete' action, but targeting the new pl_recreated
+        const actionForRedo = { ...act, pl: pl_recreated };
+        redoStack.push(actionForRedo);
+        updateButtons();
+        return; // Avoid pushing original 'act' again
       }
       redoStack.push(act); updateButtons();
     };
     redoBtn.onclick = ()=>{
       const act=redoStack.pop(); if(!act) return;
-      if(act.type==='create') svg.appendChild(act.pl);
-      else if(act.type==='delete') act.pl.remove();
+      if(act.type==='create') {
+        svg.appendChild(act.pl);
+        // If it had an ID and was complex, might need to call updateVisualDashes(act.pl)
+      } else if(act.type==='delete') {
+        const linkId = act.pl.id; 
+        if (linkId) {
+            const dashGroup = svg.querySelector('g.red-dashes[data-parent-link-id="' + linkId + '"]');
+            if (dashGroup) dashGroup.remove();
+            const activeSegmentsGroup = svg.querySelector('g.active-segments[data-parent-link-id="' + linkId + '"]');
+            if (activeSegmentsGroup) activeSegmentsGroup.remove();
+        }
+        act.pl.remove();
+      }
       undoStack.push(act); updateButtons();
     };
 
@@ -238,53 +277,19 @@ Home
       const rawY=(e.clientY-r.top+container.scrollTop)/scale;
       const x=Math.round(rawX/gridSize)*gridSize;
       const y=Math.round(rawY/gridSize)*gridSize;
-      const newNode = createNode(type,x,y); // createNode now returns the new node
+      const newNodeElement = createNode(type,x,y); // Ensure createNode returns the new node element
 
-      // After new node is added, check existing polylines
+      const allNodesForPathfinding = Array.from(panzoom.querySelectorAll('.node'));
       const allPolylines = Array.from(svg.querySelectorAll('polyline'));
       allPolylines.forEach(pl => {
-          const nodeA = document.getElementById(pl.dataset.a);
-          const nodeB = document.getElementById(pl.dataset.b);
+          const nodeA_element = document.getElementById(pl.dataset.a);
+          const nodeB_element = document.getElementById(pl.dataset.b);
 
-          if (!nodeA || !nodeB || newNode.id === nodeA.id || newNode.id === nodeB.id) {
-              return; // Skip if endpoints are invalid or new node is an endpoint
-          }
-
-          const polylinePathArray = Array.from(pl.points).map(p => [p.x, p.y]);
-          let newlyCollides = false;
-          const newNodeRect = { 
-              l: parseFloat(newNode.style.left), 
-              r: parseFloat(newNode.style.left) + 50, 
-              t: parseFloat(newNode.style.top), 
-              b: parseFloat(newNode.style.top) + 50
-          };
-
-          for (let i = 0; i < polylinePathArray.length - 1; i++) {
-              const [x1, y1] = polylinePathArray[i];
-              const [x2, y2] = polylinePathArray[i+1];
-              const vert = x1 === x2;
-              const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
-              const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
-
-              if (vert) { // Vertical segment
-                  if (newNodeRect.l < x1 && newNodeRect.r > x1 && 
-                      Math.max(minY, newNodeRect.t) < Math.min(maxY, newNodeRect.b)) {
-                      newlyCollides = true;
-                      break;
-                  }
-              } else { // Horizontal segment
-                  if (newNodeRect.t < y1 && newNodeRect.b > y1 &&
-                      Math.max(minX, newNodeRect.l) < Math.min(maxX, newNodeRect.r)) {
-                      newlyCollides = true;
-                      break;
-                  }
-              }
-          }
-          
-          if (newlyCollides) {
-              const updatedIntersectedItems = isBlocked(polylinePathArray, nodeA, nodeB);
-              pl._intersectedNodes = updatedIntersectedItems || [];
-              updateVisualDashes(pl);
+          if (nodeA_element && nodeB_element) {
+              // Recalculate path for this existing polyline, considering all nodes (including the new one) as potential obstacles
+              const newPathPoints = calculateFlowchartPath(nodeA_element, nodeB_element, allNodesForPathfinding);
+              const newPointsString = newPathPoints.map(p => `${p.x},${p.y}`).join(' '); // Corrected to use p.x, p.y
+              pl.setAttribute('points', newPointsString);
           }
       });
     };
@@ -300,20 +305,22 @@ Home
         if(unlinkMode){
           Array.from(svg.children)
             .filter(l=>l.dataset.a===n.id||l.dataset.b===n.id)
-            .forEach(l=>{ // 'l' is a polyline here
-              pushAction({type:'delete',a:l.dataset.a,b:l.dataset.b,points:l.getAttribute('points'),pl:l});
+            .forEach(l=>{ 
+              pushAction({
+                  type: 'delete',
+                  id: l.id, 
+                  'data-a': l.dataset.a,
+                  'data-b': l.dataset.b,
+                  points: l.getAttribute('points')
+              });
               const linkId = l.id;
               if (linkId) {
                   const dashGroup = svg.querySelector('g.red-dashes[data-parent-link-id="' + linkId + '"]');
-                  if (dashGroup) {
-                      dashGroup.remove();
-                  }
+                  if (dashGroup) dashGroup.remove();
                   const activeSegmentsGroup = svg.querySelector('g.active-segments[data-parent-link-id="' + linkId + '"]');
-                  if (activeSegmentsGroup) {
-                      activeSegmentsGroup.remove();
-                  }
+                  if (activeSegmentsGroup) activeSegmentsGroup.remove();
               }
-              l.remove(); // Then remove the polyline itself
+              l.remove(); 
             });
           return;
         }
@@ -357,126 +364,129 @@ Home
     }
 
     // Smart routing blocking test includes existing link segments + nodes
-    function drawLink(a,b){ // a is startNode, b is the clicked node
-      // Check for Existing Segment Activation
-      const allPolylines = Array.from(svg.querySelectorAll('polyline'));
-      for (const existingPl of allPolylines) {
-          const plEndNodeA_id = existingPl.dataset.a;
-          const plEndNodeB_id = existingPl.dataset.b;
-          const plIntersected = existingPl._intersectedNodes || [];
-
-          for (let i = 0; i < plIntersected.length; i++) {
-              const item = plIntersected[i];
-              const intersectedNode = item.node;
-
-              // Condition 1: Connecting an endpoint of existingPl to one of its intersected nodes.
-              if ((a.id === plEndNodeA_id && b.id === intersectedNode.id) || (a.id === intersectedNode.id && b.id === plEndNodeA_id)) {
-                  if (!existingPl._activePathSegments) existingPl._activePathSegments = [];
-                  existingPl._activePathSegments.push({ fromNodeId: plEndNodeA_id, toNodeId: intersectedNode.id });
-                  plIntersected.splice(i, 1); // Remove item from plIntersected
-                  updateVisualDashes(existingPl);
-                  // TODO: In next step, update polyline's main stroke based on _activePathSegments
-                  return; // Connection handled
-              }
-              if ((a.id === plEndNodeB_id && b.id === intersectedNode.id) || (a.id === intersectedNode.id && b.id === plEndNodeB_id)) {
-                  if (!existingPl._activePathSegments) existingPl._activePathSegments = [];
-                  existingPl._activePathSegments.push({ fromNodeId: plEndNodeB_id, toNodeId: intersectedNode.id });
-                  plIntersected.splice(i, 1); // Remove item from plIntersected
-                  updateVisualDashes(existingPl);
-                   // TODO: In next step, update polyline's main stroke based on _activePathSegments
-                  return; // Connection handled
-              }
-          }
-      }
-
-      // If no existing segment was activated, proceed with original drawLink logic
-      const xa=parseFloat(a.style.left)+25, ya=parseFloat(a.style.top)+25;
-      const xb=parseFloat(b.style.left)+25, yb=parseFloat(b.style.top)+25;
-      const pA=[[xa,ya],[xa,yb],[xb,yb]];
-      const pB=[[xa,ya],[xb,ya],[xb,yb]];
-
-      let intersectedByPA = isBlocked(pA, a, b);
-      let intersectedByPB = isBlocked(pB, a, b);
-
-      let chosenPath;
-      let pathIntersectedNodes = []; // This will be the list of {node, segment} for the new line
-
-      if (intersectedByPA !== null && intersectedByPA.length === 0) { 
-          chosenPath = pA;
-          pathIntersectedNodes = [];
-      } else if (intersectedByPB !== null && intersectedByPB.length === 0) { 
-          chosenPath = pB;
-          pathIntersectedNodes = [];
-      } else if (intersectedByPA !== null) { 
-          chosenPath = pA;
-          pathIntersectedNodes = intersectedByPA;
-      } else if (intersectedByPB !== null) { 
-          chosenPath = pB;
-          pathIntersectedNodes = intersectedByPB;
-      } else { 
-          chosenPath = pB; 
-          pathIntersectedNodes = []; 
-      }
+    function drawLink(a,b){ 
+      const allNodes = Array.from(panzoom.querySelectorAll('.node'));
+      const pathPoints = calculateFlowchartPath(a, b, allNodes);
       
-      const pts=chosenPath.map(p=>p.join(',')).join(' ');
+      const pts=pathPoints.map(p=>`${p.x},${p.y}`).join(' ');
       const pl=document.createElementNS(svg.namespaceURI,'polyline');
-      linkIdCounter++;
-      pl.id = 'link_' + linkIdCounter;
       pl.setAttribute('points',pts);
       pl.dataset.a=a.id; pl.dataset.b=b.id;
-      pl._intersectedNodes = pathIntersectedNodes; 
-      pl._activePathSegments = [{ fromNodeId: a.id, toNodeId: b.id }]; // Initialization for new lines
-      pl._originalSegmentA = [chosenPath[0], chosenPath[1]]; // Store original segments
-      pl._originalSegmentB = [chosenPath[1], chosenPath[2]]; // Store original segments
       svg.appendChild(pl);
       attachLinkListener(pl);
-      updateVisualDashes(pl); 
       pushAction({type:'create',pl});
     }
 
-    function isBlocked(path, sourceNode, targetNode){
-      let intersectedItemsList = []; // Now stores objects {node, segment}
-      const intermediateNodes=Array.from(panzoom.querySelectorAll('.node'))
-                        .filter(n=>n!==sourceNode&&n!==targetNode)
-                        .map(n=>{
-                          const L=parseFloat(n.style.left),
-                                T=parseFloat(n.style.top);
-                          return {node: n, id: n.id, l:L, r:L+50, t:T, b:T+50};
-                        });
-      const existingLinks=Array.from(svg.children).filter(el => el.tagName === 'polyline').map(pl=>{
-        const pts=pl.getAttribute('points').split(' ').map(s=>s.split(',').map(Number));
-        return {segs:[[pts[0],pts[1]],[pts[1],pts[2]]]};
-      });
+    // function isBlocked(path, sourceNode, targetNode){
+    //   const intermediateNodes=Array.from(panzoom.querySelectorAll('.node'))
+    //                     .filter(n=>n!==sourceNode&&n!==targetNode)
+    //                     .map(n=>{
+    //                       const L=parseFloat(n.style.left),
+    //                             T=parseFloat(n.style.top);
+    //                       return {node: n, id: n.id, l:L, r:L+50, t:T, b:T+50};
+    //                     });
+    //   const existingLinks=Array.from(svg.children).filter(el => el.tagName === 'polyline').map(pl=>{
+    //     const pts=pl.getAttribute('points').split(' ').map(s=>s.split(',').map(Number));
+    //     return {segs:[[pts[0],pts[1]],[pts[1],pts[2]]]};
+    //   });
 
-      for(let i=0; i<path.length-1; i++){
-        const currentPathSegment = [path[i], path[i+1]];
-        const [x1,y1]=currentPathSegment[0], [x2,y2]=currentPathSegment[1]; 
-        const vert = x1===x2;
-        const minX=Math.min(x1,x2), maxX=Math.max(x1,x2);
-        const minY=Math.min(y1,y2), maxY=Math.max(y1,y2);
+    //   for(let i=0; i<path.length-1; i++){
+    //     const [x1,y1]=path[i], [x2,y2]=path[i+1]; 
+    //     const vert = x1===x2;
+    //     const minX=Math.min(x1,x2), maxX=Math.max(x1,x2);
+    //     const minY=Math.min(y1,y2), maxY=Math.max(y1,y2);
 
-        // Check for Link Collisions
-        for(const lk of existingLinks){
-          for(const [[x3,y3],[x4,y4]] of lk.segs){
-            if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return null; // Hard-blocked
-          }
+    //     // Check for Link Collisions
+    //     for(const lk of existingLinks){
+    //       for(const [[x3,y3],[x4,y4]] of lk.segs){
+    //         if(segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4)) return true; // Blocked
+    //       }
+    //     }
+        
+    //     // Check for Node Collisions
+    //     for(const r of intermediateNodes){
+    //       if(vert){ // Vertical path segment
+    //         if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) return true; // Blocked
+    //       } else { // Horizontal path segment
+    //         if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) return true; // Blocked
+    //       }
+    //     }
+    //   }
+    //   return false; // Not blocked
+    // }
+
+    function isSegmentIntersectingObstacles(p1, p2, obstacleRects, margin) {
+        for (const rect of obstacleRects) {
+            const expandedRect = {
+                left: rect.left - margin,
+                top: rect.top - margin,
+                right: rect.right + margin,
+                bottom: rect.bottom + margin
+            };
+
+            // Check if segment is horizontal or vertical
+            if (p1.x === p2.x) { // Vertical segment
+                if (p1.x > expandedRect.left && p1.x < expandedRect.right) {
+                    if (Math.min(p1.y, p2.y) < expandedRect.bottom && Math.max(p1.y, p2.y) > expandedRect.top) {
+                        return true;
+                    }
+                }
+            } else if (p1.y === p2.y) { // Horizontal segment
+                if (p1.y > expandedRect.top && p1.y < expandedRect.bottom) {
+                    if (Math.min(p1.x, p2.x) < expandedRect.right && Math.max(p1.x, p2.x) > expandedRect.left) {
+                        return true;
+                    }
+                }
+            } else {
+                // For simplicity, this example doesn't handle diagonal segments against rectangles.
+                // A more robust solution would involve line-rectangle intersection algorithms.
+                // For now, we can approximate by checking if both points are inside an obstacle (which is not ideal)
+                // or if the line crosses the rectangle's boundaries.
+                // This simple check is a placeholder.
+                if ( (p1.x > expandedRect.left && p1.x < expandedRect.right && p1.y > expandedRect.top && p1.y < expandedRect.bottom) ||
+                     (p2.x > expandedRect.left && p2.x < expandedRect.right && p2.y > expandedRect.top && p2.y < expandedRect.bottom) ) {
+                    //return true; // This is too simplistic and often wrong for segments just passing by
+                }
+            }
+        }
+        return false;
+    }
+
+    function calculateFlowchartPath(startNodeElement, endNodeElement, allNodes) {
+        const startPt = { x: parseFloat(startNodeElement.style.left) + 25, y: parseFloat(startNodeElement.style.top) + 25 };
+        const endPt = { x: parseFloat(endNodeElement.style.left) + 25, y: parseFloat(endNodeElement.style.top) + 25 };
+
+        const obstacleRects = allNodes.filter(n => n !== startNodeElement && n !== endNodeElement)
+            .map(n => ({
+                left: parseFloat(n.style.left),
+                top: parseFloat(n.style.top),
+                right: parseFloat(n.style.left) + 50,
+                bottom: parseFloat(n.style.top) + 50
+            }));
+        
+        const pathMargin = 1;
+
+        // Attempt Horizontal-Vertical Path (Path H-V)
+        const midPt_HV = { x: endPt.x, y: startPt.y };
+        const pathHV = [startPt, midPt_HV, endPt];
+        const isBlocked_HV_Seg1 = isSegmentIntersectingObstacles(startPt, midPt_HV, obstacleRects, pathMargin);
+        const isBlocked_HV_Seg2 = isSegmentIntersectingObstacles(midPt_HV, endPt, obstacleRects, pathMargin);
+        if (!isBlocked_HV_Seg1 && !isBlocked_HV_Seg2) {
+            return pathHV;
+        }
+
+        // Attempt Vertical-Horizontal Path (Path V-H)
+        const midPt_VH = { x: startPt.x, y: endPt.y };
+        const pathVH = [startPt, midPt_VH, endPt];
+        const isBlocked_VH_Seg1 = isSegmentIntersectingObstacles(startPt, midPt_VH, obstacleRects, pathMargin);
+        const isBlocked_VH_Seg2 = isSegmentIntersectingObstacles(midPt_VH, endPt, obstacleRects, pathMargin);
+        if (!isBlocked_VH_Seg1 && !isBlocked_VH_Seg2) {
+            return pathVH;
         }
         
-        // Check for Node Collisions
-        for(const r of intermediateNodes){
-          let intersects = false;
-          if(vert){ // Vertical path segment
-            if(x1>=r.l&&x1<=r.r&&!(maxY<r.t||minY>r.b)) intersects = true;
-          } else { // Horizontal path segment
-            if(y1>=r.t&&y1<=r.b&&!(maxX<r.l||minX>r.r)) intersects = true;
-          }
-          if(intersects && !intersectedItemsList.find(item => item.node.id === r.id)) {
-            intersectedItemsList.push({node: r.node, segment: currentPathSegment});
-          }
-        }
-      }
-      return intersectedItemsList; // Return list of {node, segment}
+        return pathHV; // Fallback
     }
+
 
     // segment intersection helper
     function segmentsIntersect(ax,ay,bx,by,cx,cy,dx,dy){
@@ -489,7 +499,22 @@ Home
       pl.onclick = e=>{
         e.stopPropagation();
         if(unlinkMode){
-          pushAction({type:'delete',a:pl.dataset.a,b:pl.dataset.b,points:pl.getAttribute('points'),pl});
+          // When a polyline is clicked in unlinkMode:
+          pushAction({
+              type: 'delete',
+              id: pl.id, // Store ID
+              'data-a': pl.dataset.a, // Use bracket notation for data attributes
+              'data-b': pl.dataset.b,
+              points: pl.getAttribute('points')
+              // No 'pl:pl' direct DOM reference
+          });
+          const linkId = pl.id;
+          if (linkId) {
+              const dashGroup = svg.querySelector('g.red-dashes[data-parent-link-id="' + linkId + '"]');
+              if (dashGroup) dashGroup.remove();
+              const activeSegmentsGroup = svg.querySelector('g.active-segments[data-parent-link-id="' + linkId + '"]');
+              if (activeSegmentsGroup) activeSegmentsGroup.remove();
+          }
           pl.remove();
         }
       };
@@ -509,141 +534,12 @@ Home
           let intersectedByPA_update = isBlocked(pA, na, nb);
           let intersectedByPB_update = isBlocked(pB, na, nb);
           let chosenPath_update;
-          // Preserve _intersectedNodes and _activePathSegments if they exist, otherwise initialize
-          let pathIntersectedNodes_update = pl._intersectedNodes || []; 
-          let activePathSegments_update = pl._activePathSegments || [{ fromNodeId: na.id, toNodeId: nb.id }];
-
-
-          if (intersectedByPA_update !== null && intersectedByPA_update.length === 0) {
-              chosenPath_update = pA;
-              pathIntersectedNodes_update = []; // Path is clear, no intersections
-          } else if (intersectedByPB_update !== null && intersectedByPB_update.length === 0) {
-              chosenPath_update = pB;
-              pathIntersectedNodes_update = []; // Path is clear
-          } else if (intersectedByPA_update !== null) {
-              chosenPath_update = pA;
-              pathIntersectedNodes_update = intersectedByPA_update;
-          } else if (intersectedByPB_update !== null) {
-              chosenPath_update = pB;
-              pathIntersectedNodes_update = intersectedByPB_update;
-          } else { // Both paths hard-blocked
-              chosenPath_update = pB; // Default path
-              pathIntersectedNodes_update = []; // No dashes if hard-blocked
-          }
-          pl.setAttribute('points', chosenPath_update.map(p => p.join(',')).join(' '));
-          pl._intersectedNodes = pathIntersectedNodes_update; 
-          pl._activePathSegments = activePathSegments_update; // Preserve active segments
-          updateVisualDashes(pl); 
+          
+          const allNodes = Array.from(panzoom.querySelectorAll('.node'));
+          const newPathPoints = calculateFlowchartPath(na, nb, allNodes);
+          pl.setAttribute('points', newPathPoints.map(p => `${p.x},${p.y}`).join(' '));
         }
       });
-    }
-
-    function updateVisualDashes(pl) {
-        // Clear Previous Visuals
-        svg.querySelector('g.red-dashes[data-parent-link-id="' + pl.id + '"]')?.remove();
-        svg.querySelector('g.active-segments[data-parent-link-id="' + pl.id + '"]')?.remove();
-
-        // Optional: Make Original Polyline a Faint Guide (using black for now as per subtask)
-        // pl.style.stroke = '#ccc'; 
-        // pl.style.strokeWidth = '1'; 
-        // pl.style.strokeDasharray = '2,2';
-
-        // Render Active Segments
-        if (pl._activePathSegments && pl._activePathSegments.length > 0) {
-            const activeSegmentsGroup = document.createElementNS(svg.namespaceURI, 'g');
-            activeSegmentsGroup.setAttribute('class', 'active-segments');
-            activeSegmentsGroup.setAttribute('data-parent-link-id', pl.id);
-
-            pl._activePathSegments.forEach(activeSeg => {
-                const nodeFrom = document.getElementById(activeSeg.fromNodeId);
-                const nodeTo = document.getElementById(activeSeg.toNodeId);
-                if (!nodeFrom || !nodeTo) return;
-
-                // Simpler: draw a new straight line from center of nodeFrom to center of nodeTo.
-                const x1 = parseFloat(nodeFrom.style.left) + 25;
-                const y1 = parseFloat(nodeFrom.style.top) + 25;
-                const x2 = parseFloat(nodeTo.style.left) + 25;
-                const y2 = parseFloat(nodeTo.style.top) + 25;
-                const activeLine = document.createElementNS(svg.namespaceURI, 'line');
-                activeLine.setAttribute('x1', x1); activeLine.setAttribute('y1', y1);
-                activeLine.setAttribute('x2', x2); activeLine.setAttribute('y2', y2);
-                activeLine.setAttribute('stroke', 'red'); // Solid red for active
-                activeLine.setAttribute('stroke-width', '4');
-                activeSegmentsGroup.appendChild(activeLine);
-            });
-            svg.appendChild(activeSegmentsGroup);
-        }
-
-        // Render Red Dashes (Conditional)
-        if (pl._intersectedNodes && pl._intersectedNodes.length > 0) {
-            const dashGroup = document.createElementNS(svg.namespaceURI, 'g');
-            dashGroup.setAttribute('class', 'red-dashes');
-            dashGroup.setAttribute('data-parent-link-id', pl.id);
-
-            pl._intersectedNodes.forEach(item => {
-                const intersectedNodeElement = item.node;
-                const intersectingPolylineSegment = item.segment; 
-
-                let isNodeActive = false;
-                if (pl._activePathSegments) {
-                    for (const activeSeg of pl._activePathSegments) {
-                        if (activeSeg.fromNodeId === intersectedNodeElement.id || activeSeg.toNodeId === intersectedNodeElement.id) {
-                            isNodeActive = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!isNodeActive) {
-                    const nodeRect = { 
-                        x: parseFloat(intersectedNodeElement.style.left), 
-                        y: parseFloat(intersectedNodeElement.style.top), 
-                        width: 50, 
-                        height: 50 
-                    };
-                    const nodeCenterX = nodeRect.x + nodeRect.width / 2;
-                    const nodeCenterY = nodeRect.y + nodeRect.height / 2;
-                    const vx = intersectingPolylineSegment[1][0] - intersectingPolylineSegment[0][0];
-                    const vy = intersectingPolylineSegment[1][1] - intersectingPolylineSegment[0][1];
-                    const len = Math.sqrt(vx * vx + vy * vy);
-                    if (len === 0) return; 
-
-                    const uvx = vx / len;
-                    const uvy = vy / len;
-                    const dashLen = 10; 
-                    const gap = 2; 
-
-                    const p_entry_dash_end_x = nodeCenterX - uvx * (nodeRect.width / 2 + gap);
-                    const p_entry_dash_end_y = nodeCenterY - uvy * (nodeRect.height / 2 + gap);
-                    const p_entry_dash_start_x = p_entry_dash_end_x - uvx * dashLen;
-                    const p_entry_dash_start_y = p_entry_dash_end_y - uvy * dashLen;
-
-                    const p_exit_dash_start_x = nodeCenterX + uvx * (nodeRect.width / 2 + gap);
-                    const p_exit_dash_start_y = nodeCenterY + uvy * (nodeRect.height / 2 + gap);
-                    const p_exit_dash_end_x = p_exit_dash_start_x + uvx * dashLen;
-                    const p_exit_dash_end_y = p_exit_dash_start_y + uvy * dashLen;
-
-                    const dash1 = document.createElementNS(svg.namespaceURI, 'line');
-                    dash1.setAttribute('x1', p_entry_dash_start_x);
-                    dash1.setAttribute('y1', p_entry_dash_start_y);
-                    dash1.setAttribute('x2', p_entry_dash_end_x);
-                    dash1.setAttribute('y2', p_entry_dash_end_y);
-                    dash1.setAttribute('class', 'dash-line');
-                    dashGroup.appendChild(dash1);
-
-                    const dash2 = document.createElementNS(svg.namespaceURI, 'line');
-                    dash2.setAttribute('x1', p_exit_dash_start_x);
-                    dash2.setAttribute('y1', p_exit_dash_start_y);
-                    dash2.setAttribute('x2', p_exit_dash_end_x);
-                    dash2.setAttribute('y2', p_exit_dash_end_y);
-                    dash2.setAttribute('class', 'dash-line');
-                    dashGroup.appendChild(dash2);
-                }
-            });
-            if (dashGroup.hasChildNodes()) {
-                svg.appendChild(dashGroup);
-            }
-        }
     }
 
     updateButtons();
