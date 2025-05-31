@@ -2,4 +2,6 @@
 
 
 
-[| Ariel NPU |](Skyboard https://skyboard.space/)
+| Ariel NPU |
+
+[Skyboard](https://skyboard.space/)
