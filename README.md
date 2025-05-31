@@ -1,4 +1,4 @@
-![ArielWhite](https://github.com/user-attachments/assets/d39eacdd-520e-461e-958b-a176c6f7e0aa)
+![ArielWhite](https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/ArielWhite.png)
 
 
 
