@@ -11,7 +11,7 @@
   <br>
   <p align="center">
   <a href="https://skyboard.space/" target="_blank">
-    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/ArielFire.png" alt="ArielWhite" width="200" height="200">
+    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/ArielFire.png" alt="ArielFire" width="200" height="200">
   </a>
   <br>
   <a href="https://skyboard.space/">Skyboard</a>
