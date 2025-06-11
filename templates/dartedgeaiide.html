@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DART Edge AI Language Editor | Autumn v0.3.1 (With Export)</title>
+  <style>
+    /* CSS is identical to the previous version */
+    body { background-color: #1e1e1e; margin: 0; display: flex; height: 100vh; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    #ide-panel { 
+   width: 50%; display: flex; flex-direction: column; background: #1e1e1e; border-right: 2px solid #444; overflow: hidden; }
+    #visualizer-panel { width: 50%; position: relative; background: #000; }
+    #editor-container { height: 60%; position: relative; border-bottom: 1px solid #444; }
+    #controls-container { padding: 10px; flex-shrink: 0; background-color: #252526; border-bottom: 1px solid #444; }
+    #output-container { height: 40%; overflow: auto; background-color: #252526; padding: 10px; }
+    #editor, #highlighting { padding: 10px; box-sizing: border-box; width: 100%; height: 100%; position: absolute; top: 0; left: 0; font-family: 'Courier New', Courier, monospace; font-size: 16px; line-height: 1.5; white-space: pre; overflow-wrap: normal; overflow: auto; margin: 0; }
+    #editor { z-index: 2; color: transparent; background: transparent; caret-color: white; border: none; resize: none; }
+    #highlighting { z-index: 1; color: #d4d4d4; }
+    .token-keyword { color: #569cd6; } .token-function-def { color: #dcdcaa; } .token-comment { color: #6a9955; } .token-string { color: #ce9178; } .token-variable { color: #9cdcfe; } .token-number { color: #b5cea8; } .token-operator { color: #d4d4d4; } .token-delimiter { color: #ffd700; } .token-error { color: #f44747; background-color: #5a1d1d; }
+    #output-container pre { margin: 0; white-space: pre-wrap; word-break: break-all; color: #ccc; }
+    .log-header { color: #4ec9b0; font-weight: bold; }
+    .button-group { display: flex; flex-wrap: wrap; gap: 10px; }
+    .button { background-color: #007acc; color: white; border: none; padding: 8px 15px; cursor: pointer; transition: background-color 0.2s; border-radius: 4px; }
+    #buildAndRunBtn { background-color: #4CAF50; font-weight: bold; }
+    #maze-ui-panel { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 0; background: rgba(28, 42, 53, 0.85); backdrop-filter: blur(5px); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2); width: 280px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); color: white; }
+    #maze-ui-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; cursor: pointer; border-bottom: 1px solid #444; }
+    #maze-ui-header h2 { margin: 0; font-size: 1.2em; } #maze-ui-toggle { font-size: 1.5em; font-weight: bold; user-select: none; }
+    #maze-ui-content { padding: 15px; overflow: hidden; transition: all 0.3s ease; }
+    #maze-ui-panel.collapsed #maze-ui-content { padding-top: 0; padding-bottom: 0; max-height: 0; opacity: 0; }
+    .control-group { margin-bottom: 12px; } .control-group label { display: block; margin-bottom: 4px; font-size: 0.9em; color: #ccc; }
+    .control-group input { width: calc(100% - 12px); background: #333; border: 1px solid #555; color: #fff; padding: 6px; border-radius: 4px; }
+    #maze-ui-panel button { width: 100%; padding: 10px; margin-top: 8px; background-color: #007bff; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 1em; font-weight: bold; }
+    #maze-ui-panel button.secondary { background-color: #6c757d; } #maze-ui-panel button:disabled { background-color: #333; cursor: not-allowed; }
+    #maze-ui-panel hr { border: 0; border-top: 1px solid #444; margin: 15px 0; }
+  </style>
+</head>
+<body>
+
+    
+    <div id="ide-panel">
+        <div id="editor-container">
+          <textarea id="editor" spellcheck="false"></textarea>
+          <div id="highlighting"></div>
+        </div>
+        <div id="controls-container">
+             <div class="button-group">
+                <button id="buildAndRunBtn" class="button">Build & Run DART Code</button>
+                <button id="clearEditorBtn" class="button">Clear Editor</button>
+                <button id="clearConsoleBtn" class="button">Clear Console</button>
+<button id="arielnpuBtn" class="button">Ariel NPU</button>
+
+<script>
+    document.getElementById("arielnpuBtn").addEventListener("click", function() {
+        window.open("https://www.arielnpu.space", "_blank");
+    });
+</script>
+            </div>
+        </div>
+        <div id="output-container">
+          <pre id="outputContent"></pre>
+        </div>
+    </div>
+
+    <div id="visualizer-panel">
+        <div id="maze-ui-panel">
+            <div id="maze-ui-header">
+                <h2>Maze Controls</h2>
+                <span id="maze-ui-toggle">▼</span>
+            </div>
+            <div id="maze-ui-content">
+                <div class="control-group"><label for="mazeWidth">Width</label><input type="number" id="mazeWidth" value="12" min="3"></div>
+                <div class="control-group"><label for="mazeHeight">Height</label><input type="number" id="mazeHeight" value="12" min="3"></div>
+                <div class="control-group"><label for="cellSize">Cell Size</label><input type="number" id="cellSize" value="10" min="1"></div>
+                <div class="control-group"><label for="wallHeight">Wall Height</label><input type="number" id="wallHeight" value="8" min="1"></div>
+                <button id="generateBtn">Generate Maze</button>
+                <button id="solveBtn" disabled>Solve Maze</button>
+                <hr>
+                <button id="frameViewBtn" class="secondary">Frame View</button>
+                <!-- NEWLY ADDED BUTTONS -->
+                <hr>
+                <button id="exportGlbBtn" class="secondary">Export to GLB</button>
+                <button id="exportPngBtn" class="secondary">Export to PNG</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.164.1/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        // NEWLY ADDED IMPORT
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+        // --- IDE & LANGUAGE PROCESSOR ---
+        const DART_PROCESSOR = {
+            // This entire object is identical to the previous version
+            log(header, content) { const output = document.getElementById('outputContent'); output.innerHTML += `<span class="log-header">${header}</span>\n${content}\n\n`; output.scrollTop = output.scrollHeight; },
+            lex(code) { const rules = [ { type: 'comment', regex: /\/\/.*/ }, { type: 'function-def', regex: /[a-zA-Z_][a-zA-Z0-9_]*/ }, { type: 'delimiter', regex: /[:(),]/ }, { type: 'number', regex: /\b\d+(\.\d+)?\b/ }, { type: 'whitespace', regex: /\s+/ }, { type: 'error', regex: /./ } ]; let tokens = [], cursor = 0; while (cursor < code.length) { let matchFound = false; for (const rule of rules) { const match = code.substring(cursor).match(rule.regex); if (match && match.index === 0) { if (rule.type !== 'whitespace') tokens.push({ type: rule.type, value: match[0], pos: cursor }); cursor += match[0].length; matchFound = true; break; } } if (!matchFound) cursor++; } this.log('1. LEXER OUTPUT (Tokens):', JSON.stringify(tokens.map(t=>t.value), null, 2)); return tokens; },
+            parse(tokens) { let i = 0; const ast = { type: 'Program', body: [] }; while (i < tokens.length) { const token = tokens[i]; if (token.type === 'function-def' && tokens[i+1]?.value === '(') { const node = { type: 'FunctionCall', name: token.value, arguments: [] }; i += 2; while (tokens[i]?.value !== ')') { if (tokens[i]?.type === 'function-def' && tokens[i+1]?.value === ':' && tokens[i+2]?.type === 'number') { node.arguments.push({ name: tokens[i].value, value: parseFloat(tokens[i+2].value) }); i += 3; } else { i++; } } ast.body.push(node); } i++; } this.log('2. PARSER OUTPUT (Abstract Syntax Tree):', JSON.stringify(ast, null, 2)); return ast; },
+            interpret(ast) { this.log('3. INTERPRETER EXECUTION:', 'Starting...'); let executionMessage = 'No executable commands found.'; for (const node of ast.body) { if (node.type === 'FunctionCall' && node.name === 'maze_generate') { const config = node.arguments.reduce((acc, arg) => { acc[arg.name] = arg.value; return acc; }, {}); MAZE_VISUALIZER.handleGenerate(config); executionMessage = `Executed 'maze_generate' with params: ${JSON.stringify(config)}`; } } this.log('4. EXECUTION RESULT:', executionMessage); },
+            run(code) { document.getElementById('outputContent').textContent = ''; const tokens = this.lex(code); const ast = this.parse(tokens); this.interpret(ast); }
+        };
+
+        // --- MAZE VISUALIZER (The "Hardware") ---
+        const MAZE_VISUALIZER = {
+            scene: null, camera: null, renderer: null, controls: null,
+            mazeGroup: new THREE.Group(), pathObject: null,
+            mazeData: { grid: null, start: null, end: null, solutionPath: null },
+
+            init() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
+                this.camera.position.set(80, 100, 150);
+                // UPDATED RENDERER to support PNG export
+                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+                this.renderer.setPixelRatio(window.devicePixelRatio); this.renderer.shadowMap.enabled = true;
+                document.getElementById('visualizer-panel').appendChild(this.renderer.domElement);
+                this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = true;
+                this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+                const dirLight = new THREE.DirectionalLight(0xffffff, 1.5); dirLight.position.set(50, 80, 50); dirLight.castShadow = true; this.scene.add(dirLight);
+                this.scene.add(this.mazeGroup);
+                this.addEventListeners(); this.animate();
+                this.onResize(); this.handleGenerate();
+            },
+            
+            // --- NEWLY ADDED EXPORT FUNCTIONS ---
+            downloadFile(content, fileName, isBinary = false) {
+                const link = document.createElement('a');
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                const blob = isBinary ? new Blob([content], {type: 'application/octet-stream'}) : new Blob([content], {type: 'text/plain'});
+                link.href = URL.createObjectURL(blob);
+                link.download = fileName;
+                link.click();
+                URL.revokeObjectURL(link.href);
+                document.body.removeChild(link);
+            },
+            handleExportGLB() {
+                const exporter = new GLTFExporter();
+                exporter.parse(this.mazeGroup, (gltf) => { 
+                    this.downloadFile(gltf, 'maze.glb', true); 
+                }, (error) => { console.error('GLB export error:', error); }, { binary: true });
+            },
+            handleExportPNG() {
+                this.renderer.render(this.scene, this.camera); // Ensure latest frame is rendered
+                const dataURL = this.renderer.domElement.toDataURL('image/png');
+                const link = document.createElement('a');
+                link.download = 'maze.png';
+                link.href = dataURL;
+                link.click();
+            },
+            
+            // --- ALL OTHER MAZE FUNCTIONS ARE IDENTICAL TO PREVIOUS VERSION ---
+            // (Collapsed for readability)
+            onResize() { const panel = document.getElementById('visualizer-panel'); if (!panel) return; const width = panel.clientWidth; const height = panel.clientHeight; this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.renderer.setSize(width, height); },
+            handleGenerate(config = {}) { const generateBtn = document.getElementById('generateBtn'); generateBtn.disabled = true; generateBtn.textContent = 'Generating...'; setTimeout(() => { const width = config.width || parseInt(document.getElementById('mazeWidth').value), height = config.height || parseInt(document.getElementById('mazeHeight').value), cellSize = config.cellSize || parseFloat(document.getElementById('cellSize').value), wallHeight = config.wallHeight || parseFloat(document.getElementById('wallHeight').value); let attempts = 0, isGoodMaze = false; do { this.mazeData.grid = this.generateMazeGrid(width, height); const min_dist = Math.max(width, height) / 2; this.mazeData.start = this.getRandomPerimeterCell(width, height); this.mazeData.end = this.getRandomPerimeterCell(width, height, this.mazeData.start, min_dist); this.mazeData.solutionPath = this.solveMaze(this.mazeData.grid, this.mazeData.start, this.mazeData.end); if (this.mazeData.solutionPath.length > 0 && !this.isPathUninteresting(this.mazeData.solutionPath)) { isGoodMaze = true; } attempts++; } while (!isGoodMaze && attempts < 50); this.draw3DMaze(this.mazeData.grid, this.mazeData.start, this.mazeData.end, cellSize, wallHeight); document.getElementById('solveBtn').disabled = false; this.frameView(); generateBtn.disabled = false; generateBtn.textContent = 'Generate Maze'; }, 10); },
+            generateMazeGrid(width, height) { const createGrid = (w, h) => Array(h).fill(null).map(() => Array(w).fill(null).map(() => ({ N: true, E: true, S: true, W: true }))); const grid = createGrid(width, height); const dOp = { 'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E' }, dx = { 'E': 1, 'W': -1, 'N': 0, 'S': 0 }, dy = { 'E': 0, 'W': 0, 'N': -1, 'S': 1 }; const stack = [[Math.floor(Math.random()*width), Math.floor(Math.random()*height)]], visited = new Set([`${stack[0][0]},${stack[0][1]}`]); while (stack.length > 0) { const [cx, cy] = stack[stack.length - 1]; const neighbors = []; for (const dir of ['N', 'E', 'S', 'W']) { const nx = cx + dx[dir], ny = cy + dy[dir]; if (nx >= 0 && nx < width && ny >= 0 && ny < height && !visited.has(`${nx},${ny}`)) { neighbors.push({ dir, x: nx, y: ny }); } } if (neighbors.length > 0) { const { dir, x: nx, y: ny } = neighbors[Math.floor(Math.random() * neighbors.length)]; grid[cy][cx][dir] = false; grid[ny][nx][dOp[dir]] = false; visited.add(`${nx},${ny}`); stack.push([nx, ny]); } else { stack.pop(); } } return grid; },
+            getRandomPerimeterCell(w, h, exclude = null, minDistance = 0) { const perimeter = []; for (let x = 0; x < w; x++) { perimeter.push({ x, y: 0 }); perimeter.push({ x, y: h - 1 }); } for (let y = 1; y < h - 1; y++) { perimeter.push({ x: 0, y }); perimeter.push({ x: w - 1, y }); } let attempts = 0; while(attempts < 100) { let potentialCells = perimeter.filter(p => !exclude || p.x !== exclude.x || p.y !== exclude.y); if(potentialCells.length === 0) return perimeter[0]; const cell = potentialCells[Math.floor(Math.random() * potentialCells.length)]; if (exclude && minDistance > 0) { if (Math.sqrt(Math.pow(cell.x - exclude.x, 2) + Math.pow(cell.y - exclude.y, 2)) >= minDistance) return cell; } else { return cell; } attempts++; } return perimeter.filter(p => !exclude || p.x !== exclude.x || p.y !== exclude.y)[0]; },
+            solveMaze(grid, start, end) { const w = grid[0].length, h = grid.length, dx = { 'E': 1, 'W': -1, 'N': 0, 'S': 0 }, dy = { 'E': 0, 'W': 0, 'N': -1, 'S': 1 }, q = [start], visited = new Set([`${start.x},${start.y}`]), parentMap = new Map(); let pathFound = false; while (q.length > 0) { const curr = q.shift(); if (curr.x === end.x && curr.y === end.y) { pathFound = true; break; } for (const dir of ['N', 'E', 'S', 'W']) { if (!grid[curr.y][curr.x][dir]) { const nx = curr.x + dx[dir], ny = curr.y + dy[dir], key = `${nx},${ny}`; if (nx >= 0 && nx < w && ny >= 0 && ny < h && !visited.has(key)) { visited.add(key); parentMap.set(key, `${curr.x},${curr.y}`); q.push({ x: nx, y: ny }); } } } } if (!pathFound) return []; const path = []; let currKey = `${end.x},${end.y}`; while (currKey) { const [x, y] = currKey.split(',').map(Number); path.unshift({ x, y }); currKey = parentMap.get(currKey); } return path; },
+            isPathUninteresting(path) { if (path.length < 3) return true; return path.every(p => p.y === path[0].y) || path.every(p => p.x === path[0].x); },
+            clearSceneContent() { while(this.mazeGroup.children.length > 0) this.mazeGroup.remove(this.mazeGroup.children[0]); this.pathObject = null; this.mazeData.grid = null; document.getElementById('solveBtn').disabled = true; },
+            drawAnimatedPath(path, cellSize) { if (this.pathObject) this.mazeGroup.remove(this.pathObject); this.pathObject = null; if (path.length < 1) return; this.pathObject = new THREE.Group(); this.mazeGroup.add(this.pathObject); const pathGeo = new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8), pathMat = new THREE.MeshStandardMaterial({ color: 0x00aaff, emissive: 0x0088ee, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }); let i = 0; const addSegment = () => { if (i >= path.length) return; const cell = path[i], segment = new THREE.Mesh(pathGeo, pathMat); segment.position.set(cell.x * cellSize + cellSize / 2, 0.2, cell.y * cellSize + cellSize / 2); segment.rotation.x = -Math.PI / 2; this.pathObject.add(segment); i++; setTimeout(addSegment, 30); }; addSegment(); },
+            draw3DMaze(grid, start, end, cellSize, wallHeight) { this.clearSceneContent(); const width = grid[0].length, height = grid.length, wallThickness = cellSize * 0.1, wallGeo = new THREE.BoxGeometry(1, 1, 1), wallMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 }); for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const cell = grid[y][x]; if (cell.E && x < width - 1) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(wallThickness, wallHeight, cellSize); wall.position.set((x + 1) * cellSize, wallHeight / 2, y * cellSize + cellSize / 2); wall.castShadow = true; this.mazeGroup.add(wall); } if (cell.S && y < height - 1) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(cellSize, wallHeight, wallThickness); wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, (y + 1) * cellSize); wall.castShadow = true; this.mazeGroup.add(wall); } } for(let x=0; x < width; x++) { if (!(start.x === x && start.y === 0) && !(end.x === x && end.y === 0)) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(cellSize, wallHeight, wallThickness); wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, 0); wall.castShadow = true; this.mazeGroup.add(wall); } if (!(start.x === x && start.y === height - 1) && !(end.x === x && end.y === height - 1)) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(cellSize, wallHeight, wallThickness); wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, height * cellSize); wall.castShadow = true; this.mazeGroup.add(wall); } } for(let y=0; y < height; y++) { if (!(start.x === 0 && start.y === y) && !(end.x === 0 && end.y === y)) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(wallThickness, wallHeight, cellSize); wall.position.set(0, wallHeight/2, y * cellSize + cellSize/2); wall.castShadow = true; this.mazeGroup.add(wall); } if (!(start.x === width - 1 && start.y === y) && !(end.x === width - 1 && end.y === y)) { const wall = new THREE.Mesh(wallGeo, wallMat); wall.scale.set(wallThickness, wallHeight, cellSize); wall.position.set(width * cellSize, wallHeight/2, y * cellSize + cellSize/2); wall.castShadow = true; this.mazeGroup.add(wall); } } [start, end].forEach(point => { const markerGeo = new THREE.BoxGeometry(cellSize * 0.9, 0.2, cellSize * 0.9), markerMat = new THREE.MeshStandardMaterial({ color: 0xff4444, emissive: 0xaa0000 }); const marker = new THREE.Mesh(markerGeo, markerMat); marker.position.set(point.x * cellSize + cellSize / 2, 0.1, point.y * cellSize + cellSize / 2); this.mazeGroup.add(marker); }); const box = new THREE.Box3().setFromObject(this.mazeGroup); const center = box.getCenter(new THREE.Vector3()); this.mazeGroup.position.sub(center); },
+            frameView() { if (this.mazeGroup.children.length === 0) return; const box = new THREE.Box3().setFromObject(this.mazeGroup); const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3()); const maxDim = Math.max(size.x, size.y, size.z); const fov = this.camera.fov * (Math.PI / 180); let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)); cameraZ *= 1.5; this.controls.target.copy(center); const direction = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).normalize(); this.camera.position.copy(direction.multiplyScalar(cameraZ).add(center)); this.controls.update(); },
+            animate() { requestAnimationFrame(() => this.animate()); this.controls.update(); this.renderer.render(this.scene, this.camera); },
+            addEventListeners() {
+                 window.addEventListener('resize', () => this.onResize());
+                 document.getElementById('generateBtn').addEventListener('click', () => this.handleGenerate());
+                 document.getElementById('solveBtn').addEventListener('click', () => this.drawAnimatedPath(this.mazeData.solutionPath, parseFloat(document.getElementById('cellSize').value)));
+                 document.getElementById('frameViewBtn').addEventListener('click', () => this.frameView());
+                 document.getElementById('maze-ui-toggle').addEventListener('click', () => document.getElementById('maze-ui-panel').classList.toggle('collapsed'));
+                 // NEWLY ADDED EVENT LISTENERS
+                 document.getElementById('exportGlbBtn').addEventListener('click', () => this.handleExportGLB());
+                 document.getElementById('exportPngBtn').addEventListener('click', () => this.handleExportPNG());
+            }
+        };
+
+        // --- IDE EVENT LISTENERS & INITIALIZATION ---
+        const editor = document.getElementById("editor");
+        const highlighting = document.getElementById("highlighting");
+        function updateHighlighting() { const code = editor.value; let html = ''; DART_PROCESSOR.lex(code).forEach(t => { html += `<span class="token-${t.type}">${t.value.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span>`; }); highlighting.innerHTML = html; highlighting.scrollTop = editor.scrollTop; highlighting.scrollLeft = editor.scrollLeft; }
+        editor.addEventListener('input', updateHighlighting); editor.addEventListener('scroll', () => { highlighting.scrollTop = editor.scrollTop; highlighting.scrollLeft = editor.scrollLeft; });
+        document.getElementById("buildAndRunBtn").addEventListener("click", () => DART_PROCESSOR.run(editor.value));
+        document.getElementById("clearEditorBtn").addEventListener("click", () => { editor.value = ""; updateHighlighting(); });
+        document.getElementById("clearConsoleBtn").addEventListener("click", () => { document.getElementById('outputContent').textContent = ''; });
+
+        MAZE_VISUALIZER.init();
+        editor.value = `// Welcome to the Autumn IDE v0.3.1
+// Export to GLB and PNG is now available from the 'Maze Controls' panel.
+
+maze_generate(width: 20, height: 15, cellSize: 8, wallHeight: 10)
+`;
+        updateHighlighting();
+    </script>
+</body>
+</html>
