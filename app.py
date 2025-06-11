@@ -31,9 +31,9 @@ def live_mockup():
     return render_template("livemockup.html")
 
 # <-- New route to serve your mockup -->
-@app.route("/LEATR.html")
-def live_mockup():
-    return render_template("LEATR.html")
+@app.route("/leatr.html")
+def sysleatr():
+    return render_template("leatr.html")
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
