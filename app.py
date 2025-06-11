@@ -30,6 +30,11 @@ def home():
 def live_mockup():
     return render_template("livemockup.html")
 
+# <-- New route to serve your mockup -->
+@app.route("/LEATR.html")
+def live_mockup():
+    return render_template("LEATR.html")
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json() or {}
@@ -43,3 +48,4 @@ def chat():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
