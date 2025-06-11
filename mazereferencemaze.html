@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Lead Edge Maze</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          
+            padding-top: 50px;
+            margin: 0;
+            height: 100vh;
+            background-color: indigo;
+        }
+        #mazeCanvas {
+            margin-top: 20px;
+        }
+        button, select {
+            margin: 10px;
+            padding: 10px 20px;
+            background-color: deepskyblue;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            font-weight: bold;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.23);
+        }
+        .developer-comments {
+            font-size: 9px;
+            color: white;
+            text-align: left;
+            max-width: 800px;
+            font-weight: bold;
+        }
+        h1 {
+      
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .mode {
+          margin-top: 100px;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+        }
+        .content-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+ 
+    
+    <img src="https://static.wixstatic.com/media/2451db_5d6d3d7d2cbd4a5c883760ce45d89789~mv2.png" alt="Lead Edge" style="max-width: 15%; height:auto;">
+<br>
+  <br>
+    <a href="https://github.com/DART-Edge-AI/leadedge/blob/main/README.md" align="center" target="_blank">
+            <img src="https://static.wixstatic.com/media/2451db_43d17402beed42a0856ccd72eaa55027~mv2.png" alt="Logo" style="max-width: 35%; height: auto;">
+    </a>
+
+
+
+  
+    <div class="developer-comments">
+        <h2>Developer Comments:</h2>
+        <p>
+            Surgically refined and with a perimeter. In addition: all the iterations of the maze are surgical except for some that might occur were the opening and exit are close to another on the same perimeter, this is still surgically made because the openings are not in view of one another but it is not surgical on particular iterations where if you do not notice an additional path before the exit so therefore basically you never played the maze you just went straight from opening to exit therefore it is not surgical but all the other iterations will be surgical. There are no looped wall segments or looped spaces so therefore the iterations are surgical except for those rare iterations I mentioned earlier.
+            Additionally The 3D BoxGeometry Lead Edge Maze is still a little dirty which is mainly centered around properly segementing the openings.
+          NOTE: If a particular generation of the 3D Iterations has missing perimeter segments just add them back in within your editor, the actual openings are marked with red. 
+        </p>
+    </div>
+
+    <canvas id="mazeCanvas" width="875" height="875"></canvas>
+    
+    <div class="content-container">
+        <button onclick="generateMaze()">Generate Lead Edge Maze</button>
+        <select id="sizeSelect">
+            <option value="10">Small (10)</option>
+            <option value="30" selected>Medium (30)</option>
+            <option value="70">Large (70)</option>
+        </select>
+        <button onclick="exportPNG()">Export as PNG</button>
+        <button onclick="toggleResolution()">Toggle 4K</button>
+        <button onclick="solveMaze()">Solve Maze</button>
+        <button onclick="exportGLB()">Export as GLB</button>
+    </div>
+
+    <div id="threejs-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.5/examples/js/exporters/GLTFExporter.js"></script>
+    <script>
+        const canvas = document.getElementById('mazeCanvas');
+        const ctx = canvas.getContext('2d');
+        let unit = 30; // Default to small
+        let mazeSize = 875; // Default resolution
+        let is4K = false; // Track whether 4K resolution is enabled
+        let mazeData = []; // Store maze data for 3D rendering
+        let entry, exit, scene, camera, renderer, controls;
+
+        document.getElementById('sizeSelect').addEventListener('change', function() {
+            unit = parseInt(this.value);
+            generateMaze(); // Regenerate the maze when size changes
+        });
+
+        function toggleResolution() {
+            is4K = !is4K;
+            mazeSize = is4K ? 4096 : 875; // Toggle between 4K and default resolution
+            generateMaze(); // Regenerate the maze with the new resolution
+        }
+
+        function generateMaze() {
+            const mazeWidth = Math.floor(mazeSize / unit);
+            const mazeHeight = Math.floor(mazeSize / unit);
+            const grid = createGrid(mazeWidth, mazeHeight);
+            const { entry: newEntry, exit: newExit } = createPath(grid, mazeWidth, mazeHeight);
+            entry = newEntry;
+            exit = newExit;
+            mazeData = grid; // Store maze data for solving
+
+            canvas.width = mazeSize;
+            canvas.height = mazeSize;
+            ctx.clearRect(0, 0, mazeSize, mazeSize);
+            drawGrid(grid, mazeWidth, mazeHeight, entry, exit);
+            render3DMaze(grid, mazeWidth, mazeHeight);
+        }
+
+        function createGrid(width, height) {
+            const grid = [];
+            for (let y = 0; y < height; y++) {
+                const row = [];
+                for (let x = 0; x < width; x++) {
+                    row.push({
+                        top: true,
+                        right: true,
+                        bottom: true,
+                        left: true
+                    });
+                }
+                grid.push(row);
+            }
+            return grid;
+        }
+
+        function createPath(grid, width, height) {
+            const stack = [];
+            const entry = getRandomPerimeterCell(width, height);
+            let exit = getRandomPerimeterCell(width, height, entry);
+            let current = entry;
+            const visited = new Set([`${current.x},${current.y}`]);
+
+            while (stack.length > 0 || (current && (current.x !== exit.x || current.y !== exit.y))) {
+                const neighbors = getUnvisitedNeighbors(current, visited, width, height);
+
+                if (neighbors.length > 0) {
+                    const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+                    if (next) {
+                        removeWall(grid, current, next);
+                        stack.push(current);
+                        visited.add(`${next.x},${next.y}`);
+                        current = next;
+                    } else {
+                        console.error('No valid neighbors found.');
+                    }
+                } else {
+                    current = stack.pop();
+                    if (!current) break;  // Additional check to ensure current is defined
+                }
+            }
+
+            return { entry, exit };
+        }
+
+        function getRandomPerimeterCell(width, height, excludeCell = null) {
+            let cell;
+            do {
+                const side = Math.floor(Math.random() * 4);
+                switch (side) {
+                    case 0: cell = { x: Math.floor(Math.random() * width), y: 0 }; break; // Top
+                    case 1: cell = { x: width - 1, y: Math.floor(Math.random() * height) }; break; // Right
+                    case 2: cell = { x: Math.floor(Math.random() * width), y: height - 1 }; break; // Bottom
+                    case 3: cell = { x: 0, y: Math.floor(Math.random() * height) }; break; // Left
+                }
+            } while (excludeCell && cell.x === excludeCell.x && cell.y === excludeCell.y);
+            return cell;
+        }
+
+        function getUnvisitedNeighbors(cell, visited, width, height) {
+            const neighbors = [];
+            if (!cell) return neighbors;  // Additional check to ensure cell is defined
+
+            const { x, y } = cell;
+            if (x > 0 && !visited.has(`${x - 1},${y}`)) neighbors.push({ x: x - 1, y });
+            if (x < width - 1 && !visited.has(`${x + 1},${y}`)) neighbors.push({ x: x + 1, y });
+            if (y > 0 && !visited.has(`${x},${y - 1}`)) neighbors.push({ x, y: y - 1 });
+            if (y < height - 1 && !visited.has(`${x},${y + 1}`)) neighbors.push({ x, y: y + 1 });
+
+            return neighbors;
+        }
+
+        function removeWall(grid, current, next) {
+            if (current.x === next.x) {
+                if (current.y > next.y) {
+                    grid[current.y][current.x].top = false;
+                    grid[next.y][next.x].bottom = false;
+                } else {
+                    grid[current.y][current.x].bottom = false;
+                    grid[next.y][next.x].top = false;
+                }
+            } else {
+                if (current.x > next.x) {
+                    grid[current.y][current.x].left = false;
+                    grid[next.y][next.x].right = false;
+                } else {
+                    grid[current.y][current.x].right = false;
+                    grid[next.y][next.x].left = false;
+                }
+            }
+        }
+
+        function drawGrid(grid, width, height, entry, exit) {
+            const cellSize = mazeSize / Math.max(width, height);
+
+            ctx.strokeStyle = '#FFF';
+            ctx.lineWidth = 2;
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const cell = grid[y][x];
+                    const xPos = x * cellSize;
+                    const yPos = y * cellSize;
+
+                    if (cell.top) {
+                        ctx.beginPath();
+                        ctx.moveTo(xPos, yPos);
+                        ctx.lineTo(xPos + cellSize, yPos);
+                        ctx.stroke();
+                    }
+                    if (cell.right) {
+                        ctx.beginPath();
+                        ctx.moveTo(xPos + cellSize, yPos);
+                        ctx.lineTo(xPos + cellSize, yPos + cellSize);
+                        ctx.stroke();
+                    }
+                    if (cell.bottom) {
+                        ctx.beginPath();
+                        ctx.moveTo(xPos, yPos + cellSize);
+                        ctx.lineTo(xPos + cellSize, yPos + cellSize);
+                        ctx.stroke();
+                    }
+                    if (cell.left) {
+                        ctx.beginPath();
+                        ctx.moveTo(xPos, yPos);
+                        ctx.lineTo(xPos, yPos + cellSize);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            ctx.clearRect(entry.x * cellSize, entry.y * cellSize, cellSize, cellSize);
+            ctx.clearRect(exit.x * cellSize, exit.y * cellSize, cellSize, cellSize);
+
+            // Draw the blue border
+            ctx.strokeStyle = 'blue';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(0, 0, mazeSize, mazeSize);
+
+            // Create single-unit openings in the blue perimeter for entry and exit
+            ctx.clearRect(entry.x * cellSize, entry.y * cellSize, cellSize, cellSize);
+            ctx.clearRect(exit.x * cellSize, exit.y * cellSize, cellSize, cellSize);
+        }
+
+        function exportPNG() {
+            const dataURL = canvas.toDataURL("image/png");
+            const a = document.createElement('a');
+            a.href = dataURL;
+            a.download = 'LeadEdgeMaze.png';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function solveMaze() {
+            const path = [];
+            const visited = new Set();
+            const stack = [{ ...entry, path: [entry] }];
+
+            while (stack.length > 0) {
+                const { x, y, path } = stack.pop();
+                if (x === exit.x && y === exit.y) {
+                    drawPath(path);
+                    return;
+                }
+
+                visited.add(`${x},${y}`);
+                const neighbors = getNeighborsForSolve({ x, y });
+
+                for (const neighbor of neighbors) {
+                    if (!visited.has(`${neighbor.x},${neighbor.y}`)) {
+                        stack.push({ ...neighbor, path: [...path, neighbor] });
+                    }
+                }
+            }
+        }
+
+        function getNeighborsForSolve(cell) {
+            const { x, y } = cell;
+            const neighbors = [];
+
+            if (x > 0 && !mazeData[y][x].left) neighbors.push({ x: x - 1, y });
+            if (x < mazeData[0].length - 1 && !mazeData[y][x].right) neighbors.push({ x: x + 1, y });
+            if (y > 0 && !mazeData[y][x].top) neighbors.push({ x, y: y - 1 });
+            if (y < mazeData.length - 1 && !mazeData[y][x].bottom) neighbors.push({ x, y: y + 1 });
+
+            return neighbors;
+        }
+
+        function drawPath(path) {
+            ctx.strokeStyle = 'blue';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            for (let i = 0; i < path.length; i++) {
+                const { x, y } = path[i];
+                const xPos = x * (mazeSize / mazeData[0].length);
+                const yPos = y * (mazeSize / mazeData.length);
+
+                if (i === 0) {
+                    ctx.moveTo(xPos + (unit / 2), yPos + (unit / 2));
+                } else {
+                    ctx.lineTo(xPos + (unit / 2), yPos + (unit / 2));
+                }
+            }
+
+            ctx.stroke();
+        }
+
+        function render3DMaze(grid, width, height) {
+            if (scene) {
+                // Remove the previous objects from the scene
+                while (scene.children.length > 0) {
+                    scene.remove(scene.children[0]);
+                }
+            } else {
+                // Initialize Three.js components
+                scene = new THREE.Scene();
+                scene.rotation.x = Math.PI; // Rotate the scene 180 degrees around the X-axis
+                camera = new THREE.PerspectiveCamera(60, 1, 0.01, 100000);
+                camera.position.set(0, mazeSize, mazeSize); // Adjust the camera position to be above the maze
+                camera.lookAt(0, 0, 0); // Point the camera towards the center of the maze
+                renderer = new THREE.WebGLRenderer({ alpha: true }); // transparent background
+                renderer.setSize(875, 875); // Set renderer size to 875x875 pixels
+                renderer.domElement.id = "threejs-canvas"; // Add ID to the canvas
+                document.getElementById('threejs-container').appendChild(renderer.domElement);
+
+                // Add orbit controls
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.25;
+                controls.enableZoom = true;
+
+                // Render loop
+                function animate() {
+                    requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                }
+                animate();
+
+                // Handle window resize
+                window.addEventListener('resize', function() {
+                    renderer.setSize(875, 875); // Fix size to 875x875 pixels
+                    camera.aspect = 1; // Aspect ratio is 1:1 for 875x875 pixels
+                    camera.updateProjectionMatrix();
+                });
+            }
+
+            // Define materials
+            const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+
+            const mazeSegments = [];
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const cell = grid[y][x];
+                    const xPos = x * unit - mazeSize / 2;
+                    const yPos = y * unit - mazeSize / 2;
+
+                    let currentMaterial = material;
+
+                    // Check if the current cell is part of the entry or exit
+                    if ((x === entry.x && y === entry.y) || (x === exit.x && y === exit.y)) {
+                        currentMaterial = redMaterial;
+                    }
+
+                    if (cell.top) {
+                        const geometry = new THREE.BoxGeometry(unit, 1, 1); // Length, height, width
+                        const line = new THREE.Mesh(geometry, currentMaterial);
+                        line.position.set(
+                            xPos + unit / 2,
+                            yPos,
+                            0
+                        );
+                        scene.add(line);
+                        mazeSegments.push(line);
+                    }
+                    if (cell.right) {
+                        const geometry = new THREE.BoxGeometry(1, unit, 1); // Length, height, width
+                        const line = new THREE.Mesh(geometry, currentMaterial);
+                        line.position.set(
+                            xPos + unit,
+                            yPos + unit / 2,
+                            0
+                        );
+                        scene.add(line);
+                        mazeSegments.push(line);
+                    }
+                    if (cell.bottom) {
+                        const geometry = new THREE.BoxGeometry(unit, 1, 1); // Length, height, width
+                        const line = new THREE.Mesh(geometry, currentMaterial);
+                        line.position.set(
+                            xPos + unit / 2,
+                            yPos + unit,
+                            0
+                        );
+                        scene.add(line);
+                        mazeSegments.push(line);
+                    }
+                    if (cell.left) {
+                        const geometry = new THREE.BoxGeometry(1, unit, 1); // Length, height, width
+                        const line = new THREE.Mesh(geometry, currentMaterial);
+                        line.position.set(
+                            xPos,
+                            yPos + unit / 2,
+                            0
+                        );
+                        scene.add(line);
+                        mazeSegments.push(line);
+                    }
+                }
+            }
+
+            // Remove segments corresponding to the openings
+            mazeSegments.forEach((segment) => {
+                const boundingBox = new THREE.Box3().setFromObject(segment);
+                const center = boundingBox.getCenter(new THREE.Vector3());
+                if (
+                    (Math.abs(center.x - (entry.x * unit - mazeSize / 2)) < unit && Math.abs(center.y - (entry.y * unit - mazeSize / 2)) < unit) ||
+              (Math.abs(center.x - (exit.x * unit - mazeSize / 2)) < unit && Math.abs(center.y - (exit.y * unit - mazeSize / 2)) < unit)
+                ) {
+                    scene.remove(segment);
+                }
+            });
+        }
+
+        function exportGLB() {
+            const exporter = new THREE.GLTFExporter();
+            exporter.parse(scene, function (result) {
+                const blob = new Blob([result], { type: 'model/gltf-binary' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'LeadEdgeMaze.glb';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }, { binary: true });
+        }
+
+        // Initial maze generation
+        generateMaze();
+    </script>
+</body> 
+</html>
