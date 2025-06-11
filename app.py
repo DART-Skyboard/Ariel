@@ -35,6 +35,11 @@ def live_mockup():
 def sysleatr():
     return render_template("leatr.html")
 
+# <-- New route to serve your mockup -->
+@app.route("/dartedgeaiide.html")
+def syside():
+    return render_template("dartedgeaiide.html")
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json() or {}
