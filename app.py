@@ -36,6 +36,11 @@ def sysleatr():
     return render_template("leatr.html")
 
 # <-- New route to serve your mockup -->
+@app.route("/mn.html")
+def sysmn():
+    return render_template("mn.html")
+
+# <-- New route to serve your mockup -->
 @app.route("/dartedgeaiide.html")
 def syside():
     return render_template("dartedgeaiide.html")
