@@ -9,6 +9,8 @@
         --chem-panel-width: 340px;
     }
     body {
+        
+
             margin: 0;
             overflow: hidden;
             background-color: #111;
@@ -16,6 +18,7 @@
             font-family: 'Courier New', Courier, monospace;
         }
         #threejs-canvas {
+            
             display: block;
             position: absolute;
             top: 0;
@@ -381,10 +384,172 @@
 
         // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 100000);
         const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('threejs-canvas'), antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
+
+// =================== NEW BACKGROUND LOADER (PASTE THIS) ===================
+
+// --- BACKGROUND (CHOOSE ONE OPTION BELOW) ---
+// Define the path to your background file here.
+//const backgroundFileUrl = '2.png'; // <-- CHANGE THIS URL
+
+// IMPORTANT: Uncomment ONLY ONE of the following sections (A, B, or C).
+
+//SKYBOX
+
+// =================== NEW MANIPULATABLE BACKGROUND (V2 - WITH TEXTURE ZOOM) ===================
+
+// --- BACKGROUND (Image Skybox Sphere Method) ---
+// This method creates a large sphere and maps the image to its inside,
+// allowing for full rotation and scaling control.
+
+// --- Control Variables (Change these values to see the effect!) ---
+
+// Sphere Controls
+const backgroundScale = 1; // Scale of the background sphere (1 = normal size)
+const backgroundRotationX = 1; // Rotation on the X-axis (in radians)
+const backgroundRotationY = 1.5; // Rotation on the Y-axis (in radians)
+const backgroundRotationZ = 0; // Rotation on the Z-axis (in radians)
+
+// Texture Controls
+const textureZoom = 0.65; // How much to "zoom in" on the texture. 1 = no zoom, 2 = 2x zoom.
+const texturePanX = 0; // Pans the texture horizontally. Range is roughly -0.5 to 0.5.
+const texturePanY = 0.4; // Pans the texture vertically. Range is roughly -0.5 to 0.5.
+
+
+// A variable to hold our background sphere so we can access it later
+let skybox;
+
+// --- Loader Logic ---
+const textureLoader = new THREE.TextureLoader();
+const backgroundFileUrl = 'https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/templates/2.png'; // <-- CHANGE THIS URL
+
+textureLoader.load(backgroundFileUrl, (texture) => {
+    // We need a very large sphere geometry that will contain our whole scene.
+    const skyboxGeometry = new THREE.SphereGeometry(6000, 60, 40);
+    
+    // This makes sure the texture is mapped correctly for a 360 image.
+    texture.mapping = THREE.EquirectangularReflectionMapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    
+    // IMPORTANT: To make the texture repeat/pan, we must set the wrapping mode.
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    
+    // We use a basic material because we don't want the background to be affected by lights.
+    const skyboxMaterial = new THREE.MeshBasicMaterial({
+        map: texture,
+        side: THREE.BackSide // CRITICAL: Renders the texture on the *inside* of the sphere.
+    });
+    
+    // Create the final 3D object (the skybox sphere)
+    skybox = new THREE.Mesh(skyboxGeometry, skyboxMaterial);
+    
+    // Add the skybox to the scene. It is centered at the origin (0,0,0) by default.
+    scene.add(skybox);
+    
+    console.log("Image skybox sphere created with texture controls.");
+});
+
+// To apply all transforms, we update them in the animation loop.
+function updateSkybox() {
+    if (skybox) {
+        // --- Apply Sphere Transforms ---
+        skybox.scale.set(backgroundScale, backgroundScale, backgroundScale);
+        skybox.rotation.set(backgroundRotationX, backgroundRotationY, backgroundRotationZ);
+        
+        // --- Apply Texture Transforms ---
+        const texture = skybox.material.map;
+        if (texture) {
+            // Calculate the repeat value based on zoom.
+            // A zoom of 2 means we repeat the texture 0.5 times (show half of it).
+            const repeatX = 1 / textureZoom;
+            const repeatY = 1 / textureZoom;
+            texture.repeat.set(repeatX, repeatY);
+            
+            // Calculate the offset to keep the zoom centered, then add panning.
+            // The (1 - repeat) / 2 formula centers the texture after zooming.
+            const offsetX = (1 - repeatX) / 2 + texturePanX;
+            const offsetY = (1 - repeatY) / 2 + texturePanY;
+            texture.offset.set(offsetX, offsetY);
+        }
+    }
+}
+
+// ================= END OF NEW BACKGROUND LOADER ===================
+/*
+// --- OPTION A: For Image Backgrounds (PNG/JPEG) ---
+const textureLoader = new THREE.TextureLoader();
+textureLoader.load(backgroundFileUrl, (texture) => {
+    texture.mapping = THREE.EquirectangularReflectionMapping; // Best for 360 images
+    texture.colorSpace = THREE.SRGBColorSpace; // Important for correct color
+    scene.background = texture;
+    console.log("Image background loaded.");
+});
+*/
+
+/*
+// --- OPTION B: For Video Backgrounds (MP4) ---
+// Note: Videos must be muted to autoplay in most browsers.
+const videoElement = document.createElement('video');
+videoElement.src = backgroundFileUrl;
+videoElement.loop = true;
+videoElement.muted = true; // Essential for autoplay
+videoElement.playsInline = true; // Essential for iOS
+videoElement.play();
+
+const videoTexture = new THREE.VideoTexture(videoElement);
+videoTexture.mapping = THREE.EquirectangularReflectionMapping; // Best for 360 videos
+videoTexture.colorSpace = THREE.SRGBColorSpace; // Important for correct color
+scene.background = videoTexture;
+console.log("Video background loaded.");
+*/
+
+/*
+// --- OPTION C: For 3D Model Backgrounds (GLB) ---
+// This method adds the model as a "skybox" that follows the camera.
+const gltfLoader = new GLTFLoader();
+gltfLoader.load(backgroundFileUrl, (gltf) => {
+    const backgroundModel = gltf.scene;
+
+    // Scale it up so it's large enough to act as a backdrop
+    backgroundModel.scale.set(200, 200, 200);
+
+    // Make sure it doesn't get lit by scene lights or cast shadows
+    backgroundModel.traverse((child) => {
+        if (child.isMesh) {
+            child.material.depthWrite = false; // Render behind everything
+            child.castShadow = false;
+            child.receiveShadow = false;
+        }
+    });
+    
+    // Set render order to draw it first (in the background)
+    backgroundModel.renderOrder = -1;
+
+    scene.add(backgroundModel);
+
+    // This part is crucial for a GLB background:
+    // We attach the background model to the camera so it moves with it.
+    // It will always stay perfectly centered in your view, creating the illusion of a static background.
+    camera.add(backgroundModel);
+    // Move it slightly away from the camera so it doesn't clip
+   // backgroundModel.position.z = -150;
+   // backgroundModel.rotation.x = 180; 
+ //   backgroundModel.rotation.y = 360; 
+//    backgroundModel.rotation.z = 360; 
+    
+    // Also, add it to the main scene so it's actually visible
+    scene.add(camera);
+
+    console.log("GLB background model loaded.");
+});
+*/
+
+
+// ================= END OF NEW BACKGROUND LOADER ===================
 
         // --- LIGHTING & ENVIRONMENT ---
         scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -669,8 +834,8 @@
 
         // --- ANIMATION LOOP ---
         function animate() {
+            updateSkybox();
             requestAnimationFrame(animate);
-
             if (drone) {
                 // --- PHYSICS LOGIC ---
                 if (chemistryModeActive) {
