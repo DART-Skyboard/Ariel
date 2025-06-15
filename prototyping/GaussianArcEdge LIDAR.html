@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Gaussian Arcadge - Depth Masking Demo</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+        }
+        button {
+            padding: 12px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #status {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0,0,0,0.5);
+            padding: 8px;
+            border-radius: 5px;
+            font-family: monospace;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <button id="toggle-ar">Activate Gaussian Arcadge (AR Mode)</button>
+    </div>
+
+    <div id="status">Status: Awaiting Activation</div>
+
+    <!-- Hidden video element to stream camera feed -->
+    <video id="video" playsinline style="display:none"></video>
+
+    <!-- Shader for the Depth Masking Effect -->
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    </script>
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform sampler2D uObjectTexture;
+        uniform sampler2D uDepthMask;
+        uniform vec2 uResolution;
+        varying vec2 vUv;
+
+        void main() {
+            // Screen-space coordinates for the mask lookup
+            vec2 screenUv = gl_FragCoord.xy / uResolution.xy;
+
+            // Sample the depth mask (which is based on camera feed)
+            float maskValue = texture2D(uDepthMask, screenUv).r;
+
+            // If the mask value is high (e.g., > 0.5), it means a
+            // "foreground" real-world object is there. Discard the pixel.
+            if (maskValue > 0.5) {
+                discard;
+            }
+
+            // Otherwise, draw the object's normal texture
+            gl_FragColor = texture2D(uObjectTexture, vUv);
+        }
+    </script>
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- Main Application Logic -->
+    <script>
+        // --- Global Three.js Variables ---
+        let scene, camera, renderer;
+        let digitalAsset; // Our 3D object
+        let arModeActive = false;
+
+        // --- DOM Elements ---
+        const videoElement = document.getElementById('video');
+        const toggleButton = document.getElementById('toggle-ar');
+        const statusElement = document.getElementById('status');
+
+        // --- Gaussian Arcadge Processor ---
+        // This object encapsulates the logic from your documentation.
+        // For this PoC, it performs a simplified analysis (brightness thresholding).
+        // A more advanced implementation would replace the `analyzeCameraFrame` method.
+        const GaussianArcadgeProcessor = {
+            canvas: document.createElement('canvas'),
+            ctx: null,
+            maskTexture: null,
+            isInitialized: false,
+
+            init(sourceVideo, width, height) {
+                this.canvas.width = width;
+                this.canvas.height = height;
+                this.ctx = this.canvas.getContext('2d');
+                this.isInitialized = true;
+                console.log("Gaussian Arcadge Processor Initialized.");
+                statusElement.textContent = "Processor Initialized. Analyzing light scatter...";
+            },
+
+            /**
+             * This is the core analysis function based on the camera feed.
+             * It generates a mask used for occlusion.
+             * 
+             * YOUR ALGORITHM'S LOGIC WOULD GO HERE.
+             * For now, we simulate depth by creating a mask from dark areas.
+             * We assume dark objects are closer to the camera.
+             */
+            analyzeCameraFrame(sourceVideo) {
+                if (!this.isInitialized) return null;
+
+                // 1. Draw the current video frame to our hidden canvas
+                this.ctx.drawImage(sourceVideo, 0, 0, this.canvas.width, this.canvas.height);
+                
+                // 2. Get pixel data from the canvas
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                const data = imageData.data; // This is a Uint8ClampedArray [R,G,B,A, R,G,B,A, ...]
+
+                // 3. Create a mask based on brightness
+                // According to your docs, we'd analyze light scatter. Here, we'll
+                // just mask out anything darker than a certain threshold.
+                const maskData = new Uint8Array(this.canvas.width * this.canvas.height * 4);
+                
+                // THRESHOLD for brightness (0-255). Lower values mask out darker objects.
+                const brightnessThreshold = 80;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i];
+                    const g = data[i + 1];
+                    const b = data[i + 2];
+                    // Calculate brightness (a simple average)
+                    const brightness = (r + g + b) / 3;
+
+                    // If the pixel is dark, we consider it a foreground object for masking.
+                    if (brightness < brightnessThreshold) {
+                        // Set mask pixel to white (will cause discard in shader)
+                        maskData[i] = 255; // R
+                        maskData[i + 1] = 255; // G
+                        maskData[i + 2] = 255; // B
+                        maskData[i + 3] = 255; // A
+                    } else {
+                        // Set mask pixel to black (will be visible)
+                        maskData[i] = 0;
+                        maskData[i + 1] = 0;
+                        maskData[i + 2] = 0;
+                        maskData[i + 3] = 255;
+                    }
+                }
+                
+                // 4. Create a texture from our generated mask
+                const maskImageData = new ImageData(new Uint8ClampedArray(maskData.buffer), this.canvas.width, this.canvas.height);
+                if (!this.maskTexture) {
+                    this.maskTexture = new THREE.DataTexture(maskImageData, this.canvas.width, this.canvas.height, THREE.RGBAFormat);
+                } else {
+                    this.maskTexture.image = maskImageData;
+                }
+                this.maskTexture.needsUpdate = true;
+                
+                return this.maskTexture;
+            },
+
+            /**
+             * Placeholder for LiDAR data processing as per your documentation.
+             * The same API should feed into both.
+             */
+            processLidarData(lidarData) {
+                console.log("Placeholder: Processing LiDAR data stream.", lidarData);
+                statusElement.textContent = "Received LiDAR data packet.";
+                // Future logic: Fuse LiDAR depth map with camera analysis
+                // to create a much more accurate occlusion mask.
+            },
+
+            /**
+             * Placeholder for Infrared data processing as per your documentation.
+             */
+            processInfraredData(irData) {
+                console.log("Placeholder: Processing Infrared data stream.", irData);
+                statusElement.textContent = "Received Infrared data packet.";
+                // Future logic: Use IR for thermal signatures or depth in
+                // low-light conditions, complementing the visible spectrum.
+            }
+        };
+
+        // --- Main Initialization ---
+        function init() {
+            // 1. Scene
+            scene = new THREE.Scene();
+
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // 5. Create the Digital Asset with the Masking Shader
+            const geometry = new THREE.BoxGeometry(2, 2, 2);
+            
+            // The material uses our custom vertex and fragment shaders
+            const material = new THREE.ShaderMaterial({
+                uniforms: {
+                    // A simple texture for the cube's appearance
+                    uObjectTexture: { value: new THREE.MeshStandardMaterial({ color: 0x00ffff }).map },
+                    // The depth mask generated by our processor
+                    uDepthMask: { value: null },
+                    // Screen resolution to map mask correctly
+                    uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+                },
+                vertexShader: document.getElementById('vertexShader').textContent,
+                fragmentShader: document.getElementById('fragmentShader').textContent,
+                transparent: true
+            });
+            // For demonstration, let's create a texture for the cube
+            const loader = new THREE.TextureLoader();
+            loader.load(
+                'https://threejs.org/examples/textures/crate.gif', // a sample texture
+                (texture) => {
+                    material.uniforms.uObjectTexture.value = texture;
+                }
+            );
+
+            digitalAsset = new THREE.Mesh(geometry, material);
+            digitalAsset.position.set(0, 0, -2); // Position it a bit away from the camera
+            scene.add(digitalAsset);
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            toggleButton.addEventListener('click', toggleARMode);
+
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // Update shader resolution uniform
+            if (digitalAsset && digitalAsset.material.uniforms.uResolution) {
+                digitalAsset.material.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+            }
+        }
+
+        function toggleARMode() {
+            if (arModeActive) {
+                // --- Deactivate AR Mode ---
+                arModeActive = false;
+                if (videoElement.srcObject) {
+                    videoElement.srcObject.getTracks().forEach(track => track.stop());
+                }
+                scene.background = new THREE.Color(0x111111);
+                toggleButton.textContent = "Activate Gaussian Arcadge (AR Mode)";
+                statusElement.textContent = "AR Mode Deactivated.";
+            } else {
+                // --- Activate AR Mode ---
+                statusElement.textContent = "Requesting Camera Access...";
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+                        .then(function(stream) {
+                            arModeActive = true;
+                            videoElement.srcObject = stream;
+                            videoElement.play();
+
+                            // Set the camera feed as the scene background
+                            const videoTexture = new THREE.VideoTexture(videoElement);
+                            scene.background = videoTexture;
+
+                            // Initialize the processor once the video starts playing
+                            videoElement.onloadedmetadata = () => {
+                                GaussianArcadgeProcessor.init(videoElement, videoElement.videoWidth, videoElement.videoHeight);
+                            };
+
+                            toggleButton.textContent = "Deactivate AR Mode";
+                        })
+                        .catch(function(error) {
+                            console.error("Could not access camera: ", error);
+                            statusElement.textContent = "Error: Could not access camera.";
+                            alert("Could not access the camera. Please ensure you are on a secure (https://) connection and have granted permissions.");
+                        });
+                } else {
+                    alert("Your browser does not support the necessary features (getUserMedia) for AR mode.");
+                    statusElement.textContent = "Error: Browser not supported.";
+                }
+            }
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (arModeActive && GaussianArcadgeProcessor.isInitialized) {
+                // If AR is on, continuously analyze the frame and update the mask
+                const mask = GaussianArcadgeProcessor.analyzeCameraFrame(videoElement);
+                if (mask && digitalAsset && digitalAsset.material) {
+                    digitalAsset.material.uniforms.uDepthMask.value = mask;
+                }
+            }
+
+            // Animate our digital asset for visual interest
+            if (digitalAsset) {
+                digitalAsset.rotation.x += 0.005;
+                digitalAsset.rotation.y += 0.005;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Start everything
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Gaussian Arc Edge - Final</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui-overlay { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 10px; }
+        button { padding: 12px 20px; font-size: 16px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        button:disabled { background-color: #555; color: #aaa; cursor: not-allowed; }
+        #status { position: absolute; bottom: 10px; left: 10px; color: white; background-color: rgba(0,0,0,0.75); padding: 10px; border-radius: 5px; font-family: monospace; z-index: 10; line-height: 1.5; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <button id="calibrate-btn">Calibrate Sensors</button>
+        <button id="activate-btn">Activate Gaussian Arc Edge</button>
+    </div>
+    <div id="status">Status: Awaiting Calibration</div>
+    <video id="video" muted playsinline style="display:none"></video>
+
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    </script>
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform sampler2D uObjectTexture; uniform sampler2D uDepthMask; uniform vec2 uResolution; varying vec2 vUv;
+        void main() { vec2 screenUv = gl_FragCoord.xy / uResolution.xy; float maskValue = texture2D(uDepthMask, screenUv).r; if (maskValue > 0.5) { discard; } gl_FragColor = texture2D(uObjectTexture, vUv); }
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script>
+        let scene, camera, renderer, digitalAsset;
+        let arModeActive = false, isCalibrating = false, calibrationStartTime = 0;
+        let startAngle = null, maxPanAngle = 0;
+        const CALIBRATION_TIME_REQ = 5, CALIBRATION_PAN_REQ = 45;
+
+        const videoElement = document.getElementById('video');
+        const calibrateButton = document.getElementById('calibrate-btn');
+        const activateButton = document.getElementById('activate-btn');
+        const statusElement = document.getElementById('status');
+        
+        // --- Gaussian Arc Edge Processor (v10 - Environmental Range Learning) ---
+        const GaussianArcEdgeProcessor = {
+            isInitialized: false, isCalibrated: false,
+            // [UPDATED] Calibration now stores a range.
+            calibrationData: { ambientBackground: {r:0,g:0,b:0,brightness:0}, stableShadowPoint: {r:0,g:0,b:0,brightness:0} },
+            
+            canvas: document.createElement('canvas'), ctx: null, maskTexture: null,
+            lightSourceBrightnessOffset: 90.0, occlusionColorDistance: 60.0, smoothingFactor: 0.05,
+            
+            // [UPDATED] Live analysis now tracks two points.
+            farZoneAmbient: {r:0,g:0,b:0,brightness:0},
+            farZoneShadow: {r:0,g:0,b:0,brightness:0},
+            dynamicLightThreshold: 0,
+
+            resetState() { /* ... unchanged ... */ this.isInitialized=false; this.isCalibrated=false; this.calibrationData={ambientBackground:{r:0,g:0,b:0,brightness:0},stableShadowPoint:{r:0,g:0,b:0,brightness:0}}; this.farZoneAmbient={r:0,g:0,b:0,brightness:0}; this.farZoneShadow={r:0,g:0,b:0,brightness:0}; console.log("Gaussian Arc Edge state reset."); },
+            init(useCal) { this.resetState(); this.ctx=this.canvas.getContext('2d',{willReadFrequently:true}); if(useCal){this.isCalibrated=true; Object.assign(this.farZoneAmbient, this.calibrationData.ambientBackground); Object.assign(this.farZoneShadow, this.calibrationData.stableShadowPoint);} this.isInitialized=true; },
+            lerp: (s, e, a) => (1-a)*s+a*e,
+            colorDistance: (c1, c2) => Math.sqrt((c1.r-c2.r)**2 + (c1.g-c2.g)**2 + (c1.b-c2.b)**2),
+
+            analyzeCameraFrame(sourceVideo) {
+                if (!this.isInitialized || sourceVideo.paused || sourceVideo.ended) return null;
+                const w=this.canvas.width=sourceVideo.videoWidth, h=this.canvas.height=sourceVideo.videoHeight;
+                if (!w || !h) return null;
+                this.ctx.drawImage(sourceVideo, 0, 0, w, h);
+                const data = this.ctx.getImageData(0, 0, w, h).data;
+                
+                // === PASS 1: LEARN BACKGROUND RANGE (Ambient + Shadow) ===
+                const farZoneEndY = h * 0.3;
+                let farZonePixels = [];
+                for (let y = 0; y < farZoneEndY; y++) {
+                    for (let x = 0; x < w; x++) {
+                        const i = (y * w + x) * 4;
+                        const r = data[i], g = data[i + 1], b = data[i + 2];
+                        farZonePixels.push({ r, g, b, brightness: (r + g + b) / 3 });
+                    }
+                }
+
+                if (farZonePixels.length > 0) {
+                    // Calculate current frame's ambient average
+                    let currentAmbient = {r:0,g:0,b:0,brightness:0};
+                    farZonePixels.forEach(p => { currentAmbient.r+=p.r; currentAmbient.g+=p.g; currentAmbient.b+=p.b; currentAmbient.brightness+=p.brightness; });
+                    Object.keys(currentAmbient).forEach(k => currentAmbient[k] /= farZonePixels.length);
+                    
+                    // [NEW] Calculate current frame's stable shadow point
+                    farZonePixels.sort((a, b) => a.brightness - b.brightness);
+                    const shadowPixelCount = Math.floor(farZonePixels.length * 0.10); // Darkest 10%
+                    let currentShadow = {r:0,g:0,b:0,brightness:0};
+                    if (shadowPixelCount > 0) {
+                        for (let i = 0; i < shadowPixelCount; i++) { const p = farZonePixels[i]; currentShadow.r+=p.r; currentShadow.g+=p.g; currentShadow.b+=p.b; currentShadow.brightness+=p.brightness; }
+                        Object.keys(currentShadow).forEach(k => currentShadow[k] /= shadowPixelCount);
+                    }
+
+                    // Apply temporal smoothing to both points
+                    Object.keys(this.farZoneAmbient).forEach(k => this.farZoneAmbient[k] = this.lerp(this.farZoneAmbient[k], currentAmbient[k], this.smoothingFactor));
+                    Object.keys(this.farZoneShadow).forEach(k => this.farZoneShadow[k] = this.lerp(this.farZoneShadow[k], currentShadow[k], this.smoothingFactor));
+                }
+
+                // === PASS 2: HIERARCHICAL MASKING USING THE LEARNED RANGE ===
+                this.dynamicLightThreshold = this.farZoneAmbient.brightness + this.lightSourceBrightnessOffset;
+                const maskData = new Uint8Array(data.length);
+                for (let i=0; i<data.length; i+=4) {
+                    const pColor = {r:data[i], g:data[i+1], b:data[i+2]}, pBright = (pColor.r+pColor.g+pColor.b)/3;
+                    
+                    // RULE 1: Is it a true light source? NEVER MASK.
+                    if (pBright > this.dynamicLightThreshold) { maskData.set([0,0,0,255], i); continue; }
+
+                    // [UPDATED] RULE 2: Is it part of the known environmental range (ambient OR shadow)? DO NOT MASK.
+                    const distFromAmbient = this.colorDistance(pColor, this.farZoneAmbient);
+                    const distFromShadow = this.colorDistance(pColor, this.farZoneShadow);
+                    if (distFromAmbient < this.occlusionColorDistance || distFromShadow < this.occlusionColorDistance) {
+                        maskData.set([0,0,0,255], i); continue;
+                    }
+                    
+                    // RULE 3: If it's none of the above, it's a foreground object. MASK IT.
+                    maskData.set([255,255,255,255], i);
+                }
+
+                const maskImageData = new ImageData(new Uint8ClampedArray(maskData.buffer), w, h);
+                if(!this.maskTexture){this.maskTexture=new THREE.DataTexture(mID,w,h,THREE.RGBAFormat);}else{this.maskTexture.image=maskImageData;} this.maskTexture.needsUpdate=true;
+                return this.maskTexture;
+            },
+
+            finishCalibration() { this.isCalibrated = true; this.calibrationData = { ambientBackground: {...this.farZoneAmbient}, stableShadowPoint: {...this.farZoneShadow}}; }
+        };
+
+        // --- UI and Three.js Setup (No changes needed below this line) ---
+        function handleOrientation(event) { if(event.alpha===null)return; if(startAngle===null){startAngle=event.alpha;} const diff=180-Math.abs(Math.abs(event.alpha-startAngle)-180); if(diff>maxPanAngle){maxPanAngle=diff;} }
+        async function startCalibration() { if(isCalibrating||arModeActive)return; isCalibrating=true; calibrateButton.disabled=true; if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){try{const pS=await DeviceOrientationEvent.requestPermission();if(pS!=='granted')throw new Error('Orientation permission not granted.');}catch(e){isCalibrating=false;calibrateButton.disabled=false;return;}} window.addEventListener('deviceorientation',handleOrientation); navigator.mediaDevices?.getUserMedia({video:{facingMode:'user'}}).then(s=>{videoElement.srcObject=s;videoElement.play();videoElement.onplaying=()=>{scene.background=new THREE.VideoTexture(videoElement);GaussianArcEdgeProcessor.init(false);startAngle=null;maxPanAngle=0;calibrationStartTime=Date.now();};}).catch(e=>{isCalibrating=false;calibrateButton.disabled=false;window.removeEventListener('deviceorientation',handleOrientation);}); }
+        function finishCalibration() { isCalibrating=false; window.removeEventListener('deviceorientation',handleOrientation); GaussianArcEdgeProcessor.finishCalibration(); videoElement.srcObject?.getTracks().forEach(t=>t.stop()); scene.background=new THREE.Color(0x111111); statusElement.textContent="Calibration Complete!"; activateButton.disabled=false; activateButton.style.backgroundColor='#28a745'; }
+        function toggleARMode() { if (!GaussianArcEdgeProcessor.isCalibrated){alert("Please calibrate the sensors first.");return;} if(arModeActive){arModeActive=false;videoElement.srcObject?.getTracks().forEach(t=>t.stop());scene.background=new THREE.Color(0x111111);activateButton.textContent="Activate Gaussian Arc Edge";GaussianArcEdgeProcessor.resetState();calibrateButton.disabled=false;activateButton.disabled=true;activateButton.style.backgroundColor='#555';}else{navigator.mediaDevices?.getUserMedia({video:{facingMode:'environment'}}).then(s=>{arModeActive=true;videoElement.srcObject=s;videoElement.play();videoElement.onplaying=()=>{scene.background=new THREE.VideoTexture(videoElement);GaussianArcEdgeProcessor.init(true);};activateButton.textContent="Deactivate Gaussian Arc Edge";}).catch(e=>{});}}
+        function init() { scene = new THREE.Scene(); camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 91.44); camera.position.set(0,0,0); renderer = new THREE.WebGLRenderer({antialias:true,alpha:true}); renderer.setSize(window.innerWidth,window.innerHeight); document.body.appendChild(renderer.domElement); scene.add(new THREE.AmbientLight(0xffffff,0.6)); const dL=new THREE.DirectionalLight(0xffffff,0.8); dL.position.set(5,10,7.5); scene.add(dL); const mat=new THREE.ShaderMaterial({uniforms:{uObjectTexture:{value:null},uDepthMask:{value:null},uResolution:{value:new THREE.Vector2(window.innerWidth,window.innerHeight)}},vertexShader:document.getElementById('vertexShader').textContent,fragmentShader:document.getElementById('fragmentShader').textContent,transparent:true}); new THREE.TextureLoader().load('https://threejs.org/examples/textures/crate.gif',(t)=>{mat.uniforms.uObjectTexture.value=t;}); digitalAsset=new THREE.Mesh(new THREE.BoxGeometry(0.0762,0.0762,0.0762),mat); digitalAsset.position.set(0,0,-0.9144); scene.add(digitalAsset); activateButton.disabled=true; calibrateButton.addEventListener('click',startCalibration); activateButton.addEventListener('click',toggleARMode); animate();}
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if(isCalibrating){ GaussianArcEdgeProcessor.analyzeCameraFrame(videoElement); const e=(Date.now()-calibrationStartTime)/1000,tM=e>=CALIBRATION_TIME_REQ,pM=maxPanAngle>=CALIBRATION_PAN_REQ; statusElement.innerHTML=`Calibrating: Pan camera left/right<br>${pM?'✅':'❌'} Pan:${maxPanAngle.toFixed(0)}°/${CALIBRATION_PAN_REQ}°<br>${tM?'✅':'❌'} Time:${Math.min(e,CALIBRATION_TIME_REQ).toFixed(1)}s/${CALIBRATION_TIME_REQ}.0s`; if(tM&&pM)finishCalibration(); }
+            if(arModeActive && GaussianArcEdgeProcessor.isInitialized){ const mask=GaussianArcEdgeProcessor.analyzeCameraFrame(videoElement); if(mask&&digitalAsset?.material){digitalAsset.material.uniforms.uDepthMask.value=mask;} statusElement.innerHTML=`GAUSSIAN ARC EDGE - FINAL<br>--------------------------<br>Learned Ambient: ${GaussianArcEdgeProcessor.calibrationData.ambientBackground.brightness.toFixed(0)}<br>Learned Shadow: ${GaussianArcEdgeProcessor.calibrationData.stableShadowPoint.brightness.toFixed(0)}`; }
+            if(digitalAsset){digitalAsset.rotation.x+=0.005; digitalAsset.rotation.y+=0.005;} renderer.render(scene,camera);
+        }
+        init();
+    </script>
+</body>
+</html>
