@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Gaussian Arc Edge - Final</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui-overlay { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 10px; }
+        button { padding: 12px 20px; font-size: 16px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        button:disabled { background-color: #555; color: #aaa; cursor: not-allowed; }
+        #status { position: absolute; bottom: 10px; left: 10px; color: white; background-color: rgba(0,0,0,0.75); padding: 10px; border-radius: 5px; font-family: monospace; z-index: 10; line-height: 1.5; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <button id="calibrate-btn">Calibrate Sensors</button>
+        <button id="activate-btn">Activate Gaussian Arc Edge</button>
+    </div>
+    <div id="status">Status: Awaiting Calibration</div>
+    <video id="video" muted playsinline style="display:none"></video>
+
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    </script>
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform sampler2D uObjectTexture; uniform sampler2D uDepthMask; uniform vec2 uResolution; varying vec2 vUv;
+        void main() { vec2 screenUv = gl_FragCoord.xy / uResolution.xy; float maskValue = texture2D(uDepthMask, screenUv).r; if (maskValue > 0.5) { discard; } gl_FragColor = texture2D(uObjectTexture, vUv); }
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.8.0/suncalc.min.js"></script>
+    
+    <script>
+        let scene, camera, renderer, digitalAsset, ambientLight, directionalLight;
+        let arModeActive = false, isCalibrating = false, calibrationStartTime = 0;
+        let startOrientation = { alpha: null, beta: null }, currentOrientation = { alpha: 0, beta: 0 };
+        let maxPanAngle = 0;
+        const CALIBRATION_TIME_REQ = 5, CALIBRATION_PAN_REQ = 45;
+
+        const videoElement = document.getElementById('video');
+        const calibrateButton = document.getElementById('calibrate-btn');
+        const activateButton = document.getElementById('activate-btn');
+        const statusElement = document.getElementById('status');
+        
+        const GaussianArcEdgeProcessor = {
+            isInitialized: false, isCalibrated: false,
+            config: { day:{brightnessOffset:110.0,occlusionDistance:70.0}, night:{brightnessOffset:90.0,occlusionDistance:60.0} },
+            isDayTime: true,
+            calibrationData: { ambientBackground:{r:0,g:0,b:0,brightness:0}, stableShadowPoint:{r:0,g:0,b:0,brightness:0} },
+            canvas: document.createElement('canvas'), ctx: null, maskTexture: null,
+            postProcessCanvas: document.createElement('canvas'), postProcessCtx: null,
+            farZoneAmbient: {r:0,g:0,b:0,brightness:0}, farZoneShadow: {r:0,g:0,b:0,brightness:0},
+            brightestPoint: { x: 0.5, y: 0.5 },
+            dynamicLightThreshold: 0, smoothingFactor: 0.05,
+            resetState() { /*...*/ this.isInitialized=false;this.isCalibrated=false;this.calibrationData={ambientBackground:{r:0,g:0,b:0,brightness:0},stableShadowPoint:{r:0,g:0,b:0,brightness:0}};this.farZoneAmbient={r:0,g:0,b:0,brightness:0};this.farZoneShadow={r:0,g:0,b:0,brightness:0};console.log("State reset.");},
+            init(useCal) { this.resetState();this.ctx=this.canvas.getContext('2d',{willReadFrequently:true});this.postProcessCtx=this.postProcessCanvas.getContext('2d');if(useCal){this.isCalibrated=true;Object.assign(this.farZoneAmbient,this.calibrationData.ambientBackground);Object.assign(this.farZoneShadow,this.calibrationData.stableShadowPoint);}this.isInitialized=true;},
+            lerp: (s, e, a) => (1-a)*s+a*e,
+            colorDistance: (c1,c2) => Math.sqrt((c1.r-c2.r)**2+(c1.g-c2.g)**2+(c1.b-c2.b)**2),
+
+            analyzeCameraFrame(sourceVideo) {
+                if(!this.isInitialized||sourceVideo.paused||sourceVideo.ended)return null; const w=this.canvas.width=sourceVideo.videoWidth,h=this.canvas.height=sourceVideo.videoHeight; if(!w||!h)return null;this.ctx.drawImage(sourceVideo,0,0,w,h); const data=this.ctx.getImageData(0,0,w,h).data;
+                const fzeY=h*0.3; let fzP=[], bP={x:w/2,y:fzeY/2,v:-1};
+                for(let y=0;y<fzeY;y++){for(let x=0;x<w;x++){const i=(y*w+x)*4,r=data[i],g=data[i+1],b=data[i+2],v=(r+g+b)/3; fzP.push({r,g,b,brightness:v});if(v>bP.v){bP={x,y,v};}}}
+                this.brightestPoint = { x: bP.x / w, y: 1 - (bP.y / h) }; // Normalized coords for lighting
+                if(fzP.length>0){let cA={r:0,g:0,b:0,brightness:0};fzP.forEach(p=>{cA.r+=p.r;cA.g+=p.g;cA.b+=p.b;cA.brightness+=p.brightness;});Object.keys(cA).forEach(k=>cA[k]/=fzP.length);fzP.sort((a,b)=>a.brightness-b.brightness);const sPC=Math.floor(fzP.length*0.1);let cS={r:0,g:0,b:0,brightness:0};if(sPC>0){for(let i=0;i<sPC;i++){const p=fzP[i];cS.r+=p.r;cS.g+=p.g;cS.b+=p.b;cS.brightness+=p.brightness;}Object.keys(cS).forEach(k=>cS[k]/=sPC);}Object.keys(this.farZoneAmbient).forEach(k=>this.farZoneAmbient[k]=this.lerp(this.farZoneAmbient[k],cA[k],this.smoothingFactor));Object.keys(this.farZoneShadow).forEach(k=>this.farZoneShadow[k]=this.lerp(this.farZoneShadow[k],cS[k],this.smoothingFactor));}
+                const activeConfig=this.isDayTime?this.config.day:this.config.night;this.dynamicLightThreshold=this.farZoneAmbient.brightness+activeConfig.brightnessOffset;const mD=new Uint8Array(data.length);
+                for(let i=0;i<data.length;i+=4){const pC={r:data[i],g:data[i+1],b:data[i+2]},pB=(pC.r+pC.g+pC.b)/3;if(pB>this.dynamicLightThreshold){mD.set([0,0,0,255],i);continue;}const dAmb=this.colorDistance(pC,this.farZoneAmbient),dShad=this.colorDistance(pC,this.farZoneShadow);if(dAmb<activeConfig.occlusionDistance||dShad<activeConfig.occlusionDistance){mD.set([0,0,0,255],i);continue;}mD.set([255,255,255,255],i);}
+                this.postProcessCanvas.width=w;this.postProcessCanvas.height=h;this.postProcessCtx.putImageData(new ImageData(new Uint8ClampedArray(mD.buffer),w,h),0,0);this.postProcessCtx.filter='blur(4px)';this.postProcessCtx.drawImage(this.postProcessCanvas,0,0);const fMID=this.postProcessCtx.getImageData(0,0,w,h);
+                if(!this.maskTexture){this.maskTexture=new THREE.DataTexture(fMID,w,h,THREE.RGBAFormat);}else{this.maskTexture.image=fMID;}this.maskTexture.needsUpdate=true;
+                return this.maskTexture;
+            },
+            finishCalibration() { this.isCalibrated=true;this.calibrationData={ambientBackground:{...this.farZoneAmbient},stableShadowPoint:{...this.farZoneShadow}};}
+        };
+
+        function handleOrientation(event) { if (event.alpha === null) return; const angle = event.alpha; if (startOrientation.alpha === null) { startOrientation.alpha = angle; startOrientation.beta = event.beta; } currentOrientation.alpha = angle; currentOrientation.beta = event.beta; if (isCalibrating) { const diff = 180 - Math.abs(Math.abs(angle - startOrientation.alpha) - 180); if (diff > maxPanAngle) { maxPanAngle = diff; }}}
+        async function getAstronomicalData() { return new Promise(resolve => { if(!navigator.geolocation){resolve();} navigator.geolocation.getCurrentPosition(pos=>{const{latitude,longitude}=pos.coords;GaussianArcEdgeProcessor.isDayTime=SunCalc.getPosition(new Date(),latitude,longitude).altitude>0;resolve();},()=>{resolve();});}); }
+        async function startCalibration() { if(isCalibrating||arModeActive)return; isCalibrating=true; calibrateButton.disabled=true; if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){try{const pS=await DeviceOrientationEvent.requestPermission();if(pS!=='granted')throw new Error();}catch(e){isCalibrating=false;calibrateButton.disabled=false;return;}}window.addEventListener('deviceorientation',handleOrientation);navigator.mediaDevices?.getUserMedia({video:{facingMode:'user'}}).then(s=>{videoElement.srcObject=s;videoElement.play();videoElement.onplaying=()=>{scene.background=new THREE.VideoTexture(videoElement);GaussianArcEdgeProcessor.init(false);startOrientation.alpha=null;maxPanAngle=0;calibrationStartTime=Date.now();};}).catch(e=>{isCalibrating=false;calibrateButton.disabled=false;window.removeEventListener('deviceorientation',handleOrientation);});}
+        function finishCalibration() {isCalibrating=false;window.removeEventListener('deviceorientation',handleOrientation);GaussianArcEdgeProcessor.finishCalibration();videoElement.srcObject?.getTracks().forEach(t=>t.stop());scene.background=new THREE.Color(0x111111);statusElement.textContent="Calibration Complete!";activateButton.disabled=false;activateButton.style.backgroundColor='#28a745';}
+        
+        async function toggleARMode() {
+            if (!GaussianArcEdgeProcessor.isCalibrated){alert("Please calibrate sensors first.");return;}
+            if (arModeActive) { arModeActive=false;videoElement.srcObject?.getTracks().forEach(t=>t.stop());window.removeEventListener('deviceorientation',handleOrientation);scene.background=new THREE.Color(0x111111);activateButton.textContent="Activate Gaussian Arc Edge";GaussianArcEdgeProcessor.resetState();calibrateButton.disabled=false;activateButton.disabled=true;activateButton.style.backgroundColor='#555';}
+            else {
+                statusElement.textContent="Acquiring context..."; await getAstronomicalData();
+                window.addEventListener('deviceorientation', handleOrientation);
+                navigator.mediaDevices?.getUserMedia({video:{facingMode:'environment'}}).then(s=>{arModeActive=true;videoElement.srcObject=s;videoElement.play();videoElement.onplaying=()=>{scene.background=new THREE.VideoTexture(videoElement);GaussianArcEdgeProcessor.init(true);startOrientation.alpha=null;};activateButton.textContent="Deactivate Gaussian Arc Edge";}).catch(e=>{});
+            }
+        }
+        
+        function init() { scene=new THREE.Scene();camera=new THREE.PerspectiveCamera(75,window.innerWidth/window.innerHeight,0.01,91.44);camera.position.set(0,0,0);renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setSize(window.innerWidth,window.innerHeight);document.body.appendChild(renderer.domElement);
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.5); scene.add(ambientLight);
+            directionalLight = new THREE.DirectionalLight(0xffffff, 0.7); directionalLight.position.set(0, 5, 0); scene.add(directionalLight);
+            const mat=new THREE.ShaderMaterial({uniforms:{uObjectTexture:{value:null},uDepthMask:{value:null},uResolution:{value:new THREE.Vector2(window.innerWidth,window.innerHeight)}},vertexShader:document.getElementById('vertexShader').textContent,fragmentShader:document.getElementById('fragmentShader').textContent,transparent:true});new THREE.TextureLoader().load('https://threejs.org/examples/textures/crate.gif',(t)=>{mat.uniforms.uObjectTexture.value=t;});
+            digitalAsset=new THREE.Mesh(new THREE.BoxGeometry(0.0762,0.0762,0.0762),mat);
+            digitalAsset.userData.basePosition = new THREE.Vector3(0, 0, -0.9144);
+            digitalAsset.position.copy(digitalAsset.userData.basePosition);
+            scene.add(digitalAsset);
+            activateButton.disabled=true;calibrateButton.addEventListener('click',startCalibration);activateButton.addEventListener('click',toggleARMode);animate();
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if(isCalibrating){const e=(Date.now()-calibrationStartTime)/1000,tM=e>=CALIBRATION_TIME_REQ,pM=maxPanAngle>=CALIBRATION_PAN_REQ;statusElement.innerHTML=`Calibrating: Pan camera left/right<br>${pM?'✅':'❌'} Pan:${maxPanAngle.toFixed(0)}°/${CALIBRATION_PAN_REQ}°<br>${tM?'✅':'❌'} Time:${Math.min(e,CALIBRATION_TIME_REQ).toFixed(1)}s/${CALIBRATION_TIME_REQ}.0s`;if(tM&&pM)finishCalibration();}
+            if(arModeActive && GaussianArcEdgeProcessor.isInitialized){
+                const mask=GaussianArcEdgeProcessor.analyzeCameraFrame(videoElement);
+                if(mask&&digitalAsset?.material){digitalAsset.material.uniforms.uDepthMask.value=mask;}
+                
+                // [NEW] Dynamic Lighting
+                const amb = GaussianArcEdgeProcessor.farZoneAmbient;
+                ambientLight.color.setRGB(amb.r/255, amb.g/255, amb.b/255);
+                const bp = GaussianArcEdgeProcessor.brightestPoint;
+                directionalLight.position.set((bp.x - 0.5) * 10, (bp.y - 0.5) * 10, 5);
+
+                // [NEW] Surface Anchoring
+                if (startOrientation.alpha !== null) {
+                    const panOffset = (currentOrientation.alpha - startOrientation.alpha) * (Math.PI / 180);
+                    const tiltOffset = (currentOrientation.beta - startOrientation.beta) * (Math.PI / 180);
+                    const basePos = digitalAsset.userData.basePosition;
+                    // Apply motion compensation, making the object appear to stay still.
+                    digitalAsset.position.x = basePos.x - panOffset * 0.5;
+                    digitalAsset.position.y = basePos.y + tiltOffset * 0.5;
+                }
+                
+                statusElement.innerHTML=`GAUSSIAN ARC EDGE<br>Mode: ${GaussianArcEdgeProcessor.isDayTime?'Day':'Night'}<br>BG Ambient/Shadow: ${amb.brightness.toFixed(0)}/${GaussianArcEdgeProcessor.farZoneShadow.brightness.toFixed(0)}`;
+            }
+            if(digitalAsset){digitalAsset.rotation.x+=0.005;digitalAsset.rotation.y+=0.005;}renderer.render(scene,camera);
+        }
+        init();
+    </script>
+</body>
+</html>
