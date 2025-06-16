@@ -36,6 +36,11 @@ def sysleatr():
     return render_template("leatr.html")
 
 # <-- New route to serve your mockup -->
+@app.route("/prototyping/leatrproto.html")
+def sysprotoleatr():
+    return render_template("/prototyping leatrproto.html")
+
+# <-- New route to serve your mockup -->
 @app.route("/mn.html")
 def sysmn():
     return render_template("mn.html")
