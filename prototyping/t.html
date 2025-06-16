@@ -4,426 +4,306 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Mantis Navigation</title>
-    <style>
+<style>
     :root {
         --chem-panel-width: 340px;
     }
 
+    /* MODIFIED: Added overflow-x: hidden to html for robust horizontal scroll prevention */
+    html {
+        overflow-x: hidden;
+    }
+
     body {
-        
+        margin: 0;
+        overflow: hidden; /* Kept this as it's good practice */
+        background-color: #111;
+        color: white;
+        font-family: 'Courier New', Courier, monospace;
+    }
+    #threejs-canvas {
+        display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+    }
+    #ui-container {
+        position: absolute;
+        bottom: 30px;
+        left: 0;
+        width: 100%; /* Changed to 100% to better center content on all screens */
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        pointer-events: none;
+    }
+    .control-area {
+        width: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    #joystick-base {
+        width: 150px;
+        height: 150px;
+        background-color: rgba(255, 255, 255, 0.2);
+        border-radius: 50%;
+        position: relative;
+        pointer-events: all;
+    }
+    #joystick-stick {
+        width: 70px;
+        height: 70px;
+        background-color: rgba(255, 255, 255, 0.5);
+        border-radius: 50%;
+        position: absolute;
+        top: 40px;
+        left: 40px;
+        cursor: grab;
+    }
+    #thrust-container {
+        width: 100px;
+        height: 200px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        pointer-events: all;
+        gap: 15px;
+    }
+    #thrust-slider {
+        -webkit-appearance: none; appearance: none;
+        width: 150px; height: 15px; background: rgba(255, 255, 255, 0.2);
+        outline: none; border-radius: 10px; transform: rotate(-90deg);
+        cursor: pointer; margin: 0;
+    }
+    #thrust-slider::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 25px; height: 25px; background: rgba(255, 255, 255, 0.7);
+        border-radius: 50%;
+    }
+    #idle-button {
+        background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
+        color: white; font-family: 'Courier New', Courier, monospace;
+        padding: 8px 12px; border-radius: 5px; cursor: pointer;
+        margin-top: 60px; transform: translateY(20px);
+    }
+    #info-panel {
+        position: absolute; top: 10px; left: 10px;
+        padding: 10px; background: rgba(0,0,0,0.5); border-radius: 5px;
+        display: flex; flex-direction: column; gap: 8px; width: 290px;
+        z-index: 10;
+    }
+    .model-action-btn {
+        display: none; width: 100%; padding: 8px;
+        background-color: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.5);
+        color: white; border-radius: 5px; cursor: pointer;
+        font-family: 'Courier New', Courier, monospace; box-sizing: border-box;
+    }
+    .model-action-btn:hover { background-color: rgba(255, 255, 255, 0.5); }
 
-            margin: 0;
-            overflow: hidden;
-            background-color: #111;
-            color: white;
-            font-family: 'Courier New', Courier, monospace;
-        }
-        #threejs-canvas {
-            
-            display: block;
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 0;
-        }
-        #ui-container {
-            position: absolute;
-            bottom: 30px;
-            left: 0;
-            width: 80%;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            pointer-events: none;
-        }
-        .control-area {
-            width: 50%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        #joystick-base {
-            width: 150px;
-            height: 150px;
-            background-color: rgba(255, 255, 255, 0.2);
-            border-radius: 50%;
-            position: relative;
-            pointer-events: all;
-        }
-        #joystick-stick {
-            width: 70px;
-            height: 70px;
-            background-color: rgba(255, 255, 255, 0.5);
-            border-radius: 50%;
-            position: absolute;
-            top: 40px;
-            left: 40px;
-            cursor: grab;
-        }
-        #thrust-container {
-            width: 100px;
-            height: 200px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            pointer-events: all;
-            gap: 15px;
-        }
-        #thrust-slider {
-            -webkit-appearance: none; appearance: none;
-            width: 150px; height: 15px; background: rgba(255, 255, 255, 0.2);
-            outline: none; border-radius: 10px; transform: rotate(-90deg);
-            cursor: pointer; margin: 0;
-        }
-        #thrust-slider::-webkit-slider-thumb {
-            -webkit-appearance: none; appearance: none;
-            width: 25px; height: 25px; background: rgba(255, 255, 255, 0.7);
-            border-radius: 50%;
-        }
-        #idle-button {
-            background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
-            color: white; font-family: 'Courier New', Courier, monospace;
-            padding: 8px 12px; border-radius: 5px; cursor: pointer;
-            margin-top: 60px; transform: translateY(20px);
-        }
-        #info-panel {
-            position: absolute; top: 10px; left: 10px;
-            padding: 10px; background: rgba(0,0,0,0.5); border-radius: 5px;
-            display: flex; flex-direction: column; gap: 8px; width: 290px;
-            z-index: 10;
-        }
-        .model-action-btn {
-            display: none; width: 100%; padding: 8px;
-            background-color: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.5);
-            color: white; border-radius: 5px; cursor: pointer;
-            font-family: 'Courier New', Courier, monospace; box-sizing: border-box;
-        }
-        .model-action-btn:hover { background-color: rgba(255, 255, 255, 0.5); }
-        
-        /* START: Chemistry Propulsion Styles */
-        #chemistry-panel {
-            display: flex;
-            flex-direction: column;
-            position: absolute;
-            top: 280px; /* Adjusted */
-            left: 45px;
-            width: var(--chem-panel-width); box-sizing: border-box;
-            padding: 15px; background: rgba(0,0,0,0.7);
-            border-radius: 5px; border: 1px solid rgba(255,255,255,0.2);
-            max-height: calc(100vh - 850px); overflow-y: auto; display: none;
-            z-index: 10;
-        }
-        .chem-section {
-            margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.2);
-            padding-bottom: 15px;
-        }
-        .chem-section:last-child { border-bottom: none; }
-        .chem-section h3, .chem-section h4 {
-            margin: 0 0 10px 0; font-size: 1em; color: #ddd;
-        }
-        .chem-input-group {
-            display: grid; grid-template-columns: auto 1fr;
-            gap: 8px 10px; font-size: 0.85em; align-items: center;
-        }
-        .chem-input-group label { text-align: right; color: #aaa; }
-        .chem-input-group input, .chem-input-group .output-span {
-            background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3);
-            color: white; font-family: 'Courier New', Courier, monospace;
-            padding: 4px; border-radius: 3px; width: 100%; box-sizing: border-box;
-        }
-        .chem-input-group .output-span { background: transparent; border-color: transparent; padding-left: 0;}
-        .dim-input-group { grid-column: 2; display: flex; gap: 4px; }
-        .dim-input-group input { text-align: center; }
-        .valve-control-group { grid-column: 2; display: flex; align-items: center; gap: 8px; }
-        .valve-control-group input[type=range] { flex-grow: 1; }
-        .valve-control-group input[type=number] { width: 60px; }
+    /* START: Chemistry Propulsion Styles */
+    #chemistry-panel {
+        flex-direction: column;
+        position: absolute;
+        /* MODIFIED: Removed fixed 'top' and 'max-height'. JS now controls this fully. */
+        left: 10px; /* Position relative to the left edge */
+        width: var(--chem-panel-width); box-sizing: border-box;
+        padding: 15px; background: rgba(0,0,0,0.7);
+        border-radius: 5px; border: 1px solid rgba(255,255,255,0.2);
+        overflow-y: auto; display: none;
+        z-index: 10;
+    }
+    .chem-section {
+        margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.2);
+        padding-bottom: 15px;
+    }
+    .chem-section:last-child { border-bottom: none; }
+    .chem-section h3, .chem-section h4 {
+        margin: 0 0 10px 0; font-size: 1em; color: #ddd;
+    }
+    .chem-input-group {
+        display: grid; grid-template-columns: auto 1fr;
+        gap: 8px 10px; font-size: 0.85em; align-items: center;
+    }
+    .chem-input-group label { text-align: right; color: #aaa; }
+    .chem-input-group input, .chem-input-group .output-span {
+        background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3);
+        color: white; font-family: 'Courier New', Courier, monospace;
+        padding: 4px; border-radius: 3px; width: 100%; box-sizing: border-box;
+    }
+    .chem-input-group .output-span { background: transparent; border-color: transparent; padding-left: 0;}
+    .dim-input-group { grid-column: 2; display: flex; gap: 4px; }
+    .dim-input-group input { text-align: center; }
+    .valve-control-group { grid-column: 2; display: flex; align-items: center; gap: 8px; }
+    .valve-control-group input[type=range] { flex-grow: 1; }
+    .valve-control-group input[type=number] { width: 60px; }
 
-        .propellant-group {
-            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 4px; padding: 10px; margin-bottom: 10px;
-        }
-        .propellant-group-header {
-            display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
-        }
-        .propellant-group-header input { width: 70%; }
-        .remove-group-btn {
-            background: #800; color: white; border: 1px solid #c00;
-            border-radius: 50%; width: 22px; height: 22px;
-            cursor: pointer; line-height: 20px; text-align: center;
-        }
-        #chem-thrust-container {
-            width: 50%; display: none; justify-content: space-around;
-            align-items: flex-end; pointer-events: all;
-        }
-        .chem-slider-wrapper { display: flex; flex-direction: column; align-items: center; gap: 15px; }
-        .chem-slider {
-            -webkit-appearance: none; appearance: none; width: 150px; height: 15px;
-            background: rgba(255, 255, 255, 0.2); outline: none; border-radius: 10px;
-            transform: rotate(-90deg); cursor: pointer; margin-bottom: 60px;
-        }
-        .chem-slider::-webkit-slider-thumb {
-            -webkit-appearance: none; appearance: none;
-            width: 25px; height: 25px; border-radius: 50%;
-        }
-        #chem-oxi-slider::-webkit-slider-thumb { background: rgba(100, 150, 255, 0.8); }
-        #chem-fuel-slider::-webkit-slider-thumb { background: rgba(255, 100, 100, 0.8); }
-        #launch-btn {
-            background: midnightblue; border: 1px solid deepskyblue; color: white;
-            padding: 15px 25px; border-radius: 8px; cursor: pointer;
-            font-family: 'Courier New', Courier, monospace; font-size: 1.1em;
-            transition: background-color 0.2s, border-color 0.2s;
-        }
-        #launch-btn:hover { background: deepskyblue; }
-        /* END: Chemistry Propulsion Styles */
+    .propellant-group {
+        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 4px; padding: 10px; margin-bottom: 10px;
+    }
+    .propellant-group-header {
+        display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
+    }
+    .propellant-group-header input { width: 70%; }
+    .remove-group-btn {
+        background: #800; color: white; border: 1px solid #c00;
+        border-radius: 50%; width: 22px; height: 22px;
+        cursor: pointer; line-height: 20px; text-align: center;
+    }
+    #chem-thrust-container {
+        width: 50%; display: none; justify-content: space-around;
+        align-items: flex-end; pointer-events: all;
+    }
+    .chem-slider-wrapper { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+    .chem-slider {
+        -webkit-appearance: none; appearance: none; width: 150px; height: 15px;
+        background: rgba(255, 255, 255, 0.2); outline: none; border-radius: 10px;
+        transform: rotate(-90deg); cursor: pointer; margin-bottom: 60px;
+    }
+    .chem-slider::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 25px; height: 25px; border-radius: 50%;
+    }
+    #chem-oxi-slider::-webkit-slider-thumb { background: rgba(100, 150, 255, 0.8); }
+    #chem-fuel-slider::-webkit-slider-thumb { background: rgba(255, 100, 100, 0.8); }
+    #launch-btn {
+        background: midnightblue; border: 1px solid deepskyblue; color: white;
+        padding: 15px 25px; border-radius: 8px; cursor: pointer;
+        font-family: 'Courier New', Courier, monospace; font-size: 1.1em;
+        transition: background-color 0.2s, border-color 0.2s;
+    }
+    #launch-btn:hover { background: deepskyblue; }
+    /* END: Chemistry Propulsion Styles */
 
-        /* START: Panel & Drawer Styles */
-/* --- In your /* START: Panel & Drawer Styles */ section --- */
+    /* START: Panel & Drawer Styles */
+    #trajectories-panel {
+        display: none; /* Hidden by default */
+        position: absolute;
+        /* MODIFIED: Changed top from 10% to 10px for consistency */
+        top: 10px;
+        right: 10px;
+        transform: translateX(0);
+        /* MODIFIED: Changed top transition to be same as transform */
+        transition: transform 0.4s ease-in-out;
+        width: var(--chem-panel-width);
+        box-sizing: border-box;
+        padding: 15px;
+        background: rgba(0,0,0,0.7);
+        border-radius: 5px;
+        border: 1px solid rgba(255,255,255,0.2);
+        z-index: 100;
+    }
 
-#trajectories-panel {
-    display: none; 
-    position: absolute;
-    top: 10px;
+    #trajectories-panel h3 {
+        margin: 0 0 10px 0; font-size: 1em; color: #ddd;
+    }
+    #trajectories-panel p {
+        font-size: 0.85em; color: #aaa; margin: 0 0 15px 0;
+    }
+    /* Add transition to all panels for drawer animation */
+    #info-panel, #chemistry-panel, #trajectories-panel {
+        transition: transform 0.4s ease-in-out;
+    }
+    .drawer-handle {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 20px;
+        height: 60px;
+        background-color: rgba(30, 30, 30, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        cursor: pointer;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 18px;
+        line-height: 18px;
+        color: #fff;
+        user-select: none;
+        z-index: 11;
+    }
+    .drawer-handle:hover {
+        background-color: rgba(80, 80, 80, 0.6);
+    }
+    .left-panel-handle {
+        right: -21px; /* width + border */
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
+        border-left: none;
+    }
+    .right-panel-handle {
+        left: -21px;
+        border-top-left-radius: 8px;
+        border-bottom-left-radius: 8px;
+        border-right: none;
+    }
+    #info-panel.minimized, #chemistry-panel.minimized {
+        /* MODIFIED: Changed to use left: 10px as the reference instead of just -100% */
+        transform: translateX(calc(-100% - 10px)); /* slide left */
+    }
+    #trajectories-panel.minimized {
+        /* MODIFIED: This now correctly slides the panel off-screen to the right */
+        transform: translateX(calc(100% + 10px)); /* slide right */
+    }
+    /* END: Panel & Drawer Styles */
+
+    #upload-container {
+         position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+         background: rgba(0,0,0,0.7); padding: 20px; border-radius: 10px; text-align: center;
+         z-index: 20;
+    }
+    #initial-flip-container {
+        margin-top: 15px; display: flex; justify-content: center; align-items: center; gap: 5px;
+    }
+    #load-default-btn, #load-default-btn2, #load-default-btn3, #add-group-btn {
+        margin-top: 15px; padding: 8px 16px; cursor: pointer; background-color: #444;
+        color: white; border: 1px solid #666; border-radius: 5px;
+    }
+    #load-default-btn:hover, #load-default-btn2:hover, #load-default-btn3:hover, #add-group-btn:hover { background-color: #555; }
     
-    /* MODIFICATION: Center the panel horizontally at the top */
-    left: 50%;
-    transform: translateX(-50%); /* This centers it perfectly */
-    /* REMOVED: right: 10px; */
-
-    transition: transform 0.4s ease-in-out;
-    width: var(--chem-panel-width);
-    box-sizing: border-box;
-    padding: 15px;
-    background: rgba(0,0,0,0.7);
-    border-radius: 5px;
-    border: 1px solid rgba(255,255,255,0.2);
-    z-index: 100;
-}
-
-/* ... keep the existing h3, p, and other general panel styles ... */
-
-.drawer-handle {
-    position: absolute;
-    /* REMOVED: top: 50%; transform: translateY(-50%) - we will override this */
-    width: 20px; /* Base width */
-    height: 60px; /* Base height */
-    background-color: rgba(30, 30, 30, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    cursor: pointer;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-size: 18px;
-    line-height: 18px;
-    color: #fff;
-    user-select: none;
-    z-index: 11;
-}
-
-/* ... keep .drawer-handle:hover and .left-panel-handle ... */
-
-/* REMOVED: The old .right-panel-handle style */
-
-/* ADDED: New style for the top panel's handle */
-.top-panel-handle {
-    /* Position at the bottom-center of the panel */
-    top: auto; /* Unset the 'top' from the base class */
-    bottom: -21px; /* (handle height + border) to place it just outside */
-    left: 50%;
+    #view-controls {
+        position: absolute; top: 10px; right: 10px; display: flex;
+        align-items: center; gap: 10px; pointer-events: all;
+        z-index: 10;
+    }
+    #fpv-toggle, .gizmo-btn {
+        background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.4);
+        cursor: pointer; display: flex; justify-content: center;
+        align-items: center; color: white;
+    }
+    #fpv-toggle { width: 40px; height: 40px; border-radius: 5px; font-size: 10px; }
+    #fpv-toggle:hover, .gizmo-btn:hover { background: rgba(255,255,255,0.3); }
     
-    /* Change shape to be a horizontal tab */
-    width: 80px;
-    height: 20px;
-
-    /* Center it and round the correct corners */
-    transform: translateX(-50%); /* Center horizontally */
-    border-top: none;
-    border-radius: 0; /* Reset all corners first */
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
-}
-
-
-#info-panel.minimized, #chemistry-panel.minimized {
-    transform: translateX(calc(-100% - 10px)); /* slide left (no change here) */
-}
-
-#trajectories-panel.minimized {
-   /* MODIFICATION: Animate vertically (translateY) instead of horizontally */
-   /* It combines the centering with the vertical slide-out */
-   transform: translateX(-50%) translateY(calc(-100% - 10px));
-}
-
-        #trajectories-panel h3 {
-            margin: 0 0 10px 0; font-size: 1em; color: #ddd;
-        }
-        #trajectories-panel p {
-            font-size: 0.85em; color: #aaa; margin: 0 0 15px 0;
-        }
-
-
-.drawer-handle {
-    position: absolute;
-    /* REMOVED: top: 50%; transform: translateY(-50%) - we will override this */
-    width: 20px; /* Base width */
-    height: 60px; /* Base height */
-    background-color: rgba(30, 30, 30, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    cursor: pointer;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-size: 18px;
-    line-height: 18px;
-    color: #fff;
-    user-select: none;
-    z-index: 11;
-}
-        .drawer-handle:hover {
-            background-color: rgba(80, 80, 80, 0.6);
-        }
-        .left-panel-handle {
-            right: -21px; /* width + border */
-            border-top-right-radius: 8px;
-            border-bottom-right-radius: 8px;
-            border-left: none;
-        }
-        .right-panel-handle {
-            left: -21px;
-            border-top-left-radius: 8px;
-            border-bottom-left-radius: 8px;
-            border-right: none;
-        }
-
-
-#trajectories-panel {
-    display: none; 
-    position: absolute;
-    top: 10px;
-    
-    /* MODIFICATION: Center the panel horizontally at the top */
-    left: 65%;
-    transform: translateX(-50%); /* This centers it perfectly */
-    /* REMOVED: right: 10px; */
-
-    transition: transform 0.4s ease-in-out;
-    width: var(--chem-panel-width);
-    box-sizing: border-box;
-    padding: 15px;
-    background: rgba(0,0,0,0.7);
-    border-radius: 5px;
-    border: 1px solid rgba(255,255,255,0.2);
-    z-index: 100;
-}
-
-/* ... keep the existing h3, p, and other general panel styles ... */
-
-.drawer-handle {
-    position: absolute;
-    /* REMOVED: top: 50%; transform: translateY(-50%) - we will override this */
-    width: 20px; /* Base width */
-    height: 60px; /* Base height */
-    background-color: rgba(30, 30, 30, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    cursor: pointer;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-size: 18px;
-    line-height: 18px;
-    color: #fff;
-    user-select: none;
-    z-index: 11;
-}
-
-/* ... keep .drawer-handle:hover and .left-panel-handle ... */
-
-/* REMOVED: The old .right-panel-handle style */
-
-/* ADDED: New style for the top panel's handle */
-.top-panel-handle {
-    /* Position at the bottom-center of the panel */
-    top: auto; /* Unset the 'top' from the base class */
-    bottom: -21px; /* (handle height + border) to place it just outside */
-    left: 50%;
-    
-    /* Change shape to be a horizontal tab */
-    width: 80px;
-    height: 20px;
-
-    /* Center it and round the correct corners */
-    transform: translateX(-50%); /* Center horizontally */
-    border-top: none;
-    border-radius: 0; /* Reset all corners first */
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
-}
-
-
-#info-panel.minimized, #chemistry-panel.minimized {
-    transform: translateX(calc(-100% - 10px)); /* slide left (no change here) */
-}
-
-#trajectories-panel.minimized {
-   /* MODIFICATION: Animate vertically (translateY) instead of horizontally */
-   /* It combines the centering with the vertical slide-out */
-   transform: translateX(-50%) translateY(calc(-100% - 10px));
-}
-        #upload-container {
-             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-             background: rgba(0,0,0,0.7); padding: 20px; border-radius: 10px; text-align: center;
-             z-index: 20;
-        }
-        #initial-flip-container {
-            margin-top: 15px; display: flex; justify-content: center; align-items: center; gap: 5px;
-        }
-        #load-default-btn, #load-default-btn2, #load-default-btn3, #add-group-btn {
-            margin-top: 15px; padding: 8px 16px; cursor: pointer; background-color: #444;
-            color: white; border: 1px solid #666; border-radius: 5px;
-        }
-        #load-default-btn:hover, #load-default-btn2:hover, #load-default-btn3:hover, #add-group-btn:hover { background-color: #555; }
-        
-        #view-controls {
-            position: absolute; top: 10px; right: 10px; display: flex;
-            align-items: center; gap: 10px; pointer-events: all;
-            z-index: 10;
-        }
-        #fpv-toggle, .gizmo-btn {
-            background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.4);
-            cursor: pointer; display: flex; justify-content: center;
-            align-items: center; color: white;
-        }
-        #fpv-toggle { width: 40px; height: 40px; border-radius: 5px; font-size: 10px; }
-        #fpv-toggle:hover, .gizmo-btn:hover { background: rgba(255,255,255,0.3); }
-        
-        #view-gizmo { display: grid; grid-template-columns: 25px 25px 25px; grid-template-rows: 25px 25px 25px; gap: 2px; }
-        .gizmo-btn { font-size: 10px; user-select: none; }
-        #gizmo-top { grid-column: 2; grid-row: 1; }
-        #gizmo-left { grid-column: 1; grid-row: 2; }
-        #gizmo-persp { grid-column: 2; grid-row: 2; }
-        #gizmo-right { grid-column: 3; grid-row: 2; }
-        #gizmo-front { grid-column: 2; grid-row: 3; }
-    </style>
+    #view-gizmo { display: grid; grid-template-columns: 25px 25px 25px; grid-template-rows: 25px 25px 25px; gap: 2px; }
+    .gizmo-btn { font-size: 10px; user-select: none; }
+    #gizmo-top { grid-column: 2; grid-row: 1; }
+    #gizmo-left { grid-column: 1; grid-row: 2; }
+    #gizmo-persp { grid-column: 2; grid-row: 2; }
+    #gizmo-right { grid-column: 3; grid-row: 2; }
+    #gizmo-front { grid-column: 2; grid-row: 3; }
+</style>
 </head>
 <body>
     <canvas id="threejs-canvas"></canvas>
 <div id="trajectories-panel">
-    <!-- Changed class to 'top-panel-handle' and icon to an up/down arrow for clarity -->
-    <div class="drawer-handle top-panel-handle">↕</div>
-    <h3>Launch & Orbit Trajectories</h3>
-    <div class="chem-section" style="border-bottom: none;">
-        <p>Trajectory planning for engine burns.</p>
-        <div class="chem-input-group">
-            <label>Target Apoapsis (km):</label> <input type="number" value="100">
-            <label>Target Periapsis (km):</label> <input type="number" value="100">
-            <label>Inclination (°):</label> <input type="number" value="0">
-            <label>Target Body:</label> <span class="output-span">Earth</span>
+        <div class="drawer-handle right-panel-handle">&#9776;</div>
+        <h3>Launch & Orbit Trajectories</h3>
+        <div class="chem-section" style="border-bottom: none;">
+            <p>Trajectory planning for engine burns.</p>
+            <div class="chem-input-group">
+                <label>Target Apoapsis (km):</label> <input type="number" value="100">
+                <label>Target Periapsis (km):</label> <input type="number" value="100">
+                <label>Inclination (°):</label> <input type="number" value="0">
+                <label>Target Body:</label> <span class="output-span">Earth</span>
+            </div>
+            <button class="model-action-btn" style="display: block; margin-top: 15px;">Plan Maneuver</button>
         </div>
-        <button class="model-action-btn" style="display: block; margin-top: 15px;">Plan Maneuver</button>
     </div>
-</div>
     <div id="info-panel">
          <div class="drawer-handle left-panel-handle">&#9776;</div>
          <div>
