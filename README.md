@@ -10,7 +10,7 @@
   <br>
   <br>
   <p align="center">
-  <a href="https://skyboard.space/" target="_blank">
+  <a href="https://arielnpu.space/" target="_blank">
     <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/ArielEmerald.png" alt="ArielFire" width="200" height="200">
   </a>
   <br>
