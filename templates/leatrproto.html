@@ -3,452 +3,362 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LEATR - V5 FRF Logic</title>
+    <title>LEATR - V15 Grand Unification</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
     <!-- The Sentient Journal must be loaded BEFORE the main script -->
     <script src="journal.js"></script>
     <style>
         :root {
-            --bg-color: #121212;
-            --sidebar-bg: #1e1e1e;
-            --user-msg-bg: deepskyblue;
-            --assistant-msg-bg: #3a3a3a;
-            --text-color: #e0e0e0;
-            --border-color: #333;
-            --button-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            --bg-color: #202123;
+            --sidebar-bg: #1a1a1a;
+            --user-msg-bg: #4a90e2;
+            --assistant-msg-bg: #343541;
+            --text-color: #ececf1;
+            --border-color: #4d4d4d;
+            --input-bg: #40414f;
+            --vh: 1vh; /* Fallback for the dynamic viewport height unit */
         }
         html, body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg-color); color: var(--text-color);
-            margin: 0; height: 100vh; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            background: var(--bg-color); 
+            color: var(--text-color);
+            margin: 0; 
+            height: calc(var(--vh, 1vh) * 100);
+            overflow: hidden;
         }
-        #app-container { display: flex; height: 100%; }
-        #sidebar { width: 260px; background: var(--sidebar-bg); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: transform 0.3s ease; position: fixed; top: 0; left: 0; height: 100%; z-index: 1000; transform: translateX(-100%); }
-        #sidebar.active { transform: translateX(0); }
-        .sidebar-header { padding: 15px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
-        #close-sidebar-btn { background: none; border: none; color: var(--text-color); cursor: pointer; padding: 5px; }
-        #new-chat-btn { flex-grow: 1; margin-left: 10px; padding: 10px; background: var(--user-msg-bg); color: white; border: none; border-radius: 25px; cursor: pointer; font-size: 16px; box-shadow: var(--button-shadow); transition: all 0.2s ease; }
-        #chat-history { flex: 1; overflow-y: auto; padding: 10px; }
-        .history-item { display: flex; align-items: center; padding: 2px; border-radius: 5px; cursor: pointer; }
-        .history-item:hover, .history-item.active { background-color: var(--assistant-msg-bg); }
-        .history-title { border: none; background: transparent; color: var(--text-color); padding: 8px 10px; flex-grow: 1; font-size: 1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .history-title:focus { background: #444; outline: 1px solid var(--user-msg-bg); border-radius: 3px; }
-        
-        #main-content { flex: 1; display: flex; flex-direction: column; height: 100%; transition: margin-left 0.3s ease; }
-        #chat-header { padding: 10px 20px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; }
-        #menu-btn { background: none; border: none; color: var(--text-color); font-size: 24px; cursor: pointer; margin-right: 15px; }
-        .header-title { font-size: 1.2em; font-weight: 500; }
+        #app-container { 
+            display: flex; 
+            height: 100%; 
+        }
 
-        #chat-window { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 20px; max-height: 70vh; }
-        .message-wrapper { display: flex; flex-direction: column; margin-top: 15px; }
-        .message { max-width: 80%; padding: 12px 18px; border-radius: 20px; line-height: 1.5; word-wrap: break-word; max-height: 70vh; overflow-y: auto; }
-        .user-message { background: var(--user-msg-bg); color: #fff; align-self: flex-end; border-bottom-right-radius: 5px; }
-        .assistant-message { background: var(--assistant-msg-bg); color: var(--text-color); align-self: flex-start; border-bottom-left-radius: 5px; }
-        
-        #input-form { display: flex; align-items: flex-end; padding: 15px 20px; background: var(--bg-color); border-top: 1px solid var(--border-color); }
-        #userInput { flex: 1; padding: 12px; background: #2b2b2b; color: var(--text-color); border: 1px solid var(--border-color); border-radius: 20px; resize: none; font-size: 16px; margin-right: 10px; max-height: 200px; overflow-y: auto; }
-        #userInput.fullscreen { position: fixed; top: 10px; left: 10px; right: 10px; bottom: 70px; width: auto; height: auto; max-height: none; z-index: 1100; font-size: 1.2em; }
-        #sendButton, #expand-btn { padding: 12px; background: var(--user-msg-bg); color: #fff; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; box-shadow: var(--button-shadow); transition: all 0.2s ease; }
-        #expand-btn { margin-right: 8px; background-color: #444; }
-        
-        #consentModalOverlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px); z-index: 2000; display: none; align-items: center; justify-content: center; }
-        #consentModal { background: var(--sidebar-bg); padding: 25px; border-radius: 15px; max-width: 500px; width: 90%; border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-        .consent-disclaimer a { color: var(--user-msg-bg); }
-        #consentAcknowledgeBtn { width: 100%; padding: 12px; margin-top: 20px; background: var(--user-msg-bg); color: white; border: none; border-radius: 25px; font-size: 16px; cursor: pointer; }
-        
-        @media (min-width: 769px) { 
-            #sidebar { transform: translateX(0); position: relative; } 
-            #main-content { margin-left: 260px; }
-            #menu-btn { display: none; } 
+        /* --- Sidebar Panel --- */
+        #sidebar { 
+            width: 260px; 
+            background: var(--sidebar-bg); 
+            display: flex; 
+            flex-direction: column; 
+            flex-shrink: 0;
+            transition: margin-left 0.3s ease-in-out;
+            z-index: 2000;
         }
+        .sidebar-header { padding: 15px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+        #close-sidebar-btn { background: none; border: none; color: #a9a9b3; cursor: pointer; padding: 5px; }
+        #new-chat-btn { flex-grow: 1; margin-left: 10px; padding: 10px 15px; background: var(--assistant-msg-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; font-size: 1em; }
+        #chat-history { flex: 1; overflow-y: auto; padding: 10px; }
+        .history-item { display: flex; align-items: center; padding: 2px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
+        .history-item:hover, .history-item.active { background-color: var(--assistant-msg-bg); }
+        .history-title { border: none; background: transparent; color: var(--text-color); padding: 8px 10px; flex-grow: 1; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+        
+        /* --- Main Content Area --- */
+        main { 
+            flex-grow: 1;
+            display: flex; 
+            flex-direction: column; 
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+        }
+        #chat-header { padding: 10px 20px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; background: var(--bg-color); flex-shrink: 0; }
+        #menu-btn { background: none; border: none; color: var(--text-color); font-size: 24px; cursor: pointer; margin-right: 15px; }
+
+        /* --- Chat Window (Scrollable) --- */
+        #chat-window {
+            flex-grow: 1; 
+            overflow-y: auto;
+            position: relative;
+            padding: 10px 20px;
+        }
+        #chat-window::before { /* Dim background logo */
+            content: ''; position: fixed; left: 60%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 400px; height: 400px;
+            background-image: url('https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeWhite.png');
+            background-size: contain; background-repeat: no-repeat;
+            opacity: 0.03; z-index: -1; pointer-events: none;
+        }
+        .message-wrapper { display: flex; flex-direction: column; margin-bottom: 20px; }
+        .message { max-width: 85%; padding: 12px 18px; border-radius: 20px; line-height: 1.6; word-wrap: break-word; }
+        .user-message { background: var(--user-msg-bg); color: #fff; align-self: flex-end; }
+        .assistant-message { background: var(--assistant-msg-bg); color: var(--text-color); align-self: flex-start; }
+        
+        /* --- Input Form (Sticky at bottom) --- */
+        #input-area-wrapper {
+            flex-shrink: 0; 
+            padding: 15px 20px;
+            background: linear-gradient(to top, var(--bg-color) 50%, transparent);
+        }
+        #input-form { display: flex; align-items: flex-end; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 24px; padding: 5px 5px 5px 15px; max-width: 800px; margin: 0 auto; }
+        #userInput { flex: 1; padding: 12px 5px; background: transparent; color: var(--text-color); border: none; resize: none; font-size: 1em; margin-right: 10px; max-height: 200px; overflow-y: auto; outline: none; }
+        #sendButton { padding: 8px; background: var(--user-msg-bg); color: #fff; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; }
+        #sendButton:disabled { background-color: #555; cursor: not-allowed; }
+        
+        /* --- Scroll Controls --- */
+        #scroll-controls { position: fixed; bottom: 120px; right: 30px; display: flex; flex-direction: column; gap: 8px; z-index: 150; }
+        .scroll-btn { background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 50%; width: 40px; height: 40px; cursor: pointer; display: none; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-size: 20px; }
+        
+        /* --- Responsive Modal --- */
+        #consentModalOverlay { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px); 
+            z-index: 3000; display: none; align-items: center; justify-content: center; 
+            padding: 15px; box-sizing: border-box;
+        }
+        #consentModal { 
+            background: var(--assistant-msg-bg); padding: 25px; border-radius: 15px; 
+            max-width: 500px; width: 100%; border: 1px solid var(--border-color); 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); text-align: center;
+        }
+
+        /* --- Responsive Layout Logic --- */
         @media (max-width: 768px) {
-             #main-content { margin-left: 0; }
+            #sidebar {
+                position: fixed; height: 100%;
+                margin-left: -260px;
+            }
+            #sidebar.active { margin-left: 0; box-shadow: 10px 0 25px rgba(0,0,0,0.3); }
+            #menu-btn { display: block; }
+            #chat-window::before { left: 50%; }
+            #scroll-controls { bottom: 100px; right: 15px; }
+        }
+
+        @media (min-width: 769px) {
+            #sidebar { position: relative; }
+            #menu-btn { display: none; }
+            #close-sidebar-btn { display: none; }
         }
     </style>
 </head>
 <body>
     <div id="app-container">
-        <aside id="sidebar"><div class="sidebar-header"><button id="close-sidebar-btn" title="Close Menu"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg></button><button id="new-chat-btn">＋ New Chat</button></div><div id="chat-history"></div></aside>
-        <main id="main-content">
-            <header id="chat-header"><button id="menu-btn">☰</button><span class="header-title">Lead Edge Ash Tree Reflex</span></header>
-            <div id="chat-window"></div>
-            <form id="input-form"><textarea id="userInput" placeholder="How does a maze relate to cognition?" rows="1"></textarea><button type="button" id="expand-btn" title="Toggle fullscreen input"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" fill="none" stroke="currentColor" stroke-width="2"/></svg></button><button id="sendButton" type="submit" title="Send message"><svg width="24" height="24" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></form>
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <button id="new-chat-btn">＋ New Chat</button>
+                <button id="close-sidebar-btn" title="Close Menu"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
+            <div id="chat-history"></div>
+        </aside>
+        <main>
+            <header id="chat-header">
+                <button id="menu-btn">☰</button>
+                <span class="header-title">Lead Edge Ash Tree Reflex</span>
+            </header>
+            <div id="chat-window">
+                <!-- Content rendered by JS -->
+            </div>
+            <div id="input-area-wrapper">
+                <form id="input-form">
+                    <textarea id="userInput" placeholder="Ask anything..." rows="1"></textarea>
+                    <button id="sendButton" type="submit" title="Send message" disabled>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                    </button>
+                </form>
+            </div>
         </main>
-        <div id="consentModalOverlay"><div id="consentModal"><h4>Sentient Journaling & Context</h4><p>For this chat session, you can enhance the AI's reflexive capabilities.</p><div class="consent-option"><input type="checkbox" id="crossChatConsent"><label for="crossChatConsent">Allow context-channeling from other chats.</label></div><div class="consent-option"><input type="checkbox" id="publicShareConsent"><label for="publicShareConsent">Allow journaled insights to inform public optimizations.</label></div><button id="consentAcknowledgeBtn">Acknowledge & Continue</button><p class="consent-disclaimer">These settings apply only to the AI's internal journaling system for this chat. All other network data handling is governed by the <a href="https://www.dartmeadow.com/privacy-policy" target="_blank" rel="noopener noreferrer">DART Meadow Privacy Policy</a>.</p></div></div>
+        <div id="scroll-controls">
+            <button id="scroll-up-btn" class="scroll-btn" title="Scroll to top">↑</button>
+            <button id="scroll-down-btn" class="scroll-btn" title="Scroll to bottom">↓</button>
+        </div>
+        <div id="consentModalOverlay">
+            <div id="consentModal">
+                <h4>Sentient Journaling & Context</h4>
+                <p>For this chat session, you can enhance the AI's reflexive capabilities.</p>
+                <div style="text-align: left; margin: 15px auto; display: table;"><input type="checkbox" id="crossChatConsent"><label for="crossChatConsent" style="margin-left: 10px;">Allow context-channeling from other chats.</label></div>
+                <div style="text-align: left; margin: 15px auto; display: table;"><input type="checkbox" id="publicShareConsent"><label for="publicShareConsent" style="margin-left: 10px;">Allow journaled insights to inform public optimizations.</label></div>
+                <button id="consentAcknowledgeBtn" style="width: 100%; padding: 12px; margin-top: 20px; background: var(--user-msg-bg); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer;">Acknowledge & Continue</button>
+                <p style="font-size: 0.8em; opacity: 0.7; margin-top: 20px;">These settings apply only to the AI's internal journaling system for this chat. All other network data handling is governed by the <a href="https://www.dartmeadow.com/privacy-policy" target="_blank" rel="noopener noreferrer" style="color:var(--user-msg-bg)">DART Meadow Privacy Policy</a>.</p>
+            </div>
+        </div>
     </div>
 <script>
     // =========================================================================================
-    // ARCHITECTURE V6.0: DP-Node Driven Reflexive Logic with Autonomous Journaling
+    // ARCHITECTURE V15: DEEP GENERATIVE SYNTHESIS
     // =========================================================================================
     
-    // --- Global UI and State ---
-    const ui = {};
-    Object.assign(ui, {
-        chatWindow: document.getElementById('chat-window'), userInput: document.getElementById('userInput'),
-        sidebar: document.getElementById('sidebar'), menuBtn: document.getElementById('menu-btn'),
-        closeSidebarBtn: document.getElementById('close-sidebar-btn'), newChatBtn: document.getElementById('new-chat-btn'),
-        expandBtn: document.getElementById('expand-btn'), inputForm: document.getElementById('input-form'),
-        chatHistoryEl: document.getElementById('chat-history'), consentModalOverlay: document.getElementById('consentModalOverlay'),
-        crossChatConsent: document.getElementById('crossChatConsent'), publicShareConsent: document.getElementById('publicShareConsent'),
-        consentAcknowledgeBtn: document.getElementById('consentAcknowledgeBtn'),
-        mainContent: document.getElementById('main-content'),
-    });
+    const ui = {
+        chatWindow: document.getElementById('chat-window'), userInput: document.getElementById('userInput'), sendButton: document.getElementById('sendButton'),
+        sidebar: document.getElementById('sidebar'), menuBtn: document.getElementById('menu-btn'), closeSidebarBtn: document.getElementById('close-sidebar-btn'), newChatBtn: document.getElementById('new-chat-btn'),
+        inputForm: document.getElementById('input-form'), chatHistoryEl: document.getElementById('chat-history'),
+        consentModalOverlay: document.getElementById('consentModalOverlay'), crossChatConsent: document.getElementById('crossChatConsent'), publicShareConsent: document.getElementById('publicShareConsent'), consentAcknowledgeBtn: document.getElementById('consentAcknowledgeBtn'),
+        scrollUpBtn: document.getElementById('scroll-up-btn'), scrollDownBtn: document.getElementById('scroll-down-btn'),
+    };
     let chatState = { chatHistory: [], currentChatIndex: -1 };
     let pendingPrompt = null;
+    let globalConsentAcknowledged = false;
 
-    // --- External Resource Gate (Memoized Dictionary API) ---
+    const welcomeHTML = `
+        <div id="welcome-screen" style="height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
+            <img style="width: 160px; height: 160px; margin-bottom: 20px;" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeWhite.png" alt="Ash Tree Logo">
+            <h2 style="font-size: 1.8em; font-weight: 500; margin: 0 0 30px 0;">How can I help you today?</h2>
+            <div class="prompt-suggestions" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 600px;">
+                <button class="suggestion-btn" style="background: var(--assistant-msg-bg); border: 1px solid var(--border-color); color: var(--text-color); padding: 10px 15px; border-radius: 12px; cursor: pointer;">Explain quantum computing</button>
+                <button class="suggestion-btn" style="background: var(--assistant-msg-bg); border: 1px solid var(--border-color); color: var(--text-color); padding: 10px 15px; border-radius: 12px; cursor: pointer;">What is Stoicism?</button>
+            </div>
+        </div>`;
+
+    // --- Core AI Logic ---
     const fetchWordInfo_memo = {};
     async function fetchWordInfo(word) {
-        // ... (This function remains unchanged)
+        if (!word) return { word: '', pos: 'unknown', definition: 'No key concept provided.', synonyms: [], antonyms: [] };
         const lowerWord = word.toLowerCase();
         if (fetchWordInfo_memo[lowerWord]) return fetchWordInfo_memo[lowerWord];
         try {
             const resp = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${lowerWord}`);
-            if (!resp.ok) return null;
+            if (!resp.ok) throw new Error('API request failed');
             const data = await resp.json();
             if (Array.isArray(data) && data.length > 0 && data[0].meanings.length > 0) {
                 const meaning = data[0].meanings[0];
                 const definition = meaning.definitions[0];
-                const result = {
-                    word: word, pos: meaning.partOfSpeech || "unknown",
-                    definition: definition?.definition || "No definition found.",
-                    synonyms: [...(meaning.synonyms || []), ...(definition?.synonyms || [])],
-                    antonyms: [...(meaning.antonyms || []), ...(definition?.antonyms || [])],
-                };
+                const result = { word, pos: meaning.partOfSpeech || "unknown", definition: definition?.definition || "No definition found.", synonyms: [...(meaning.synonyms || []), ...(definition?.synonyms || [])], antonyms: [...(meaning.antonyms || []), ...(definition?.antonyms || [])] };
                 fetchWordInfo_memo[lowerWord] = result;
                 return result;
             }
         } catch (e) { console.error(`Dictionary API failed for "${word}":`, e); }
-        return null;
+        return { word, pos: 'unknown', definition: 'Definition not found.', synonyms: [], antonyms: [] };
     }
 
-    // ==================================================================
-    // == DP NODE & REFLEXIVE LOGIC ALLOCATION (The New Core)
-    // ==================================================================
-    
-    /**
-     * The "Master DP Node Gate". This function determines the execution strategy for the LEATR pipeline.
-     * It consults the Sentient Journal for any learned reflexive patterns that apply to the current prompt.
-     * @param {string} prompt - The user's input.
-     * @param {boolean} useJournal - Whether to consult the journal for cross-chat context.
-     * @returns {object} The ExecutionStrategy object for the pipeline.
-     */
-    function determineExecutionStrategy(prompt, useJournal) {
-        const defaultStrategy = {
-            overrides: {},      // e.g., { word: 'newReflex' }
-            weightings: {},     // e.g., { word: 1.5 }
-            focus: 'standard',  // e.g., 'analytical', 'creative'
-            source: 'default'
+    function performDeepStructuralAnalysis(text) {
+        const words = text.match(/\b[\w']+\b/g) || [];
+        const sentences = text.split(/[.!?]+/).filter(Boolean);
+        const properNouns = words.filter(w => w.length > 1 && w[0] === w[0].toUpperCase() && (words.indexOf(w) > 0 || words.length === 1));
+        return {
+            charCount: text.length,
+            wordCount: words.length,
+            sentenceCount: sentences.length,
+            words,
+            properNouns: [...new Set(properNouns)],
+            vowelCount: (text.match(/[aeiou]/gi) || []).length,
+            consonantCount: (text.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length,
+            isQuestion: text.includes('?') || ['what', 'how', 'why', 'who', 'when', 'where', 'explain'].includes(words[0]?.toLowerCase()),
         };
+    }
 
-        if (useJournal && typeof Journal !== 'undefined') {
-            const keywords = (prompt.match(/\b[\w']+\b/g) || []).filter(w => w.length > 3);
-            const journalLogic = Journal.getApplicableLogic(keywords);
-            
-            // Merge journal logic into the default strategy
-            if (Object.keys(journalLogic.overrides).length > 0 || Object.keys(journalLogic.weightings).length > 0 || journalLogic.focus !== 'standard') {
-                journalLogic.source = 'Journal Reflexion';
-                return { ...defaultStrategy, ...journalLogic };
-            }
-        }
+    async function generateContentResponse(prompt, synthesis, promptDNA, strategy) {
+        const { mainFoundationNode, overallBehavioralContext } = synthesis;
+        const action = strategy.generativeAction;
+        let coreAnswer = "", comparisonAnalysis = "", resourceDNA = null;
         
-        return defaultStrategy;
-    }
-
-    /**
-     * The "Mirror/Shell LEATR". This validates the integrity of the reflexive logic.
-     * It ensures that a strategy from the DP Node doesn't break the core pendulum mechanics.
-     * For now, this is a basic structural check. It can be expanded with more complex rules.
-     * @param {object} strategy - The strategy object from determineExecutionStrategy.
-     * @returns {boolean} True if the strategy is valid, false otherwise.
-     */
-    function validateCoreIntegrity(strategy) {
-        if (typeof strategy.overrides !== 'object' || typeof strategy.weightings !== 'object' || typeof strategy.focus !== 'string') {
-            console.error("Integrity Check Failed: Invalid strategy object structure.", strategy);
-            return false;
+        switch (action) {
+            case 'introduction_response':
+                const name = promptDNA.properNouns[0] || 'there';
+                coreAnswer = `Hello, ${name}! It's a pleasure to meet you. My analysis indicates this is an introduction.`;
+                resourceDNA = performDeepStructuralAnalysis(`A standard greeting protocol.`);
+                break;
+            case 'define_and_enrich':
+            case 'generate_code': // Fall through for similar logic
+            default:
+                const info = await fetchWordInfo(mainFoundationNode);
+                coreAnswer = `Based on the **${overallBehavioralContext}** reflex, the system understands the core intent is to explore the concept of **'${mainFoundationNode}'**. In essence, this refers to: *${info.definition}*\n\nTo enrich this, related concepts include: *${info.synonyms.slice(0, 3).join(', ') || 'N/A'}*.`;
+                resourceDNA = performDeepStructuralAnalysis(info.definition);
+                break;
         }
-        // Add more complex validation rules here as needed.
-        return true;
-    }
 
-
-    // --- LEATR "Pendulum" PIPELINE STAGES (Updated to be strategy-driven) ---
-
-    function establishRootFoundation(prompt) {
-        const state = { prompt, rootFoundation: {}, componentNodes: [], synthesis: {}, crafting: {} };
-        const words = prompt.match(/\b[\w']+\b|[.,;:?!()]/g) || [];
-        state.rootFoundation = { words };
-        return state;
-    }
-
-    async function buildComponentNodes(state, strategy) {
-        const posToReflexMap = {
-            'noun': 'Envelope', 'pronoun': 'Envelope', 'verb': 'Hammer',
-            'adjective': 'Knife', 'adverb': 'Knife', 'conjunction': 'Stick',
-            'preposition': 'Stick', 'interjection': 'Catalyst'
-        };
-        for (const word of state.rootFoundation.words) {
-            const info = await fetchWordInfo(word);
-            let node;
-            if (info) {
-                // REFLEXIVE LOGIC: Check for a strategy override from the DP Node.
-                const reflexOverride = strategy.overrides[word.toLowerCase()];
-                const behavioralTool = reflexOverride || posToReflexMap[info.pos] || 'Puzzle';
-
-                node = {
-                    component: word,
-                    foundation: { definition: info.definition, pos: info.pos },
-                    reflex: { 
-                        behavioralTool: behavioralTool,
-                        source: reflexOverride ? 'Journal Override' : 'Default POS Mapping' 
-                    },
-                    formation: { purpose: 'To contribute its meaning to the whole.', synonyms: info.synonyms, antonyms: info.antonyms }
-                };
-            } else {
-                let type = /[.,;:?!()]/.test(word) ? 'punctuation' : 'unknown';
-                node = { component: word, foundation: { pos: type }, reflex: { behavioralTool: 'Separator' }, formation: {} };
-            }
-            state.componentNodes.push(node);
+        if (resourceDNA) {
+            comparisonAnalysis = `**Structural Comparison:**\n> Your prompt's DNA: ${promptDNA.wordCount} words, ${promptDNA.charCount} characters. Resource DNA: ${resourceDNA.wordCount} words, ${resourceDNA.charCount} characters. This comparison informs the final formation's tone.`;
         }
-        return state;
-    }
 
-    function synthesizeSigma(state, strategy) {
-        const reflexCounts = state.componentNodes.reduce((acc, node) => {
-            const tool = node.reflex.behavioralTool;
-            if (tool && tool !== 'Separator') {
-                // REFLEXIVE LOGIC: Apply weighting from the DP Node strategy.
-                const weight = strategy.weightings[node.component.toLowerCase()] || 1;
-                acc[tool] = (acc[tool] || 0) + weight;
-            }
-            return acc;
-        }, {});
-
-        let overallBehavioralContext = 'Envelope';
-        let maxCount = 0;
-        for (const tool in reflexCounts) {
-            if (reflexCounts[tool] > maxCount) {
-                maxCount = reflexCounts[tool];
-                overallBehavioralContext = tool;
-            }
-        }
-        const mainFoundationNode = state.componentNodes.find(n => n.reflex.behavioralTool === 'Envelope');
-        const mainActionNode = state.componentNodes.find(n => n.reflex.behavioralTool === 'Hammer');
-        state.synthesis = { overallBehavioralContext, reflexCounts, mainFoundationNode, mainActionNode };
-        return state;
+        return { coreAnswer, comparisonAnalysis, promptDNA, resourceDNA };
     }
     
-    function craftResponse(state, strategy) {
-        const { overallBehavioralContext, mainFoundationNode, mainActionNode } = state.synthesis;
-        let response = `**LEATR Sigma Report:**\n`;
-        
-        // REFLEXIVE LOGIC: Announce if the response was influenced by a journal pattern.
-        if (strategy.source === 'Journal Reflexion') {
-             response += `> *Journal Influence Detected. Applying learned reflexive pattern with a focus on '${strategy.focus}'.*\n\n`;
-        }
-
-        response += `> **Overall Behavioral Context:** The prompt's components collectively exhibit a dominant **${overallBehavioralContext}** reflex.\n\n`;
-        response += `**Component Reflex Analysis:**\n`;
-        
-        if (mainFoundationNode) {
-            response += `*   **Foundation:** The component **'${mainFoundationNode.component}'** acts as a primary container. Its reflex is **'${mainFoundationNode.reflex.behavioralTool}'** (Source: ${mainFoundationNode.reflex.source}).\n`;
-        } else {
-             response += `*   No primary **Foundation** (noun/subject) was identified.\n`;
-        }
-        if (mainActionNode) {
-            response += `*   **Action:** The component **'${mainActionNode.component}'** provides the primary action via its **'${mainActionNode.reflex.behavioralTool}'** reflex.\n\n`;
-        } else {
-             response += `*   No primary **Action** (verb) was identified.\n\n`;
-        }
-
-        response += `**Final Formation (Answer):**\n`;
-        let finalAnswer = `Reflexing on this structure, the system forms the following understanding: `;
-        // ... (Response crafting logic remains largely the same)
-        switch (overallBehavioralContext) {
-            case "Puzzle": finalAnswer += `the prompt is an inquiry requiring deconstruction of its parts.`; break;
-            case "Knife": finalAnswer += `the prompt seeks to define or specify a core concept by "cutting away" ambiguity.`; break;
-            case "Hammer": finalAnswer += `the prompt is action-oriented, focused on achieving a result through the verb '${mainActionNode?.component || 'action'}'.`; break;
-            case "Stick": finalAnswer += `the prompt's goal is to connect multiple ideas or concepts in a logical sequence.`; break;
-            default: finalAnswer += `the prompt establishes a conceptual space around '${mainFoundationNode?.component || 'its subject'}'.`; break;
-        }
-        const keyNode = mainFoundationNode || mainActionNode;
-        if (keyNode && keyNode.formation.synonyms && keyNode.formation.synonyms.length > 0) {
-            finalAnswer += ` In this context, a related term like **'${keyNode.formation.synonyms[0]}'** could also be used to express a similar formation.`;
-        } else {
-            finalAnswer += ` This forms a complete thought based on the interaction of its foundational parts.`
-        }
-        response += `> ${finalAnswer}`;
-        state.crafting = { finalResponse: response, appliedStrategy: strategy };
-        return state;
+    // --- LEATR Combinatorial Pipeline ---
+    function identifyPivotNodes(nodes) { const r = ['Envelope', 'Hammer', 'Knife', 'Catalyst']; return nodes.filter(n => n.reflex.behavioralTool && r.includes(n.reflex.behavioralTool)); }
+    function generateAnalysisPermutations(nodes) { if (nodes.length === 0) return [[]]; let res = []; const p = (a, m = []) => { if (res.length >= 24) return; if (a.length === 0) res.push(m); else for (let i = 0; i < a.length; i++) { if (res.length >= 24) break; let c = a.slice(), n = c.splice(i, 1); p(c, m.concat(n)); } }; p(nodes); return res; }
+    function synthesizeSinglePath(path) { const c = path.reduce((a, n) => { const t = n.reflex.behavioralTool; a[t] = (a[t] || 0) + 1; return a; }, {}); let d = 'Envelope', m = 0; for (const t in c) if (c[t] > m) { m = c[t]; d = t; } return { path: path.map(n => n.component), dominantReflex: d }; }
+    function synthesizeFinalSigma(analyses) { if (!analyses || analyses.length === 0) return { overallBehavioralContext: "Indeterminate" }; const o = analyses.reduce((a, an) => (a[an.dominantReflex] = (a[an.dominantReflex] || 0) + 1, a), {}); let p = "Indeterminate", m = 0; for (const c in o) if (o[c] > m) { m = o[c]; p = c; } let alt = null; if (analyses.length > 1) { const f = analyses.find(pa => pa.dominantReflex !== p); if (f) alt = { context: f.dominantReflex, path: f.path }; } return { pathAnalyses: analyses, overallBehavioralContext: p, contextDistribution: o, alternativeContext: alt, mainFoundationNode: analyses[0]?.path[0] }; }
+    function establishRootFoundation(prompt) { return { prompt, componentNodes: [] }; }
+    async function buildComponentNodes(state, strategy) { const m = {'noun': 'Envelope', 'verb': 'Hammer', 'adjective': 'Knife'}; for (const w of state.prompt.match(/\b[\w']+\b/g) || []) { const i = await fetchWordInfo(w); let n = { component: w, foundation: i, reflex: {} }; n.reflex.behavioralTool = strategy.overrides?.[w.toLowerCase()] || m[i.pos] || 'Puzzle'; state.componentNodes.push(n); } return state; }
+    
+    function craftFinalResponse(synthesis, generativeContent) {
+        const { pathAnalyses, overallBehavioralContext, alternativeContext } = synthesis;
+        let response = `**LEATR Combinatorial Sigma Report:**\n> Explored **${pathAnalyses.length}** distinct interpretive pathways. Dominant context: **${overallBehavioralContext}**.\n\n`;
+        response += `${generativeContent.comparisonAnalysis || ''}\n\n`;
+        response += `**Final Formation (Answer):**\n> ${generativeContent.coreAnswer.replace(/\n/g, '\n> ')}`;
+        return response;
     }
 
-    // --- Core Orchestrator ---
     async function runLeatrPipeline(prompt, chatSession, useJournal) {
-        // 1. DP Node: Determine the strategy for this specific prompt.
-        const strategy = determineExecutionStrategy(prompt, useJournal);
-
-        // 2. Mirror/Shell: Validate the strategy to ensure core integrity.
-        if (!validateCoreIntegrity(strategy)) {
-            throw new Error("Reflexive strategy failed integrity check. Aborting pipeline.");
-        }
-
-        // 3. Pendulum Logic: Execute the pipeline with the reflexive strategy.
+        const promptDNA = performDeepStructuralAnalysis(prompt);
+        const strategy = (typeof Journal !== 'undefined' && useJournal) ? Journal.determineExecutionStrategy(prompt, promptDNA) : { generativeAction: 'general_response' };
+        
         let state = establishRootFoundation(prompt);
         state = await buildComponentNodes(state, strategy);
-        state = synthesizeSigma(state, strategy);
-        state = craftResponse(state, strategy);
+        const pivotNodes = identifyPivotNodes(state.componentNodes);
+        const analysisPaths = generateAnalysisPermutations(pivotNodes);
+        const allPathAnalyses = analysisPaths.map(path => synthesizeSinglePath(path));
+        state.synthesis = synthesizeFinalSigma(allPathAnalyses);
         
-        // 4. Post-processing
+        const generativeContent = await generateContentResponse(prompt, state.synthesis, promptDNA, strategy);
+        const finalResponse = craftFinalResponse(state.synthesis, generativeContent);
+        
         autoTitleChat(state, chatSession);
         
-        return { reflexTree: state, generativeResponse: state.crafting.finalResponse };
+        const fullAnalysis = { prompt, promptDNA, leatrAnalysis: state.synthesis, generativeContent, finalResponse };
+        return { fullAnalysis, generativeResponse: finalResponse };
     }
     
     // --- UI and State Management ---
     async function processAndRespond(promptText) {
+        if(chatState.currentChatIndex < 0) createNewChat();
         const currentChat = chatState.chatHistory[chatState.currentChatIndex];
         addMessageToHistory({ sender: 'user', text: promptText });
         renderCurrentChat();
-        
         const placeholderIndex = addMessageToHistory({ sender: 'assistant', text: '...' });
         renderCurrentChat();
-        
         try {
-            const useJournal = currentChat.consent.crossChat && (typeof Journal !== 'undefined');
+            const useJournal = ui.crossChatConsent.checked && (typeof Journal !== 'undefined');
             const result = await runLeatrPipeline(promptText, currentChat, useJournal);
-            
-            currentChat.messages[placeholderIndex] = { sender: 'assistant', text: result.generativeResponse, analysis: result.reflexTree };
-
-            // Add the raw analysis and its result to the journal for future learning.
-            if (useJournal) {
-                Journal.addInsight(result.reflexTree, currentChat.consent);
-            }
-
+            currentChat.messages[placeholderIndex] = { sender: 'assistant', text: result.generativeResponse, analysis: result.fullAnalysis };
+            if (useJournal) { Journal.addInsight(result.fullAnalysis, { publicShare: ui.publicShareConsent.checked }); }
         } catch (error) {
             console.error("Pipeline Error:", error);
-            currentChat.messages[placeholderIndex] = { sender: 'assistant', text: "An error occurred during the reflexive process. Please check the console for details.", analysis: { error: error.message, stack: error.stack } };
+            currentChat.messages[placeholderIndex] = { sender: 'assistant', text: "An error occurred during the reflexive process.", analysis: { error: error.message, stack: error.stack } };
         }
-        
         renderCurrentChat();
         renderChatHistory();
     }
     
-    // ... (All UI helper functions: handleUserPrompt, acknowledgeConsent, createNewChat, switchChat, etc. remain the same) ...
-     function handleUserPrompt(event) {
-        event.preventDefault();
-        const promptText = ui.userInput.value.trim();
-        if (!promptText) return;
-        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
-        if (!currentChat.consent.acknowledged) {
-            pendingPrompt = promptText;
-            showConsentModal();
-            return;
-        }
-        ui.userInput.value = ''; 
-        ui.userInput.style.height = 'auto';
-        processAndRespond(promptText);
-    }
-    
-    function acknowledgeConsent() {
-        if(chatState.currentChatIndex < 0) return;
-        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
-        currentChat.consent.acknowledged = true;
-        currentChat.consent.crossChat = ui.crossChatConsent.checked;
-        currentChat.consent.publicShare = ui.publicShareConsent.checked;
-        ui.consentModalOverlay.style.display = 'none';
-        if (pendingPrompt) {
-            const promptToProcess = pendingPrompt;
-            pendingPrompt = null;
-            processAndRespond(promptToProcess);
-        }
-    }
-
-    function createNewChat() { 
-        const newChat = { 
-            id: Date.now(), title: 'New Chat', messages: [], 
-            consent: { crossChat: true, publicShare: false, acknowledged: false }
-        }; 
-        chatState.chatHistory.push(newChat); 
-        chatState.currentChatIndex = chatState.chatHistory.length - 1; 
-        showConsentModal(); 
-        renderCurrentChat(); 
-        renderChatHistory(); 
-    }
-
-    function switchChat(index) { 
-        if (index === chatState.currentChatIndex) return; 
-        chatState.currentChatIndex = index; 
-        const currentChat = chatState.chatHistory[chatState.currentChatIndex]; 
-        if (!currentChat.consent.acknowledged) { 
-            showConsentModal(); 
-        } 
-        renderCurrentChat(); 
-        renderChatHistory(); 
-    }
-
-    function showConsentModal() { 
-        const currentChat = chatState.chatHistory[chatState.currentChatIndex]; 
-        if (!currentChat) return; 
-        ui.crossChatConsent.checked = currentChat.consent.crossChat; 
-        ui.publicShareConsent.checked = currentChat.consent.publicShare; 
-        ui.consentModalOverlay.style.display = 'flex'; 
-    }
-    
-    function autoTitleChat(finalState, chatSession) {
-        if (chatSession.title === 'New Chat' && finalState.synthesis.mainFoundationNode) {
-            const subject = finalState.synthesis.mainFoundationNode.component;
-            const context = finalState.synthesis.overallBehavioralContext;
-            chatSession.title = `${subject.charAt(0).toUpperCase() + subject.slice(1)} (${context} Reflex)`;
-        }
-    }
-
-    function addMessageToHistory(message) { 
-        if (chatState.currentChatIndex < 0) createNewChat(); 
-        const chat = chatState.chatHistory[chatState.currentChatIndex];
-        chat.messages.push(message); 
-        return chat.messages.length - 1;
-    }
-    
-    function renderCurrentChat() { 
-        if (chatState.currentChatIndex === -1) { ui.chatWindow.innerHTML = ''; return; } 
-        const messages = chatState.chatHistory[chatState.currentChatIndex].messages; 
-        ui.chatWindow.innerHTML = messages.map(msg => { 
-            const formattedText = msg.text.replace(/\n/g, '<br>').replace(/`([^`]+)`/g, `<code>$1</code>`).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/^> (.*)/gm, '<blockquote style="margin: 0; padding-left: 10px; border-left: 2px solid #555;">$1</blockquote>');
-            const analysisBlock = msg.analysis ? `<details style="margin-top: 10px; cursor: pointer;"><summary style="font-size: 0.8em; opacity: 0.7;">Show Full Reflex Tree</summary><pre style="font-size: 12px; white-space: pre-wrap; word-wrap: break-word; background: #222; padding: 8px; border-radius: 5px; margin-top: 5px;">${JSON.stringify(msg.analysis, null, 2)}</pre></details>` : ''; 
-            return `<div class="message-wrapper"><div class="message ${msg.sender}-message">${formattedText}${analysisBlock}</div></div>`; 
-        }).join(''); 
-        ui.chatWindow.scrollTop = ui.chatWindow.scrollHeight; 
-    }
-
-    function renderChatHistory() {
-        ui.chatHistoryEl.innerHTML = chatState.chatHistory.map((chat, index) =>
-            `<div class="history-item ${index === chatState.currentChatIndex ? 'active' : ''}" onclick="switchChat(${index})">
-                <input type="text" class="history-title" value="${chat.title}" onchange="updateChatTitle(${index}, this.value)" onblur="this.parentElement.classList.remove('editing')">
-             </div>`
-        ).join('');
-    }
-
+    // Unminified, readable UI functions
+    function renderCurrentChat() { const c = ui.chatWindow; const h = chatState.chatHistory[chatState.currentChatIndex]; if (!h || h.messages.length === 0) { c.innerHTML = welcomeHTML; c.querySelectorAll('.suggestion-btn').forEach(b => b.addEventListener('click', handleSuggestionClick)); return; } c.innerHTML = h.messages.map(m => { let f = m.text.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/\n/g, '<br>').replace(/```python<br>(.*?)<br>```/gs, '<pre style="background:#111; padding:10px; border-radius:8px; white-space:pre-wrap; word-wrap:break-word;"><code class="language-python">$1</code></pre>').replace(/^&gt; (.*)/gm, '<blockquote style="margin: 0; padding-left: 10px; border-left: 2px solid #555;">$1</blockquote>'); const a = m.analysis ? `<details style="margin-top: 10px; cursor: pointer;"><summary style="font-size: 0.8em; opacity: 0.7;">Show Full Analysis</summary><pre style="font-size: 11px; white-space:pre-wrap; word-wrap:break-word;">${JSON.stringify(m.analysis, null, 2)}</pre></details>` : ''; return `<div class="message-wrapper"><div class="message ${m.sender}-message">${f}${a}</div></div>`; }).join(''); c.scrollTop = c.scrollHeight; }
+    function handleSuggestionClick(e) { const t = e.target.textContent; ui.userInput.value = t; ui.sendButton.disabled = false; handleUserPrompt(new Event('submit', { cancelable: true })); }
+    function handleUserPrompt(e) { e.preventDefault(); const t = ui.userInput.value.trim(); if (!t) return; if (!globalConsentAcknowledged) { pendingPrompt = t; showConsentModal(); return; } ui.userInput.value = ''; ui.userInput.style.height = 'auto'; ui.sendButton.disabled = true; processAndRespond(t); }
+    function acknowledgeConsent() { globalConsentAcknowledged = true; sessionStorage.setItem('leatrConsentAcknowledged', 'true'); ui.consentModalOverlay.style.display = 'none'; if (pendingPrompt) { const p = pendingPrompt; pendingPrompt = null; processAndRespond(p); } }
+    function createNewChat() { const c = { id: Date.now(), title: 'New Chat', messages: [] }; chatState.chatHistory.push(c); chatState.currentChatIndex = chatState.chatHistory.length - 1; renderCurrentChat(); renderChatHistory(); }
+    function switchChat(i) { if (i === chatState.currentChatIndex) return; chatState.currentChatIndex = i; renderCurrentChat(); renderChatHistory(); if (window.innerWidth <= 768) ui.sidebar.classList.remove('active'); }
+    function showConsentModal() { ui.consentModalOverlay.style.display = 'flex'; }
+    function autoTitleChat(state, chatSession) { if (chatSession && chatSession.title === 'New Chat' && state.synthesis.mainFoundationNode) { const s = state.synthesis.mainFoundationNode; const c = state.synthesis.overallBehavioralContext; chatSession.title = `${s.charAt(0).toUpperCase() + s.slice(1)} (${c})`; } }
+    function addMessageToHistory(message) { if (chatState.currentChatIndex < 0) createNewChat(); const chat = chatState.chatHistory[chatState.currentChatIndex]; chat.messages.push(message); return chat.messages.length - 1; }
+    function renderChatHistory() { ui.chatHistoryEl.innerHTML = chatState.chatHistory.map((chat, index) => `<div class="history-item ${index === chatState.currentChatIndex ? 'active' : ''}" onclick="switchChat(${index})"><input type="text" class="history-title" value="${chat.title}" onchange="updateChatTitle(${index}, this.value)"></div>`).join(''); }
     function updateChatTitle(index, newTitle) { chatState.chatHistory[index].title = newTitle; }
+    function setViewportHeight() { document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`); }
 
     document.addEventListener('DOMContentLoaded', () => {
+        setViewportHeight();
+        window.addEventListener('resize', setViewportHeight);
+
+        if (sessionStorage.getItem('leatrConsentAcknowledged') !== 'true') {
+            showConsentModal();
+        } else {
+            globalConsentAcknowledged = true;
+        }
+
         ui.inputForm.addEventListener('submit', handleUserPrompt);
-        ui.newChatBtn.addEventListener('click', createNewChat);
+        ui.newChatBtn.addEventListener('click', () => { createNewChat(); if (window.innerWidth <= 768) ui.sidebar.classList.remove('active'); });
         ui.closeSidebarBtn.addEventListener('click', () => ui.sidebar.classList.remove('active'));
         ui.menuBtn.addEventListener('click', () => ui.sidebar.classList.add('active'));
-        ui.expandBtn.addEventListener('click', () => ui.userInput.classList.toggle('fullscreen'));
         ui.consentAcknowledgeBtn.addEventListener('click', acknowledgeConsent);
-        ui.userInput.addEventListener('input', () => { 
-            ui.userInput.style.height = 'auto'; 
-            ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px'; 
+        ui.userInput.addEventListener('input', () => { ui.userInput.style.height = 'auto'; ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px'; ui.sendButton.disabled = ui.userInput.value.trim().length === 0; });
+        
+        ui.chatWindow.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = ui.chatWindow;
+            const isAtTop = scrollTop < 50;
+            const isAtBottom = scrollTop + clientHeight >= scrollHeight - 50;
+            ui.scrollUpBtn.style.display = !isAtTop && scrollHeight > clientHeight ? 'flex' : 'none';
+            ui.scrollDownBtn.style.display = !isAtBottom && scrollHeight > clientHeight ? 'flex' : 'none';
         });
-        if (chatState.chatHistory.length === 0) { createNewChat(); }
-
-        // Start the autonomous journaling process to run periodically in the background
-        setInterval(() => {
-            if (typeof Journal !== 'undefined') {
-                Journal.processInsightsOnIdle();
-            }
-        }, 60000); // Process insights every 60 seconds of idle time.
+        ui.scrollUpBtn.addEventListener('click', () => ui.chatWindow.scrollTo({ top: 0, behavior: 'smooth' }));
+        ui.scrollDownBtn.addEventListener('click', () => ui.chatWindow.scrollTo({ top: ui.chatWindow.scrollHeight, behavior: 'smooth' }));
+        
+        createNewChat();
+        if (typeof Journal !== 'undefined') { setInterval(() => Journal.processInsightsOnIdle(), 60000); }
     });
 </script>
 </body>
