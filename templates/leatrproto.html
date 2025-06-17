@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LEATR - V4 FRF Logic</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
+    <!-- The Sentient Journal must be loaded BEFORE the main script -->
+    <script src="journal.js"></script>
     <style>
         :root {
             --bg-color: #121212;
@@ -32,12 +34,12 @@
         .history-title { border: none; background: transparent; color: var(--text-color); padding: 8px 10px; flex-grow: 1; font-size: 1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .history-title:focus { background: #444; outline: 1px solid var(--user-msg-bg); border-radius: 3px; }
         
-        #main-content { flex: 1; display: flex; flex-direction: column; height: 100%; transition: margin-left 0.3s ease; /* Adjusted height and padding */ }
+        #main-content { flex: 1; display: flex; flex-direction: column; height: 100%; transition: margin-left 0.3s ease; }
         #chat-header { padding: 10px 20px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; }
         #menu-btn { background: none; border: none; color: var(--text-color); font-size: 24px; cursor: pointer; margin-right: 15px; }
         .header-title { font-size: 1.2em; font-weight: 500; }
 
-        #chat-window { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 20px; max-height: 80%;}
+        #chat-window { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 20px; max-height: 80%; padding-top: 25px; }
         .message-wrapper { display: flex; flex-direction: column; margin-top: 15px; }
         .message { max-width: 80%; padding: 12px 18px; border-radius: 20px; line-height: 1.5; word-wrap: break-word; max-height: 70vh; overflow-y: auto; }
         .user-message { background: var(--user-msg-bg); color: #fff; align-self: flex-end; border-bottom-right-radius: 5px; }
@@ -76,7 +78,7 @@
     </div>
 <script>
     // =========================================================================================
-    // ARCHITECTURE V4: HIERARCHICAL FRF (FOUNDATION-REFLEX-FORMATION)
+    // ARCHITECTURE V5: HIERARCHICAL FRF with Sentient Journaling
     // =========================================================================================
     
     const ui = {};
@@ -93,7 +95,6 @@
     let chatState = { chatHistory: [], currentChatIndex: -1 };
     let pendingPrompt = null;
 
-    // Memoization cache for dictionary API to prevent redundant calls
     const fetchWordInfo_memo = {};
     async function fetchWordInfo(word) {
         const lowerWord = word.toLowerCase();
@@ -120,52 +121,31 @@
 
     // --- LEATR PIPELINE STAGES ---
 
-    /**
-     * STAGE 1: ESTABLISH ROOT FOUNDATION - Low-level analysis of the raw prompt.
-     */
     function establishRootFoundation(prompt) {
         const state = { prompt, rootFoundation: {}, componentNodes: [], synthesis: {}, crafting: {} };
-        // Use regex to capture words and standalone punctuation
         const words = prompt.match(/\b[\w']+\b|[.,;:?!()]/g) || [];
         state.rootFoundation = { words };
         return state;
     }
 
-    /**
-     * STAGE 2: BUILD COMPONENT NODES - Create FRF nodes for each component using external data.
-     */
     async function buildComponentNodes(state) {
-        // Map Parts of Speech to the "Behavioral Tools" from the LEATR documents.
         const posToReflexMap = {
-            'noun': 'Envelope', 'pronoun': 'Envelope',
-            'verb': 'Hammer',
-            'adjective': 'Knife', 'adverb': 'Knife',
-            'conjunction': 'Stick', 'preposition': 'Stick',
-            'interjection': 'Catalyst' // A sensible addition for words like "Wow!"
+            'noun': 'Envelope', 'pronoun': 'Envelope', 'verb': 'Hammer',
+            'adjective': 'Knife', 'adverb': 'Knife', 'conjunction': 'Stick',
+            'preposition': 'Stick', 'interjection': 'Catalyst'
         };
-
         for (const word of state.rootFoundation.words) {
             const info = await fetchWordInfo(word);
             let node;
             if (info) {
                 node = {
                     component: word,
-                    foundation: { // What it IS
-                        definition: info.definition,
-                        pos: info.pos,
-                    },
-                    reflex: { // How it BEHAVES
-                        behavioralTool: posToReflexMap[info.pos] || 'Puzzle', // Default to Puzzle for unknown POS
-                    },
-                    formation: { // What it CREATES
-                        purpose: 'To contribute its meaning to the whole.',
-                        synonyms: info.synonyms,
-                        antonyms: info.antonyms
-                    }
+                    foundation: { definition: info.definition, pos: info.pos },
+                    reflex: { behavioralTool: posToReflexMap[info.pos] || 'Puzzle' },
+                    formation: { purpose: 'To contribute its meaning to the whole.', synonyms: info.synonyms, antonyms: info.antonyms }
                 };
-            } else { // Handle punctuation or unknown words
-                let type = 'unknown';
-                if (/[.,;:?!()]/.test(word)) type = 'punctuation';
+            } else {
+                let type = /[.,;:?!()]/.test(word) ? 'punctuation' : 'unknown';
                 node = { component: word, foundation: { pos: type }, reflex: { behavioralTool: 'Separator' }, formation: {} };
             }
             state.componentNodes.push(node);
@@ -173,18 +153,13 @@
         return state;
     }
 
-    /**
-     * STAGE 3: SYNTHESIZE SIGMA - Contrast all FRF nodes to find the overall context/intent.
-     */
     function synthesizeSigma(state) {
         const reflexCounts = state.componentNodes.reduce((acc, node) => {
             const tool = node.reflex.behavioralTool;
             if (tool && tool !== 'Separator') acc[tool] = (acc[tool] || 0) + 1;
             return acc;
         }, {});
-        
-        // Determine the dominant reflex for the entire prompt
-        let overallBehavioralContext = 'Envelope'; // Default
+        let overallBehavioralContext = 'Envelope';
         let maxCount = 0;
         for (const tool in reflexCounts) {
             if (reflexCounts[tool] > maxCount) {
@@ -192,23 +167,27 @@
                 overallBehavioralContext = tool;
             }
         }
-
-        // Find the primary conceptual container (first Noun) and action (first Verb)
         const mainFoundationNode = state.componentNodes.find(n => n.reflex.behavioralTool === 'Envelope');
         const mainActionNode = state.componentNodes.find(n => n.reflex.behavioralTool === 'Hammer');
-        
         state.synthesis = { overallBehavioralContext, reflexCounts, mainFoundationNode, mainActionNode };
         return state;
     }
 
     /**
-     * STAGE 4: CRAFT RESPONSE - Generate a thorough, FRF-based report.
+     * STAGE 4: CRAFT RESPONSE - Now includes optional journal influence.
+     * @param {object} state - The current analysis state.
+     * @param {object|null} influence - A relevant insight from the journal.
      */
-    function craftResponse(state) {
+    function craftResponse(state, influence = null) {
         const { overallBehavioralContext, mainFoundationNode, mainActionNode } = state.synthesis;
-        
         let response = `**LEATR Sigma Report:**\n`;
         response += `> **Overall Behavioral Context:** The prompt's components collectively exhibit a dominant **${overallBehavioralContext}** reflex.\n\n`;
+
+        // NEW: Add the Journal Reflexion section if an influence was found.
+        if (influence && influence.synthesis.mainFoundationNode) {
+            response += `**Journal Reflexion:**\n`;
+            response += `> This prompt shares a theme with a past insight regarding **'${influence.synthesis.mainFoundationNode.component}'**. That analysis had a **'${influence.synthesis.overallBehavioralContext}'** context, providing an additional layer to consider for this formation.\n\n`;
+        }
 
         response += `**Component Reflex Analysis:**\n`;
         if (mainFoundationNode) {
@@ -222,44 +201,43 @@
              response += `*   No primary **Reflex** (verb/action) was identified.\n\n`;
         }
 
-
         response += `**Final Formation (Answer):**\n`;
         let finalAnswer = `Reflexing on this structure, the system forms the following understanding: `;
-        
         switch (overallBehavioralContext) {
             case "Puzzle": finalAnswer += `the prompt is an inquiry requiring deconstruction of its parts.`; break;
             case "Knife": finalAnswer += `the prompt seeks to define or specify a core concept by "cutting away" ambiguity.`; break;
             case "Hammer": finalAnswer += `the prompt is action-oriented, focused on achieving a result through the verb '${mainActionNode?.component || 'action'}'.`; break;
             case "Stick": finalAnswer += `the prompt's goal is to connect multiple ideas or concepts in a logical sequence.`; break;
-            case "Envelope":
             default: finalAnswer += `the prompt establishes a conceptual space around '${mainFoundationNode?.component || 'its subject'}'.`; break;
         }
-
-        // Weave in a synonym to demonstrate "understanding" in formation.
         const keyNode = mainFoundationNode || mainActionNode;
         if (keyNode && keyNode.formation.synonyms && keyNode.formation.synonyms.length > 0) {
             finalAnswer += ` In this context, a related term like **'${keyNode.formation.synonyms[0]}'** could also be used to express a similar formation.`;
         } else {
             finalAnswer += ` This forms a complete thought based on the interaction of its foundational parts.`
         }
-        
         response += `> ${finalAnswer}`;
         state.crafting.finalResponse = response;
         return state;
     }
 
     // --- Core Orchestrator ---
-    async function runLeatrPipeline(prompt, chatSession) {
-        // Executes the four stages in sequence
+    async function runLeatrPipeline(prompt, chatSession, useJournal) {
+        // NEW: Check for journal influence at the start of the pipeline.
+        let influence = null;
+        if (useJournal) {
+            const preliminaryWords = (prompt.match(/\b[\w']+\b/g) || []).filter(w => w.length > 3);
+            influence = Journal.getRelevantInsight(preliminaryWords);
+        }
+
         let state = establishRootFoundation(prompt);
         state = await buildComponentNodes(state);
         state = synthesizeSigma(state);
-        state = craftResponse(state);
+        // NEW: Pass the influence (or null) to the response crafting stage.
+        state = craftResponse(state, influence);
         
-        // Auto-title the chat if it's new
         autoTitleChat(state, chatSession);
         
-        // Return the full analysis tree and the final generated response
         return { reflexTree: state, generativeResponse: state.crafting.finalResponse };
     }
     
@@ -269,37 +247,41 @@
         addMessageToHistory({ sender: 'user', text: promptText });
         renderCurrentChat();
         
-        // Add a placeholder message for the AI's response
         const placeholderIndex = addMessageToHistory({ sender: 'assistant', text: '...' });
         renderCurrentChat();
         
         try {
-            const result = await runLeatrPipeline(promptText, currentChat);
-            // Update the placeholder message with the actual result and analysis
+            // NEW: Check consent to decide if the journal should be used.
+            const useJournal = currentChat.consent.crossChat;
+            const result = await runLeatrPipeline(promptText, currentChat, useJournal);
+            
+            // Update placeholder with the full response.
             currentChat.messages[placeholderIndex] = { sender: 'assistant', text: result.generativeResponse, analysis: result.reflexTree };
+
+            // NEW: Save the new analysis to the journal AFTER it's been processed.
+            Journal.addInsight(result.reflexTree);
+
         } catch (error) {
             console.error("Pipeline Error:", error);
             currentChat.messages[placeholderIndex] = { sender: 'assistant', text: "An error occurred during the reflexive process. Please check the console for details.", analysis: { error: error.message, stack: error.stack } };
         }
         
         renderCurrentChat();
-        renderChatHistory(); // Update history in case title changed
+        renderChatHistory();
     }
     
     function handleUserPrompt(event) {
         event.preventDefault();
         const promptText = ui.userInput.value.trim();
         if (!promptText) return;
-        
         const currentChat = chatState.chatHistory[chatState.currentChatIndex];
         if (!currentChat.consent.acknowledged) {
             pendingPrompt = promptText;
             showConsentModal();
             return;
         }
-        
         ui.userInput.value = ''; 
-        ui.userInput.style.height = 'auto'; // Reset height after send
+        ui.userInput.style.height = 'auto';
         processAndRespond(promptText);
     }
     
@@ -310,7 +292,6 @@
         currentChat.consent.crossChat = ui.crossChatConsent.checked;
         currentChat.consent.publicShare = ui.publicShareConsent.checked;
         ui.consentModalOverlay.style.display = 'none';
-        
         if (pendingPrompt) {
             const promptToProcess = pendingPrompt;
             pendingPrompt = null;
@@ -319,13 +300,10 @@
     }
 
     function createNewChat() { 
-        saveCurrentChatIfUnsaved(); 
         const newChat = { 
-            id: Date.now(), 
-            title: 'New Chat', 
-            messages: [], 
+            id: Date.now(), title: 'New Chat', messages: [], 
             sentientJournal: { focus: {}, conceptualTakeaways: [] }, 
-            consent: { crossChat: false, publicShare: false, acknowledged: false } 
+            consent: { crossChat: true, publicShare: false, acknowledged: false } // Default to allowing context
         }; 
         chatState.chatHistory.push(newChat); 
         chatState.currentChatIndex = chatState.chatHistory.length - 1; 
@@ -335,7 +313,6 @@
     }
     function switchChat(index) { 
         if (index === chatState.currentChatIndex) return; 
-        saveCurrentChatIfUnsaved(); 
         chatState.currentChatIndex = index; 
         const currentChat = chatState.chatHistory[chatState.currentChatIndex]; 
         if (!currentChat.consent.acknowledged) { 
@@ -351,7 +328,6 @@
         ui.publicShareConsent.checked = currentChat.consent.publicShare; 
         ui.consentModalOverlay.style.display = 'flex'; 
     }
-    function saveCurrentChatIfUnsaved() { /* ... placeholder for future local storage logic ... */ }
     
     function autoTitleChat(finalState, chatSession) {
         if (chatSession.title === 'New Chat' && finalState.synthesis.mainFoundationNode) {
@@ -365,29 +341,15 @@
         if (chatState.currentChatIndex < 0) createNewChat(); 
         const chat = chatState.chatHistory[chatState.currentChatIndex];
         chat.messages.push(message); 
-        return chat.messages.length - 1; // Return index of the new message
+        return chat.messages.length - 1;
     }
     
     function renderCurrentChat() { 
-        if (chatState.currentChatIndex === -1) { 
-            ui.chatWindow.innerHTML = ''; 
-            return; 
-        } 
+        if (chatState.currentChatIndex === -1) { ui.chatWindow.innerHTML = ''; return; } 
         const messages = chatState.chatHistory[chatState.currentChatIndex].messages; 
         ui.chatWindow.innerHTML = messages.map(msg => { 
-            // Enhanced rendering with markdown-like features and the analysis block
-            const formattedText = msg.text.replace(/\n/g, '<br>')
-                                       .replace(/`([^`]+)`/g, `<code>$1</code>`)
-                                       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                                       .replace(/\*(.+?)\*/g, '<em>$1</em>')
-                                       .replace(/^> (.*)/gm, '<blockquote style="margin: 0; padding-left: 10px; border-left: 2px solid #555;">$1</blockquote>');
-            
-            const analysisBlock = msg.analysis ? 
-                `<details style="margin-top: 10px; cursor: pointer;">
-                    <summary style="font-size: 0.8em; opacity: 0.7;">Show Full Reflex Tree</summary>
-                    <pre style="font-size: 12px; white-space: pre-wrap; word-wrap: break-word; background: #222; padding: 8px; border-radius: 5px; margin-top: 5px;">${JSON.stringify(msg.analysis, null, 2)}</pre>
-                </details>` : ''; 
-            
+            const formattedText = msg.text.replace(/\n/g, '<br>').replace(/`([^`]+)`/g, `<code>$1</code>`).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/^> (.*)/gm, '<blockquote style="margin: 0; padding-left: 10px; border-left: 2px solid #555;">$1</blockquote>');
+            const analysisBlock = msg.analysis ? `<details style="margin-top: 10px; cursor: pointer;"><summary style="font-size: 0.8em; opacity: 0.7;">Show Full Reflex Tree</summary><pre style="font-size: 12px; white-space: pre-wrap; word-wrap: break-word; background: #222; padding: 8px; border-radius: 5px; margin-top: 5px;">${JSON.stringify(msg.analysis, null, 2)}</pre></details>` : ''; 
             return `<div class="message-wrapper"><div class="message ${msg.sender}-message">${formattedText}${analysisBlock}</div></div>`; 
         }).join(''); 
         ui.chatWindow.scrollTop = ui.chatWindow.scrollHeight; 
@@ -400,34 +362,21 @@
              </div>`
         ).join('');
     }
-    function updateChatTitle(index, newTitle) { 
-        chatState.chatHistory[index].title = newTitle; 
-    }
+    function updateChatTitle(index, newTitle) { chatState.chatHistory[index].title = newTitle; }
 
-    // --- Event Listeners ---
     document.addEventListener('DOMContentLoaded', () => {
         ui.inputForm.addEventListener('submit', handleUserPrompt);
         ui.newChatBtn.addEventListener('click', createNewChat);
         ui.closeSidebarBtn.addEventListener('click', () => ui.sidebar.classList.remove('active'));
-        ui.menuBtn.addEventListener('click', () => {
-            ui.sidebar.classList.add('active');
-            if (window.innerWidth <= 768) {
-                ui.mainContent.style.marginLeft = '0';
-            }
-        });
+        ui.menuBtn.addEventListener('click', () => ui.sidebar.classList.add('active'));
         ui.expandBtn.addEventListener('click', () => ui.userInput.classList.toggle('fullscreen'));
         ui.consentAcknowledgeBtn.addEventListener('click', acknowledgeConsent);
         ui.userInput.addEventListener('input', () => { 
             ui.userInput.style.height = 'auto'; 
             ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px'; 
         });
-        
-        // Create initial chat on load
-        if (chatState.chatHistory.length === 0) {
-            createNewChat();
-        }
+        if (chatState.chatHistory.length === 0) { createNewChat(); }
     });
-
 </script>
 </body>
 </html>
