@@ -39,7 +39,7 @@
         #menu-btn { background: none; border: none; color: var(--text-color); font-size: 24px; cursor: pointer; margin-right: 15px; }
         .header-title { font-size: 1.2em; font-weight: 500; }
 
-        #chat-window { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 20px; max-height: 80%; padding-top: 25px; }
+        #chat-window { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 20px; max-height: 70vh; }
         .message-wrapper { display: flex; flex-direction: column; margin-top: 15px; }
         .message { max-width: 80%; padding: 12px 18px; border-radius: 20px; line-height: 1.5; word-wrap: break-word; max-height: 70vh; overflow-y: auto; }
         .user-message { background: var(--user-msg-bg); color: #fff; align-self: flex-end; border-bottom-right-radius: 5px; }
@@ -78,7 +78,7 @@
     </div>
 <script>
     // =========================================================================================
-    // ARCHITECTURE V5: HIERARCHICAL FRF with Sentient Journaling
+    // ARCHITECTURE V5.1: HIERARCHICAL FRF with Resilient Sentient Journaling
     // =========================================================================================
     
     const ui = {};
@@ -172,18 +172,12 @@
         state.synthesis = { overallBehavioralContext, reflexCounts, mainFoundationNode, mainActionNode };
         return state;
     }
-
-    /**
-     * STAGE 4: CRAFT RESPONSE - Now includes optional journal influence.
-     * @param {object} state - The current analysis state.
-     * @param {object|null} influence - A relevant insight from the journal.
-     */
+    
     function craftResponse(state, influence = null) {
         const { overallBehavioralContext, mainFoundationNode, mainActionNode } = state.synthesis;
         let response = `**LEATR Sigma Report:**\n`;
         response += `> **Overall Behavioral Context:** The prompt's components collectively exhibit a dominant **${overallBehavioralContext}** reflex.\n\n`;
 
-        // NEW: Add the Journal Reflexion section if an influence was found.
         if (influence && influence.synthesis.mainFoundationNode) {
             response += `**Journal Reflexion:**\n`;
             response += `> This prompt shares a theme with a past insight regarding **'${influence.synthesis.mainFoundationNode.component}'**. That analysis had a **'${influence.synthesis.overallBehavioralContext}'** context, providing an additional layer to consider for this formation.\n\n`;
@@ -223,17 +217,19 @@
 
     // --- Core Orchestrator ---
     async function runLeatrPipeline(prompt, chatSession, useJournal) {
-        // NEW: Check for journal influence at the start of the pipeline.
         let influence = null;
-        if (useJournal) {
+        // NEW: Check if Journal object exists before trying to use it.
+        if (useJournal && typeof Journal !== 'undefined') {
             const preliminaryWords = (prompt.match(/\b[\w']+\b/g) || []).filter(w => w.length > 3);
             influence = Journal.getRelevantInsight(preliminaryWords);
+        } else if (useJournal) {
+            // This case handles when consent is true but the script failed to load.
+            console.error("Journaling is enabled, but the 'Journal' object is not available. Ensure journal.js is loaded correctly.");
         }
 
         let state = establishRootFoundation(prompt);
         state = await buildComponentNodes(state);
         state = synthesizeSigma(state);
-        // NEW: Pass the influence (or null) to the response crafting stage.
         state = craftResponse(state, influence);
         
         autoTitleChat(state, chatSession);
@@ -252,14 +248,21 @@
         
         try {
             // NEW: Check consent to decide if the journal should be used.
-            const useJournal = currentChat.consent.crossChat;
+            let useJournal = currentChat.consent.crossChat;
+
+            // NEW: Added a global check for the Journal object itself for resilience.
+            if (typeof Journal === 'undefined') {
+                useJournal = false; // Force disable if the script isn't loaded.
+            }
+
             const result = await runLeatrPipeline(promptText, currentChat, useJournal);
             
-            // Update placeholder with the full response.
             currentChat.messages[placeholderIndex] = { sender: 'assistant', text: result.generativeResponse, analysis: result.reflexTree };
 
-            // NEW: Save the new analysis to the journal AFTER it's been processed.
-            Journal.addInsight(result.reflexTree);
+            // NEW: Only add to journal if it exists.
+            if (typeof Journal !== 'undefined') {
+                Journal.addInsight(result.reflexTree);
+            }
 
         } catch (error) {
             console.error("Pipeline Error:", error);
@@ -303,7 +306,7 @@
         const newChat = { 
             id: Date.now(), title: 'New Chat', messages: [], 
             sentientJournal: { focus: {}, conceptualTakeaways: [] }, 
-            consent: { crossChat: true, publicShare: false, acknowledged: false } // Default to allowing context
+            consent: { crossChat: true, publicShare: false, acknowledged: false }
         }; 
         chatState.chatHistory.push(newChat); 
         chatState.currentChatIndex = chatState.chatHistory.length - 1; 
@@ -311,6 +314,7 @@
         renderCurrentChat(); 
         renderChatHistory(); 
     }
+
     function switchChat(index) { 
         if (index === chatState.currentChatIndex) return; 
         chatState.currentChatIndex = index; 
@@ -321,6 +325,7 @@
         renderCurrentChat(); 
         renderChatHistory(); 
     }
+
     function showConsentModal() { 
         const currentChat = chatState.chatHistory[chatState.currentChatIndex]; 
         if (!currentChat) return; 
@@ -362,6 +367,7 @@
              </div>`
         ).join('');
     }
+
     function updateChatTitle(index, newTitle) { chatState.chatHistory[index].title = newTitle; }
 
     document.addEventListener('DOMContentLoaded', () => {
