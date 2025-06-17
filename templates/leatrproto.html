@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LEATR - V4 FRF Logic</title>
+    <title>LEATR - V5 FRF Logic</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
     <!-- The Sentient Journal must be loaded BEFORE the main script -->
     <script src="journal.js"></script>
@@ -78,9 +78,10 @@
     </div>
 <script>
     // =========================================================================================
-    // ARCHITECTURE V5.1: HIERARCHICAL FRF with Resilient Sentient Journaling
+    // ARCHITECTURE V6.0: DP-Node Driven Reflexive Logic with Autonomous Journaling
     // =========================================================================================
     
+    // --- Global UI and State ---
     const ui = {};
     Object.assign(ui, {
         chatWindow: document.getElementById('chat-window'), userInput: document.getElementById('userInput'),
@@ -95,8 +96,10 @@
     let chatState = { chatHistory: [], currentChatIndex: -1 };
     let pendingPrompt = null;
 
+    // --- External Resource Gate (Memoized Dictionary API) ---
     const fetchWordInfo_memo = {};
     async function fetchWordInfo(word) {
+        // ... (This function remains unchanged)
         const lowerWord = word.toLowerCase();
         if (fetchWordInfo_memo[lowerWord]) return fetchWordInfo_memo[lowerWord];
         try {
@@ -119,7 +122,57 @@
         return null;
     }
 
-    // --- LEATR PIPELINE STAGES ---
+    // ==================================================================
+    // == DP NODE & REFLEXIVE LOGIC ALLOCATION (The New Core)
+    // ==================================================================
+    
+    /**
+     * The "Master DP Node Gate". This function determines the execution strategy for the LEATR pipeline.
+     * It consults the Sentient Journal for any learned reflexive patterns that apply to the current prompt.
+     * @param {string} prompt - The user's input.
+     * @param {boolean} useJournal - Whether to consult the journal for cross-chat context.
+     * @returns {object} The ExecutionStrategy object for the pipeline.
+     */
+    function determineExecutionStrategy(prompt, useJournal) {
+        const defaultStrategy = {
+            overrides: {},      // e.g., { word: 'newReflex' }
+            weightings: {},     // e.g., { word: 1.5 }
+            focus: 'standard',  // e.g., 'analytical', 'creative'
+            source: 'default'
+        };
+
+        if (useJournal && typeof Journal !== 'undefined') {
+            const keywords = (prompt.match(/\b[\w']+\b/g) || []).filter(w => w.length > 3);
+            const journalLogic = Journal.getApplicableLogic(keywords);
+            
+            // Merge journal logic into the default strategy
+            if (Object.keys(journalLogic.overrides).length > 0 || Object.keys(journalLogic.weightings).length > 0 || journalLogic.focus !== 'standard') {
+                journalLogic.source = 'Journal Reflexion';
+                return { ...defaultStrategy, ...journalLogic };
+            }
+        }
+        
+        return defaultStrategy;
+    }
+
+    /**
+     * The "Mirror/Shell LEATR". This validates the integrity of the reflexive logic.
+     * It ensures that a strategy from the DP Node doesn't break the core pendulum mechanics.
+     * For now, this is a basic structural check. It can be expanded with more complex rules.
+     * @param {object} strategy - The strategy object from determineExecutionStrategy.
+     * @returns {boolean} True if the strategy is valid, false otherwise.
+     */
+    function validateCoreIntegrity(strategy) {
+        if (typeof strategy.overrides !== 'object' || typeof strategy.weightings !== 'object' || typeof strategy.focus !== 'string') {
+            console.error("Integrity Check Failed: Invalid strategy object structure.", strategy);
+            return false;
+        }
+        // Add more complex validation rules here as needed.
+        return true;
+    }
+
+
+    // --- LEATR "Pendulum" PIPELINE STAGES (Updated to be strategy-driven) ---
 
     function establishRootFoundation(prompt) {
         const state = { prompt, rootFoundation: {}, componentNodes: [], synthesis: {}, crafting: {} };
@@ -128,7 +181,7 @@
         return state;
     }
 
-    async function buildComponentNodes(state) {
+    async function buildComponentNodes(state, strategy) {
         const posToReflexMap = {
             'noun': 'Envelope', 'pronoun': 'Envelope', 'verb': 'Hammer',
             'adjective': 'Knife', 'adverb': 'Knife', 'conjunction': 'Stick',
@@ -138,10 +191,17 @@
             const info = await fetchWordInfo(word);
             let node;
             if (info) {
+                // REFLEXIVE LOGIC: Check for a strategy override from the DP Node.
+                const reflexOverride = strategy.overrides[word.toLowerCase()];
+                const behavioralTool = reflexOverride || posToReflexMap[info.pos] || 'Puzzle';
+
                 node = {
                     component: word,
                     foundation: { definition: info.definition, pos: info.pos },
-                    reflex: { behavioralTool: posToReflexMap[info.pos] || 'Puzzle' },
+                    reflex: { 
+                        behavioralTool: behavioralTool,
+                        source: reflexOverride ? 'Journal Override' : 'Default POS Mapping' 
+                    },
                     formation: { purpose: 'To contribute its meaning to the whole.', synonyms: info.synonyms, antonyms: info.antonyms }
                 };
             } else {
@@ -153,12 +213,17 @@
         return state;
     }
 
-    function synthesizeSigma(state) {
+    function synthesizeSigma(state, strategy) {
         const reflexCounts = state.componentNodes.reduce((acc, node) => {
             const tool = node.reflex.behavioralTool;
-            if (tool && tool !== 'Separator') acc[tool] = (acc[tool] || 0) + 1;
+            if (tool && tool !== 'Separator') {
+                // REFLEXIVE LOGIC: Apply weighting from the DP Node strategy.
+                const weight = strategy.weightings[node.component.toLowerCase()] || 1;
+                acc[tool] = (acc[tool] || 0) + weight;
+            }
             return acc;
         }, {});
+
         let overallBehavioralContext = 'Envelope';
         let maxCount = 0;
         for (const tool in reflexCounts) {
@@ -173,30 +238,32 @@
         return state;
     }
     
-    function craftResponse(state, influence = null) {
+    function craftResponse(state, strategy) {
         const { overallBehavioralContext, mainFoundationNode, mainActionNode } = state.synthesis;
         let response = `**LEATR Sigma Report:**\n`;
-        response += `> **Overall Behavioral Context:** The prompt's components collectively exhibit a dominant **${overallBehavioralContext}** reflex.\n\n`;
-
-        if (influence && influence.synthesis.mainFoundationNode) {
-            response += `**Journal Reflexion:**\n`;
-            response += `> This prompt shares a theme with a past insight regarding **'${influence.synthesis.mainFoundationNode.component}'**. That analysis had a **'${influence.synthesis.overallBehavioralContext}'** context, providing an additional layer to consider for this formation.\n\n`;
+        
+        // REFLEXIVE LOGIC: Announce if the response was influenced by a journal pattern.
+        if (strategy.source === 'Journal Reflexion') {
+             response += `> *Journal Influence Detected. Applying learned reflexive pattern with a focus on '${strategy.focus}'.*\n\n`;
         }
 
+        response += `> **Overall Behavioral Context:** The prompt's components collectively exhibit a dominant **${overallBehavioralContext}** reflex.\n\n`;
         response += `**Component Reflex Analysis:**\n`;
+        
         if (mainFoundationNode) {
-            response += `*   The component **'${mainFoundationNode.component}'** acts as a primary **Foundation**. Its inherent reflex is **'${mainFoundationNode.reflex.behavioralTool}'**, serving as a conceptual container for its meaning: *"${mainFoundationNode.foundation.definition.slice(0, 80)}..."*\n`;
+            response += `*   **Foundation:** The component **'${mainFoundationNode.component}'** acts as a primary container. Its reflex is **'${mainFoundationNode.reflex.behavioralTool}'** (Source: ${mainFoundationNode.reflex.source}).\n`;
         } else {
              response += `*   No primary **Foundation** (noun/subject) was identified.\n`;
         }
         if (mainActionNode) {
-            response += `*   The component **'${mainActionNode.component}'** provides the primary action. Its inherent reflex is **'${mainActionNode.reflex.behavioralTool}'**, applying force to shape the prompt's intent.\n\n`;
+            response += `*   **Action:** The component **'${mainActionNode.component}'** provides the primary action via its **'${mainActionNode.reflex.behavioralTool}'** reflex.\n\n`;
         } else {
-             response += `*   No primary **Reflex** (verb/action) was identified.\n\n`;
+             response += `*   No primary **Action** (verb) was identified.\n\n`;
         }
 
         response += `**Final Formation (Answer):**\n`;
         let finalAnswer = `Reflexing on this structure, the system forms the following understanding: `;
+        // ... (Response crafting logic remains largely the same)
         switch (overallBehavioralContext) {
             case "Puzzle": finalAnswer += `the prompt is an inquiry requiring deconstruction of its parts.`; break;
             case "Knife": finalAnswer += `the prompt seeks to define or specify a core concept by "cutting away" ambiguity.`; break;
@@ -211,27 +278,27 @@
             finalAnswer += ` This forms a complete thought based on the interaction of its foundational parts.`
         }
         response += `> ${finalAnswer}`;
-        state.crafting.finalResponse = response;
+        state.crafting = { finalResponse: response, appliedStrategy: strategy };
         return state;
     }
 
     // --- Core Orchestrator ---
     async function runLeatrPipeline(prompt, chatSession, useJournal) {
-        let influence = null;
-        // NEW: Check if Journal object exists before trying to use it.
-        if (useJournal && typeof Journal !== 'undefined') {
-            const preliminaryWords = (prompt.match(/\b[\w']+\b/g) || []).filter(w => w.length > 3);
-            influence = Journal.getRelevantInsight(preliminaryWords);
-        } else if (useJournal) {
-            // This case handles when consent is true but the script failed to load.
-            console.error("Journaling is enabled, but the 'Journal' object is not available. Ensure journal.js is loaded correctly.");
+        // 1. DP Node: Determine the strategy for this specific prompt.
+        const strategy = determineExecutionStrategy(prompt, useJournal);
+
+        // 2. Mirror/Shell: Validate the strategy to ensure core integrity.
+        if (!validateCoreIntegrity(strategy)) {
+            throw new Error("Reflexive strategy failed integrity check. Aborting pipeline.");
         }
 
+        // 3. Pendulum Logic: Execute the pipeline with the reflexive strategy.
         let state = establishRootFoundation(prompt);
-        state = await buildComponentNodes(state);
-        state = synthesizeSigma(state);
-        state = craftResponse(state, influence);
+        state = await buildComponentNodes(state, strategy);
+        state = synthesizeSigma(state, strategy);
+        state = craftResponse(state, strategy);
         
+        // 4. Post-processing
         autoTitleChat(state, chatSession);
         
         return { reflexTree: state, generativeResponse: state.crafting.finalResponse };
@@ -247,21 +314,14 @@
         renderCurrentChat();
         
         try {
-            // NEW: Check consent to decide if the journal should be used.
-            let useJournal = currentChat.consent.crossChat;
-
-            // NEW: Added a global check for the Journal object itself for resilience.
-            if (typeof Journal === 'undefined') {
-                useJournal = false; // Force disable if the script isn't loaded.
-            }
-
+            const useJournal = currentChat.consent.crossChat && (typeof Journal !== 'undefined');
             const result = await runLeatrPipeline(promptText, currentChat, useJournal);
             
             currentChat.messages[placeholderIndex] = { sender: 'assistant', text: result.generativeResponse, analysis: result.reflexTree };
 
-            // NEW: Only add to journal if it exists.
-            if (typeof Journal !== 'undefined') {
-                Journal.addInsight(result.reflexTree);
+            // Add the raw analysis and its result to the journal for future learning.
+            if (useJournal) {
+                Journal.addInsight(result.reflexTree, currentChat.consent);
             }
 
         } catch (error) {
@@ -273,7 +333,8 @@
         renderChatHistory();
     }
     
-    function handleUserPrompt(event) {
+    // ... (All UI helper functions: handleUserPrompt, acknowledgeConsent, createNewChat, switchChat, etc. remain the same) ...
+     function handleUserPrompt(event) {
         event.preventDefault();
         const promptText = ui.userInput.value.trim();
         if (!promptText) return;
@@ -305,7 +366,6 @@
     function createNewChat() { 
         const newChat = { 
             id: Date.now(), title: 'New Chat', messages: [], 
-            sentientJournal: { focus: {}, conceptualTakeaways: [] }, 
             consent: { crossChat: true, publicShare: false, acknowledged: false }
         }; 
         chatState.chatHistory.push(newChat); 
@@ -382,6 +442,13 @@
             ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px'; 
         });
         if (chatState.chatHistory.length === 0) { createNewChat(); }
+
+        // Start the autonomous journaling process to run periodically in the background
+        setInterval(() => {
+            if (typeof Journal !== 'undefined') {
+                Journal.processInsightsOnIdle();
+            }
+        }, 60000); // Process insights every 60 seconds of idle time.
     });
 </script>
 </body>
