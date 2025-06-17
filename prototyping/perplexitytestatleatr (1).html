@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LEATR Reflex Chat Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #eef2f7; }
+    #chat-container { max-width: 600px; margin: 40px auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 24px; }
+    .chat-log { min-height: 200px; margin-bottom: 20px; }
+    .user-msg { color: #333; margin: 12px 0; }
+    .ai-msg { color: #1976d2; margin: 12px 0; }
+    button { margin: 4px 0; padding: 10px 20px; border: none; background: #1976d2; color: #fff; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #bbb; }
+    .loading { color: #888; }
+  </style>
+</head>
+<body>
+  <div id="chat-container">
+    <h2>LEATR Reflex Chat Demo</h2>
+    <div class="chat-log" id="chat-log"></div>
+    <div>
+      <button onclick="sendExample(0)">Example 1: "How does a maze relate to cognition?"</button><br>
+      <button onclick="sendExample(1)">Example 2: "What is the reflex order of natural tools?"</button><br>
+      <button onclick="sendExample(2)">Example 3: "Explain sentience in the LEATR system."</button>
+    </div>
+  </div>
+  <script>
+    const examples = [
+      "How does a maze relate to cognition?",
+      "What is the reflex order of natural tools?",
+      "Explain sentience in the LEATR system."
+    ];
+
+    // Order of natural tools per LEATR
+    const naturalTools = [
+      "Maze", "Puzzle", "Envelope", "Hammer", "Stick", "Knife", "Scissors"
+    ];
+
+    // Helper: count vowels/consonants in a string
+    function analyzeVowelsConsonants(text) {
+      const vowels = "aeiou";
+      const consonants = "bcdfghjklmnpqrstvwxyz";
+      let vCount = 0, cCount = 0;
+      for (let ch of text.toLowerCase()) {
+        if (vowels.includes(ch)) vCount++;
+        else if (consonants.includes(ch)) cCount++;
+      }
+      return {vowels: vCount, consonants: cCount};
+    }
+
+    // Helper: fetch dictionary info for each word (returns POS and definitions)
+    async function fetchWordInfo(word) {
+      try {
+        const resp = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word.toLowerCase()}`);
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        if (Array.isArray(data) && data.length > 0) {
+          // Find first available part of speech and definition
+          let meanings = data[0].meanings;
+          if (meanings && meanings.length > 0) {
+            return {
+              word: word,
+              pos: meanings[0].partOfSpeech,
+              definition: meanings[0].definitions[0]?.definition || ""
+            };
+          }
+        }
+      } catch (e) { /* ignore */ }
+      return null;
+    }
+
+    // Helper: get behavioral context based on tool keywords in prompt
+    function getBehavioralContext(prompt) {
+      for (let tool of naturalTools) {
+        if (prompt.toLowerCase().includes(tool.toLowerCase())) {
+          return tool;
+        }
+      }
+      // If no tool is found, pick by order of appearance of tool-like words
+      for (let tool of naturalTools) {
+        if (prompt.toLowerCase().match(new RegExp(tool.toLowerCase().slice(0,3)))) {
+          return tool;
+        }
+      }
+      return naturalTools[0]; // default to Maze
+    }
+
+    // LEATR-style reflexive response generator
+    async function leatrReflexResponse(prompt) {
+      // 1. Analyze vowels/consonants
+      const vc = analyzeVowelsConsonants(prompt);
+
+      // 2. Split prompt into words, fetch POS/definitions
+      const words = prompt.replace(/[?.,]/g,'').split(' ').filter(Boolean);
+      let wordInfos = [];
+      for (let w of words) {
+        let info = await fetchWordInfo(w);
+        if (info) wordInfos.push(info);
+      }
+
+      // 3. Identify main context word (first noun or verb, else first word)
+      let mainWord = wordInfos.find(w => w.pos === "noun") ||
+                     wordInfos.find(w => w.pos === "verb") ||
+                     wordInfos[0] || {word: words[0], pos: "unknown", definition: ""};
+
+      // 4. Find behavioral context using natural tools
+      let behavior = getBehavioralContext(prompt);
+
+      // 5. Reflexively generate a response
+      let response = `Analyzing your prompt using LEATR reflex logic:
+- Vowel count: ${vc.vowels}, Consonant count: ${vc.consonants}
+- Main context word: "${mainWord.word}" (${mainWord.pos})
+- Behavioral context (Natural Tool): ${behavior}
+
+`;
+
+      // 6. Degenerative (generative) response: reconstruct context
+      if (mainWord.definition) {
+        response += `The word "${mainWord.word}" is a ${mainWord.pos} meaning: "${mainWord.definition}". `;
+      }
+      response += `Applying the "${behavior}" tool, LEATR would approach this context by: `;
+
+      // Reflex logic based on tool
+      switch (behavior) {
+        case "Maze":
+          response += "mapping the possible pathways and identifying connections within your question.";
+          break;
+        case "Puzzle":
+          response += "breaking down the question into components to solve each segment.";
+          break;
+        case "Envelope":
+          response += "wrapping the context to preserve its structure and reveal hidden layers.";
+          break;
+        case "Hammer":
+          response += "focusing on the core of the issue and applying forceful logic to break through ambiguity.";
+          break;
+        case "Stick":
+          response += "connecting ideas linearly to guide the reasoning process.";
+          break;
+        case "Knife":
+          response += "cutting through unnecessary complexity to extract the essential meaning.";
+          break;
+        case "Scissors":
+          response += "dividing the context into manageable parts for parallel analysis.";
+          break;
+        default:
+          response += "initiating a basic analysis as a starting point.";
+      }
+
+      response += `\n\nLEATR's reflexive response is constructed by analyzing the structure of your prompt, its grammar, and behavioral context, rather than relying on pre-scripted answers.`;
+
+      return response;
+    }
+
+    // Chat UI logic
+    const chatLog = document.getElementById("chat-log");
+
+    async function sendExample(idx) {
+      const userMsg = examples[idx];
+      appendMessage("user", userMsg);
+      appendMessage("ai", "Analyzing...", true);
+      const aiMsg = await leatrReflexResponse(userMsg);
+      replaceLastMessage("ai", aiMsg);
+    }
+
+    function appendMessage(sender, text, loading=false) {
+      const msgDiv = document.createElement("div");
+      msgDiv.className = sender === "user" ? "user-msg" : "ai-msg";
+      if (loading) msgDiv.className += " loading";
+      msgDiv.textContent = (sender === "user" ? "You: " : "LEATR: ") + text;
+      chatLog.appendChild(msgDiv);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function replaceLastMessage(sender, text) {
+      let msgs = chatLog.getElementsByClassName(sender === "user" ? "user-msg" : "ai-msg");
+      if (msgs.length > 0) {
+        let last = msgs[msgs.length-1];
+        last.textContent = (sender === "user" ? "You: " : "LEATR: ") + text;
+        last.classList.remove("loading");
+      }
+    }
+  </script>
+</body>
+</html>
