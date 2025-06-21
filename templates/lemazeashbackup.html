@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Lead Edge Maze Ash</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: transparent;
+            color: #fff;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 0;
+            background: rgba(28, 42, 53, 0.85);
+            backdrop-filter: blur(5px);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            width: 280px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            transition: height 0.3s ease;
+        }
+        #ui-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-bottom: 1px solid #444;
+        }
+        #ui-header h2 { margin: 0; font-size: 1.2em; }
+        #ui-toggle { font-size: 1.5em; font-weight: bold; user-select: none; }
+        #ui-content {
+            padding: 15px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        #ui-panel.collapsed #ui-content { padding-top: 0; padding-bottom: 0; max-height: 0; opacity: 0; }
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; margin-bottom: 4px; font-size: 0.9em; color: #ccc; }
+        .control-group input { width: calc(100% - 12px); background: #333; border: 1px solid #555; color: #fff; padding: 6px; border-radius: 4px; }
+        button { width: 100%; padding: 10px; margin-top: 8px; background-color: #007bff; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 1em; font-weight: bold; transition: background-color 0.2s; }
+        button:hover { background-color: #0056b3; }
+        button.secondary { background-color: #6c757d; }
+        button.secondary:hover { background-color: #5a6268; }
+        button:disabled { background-color: #333; cursor: not-allowed; color: #777; }
+        hr { border: 0; border-top: 1px solid #444; margin: 15px 0; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <div id="ui-header">
+            <h2>Maze Controls</h2>
+            <span id="ui-toggle">▼</span>
+        </div>
+        <div id="ui-content">
+            <div class="control-group">
+                <label for="mazeWidth">Width</label>
+                <input type="number" id="mazeWidth" value="12" min="3" max="100">
+            </div>
+            <div class="control-group">
+                <label for="mazeHeight">Height</label>
+                <input type="number" id="mazeHeight" value="12" min="3" max="100">
+            </div>
+            <div class="control-group">
+                <label for="cellSize">Cell Size</label>
+                <input type="number" id="cellSize" value="10" min="1">
+            </div>
+             <div class="control-group">
+                <label for="wallHeight">Wall Height</label>
+                <input type="number" id="wallHeight" value="8" min="1">
+            </div>
+            <button id="generateBtn">Generate Maze</button>
+            <button id="solveBtn" disabled>Solve Maze</button>
+
+            <!-- [NEW] Checkbox for instant solving -->
+            <div class="control-group" style="margin-top: 10px; display: flex; align-items: center; justify-content: start;">
+                <input type="checkbox" id="instantSolveCheck" style="width: auto; margin-right: 8px; margin-top:0;">
+                <label for="instantSolveCheck" style="margin-bottom: 0; color: #fff; font-size: 0.9em; display: inline-block; width:auto;">Solve Instantly</label>
+            </div>
+
+            <hr>
+            <button id="frameViewBtn" class="secondary">Frame View</button>
+            <button id="exportGlbBtn" class="secondary">Export to GLB</button>
+            <button id="exportPngBtn" class="secondary">Export to PNG</button>
+            <hr>
+            <button id="clearBtn" class="secondary" style="background-color: #dc3545;">Clear Scene</button>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+        // --- GLOBAL STATE ---
+        let scene, camera, renderer, controls;
+        let mazeGroup = new THREE.Group();
+        let pathObject = null;
+        
+        const mazeData = { grid: null, start: null, end: null, solutionPath: null };
+        
+        // --- UI ELEMENTS ---
+        const uiPanel = document.getElementById('ui-panel');
+        const uiToggle = document.getElementById('ui-toggle');
+        const generateBtn = document.getElementById('generateBtn');
+        const solveBtn = document.getElementById('solveBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const frameViewBtn = document.getElementById('frameViewBtn');
+        const exportGlbBtn = document.getElementById('exportGlbBtn');
+        const exportPngBtn = document.getElementById('exportPngBtn');
+        // [NEW] Get reference to the new checkbox
+        const instantSolveCheck = document.getElementById('instantSolveCheck');
+
+        // --- MAZE LOGIC --- (No changes in this section)
+        function createGrid(w, h) { return Array(h).fill(null).map(() => Array(w).fill(null).map(() => ({ N: true, E: true, S: true, W: true }))); }
+        function generateMazeGrid(width, height) {
+            const grid = createGrid(width, height);
+            const dOp = { 'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E' };
+            const dx = { 'E': 1, 'W': -1, 'N': 0, 'S': 0 };
+            const dy = { 'E': 0, 'W': 0, 'N': -1, 'S': 1 };
+            const stack = [[Math.floor(Math.random()*width), Math.floor(Math.random()*height)]];
+            const visited = new Set([`${stack[0][0]},${stack[0][1]}`]);
+            while (stack.length > 0) {
+                const [cx, cy] = stack[stack.length - 1];
+                const neighbors = [];
+                for (const dir of ['N', 'E', 'S', 'W']) {
+                    const nx = cx + dx[dir], ny = cy + dy[dir];
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height && !visited.has(`${nx},${ny}`)) {
+                        neighbors.push({ dir, x: nx, y: ny });
+                    }
+                }
+                if (neighbors.length > 0) {
+                    const { dir, x: nx, y: ny } = neighbors[Math.floor(Math.random() * neighbors.length)];
+                    grid[cy][cx][dir] = false; grid[ny][nx][dOp[dir]] = false;
+                    visited.add(`${nx},${ny}`); stack.push([nx, ny]);
+                } else { stack.pop(); }
+            }
+            return grid;
+        }
+        function getRandomPerimeterCell(w, h, exclude = null, minDistance = 0) {
+            const perimeter = [];
+            for (let x = 0; x < w; x++) { perimeter.push({ x, y: 0 }); perimeter.push({ x, y: h - 1 }); }
+            for (let y = 1; y < h - 1; y++) { perimeter.push({ x: 0, y }); perimeter.push({ x: w - 1, y }); }
+            
+            let attempts = 0;
+            while(attempts < 100) {
+                let potentialCells = perimeter;
+                if (exclude) {
+                    potentialCells = perimeter.filter(p => p.x !== exclude.x || p.y !== exclude.y);
+                }
+                if(potentialCells.length === 0) return perimeter[0];
+                
+                const cell = potentialCells[Math.floor(Math.random() * potentialCells.length)];
+                
+                if (exclude && minDistance > 0) {
+                    const dist = Math.sqrt(Math.pow(cell.x - exclude.x, 2) + Math.pow(cell.y - exclude.y, 2));
+                    if (dist >= minDistance) {
+                        return cell;
+                    }
+                } else {
+                    return cell;
+                }
+                attempts++;
+            }
+            return perimeter.filter(p => p.x !== exclude?.x || p.y !== exclude?.y)[0];
+        }
+        function solveMaze(grid, start, end) {
+            const w = grid[0].length, h = grid.length;
+            const dx = { 'E': 1, 'W': -1, 'N': 0, 'S': 0 };
+            const dy = { 'E': 0, 'W': 0, 'N': -1, 'S': 1 };
+            const q = [start], visited = new Set([`${start.x},${start.y}`]), parentMap = new Map();
+            let pathFound = false;
+            while (q.length > 0) {
+                const curr = q.shift();
+                if (curr.x === end.x && curr.y === end.y) { pathFound = true; break; }
+                for (const dir of ['N', 'E', 'S', 'W']) {
+                    if (!grid[curr.y][curr.x][dir]) {
+                        const nx = curr.x + dx[dir], ny = curr.y + dy[dir], key = `${nx},${ny}`;
+                        if (nx >= 0 && nx < w && ny >= 0 && ny < h && !visited.has(key)) {
+                            visited.add(key); parentMap.set(key, `${curr.x},${curr.y}`); q.push({ x: nx, y: ny });
+                        }
+                    }
+                }
+            }
+            if (!pathFound) return [];
+            const path = []; let currKey = `${end.x},${end.y}`;
+            while (currKey) {
+                const [x, y] = currKey.split(',').map(Number);
+                path.unshift({ x, y }); currKey = parentMap.get(currKey);
+            }
+            return path;
+        }
+        function isPathUninteresting(path) {
+            if (path.length < 3) return true;
+            const isHorizontal = path.every(p => p.y === path[0].y);
+            const isVertical = path.every(p => p.x === path[0].x);
+            return isHorizontal || isVertical;
+        }
+
+        // --- THREE.JS LOGIC --- (No changes in init, draw3DMaze)
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
+            camera.position.set(80, 100, 150);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dirLight.position.set(50, 80, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 200; dirLight.shadow.camera.bottom = -200;
+            dirLight.shadow.camera.left = -200; dirLight.shadow.camera.right = 200;
+            scene.add(dirLight);
+            
+            scene.add(mazeGroup);
+            
+            addEventListeners();
+            animate();
+        }
+        function draw3DMaze(grid, start, end, cellSize, wallHeight) {
+            clearSceneContent();
+            
+            const width = grid[0].length;
+            const height = grid.length;
+            const wallThickness = cellSize * 0.1;
+            
+            const wallGeo = new THREE.BoxGeometry(1, 1, 1);
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const cell = grid[y][x];
+                    if (cell.N && y > 0) { }
+                    if (cell.W && x > 0) { }
+
+                    if (cell.E && x < width - 1) {
+                        const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.scale.set(wallThickness, wallHeight, cellSize);
+                        wall.position.set((x + 1) * cellSize, wallHeight / 2, y * cellSize + cellSize / 2);
+                        wall.castShadow = true; mazeGroup.add(wall);
+                    }
+                    if (cell.S && y < height - 1) {
+                         const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.scale.set(cellSize, wallHeight, wallThickness);
+                        wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, (y + 1) * cellSize);
+                        wall.castShadow = true; mazeGroup.add(wall);
+                    }
+                }
+            }
+            
+            for(let x=0; x < width; x++) {
+                 if (!(start.x === x && start.y === 0) && !(end.x === x && end.y === 0)) {
+                     const wall = new THREE.Mesh(wallGeo, wallMat);
+                     wall.scale.set(cellSize, wallHeight, wallThickness);
+                     wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, 0);
+                     wall.castShadow = true; mazeGroup.add(wall);
+                 }
+                 if (!(start.x === x && start.y === height - 1) && !(end.x === x && end.y === height - 1)) {
+                     const wall = new THREE.Mesh(wallGeo, wallMat);
+                     wall.scale.set(cellSize, wallHeight, wallThickness);
+                     wall.position.set(x * cellSize + cellSize / 2, wallHeight / 2, height * cellSize);
+                     wall.castShadow = true; mazeGroup.add(wall);
+                 }
+            }
+            for(let y=0; y < height; y++) {
+                 if (!(start.x === 0 && start.y === y) && !(end.x === 0 && end.y === y)) {
+                    const wall = new THREE.Mesh(wallGeo, wallMat);
+                    wall.scale.set(wallThickness, wallHeight, cellSize);
+                    wall.position.set(0, wallHeight/2, y * cellSize + cellSize/2);
+                    wall.castShadow = true; mazeGroup.add(wall);
+                 }
+                 if (!(start.x === width - 1 && start.y === y) && !(end.x === width - 1 && end.y === y)) {
+                    const wall = new THREE.Mesh(wallGeo, wallMat);
+                    wall.scale.set(wallThickness, wallHeight, cellSize);
+                    wall.position.set(width * cellSize, wallHeight/2, y * cellSize + cellSize/2);
+                    wall.castShadow = true; mazeGroup.add(wall);
+                 }
+            }
+            
+            [start, end].forEach(point => {
+                const markerGeo = new THREE.BoxGeometry(cellSize * 0.9, 0.2, cellSize * 0.9);
+                const markerMat = new THREE.MeshStandardMaterial({ color: 0xff4444, emissive: 0xaa0000 });
+                const marker = new THREE.Mesh(markerGeo, markerMat);
+                marker.position.set(point.x * cellSize + cellSize / 2, 0.1, point.y * cellSize + cellSize / 2);
+                mazeGroup.add(marker);
+            });
+
+            const box = new THREE.Box3().setFromObject(mazeGroup);
+            const center = box.getCenter(new THREE.Vector3());
+            mazeGroup.position.sub(center);
+        }
+        
+        // [MODIFIED] Renamed parameter, it is not used here but kept for signature consistency
+        function drawAnimatedPath(path, cellSize) {
+            clearPathObject();
+            if (path.length < 1) return;
+
+            pathObject = new THREE.Group();
+            pathObject.name = 'solution_path_group';
+            mazeGroup.add(pathObject);
+
+            const pathGeo = new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8);
+            const pathMat = new THREE.MeshStandardMaterial({
+                color: 0x00aaff, emissive: 0x0088ee, emissiveIntensity: 1.5,
+                side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.85
+            });
+
+            let i = 0;
+            const interval = 30; // The animation speed control
+
+            function addSegment() {
+                if (i >= path.length) return;
+                const cell = path[i];
+                const segment = new THREE.Mesh(pathGeo, pathMat);
+                segment.position.set(
+                    cell.x * cellSize + cellSize / 2, 0.2, cell.y * cellSize + cellSize / 2
+                );
+                segment.rotation.x = -Math.PI / 2;
+                pathObject.add(segment);
+                i++;
+                setTimeout(addSegment, interval);
+            }
+            addSegment();
+        }
+
+        // [NEW] Function to draw the path instantly
+        function drawInstantPath(path, cellSize) {
+            clearPathObject();
+            if (path.length < 1) return;
+
+            pathObject = new THREE.Group();
+            pathObject.name = 'solution_path_group';
+            mazeGroup.add(pathObject);
+
+            const pathGeo = new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8);
+            const pathMat = new THREE.MeshStandardMaterial({
+                color: 0x00aaff, emissive: 0x0088ee, emissiveIntensity: 1.5,
+                side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.85
+            });
+
+            // Use a simple loop to add all segments at once
+            for (const cell of path) {
+                const segment = new THREE.Mesh(pathGeo, pathMat);
+                segment.position.set(
+                    cell.x * cellSize + cellSize / 2, 0.2, cell.y * cellSize + cellSize / 2
+                );
+                segment.rotation.x = -Math.PI / 2;
+                pathObject.add(segment);
+            }
+        }
+        
+        function frameView() {
+            if (mazeGroup.children.length === 0) return;
+            const box = new THREE.Box3().setFromObject(mazeGroup);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+            cameraZ *= 1.5;
+            controls.target.copy(center);
+            const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+            camera.position.copy(direction.multiplyScalar(cameraZ).add(center));
+            controls.update();
+        }
+
+        // --- HANDLERS & HELPERS --- (No changes to clear functions or generate)
+        function clearPathObject() {
+            if (pathObject) {
+                pathObject.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
+                });
+                mazeGroup.remove(pathObject);
+                pathObject = null;
+            }
+        }
+        function clearSceneContent() {
+            while(mazeGroup.children.length > 0){ 
+                const child = mazeGroup.children[0];
+                mazeGroup.remove(child);
+                if (child.isMesh) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                } else if (child.isGroup) {
+                    child.traverse(c => {
+                        if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); }
+                    });
+                }
+            }
+            pathObject = null;
+            mazeData.grid = null;
+            solveBtn.disabled = true;
+        }
+        function handleGenerate() {
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'Generating...';
+
+         setTimeout(() => {
+                const width = parseInt(document.getElementById('mazeWidth').value);
+                const height = parseInt(document.getElementById('mazeHeight').value);
+                const cellSize = parseFloat(document.getElementById('cellSize').value);
+                const wallHeight = parseFloat(document.getElementById('wallHeight').value);
+
+                let attempts = 0;
+                let isGoodMaze = false;
+                
+                do {
+                    mazeData.grid = generateMazeGrid(width, height);
+                    const min_dist = Math.max(width, height) / 2;
+                    mazeData.start = getRandomPerimeterCell(width, height);
+                    mazeData.end = getRandomPerimeterCell(width, height, mazeData.start, min_dist);
+                    mazeData.solutionPath = solveMaze(mazeData.grid, mazeData.start, mazeData.end);
+
+                    if (mazeData.solutionPath.length > 0 && !isPathUninteresting(mazeData.solutionPath)) {
+                        isGoodMaze = true;
+                    }
+                    attempts++;
+                } while (!isGoodMaze && attempts < 50);
+
+                if (!isGoodMaze) {
+                    console.warn("Could not generate a complex maze after 50 attempts. Using the last one.");
+                }
+
+                draw3DMaze(mazeData.grid, mazeData.start, mazeData.end, cellSize, wallHeight);
+                
+                solveBtn.disabled = false;
+                frameView();
+
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'Generate Maze';
+            }, 10);
+        }
+
+        // [MODIFIED] The solve handler now checks the checkbox
+        function handleSolve() {
+            if (!mazeData.solutionPath || mazeData.solutionPath.length === 0) {
+                alert("No solution found for this maze!");
+                return;
+            }
+
+            const cellSize = parseFloat(document.getElementById('cellSize').value);
+            const isInstant = instantSolveCheck.checked;
+
+            if (isInstant) {
+                drawInstantPath(mazeData.solutionPath, cellSize);
+            } else {
+                drawAnimatedPath(mazeData.solutionPath, cellSize);
+            }
+        }
+        
+        function downloadFile(content, fileName, isBinary = false) {
+            const link = document.createElement('a'); link.style.display = 'none'; document.body.appendChild(link);
+            const blob = isBinary ? new Blob([content], {type: 'application/octet-stream'}) : new Blob([content], {type: 'text/plain'});
+            link.href = URL.createObjectURL(blob); link.download = fileName; link.click();
+            URL.revokeObjectURL(link.href); document.body.removeChild(link);
+        }
+        function handleExportGLB() {
+            const exporter = new GLTFExporter();
+            exporter.parse( mazeGroup, (gltf) => { 
+                downloadFile(gltf, 'maze.glb', true); 
+            }, (error) => { console.error('GLB export error:', error); }, { binary: true } );
+        }
+        function handleExportPNG() {
+            renderer.render(scene, camera);
+            const dataURL = renderer.domElement.toDataURL('image/png');
+            const link = document.createElement('a'); link.download = 'maze.png'; link.href = dataURL; link.click();
+        }
+
+        // --- EVENT LISTENERS & INITIALIZATION --- (No changes here)
+        function addEventListeners() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+            uiToggle.addEventListener('click', () => {
+                uiPanel.classList.toggle('collapsed'); uiToggle.textContent = uiPanel.classList.contains('collapsed') ? '►' : '▼'; });
+            generateBtn.addEventListener('click', handleGenerate);
+            solveBtn.addEventListener('click', handleSolve);
+            clearBtn.addEventListener('click', clearSceneContent);
+            frameViewBtn.addEventListener('click', frameView);
+            exportGlbBtn.addEventListener('click', handleExportGLB);
+            exportPngBtn.addEventListener('click', handleExportPNG);
+        }
+        function animate() {
+            requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera);
+        }
+        init();
+        handleGenerate();
+
+    </script>
+</body>
+</html>
