@@ -49,8 +49,12 @@ def sysmn():
 @app.route("/dartedgeaiide.html")
 def syside():
     return render_template("dartedgeaiide.html")
-
+# <-- New route to serve your mockup -->
+@app.route("/leaudiovisualizer.html")
+def sysleav():
+    return render_template("leaudiovisualizer.html")
 @app.route("/api/chat", methods=["POST"])
+
 def chat():
     payload = request.get_json() or {}
     user_msg = payload.get("message", "").strip()
