@@ -1215,22 +1215,24 @@ function drawInstantPath(path, cellSize) {
             return audioContextStarted;
         }
         
-        function setupAudioSource(audioElement) {
+                function setupAudioSource() {
+            // If the source is already created and connected, we're done.
+            if (audioSource) return true;
+            
             if (!ensureAudioContextStarted()) {
                 addTerminalMessage("ERROR: AUDIO CONTEXT NOT READY.", true);
                 return false;
             }
-            if (audioSource) {
-                audioSource.disconnect();
-            }
+            
+            // This part will now only run ONCE, the very first time a track is loaded.
             try {
-                audioSource = audioContext.createMediaElementSource(audioElement);
+                audioSource = audioContext.createMediaElementSource(currentAudioElement);
                 audioSource.connect(audioAnalyser);
                 audioAnalyser.connect(audioContext.destination);
-                addTerminalMessage("AUDIO SOURCE CONNECTED: " + (audioElement.src.substring(0,50) || "HTMLMediaElement"));
+                addTerminalMessage("AUDIO SOURCE ESTABLISHED & CONNECTED.");
                 return true;
             } catch (error) {
-                 addTerminalMessage("ERROR SETTING UP AUDIO SOURCE: " + error.message, true);
+                 addTerminalMessage("FATAL: COULD NOT SET UP AUDIO SOURCE: " + error.message, true);
                  console.error("Error setting up audio source:", error);
                  return false;
             }
@@ -1241,51 +1243,75 @@ function drawInstantPath(path, cellSize) {
                 handleGenerate();
                 isMazeGeneratedForSong = true;
             }
-            audioElement.play().catch(e => addTerminalMessage("Playback error: " + e.message, true));
+            // The play() method returns a promise. We'll catch potential errors.
+            audioElement.play().catch(e => {
+                // This error is normal if you switch tracks quickly. We can safely ignore it.
+                if (e.name !== 'AbortError') {
+                    addTerminalMessage("Playback error: " + e.message, true);
+                }
+            });
         }
 
         function loadAudioFile(file) {
             if (!initAudioSystem()) return;
+            
             isMazeGeneratedForSong = false;
             const fileURL = URL.createObjectURL(file);
-            currentAudioElement.src = fileURL;
             fileLabel.textContent = file.name.length > 25 ? file.name.substring(0,22) + "..." : file.name;
+            addTerminalMessage(`LOADING AUDIO FILE: ${file.name}`);
+
+            // This event handler is the key. It waits for the new file to be ready.
             currentAudioElement.oncanplaythrough = () => {
-                if (setupAudioSource(currentAudioElement)) {
+                // Ensure the single audio source node is created if it's the first time.
+                if (setupAudioSource()) {
+                    // Now that the track is ready and source is connected, play it.
                     playAudio(currentAudioElement);
                 }
+                // Nullify the handler to prevent it from re-firing on this track (e.g., after seeking).
+                currentAudioElement.oncanplaythrough = null;
             };
             currentAudioElement.onerror = () => {
                 addTerminalMessage(`ERROR LOADING AUDIO FILE: ${file.name}`, true);
                 fileLabel.textContent = "LOAD ERROR";
             };
-            addTerminalMessage(`LOADING AUDIO FILE: ${file.name}`);
+
+            // Set the new source and tell the browser to load it. The event handler will do the rest.
+            currentAudioElement.src = fileURL;
+            currentAudioElement.load();
         }
 
         function loadDemoTrack(url) {
             if (!initAudioSystem()) return;
+
             isMazeGeneratedForSong = false;
-            currentAudioElement.src = url;
             const filename = url.split("/").pop();
             fileLabel.textContent = filename.length > 25 ? filename.substring(0,22) + "..." : filename;
-            
+            addTerminalMessage(`LOADING DEMO TRACK: ${filename}`);
+
+            // This event handler is the key. It waits for the new track to be ready.
             currentAudioElement.oncanplaythrough = () => {
-                 if (setupAudioSource(currentAudioElement)) {
+                // Ensure the single audio source node is created if it's the first time.
+                if (setupAudioSource()) {
+                    // Now that the track is ready and source is connected, play it.
                     playAudio(currentAudioElement);
                 }
+                // Nullify the handler to prevent it from re-firing on this track (e.g., after seeking).
+                currentAudioElement.oncanplaythrough = null;
             };
              currentAudioElement.onerror = () => {
                 addTerminalMessage(`ERROR LOADING DEMO: ${filename}`, true);
                 fileLabel.textContent = "LOAD ERROR";
             };
-            addTerminalMessage(`LOADING DEMO TRACK: ${filename}`);
+
+            // Set the new source and tell the browser to load it. The event handler will do the rest.
+            currentAudioElement.src = url;
+            currentAudioElement.load();
         }
         
         currentAudioElement.onplay = () => { isAudioPlaying = true; terminalStatus.textContent = "PLAYING"; };
         currentAudioElement.onpause = () => { isAudioPlaying = false; terminalStatus.textContent = "PAUSED"; };
         currentAudioElement.onended = () => { isAudioPlaying = false; terminalStatus.textContent = "AUDIO READY"; };
-
-
+        
         // --- UI HANDLERS & HELPERS ---
         function updateMazeMetrics() {
             wallCountValueElement.textContent = mazeData.wallMeshes.length;
