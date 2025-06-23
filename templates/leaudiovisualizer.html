@@ -687,9 +687,18 @@ Original URL: [https://codepen.io/filipz/pen/yyyRgry](https://codepen.io/filipz/
 
     // --- SPOTIFY CONSTANTS ---
     // IMPORTANT: Replace with your own Client ID from the Spotify Developer Dashboard.
-    const SPOTIFY_CLIENT_ID = '30653ea03459454cbf3f0048e5a5b7df';
-    // This should match the Redirect URI you set in your Spotify Developer Dashboard.
-    const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
+    // --- SPOTIFY CONSTANTS ---
+// --- SPOTIFY CONSTANTS ---
+const SPOTIFY_CLIENT_ID = '30653ea03459454cbf3f0048e5a5b7df';
+const SPOTIFY_REDIRECT_URI = 'https://arielnpu.space/leaudiovisualizer.html'; // ← exact, no trailing slash
+
+const SPOTIFY_SCOPES = [
+    'streaming',
+    'user-read-email',
+    'user-read-private',
+    'user-read-playback-state',
+    'user-modify-playback-state'
+].join(' ');
 
 
     // *** MODIFICATION: Register GSAP plugins here ***
@@ -1241,45 +1250,69 @@ Original URL: [https://codepen.io/filipz/pen/yyyRgry](https://codepen.io/filipz/
         addTerminalMessage("PATH SOLUTION DRAWN INSTANTLY.");
     }
 
-    // --- SPOTIFY INTEGRATION ---
-    function initSpotify() {
-        if (SPOTIFY_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
-            addTerminalMessage("SPOTIFY: Client ID not set. Integration disabled.", true);
-            spotifyLoginBtn.textContent = "Spotify Disabled";
-            spotifyLoginBtn.disabled = true;
-            return;
-        }
-
-        // Check for access token in URL hash
-        const hash = window.location.hash;
-        if (hash) {
-            const params = new URLSearchParams(hash.substring(1));
-            const token = params.get('access_token');
-            if (token) {
-                spotifyAccessToken = token;
-                // Clean the URL
-                window.location.hash = '';
-                history.pushState("", document.title, window.location.pathname + window.location.search);
-                
-                addTerminalMessage("SPOTIFY: Access token received.");
-                spotifyLoginView.style.display = 'none';
-                spotifyPlayerView.style.display = 'block';
-                initializeSpotifySDK();
-            }
-        }
+// --- SPOTIFY INTEGRATION ---
+function initSpotify() {
+    // --- GUARD CLAUSE: ensure Client ID is set ---
+    if (!SPOTIFY_CLIENT_ID || SPOTIFY_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
+        addTerminalMessage("SPOTIFY: Client ID not set. Integration disabled.", true);
+        spotifyLoginBtn.textContent = "Spotify Disabled";
+        spotifyLoginBtn.disabled = true;
+        return;
     }
+    
+    // --- PARSE ACCESS TOKEN FROM URL HASH ---
+    const hash = window.location.hash;
+    if (!hash) return;
+    
+    const params = new URLSearchParams(hash.substring(1));
+    const token = params.get('access_token');
+    if (!token) return;
+    
+    // --- STORE TOKEN & CLEAN UP URL ---
+    spotifyAccessToken = token;
+    window.location.hash = '';
+    history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    
+    // --- UPDATE UI & INITIALIZE SDK ---
+    addTerminalMessage("SPOTIFY: Access token received.");
+    spotifyLoginView.style.display = 'none';
+    spotifyPlayerView.style.display = 'block';
+    initializeSpotifySDK();
+}
+
+// Wire it up on page-load:
+document.addEventListener('DOMContentLoaded', initSpotify);
 
     function handleSpotifyLogin() {
-        const scopes = [
-            'streaming',
-            'user-read-email',
-            'user-read-private',
-            'user-read-playback-state',
-            'user-modify-playback-state'
-        ].join(' ');
-
-        window.location = `https://accounts.spotify.com/authorize?client_id=${SPOTIFY_CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(SPOTIFY_REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}`;
+    // --- GUARD CLAUSES ---
+    // Ensure Client ID is configured
+    if (!SPOTIFY_CLIENT_ID || SPOTIFY_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
+        alert("Spotify Client ID is not configured. Please set SPOTIFY_CLIENT_ID.");
+        addTerminalMessage("SPOTIFY: Client ID not set. Integration disabled.", true);
+        return;
     }
+    // Ensure Redirect URI is configured
+    if (!SPOTIFY_REDIRECT_URI) {
+        alert("Spotify Redirect URI is not configured. Please set SPOTIFY_REDIRECT_URI.");
+        addTerminalMessage("SPOTIFY: Redirect URI not set. Integration disabled.", true);
+        return;
+    }
+    
+    // --- BUILD AUTHORIZE URL ---
+    const authEndpoint = 'https://accounts.spotify.com/authorize';
+    const params = new URLSearchParams({
+        client_id: SPOTIFY_CLIENT_ID,
+        response_type: 'token',
+        redirect_uri: SPOTIFY_REDIRECT_URI,
+        scope: SPOTIFY_SCOPES,
+        show_dialog: 'true' // Force login/consent dialog every time
+    });
+    
+    // --- REDIRECT TO SPOTIFY ---
+    const authUrl = `${authEndpoint}?${params.toString()}`;
+    console.log("Redirecting to Spotify:", authUrl);
+    window.location.href = authUrl;
+}
     
     function initializeSpotifySDK() {
         window.onSpotifyWebPlaybackSDKReady = () => {
