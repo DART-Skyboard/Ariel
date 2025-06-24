@@ -1242,29 +1242,46 @@ const SPOTIFY_REDIRECT_URI = 'https://arielnpu.space/leaudiovisualizer.html';
 
     // --- SPOTIFY INTEGRATION ---
     function initSpotify() {
-        if (SPOTIFY_CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
+        if (SPOTIFY_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' || SPOTIFY_CLIENT_ID === '') {
             addTerminalMessage("SPOTIFY: Client ID not set. Integration disabled.", true);
             spotifyLoginBtn.textContent = "Spotify Disabled";
             spotifyLoginBtn.disabled = true;
-            return;
+            spotifyLoginView.style.display = 'block'; // Ensure login view is shown
+            spotifyPlayerView.style.display = 'none';
+            return false; // Indicate that initialization did not proceed
         }
 
-        // Check for access token in URL hash
         const hash = window.location.hash;
         if (hash) {
             const params = new URLSearchParams(hash.substring(1));
             const token = params.get('access_token');
             if (token) {
                 spotifyAccessToken = token;
-                // Clean the URL
-                window.location.hash = '';
+                window.location.hash = ''; // Clean the URL
                 history.pushState("", document.title, window.location.pathname + window.location.search);
                 
-                addTerminalMessage("SPOTIFY: Access token received.");
+                addTerminalMessage("SPOTIFY: Access token received from URL.");
                 spotifyLoginView.style.display = 'none';
                 spotifyPlayerView.style.display = 'block';
                 initializeSpotifySDK();
+                return true; // Indicate successful token retrieval and SDK init
+            } else {
+                // Hash exists but no token (e.g., error parameter from Spotify)
+                const error = params.get('error');
+                if (error) {
+                    addTerminalMessage(`SPOTIFY: Error during login - ${error}`, true);
+                    showNotification(`Spotify Login Error: ${error}`, 5000);
+                }
+                spotifyLoginView.style.display = 'block';
+                spotifyPlayerView.style.display = 'none';
+                return false;
             }
+        } else {
+            // No hash, so no token from redirect. Show login button.
+            addTerminalMessage("SPOTIFY: No access token in URL. Ready for login.");
+            spotifyLoginView.style.display = 'block';
+            spotifyPlayerView.style.display = 'none';
+            return false; // Indicate no token found, SDK not initialized yet
         }
     }
 
@@ -1844,9 +1861,11 @@ const SPOTIFY_REDIRECT_URI = 'https://arielnpu.space/leaudiovisualizer.html';
             setTimeout(() => { 
                 loadingOverlay.style.display = 'none'; 
                 initAudioSystem();
-                initSpotify();
+                const spotifyInitialized = initSpotify(); // Call initSpotify and check its return
                 terminalStatus.textContent = "ONLINE";
-                showNotification("System Online. Load Audio or connect Spotify.", 4000);
+                if (!spotifyInitialized) { // Only show this if Spotify didn't initialize (i.e. no token yet)
+                    showNotification("System Online. Load Audio or Login with Spotify.", 4000);
+                }
             }, 500);
             
             initThree();
