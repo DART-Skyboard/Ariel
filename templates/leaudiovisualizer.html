@@ -1,228 +1,151 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spotify Web Player</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #121212;
-            color: #ffffff;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            text-align: center;
-        }
-        #login-container, #player-container {
-            background-color: #282828;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 4px 60px rgba(0, 0, 0, 0.5);
-        }
-        h1 {
-            margin-bottom: 20px;
-        }
-        .btn {
-            background-color: #1DB954;
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 50px;
-            font-size: 16px;
-            cursor: pointer;
-            text-decoration: none;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: bold;
-        }
-        .btn:hover {
-            background-color: #1ED760;
-        }
-        .player-controls button {
-            background: none;
-            border: 1px solid #535353;
-            color: white;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            margin: 0 10px;
-            cursor: pointer;
-            font-size: 20px;
-        }
-        .player-controls button:hover {
-            border-color: #b3b3b3;
-        }
-        #now-playing-img {
-            width: 200px;
-            height: 200px;
-            margin-top: 20px;
-            border-radius: 5px;
-        }
-        #now-playing-info {
-            margin-top: 15px;
-        }
-        #track-name {
-            font-size: 24px;
-            font-weight: bold;
-        }
-        #artist-name {
-            font-size: 16px;
-            color: #b3b3b3;
-        }
-    </style>
+    <title>Spotify SDK - Controlled Test</title>
 </head>
 <body>
-
-    <!-- This container is shown before the user logs in -->
-    <div id="login-container">
-        <h1>Spotify Web SDK Player</h1>
-        <p>Please log in to start listening.</p>
-        <button id="login-btn" class="btn">Login with Spotify</button>
+    <h1>Spotify SDK Controlled Test</h1>
+    <p>This page tests the Spotify authentication and SDK initialization in separate steps.</p>
+    
+    <div id="login-section">
+        <h2>Step 1: Authentication</h2>
+        <p>Click the button below to log in with Spotify. The page will redirect to Spotify and then back here.</p>
+        <button id="login-btn">Login with Spotify</button>
     </div>
 
-    <!-- This container is shown after the user logs in -->
-    <div id="player-container" style="display: none;">
-        <h1>Now Playing</h1>
-        <div id="now-playing-info">
-            <img id="now-playing-img" src="" alt="Album Art">
-            <div id="track-name">Track Name</div>
-            <div id="artist-name">Artist Name</div>
-        </div>
-        <div class="player-controls">
-            <button id="prev-btn">⏮</button>
-            <button id="toggle-play-btn">▶️</button>
-            <button id="next-btn">⏭</button>
-        </div>
-        <p><small>Device: <span id="device-name"></span></small></p>
+    <div id="player-section" style="display: none;">
+        <h2>Step 2: SDK Initialization</h2>
+        <p>Access Token Received! Now, we can initialize the player.</p>
+        <p><strong>Access Token:</strong> <span id="token-display"></span></p>
+        <p><strong>Status:</strong> <span id="status-display">Waiting for SDK to load...</span></p>
+        <button id="togglePlay" disabled>Toggle Play</button>
     </div>
 
-    <!-- The official Spotify SDK script -->
     <script src="https://sdk.scdn.co/spotify-player.js"></script>
-
     <script>
-        // --- Step 1: Authentication ---
-        // Replace this with your client ID from the Spotify Developer Dashboard.
-        const CLIENT_ID = 'YOUR_CLIENT_ID'; 
-        const REDIRECT_URI = 'http://localhost:8080/'; // Must match the one in your dashboard
-        
-        const loginButton = document.getElementById('login-btn');
-        const loginContainer = document.getElementById('login-container');
-        const playerContainer = document.getElementById('player-container');
-        
+        // =======================================================================
+        // === CONFIGURATION - SET THESE VALUES ==================================
+        // =======================================================================
+        const CLIENT_ID = '30653ea03459454cbf3f0048e5a5b7df'; // Your real Client ID
+        const REDIRECT_URI = 'https://arielnpu.space/spotify-test-2.html'; // MUST MATCH THE DASHBOARD
+        // =======================================================================
+
+        const loginBtn = document.getElementById('login-btn');
+        const loginSection = document.getElementById('login-section');
+        const playerSection = document.getElementById('player-section');
+        const tokenDisplay = document.getElementById('token-display');
+        const statusDisplay = document.getElementById('status-display');
+        const togglePlayBtn = document.getElementById('togglePlay');
+
         let accessToken = null;
         let player = null;
-        let deviceId = null;
 
-        // On page load, try to fetch the token from the URL
+        // Step 1: Handle the login button click
+        loginBtn.addEventListener('click', () => {
+            const scopes = 'streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state';
+            const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}`;
+            console.log('Redirecting to:', authUrl);
+            window.location = authUrl;
+        });
+        
+        // This function is called by the Spotify SDK script when it's ready
+        window.onSpotifyWebPlaybackSDKReady = () => {
+            console.log('Spotify SDK script has loaded.');
+            statusDisplay.textContent = 'SDK loaded. Waiting for Access Token.';
+            // If we already have a token (from the redirect), initialize the player now.
+            if (accessToken) {
+                initializePlayer();
+            }
+        };
+
+        // This function sets up the player once we have an access token
+        function initializePlayer() {
+            statusDisplay.textContent = 'Initializing player...';
+            
+            player = new Spotify.Player({
+                name: 'Ariel Final Test Player',
+                getOAuthToken: cb => {
+                    console.log('SDK requesting token...');
+                    cb(accessToken);
+                },
+                volume: 0.5
+            });
+
+            // Event Listeners from the official reference
+            player.addListener('ready', ({ device_id }) => {
+                console.log('Player is ready! Device ID:', device_id);
+                statusDisplay.textContent = `Player Ready! Device ID: ${device_id}`;
+                togglePlayBtn.disabled = false;
+            });
+
+            player.addListener('not_ready', ({ device_id }) => {
+                console.log('Device has gone offline', device_id);
+                statusDisplay.textContent = 'Player offline.';
+                togglePlayBtn.disabled = true;
+            });
+
+            player.addListener('initialization_error', ({ message }) => { 
+                console.error('Initialization Error:', message);
+                statusDisplay.textContent = `Initialization Error: ${message}`;
+            });
+
+            player.addListener('authentication_error', ({ message }) => {
+                console.error('Authentication Error:', message);
+                statusDisplay.textContent = `Authentication Error: ${message}. Token might be expired.`;
+            });
+
+            player.addListener('player_state_changed', (state) => {
+                if (!state) { return; }
+                console.log('Player state changed:', state);
+                togglePlayBtn.textContent = state.paused ? 'Play' : 'Pause';
+            });
+            
+            // Connect to the player!
+            console.log('Connecting player...');
+            player.connect().then(success => {
+                if (success) {
+                    console.log('The Web Playback SDK successfully connected to Spotify!');
+                }
+            });
+        }
+
+        // This code runs as soon as the page's main content is loaded
         document.addEventListener('DOMContentLoaded', () => {
             const hash = window.location.hash;
             if (hash) {
+                // We have returned from Spotify with a token in the URL hash
                 const params = new URLSearchParams(hash.substring(1));
                 accessToken = params.get('access_token');
                 
                 if (accessToken) {
-                    // Hide login, show player
-                    loginContainer.style.display = 'none';
-                    playerContainer.style.display = 'block';
-                    // The SDK is ready, we can initialize the player
-                    initializePlayer();
+                    // Show the player section, hide the login section
+                    loginSection.style.display = 'none';
+                    playerSection.style.display = 'block';
+                    tokenDisplay.textContent = `${accessToken.substring(0, 15)}...`; // Show a snippet of the token
+
+                    // Clean the URL hash
+                    history.replaceState(null, '', ' ');
+
+                    // If the SDK is already loaded, initialize the player. Otherwise, onSpotifyWebPlaybackSDKReady will do it.
+                    if (window.Spotify && window.Spotify.Player) {
+                        initializePlayer();
+                    }
+                } else {
+                    // Handle the case where there's a hash but no token (e.g., an error)
+                    const error = params.get('error');
+                    alert(`An error occurred during login: ${error}`);
                 }
+            } else {
+                // No hash, so show the login button
+                loginSection.style.display = 'block';
+                playerSection.style.display = 'none';
             }
         });
-
-        loginButton.addEventListener('click', () => {
-            // Scopes are the permissions we ask the user for
-            const scopes = [
-                'streaming',
-                'user-read-email',
-                'user-read-private',
-                'user-library-read',
-                'user-library-modify',
-                'user-read-playback-state',
-                'user-modify-playback-state'
-            ].join(' ');
-
-            // Redirect user to Spotify's authorization page
-            window.location = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}`;
-        });
-
-        // --- Step 2: Initialize the Spotify Player ---
-        function initializePlayer() {
-            // This function is called by the Spotify SDK script when it's ready
-            window.onSpotifyWebPlaybackSDKReady = () => {
-                player = new Spotify.Player({
-                    name: 'My Web Player',
-                    // This function gets the OAuth token
-                    getOAuthToken: cb => { cb(accessToken); },
-                    volume: 0.5
-                });
-
-                // --- Player Event Listeners ---
-
-                // Ready
-                player.addListener('ready', ({ device_id }) => {
-                    console.log('Ready with Device ID', device_id);
-                    deviceId = device_id;
-                    document.getElementById('device-name').textContent = deviceId;
-                });
-
-                // Not Ready
-                player.addListener('not_ready', ({ device_id }) => {
-                    console.log('Device ID has gone offline', device_id);
-                });
-
-                // Error handling
-                player.addListener('initialization_error', ({ message }) => { console.error(message); });
-                player.addListener('authentication_error', ({ message }) => { console.error(message); });
-                player.addListener('account_error', ({ message }) => { console.error(message); });
-
-                // Player state changed
-                player.addListener('player_state_changed', state => {
-                    if (!state) {
-                        return;
-                    }
-                    console.log('Player state changed:', state);
-                    updateUI(state);
-                });
-                
-                // Connect to the player!
-                player.connect();
-            };
-        }
-
-        // --- Step 3: UI and Controls ---
-
-        const togglePlayBtn = document.getElementById('toggle-play-btn');
-        const prevBtn = document.getElementById('prev-btn');
-        const nextBtn = document.getElementById('next-btn');
-
+        
         togglePlayBtn.addEventListener('click', () => {
-            player.togglePlay();
+            if(player) player.togglePlay();
         });
 
-        prevBtn.addEventListener('click', () => {
-            player.previousTrack();
-        });
-
-        nextBtn.addEventListener('click', () => {
-            player.nextTrack();
-        });
-        
-        // Function to update the UI based on the player state
-        function updateUI(state) {
-            const track = state.track_window.current_track;
-            const isPaused = state.paused;
-
-            document.getElementById('now-playing-img').src = track.album.images[0].url;
-            document.getElementById('track-name').textContent = track.name;
-            document.getElementById('artist-name').textContent = track.artists.map(artist => artist.name).join(', ');
-            
-            togglePlayBtn.textContent = isPaused ? '▶️' : '⏸️';
-        }
-        
     </script>
 </body>
 </html>
