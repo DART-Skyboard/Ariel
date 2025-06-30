@@ -1,0 +1,2348 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lead Edge Ash Tree Reflex [ Plaid Ash a0.0.1 ]</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
+    <!-- The Sentient Journal must be loaded BEFORE the main script -->
+    <!-- Assuming journal.js exists and is in the same directory -->
+    <script src="journal.js"></script>
+    <style>
+        :root {
+            --bg-color: #202123;
+            --sidebar-bg: #1a1a1a;
+            --user-msg-bg: #4a90e2; /* Primary blue color */
+            --assistant-msg-bg: #343541; /* Darker background for assistant messages and UI elements */
+            --text-color: #ececf1; /* Light text color */
+            --border-color: #4d4d4d; /* Medium dark border color */
+            --input-bg: #40414f; /* Darker background for input areas */
+            --canvas-node-border: var(--user-msg-bg); /* Canvas node border color matches primary blue */
+            --canvas-node-bg: var(--assistant-msg-bg); /* Canvas node background matches UI element background */
+            --canvas-bg: #fff; /* White background for the canvas itself */
+            --canvas-controls-bg: #fafafa; /* Light background for canvas toolbar */
+            --canvas-controls-border: #ddd; /* Light border for canvas toolbar */
+            --canvas-controls-icon: #444; /* Dark icons for canvas toolbar */
+            --canvas-link-stroke: #000; /* Black links on the white canvas */
+            --vh: 1vh; /* Fallback for the dynamic viewport height unit */
+        }
+        html, body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            height: calc(var(--vh, 1vh) * 100);
+            overflow: hidden;
+        }
+        #app-container {
+            display: flex;
+            height: 100%;
+        }
+
+        /* --- Sidebar Panel (Left) --- */
+        #sidebar {
+            width: 260px;
+            background: var(--sidebar-bg);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: margin-left 0.3s ease-in-out;
+            z-index: 2000;
+        }
+        .sidebar-header {
+            padding: 15px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #close-sidebar-btn {
+            background: none;
+            border: none;
+            color: #a9a9b3;
+            cursor: pointer;
+            padding: 5px;
+            display: none; /* Hidden by default, shown on mobile */
+        }
+        #new-chat-btn {
+            flex-grow: 1;
+            margin-left: 10px;
+            padding: 10px 15px;
+            background: var(--assistant-msg-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        #chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .history-item {
+            display: flex;
+            align-items: center;
+            padding: 2px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 4px;
+        }
+        .history-item:hover, .history-item.active {
+            background-color: var(--assistant-msg-bg);
+        }
+        .history-title {
+            border: none;
+            background: transparent;
+            color: var(--text-color);
+            padding: 8px 10px;
+            flex-grow: 1;
+            font-size: 0.9em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            cursor: pointer;
+        }
+        .extensions-panel {
+            padding: 10px;
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+        .extensions-panel h4 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: var(--text-color);
+            font-size: 1.1em;
+        }
+        .extension-item {
+            display: flex;
+            align-items: center;
+            padding: 8px 10px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background-color 0.2s ease;
+        }
+        .extension-item:hover {
+            background-color: #2b2b3a;
+        }
+        .checkbox {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-color);
+            border-radius: 4px;
+            margin-right: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+        }
+        .checkbox.checked {
+            background-color: var(--user-msg-bg);
+            border-color: var(--user-msg-bg);
+        }
+        .checkbox.checked::after {
+            content: '✔';
+            color: white;
+            font-size: 14px;
+        }
+
+        /* --- Main Content Area (Center) --- */
+        main {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            border-left: 1px solid var(--border-color);
+        }
+        #chat-header {
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            background: var(--bg-color);
+            flex-shrink: 0;
+        }
+        #menu-btn {
+            background: none;
+            border: none;
+            color: var(--text-color);
+            font-size: 24px;
+            cursor: pointer;
+            margin-right: 15px;
+            display: none; /* Hidden by default, shown on mobile */
+        }
+        .header-title { font-weight: 500; font-size: 1.2em; }
+
+        /* --- Chat Window (Scrollable) --- */
+        #chat-window {
+            flex-grow: 1;
+            overflow-y: auto;
+            position: relative;
+            padding: 10px 20px;
+        }
+        #chat-window::before { /* Dim background logo */
+            content: ''; position: fixed; left: 60%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 400px; height: 400px;
+            background-image: url('https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeWhite.png');
+            background-size: contain; background-repeat: no-repeat;
+            opacity: 0.03; z-index: -1; pointer-events: none;
+        }
+        .message-wrapper {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 20px;
+        }
+        .message {
+            max-width: 85%;
+            padding: 12px 18px;
+            border-radius: 20px;
+            line-height: 1.6;
+            word-wrap: break-word;
+        }
+        .user-message {
+            background: var(--user-msg-bg);
+            color: #fff;
+            align-self: flex-end;
+        }
+        .assistant-message {
+            background: var(--assistant-msg-bg);
+            color: var(--text-color);
+            align-self: flex-start;
+        }
+         /* Styles for the 'Show Full Analysis' details/summary */
+        details > summary { /* Style the summary to look clickable */
+            list-style: none; /* Remove default triangle */
+        }
+        details > summary::before { /* Add a custom indicator */
+            content: '► '; /* Right arrow */
+            display: inline-block;
+            width: 1em;
+            margin-right: 0.5em;
+            transition: transform 0.2s ease;
+        }
+        details[open] > summary::before {
+            transform: rotate(90deg); /* Rotate arrow when open */
+        }
+        details pre { /* Style the analysis code block */
+            background: #111;
+            padding: 10px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-break: break-all; /* Ensure long words break */
+        }
+
+
+        .edit-btn { /* For math reports */
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: #555;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+        }
+        .message-wrapper:hover .edit-btn {
+            display: flex;
+        }
+        .edit-btn:hover {
+            opacity: 1;
+        }
+
+        /* --- Input Form (Sticky at bottom) --- */
+        #input-area-wrapper {
+            flex-shrink: 0;
+            padding: 15px 20px;
+            background: linear-gradient(to top, var(--bg-color) 50%, transparent);
+        }
+        #input-form {
+            display: flex;
+            align-items: flex-end;
+            background: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 5px 5px 5px 15px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        #userInput {
+            flex: 1;
+            padding: 12px 5px;
+            background: transparent;
+            color: var(--text-color);
+            border: none;
+            resize: none;
+            font-size: 1em;
+            margin-right: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            outline: none;
+        }
+        #sendButton {
+            padding: 8px;
+            background: var(--user-msg-bg);
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            flex-shrink: 0;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+        #sendButton:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+
+        /* --- Scroll Controls --- */
+        #scroll-controls {
+            position: fixed;
+            bottom: 120px;
+            right: 30px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 150;
+        }
+        .scroll-btn {
+            background: var(--input-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            font-size: 20px;
+        }
+
+        /* --- Ash Canvas Overlay --- */
+        #ash-canvas-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            display: none; /* Initially hidden */
+            align-items: center;
+            justify-content: center;
+            z-index: 3000;
+            padding: 15px;
+            box-sizing: border-box;
+        }
+
+        /* Ash Canvas Panel within the overlay */
+        #ash-canvas-panel {
+            width: 90%; /* Make it responsive */
+            max-width: 800px; /* Max width */
+            height: 90%; /* Make it responsive */
+            max-height: 600px; /* Max height */
+            background: var(--sidebar-bg); /* Use sidebar background color */
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        #ash-canvas-panel .toolbar { /* Styles for the draggable nodes toolbar */
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        #ash-canvas-panel .toolbar .draggable {
+            width: 50px;
+            height: 50px;
+            border: 3px solid var(--canvas-node-border);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            background: var(--canvas-node-bg);
+            color: var(--text-color);
+            cursor: grab;
+        }
+        #ash-canvas-panel .circuit-container { /* Styles for the canvas area itself */
+            flex: 1;
+            background: var(--canvas-bg); /* White background */
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #ash-canvas-panel .canvas-controls { /* Styles for the controls toolbar above canvas */
+            display: flex;
+            justify-content: space-around;
+            background: var(--canvas-controls-bg);
+            border-bottom: 1px solid var(--canvas-controls-border);
+            padding: 4px 0;
+            flex-shrink: 0; /* Prevent controls from shrinking */
+        }
+        #ash-canvas-panel .canvas-controls button {
+            width: 32px;
+            height: 32px;
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            font-size: 18px;
+            color: var(--canvas-controls-icon);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background .2s, color .2s;
+        }
+         #ash-canvas-panel .canvas-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #ash-canvas-panel .canvas-controls button.active {
+            background: var(--user-msg-bg);
+            color: #fff;
+        }
+        #ash-canvas-panel .canvas-scroll { /* Scrollable area holding the pan/zoom container */
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+
+        #ash-canvas-panel .panzoom { /* Container for nodes and SVG */
+            position: relative;
+            width: 2000px; /* Large fixed size for pan/zoom */
+            height: 2000px; /* Large fixed size for pan/zoom */
+            transform-origin: 0 0;
+            transform: scale(1); /* Initial scale */
+        }
+        #ash-canvas-panel .panzoom svg { /* SVG for links */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* SVG itself doesn't capture mouse */
+        }
+         #ash-canvas-panel .panzoom svg polyline {
+            stroke: var(--canvas-link-stroke);
+            stroke-width: 4;
+            fill: none;
+             pointer-events: stroke; /* Make lines clickable */
+            cursor: pointer;
+            marker-end: url(#arrowhead);
+        }
+         #ash-canvas-panel .panzoom svg marker path {
+             fill: var(--canvas-link-stroke);
+        }
+
+        #ash-canvas-panel .node { /* Styles for draggable nodes on canvas */
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            border: 3px solid var(--canvas-node-border);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            background: var(--canvas-node-bg);
+            color: var(--text-color);
+            cursor: pointer;
+            user-select: none;
+        }
+        #ash-canvas-panel .node.selected { /* Highlight for selected node */
+            border-color: yellow !important;
+        }
+
+        /* Canvas Action Buttons */
+        .canvas-action-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .canvas-action-buttons button {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        #submit-canvas-btn { background: var(--user-msg-bg); color: white; }
+        #close-canvas-btn-overlay { background: #555; color: white; }
+
+
+        /* --- Modals and Overlays (Math Calculator) --- */
+        #consentModalOverlay, #math-calculator-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            display: none; /* Initially hidden */
+            align-items: center;
+            justify-content: center;
+            z-index: 3001; /* Ensure modals are above the canvas overlay if both are somehow open */
+            padding: 15px;
+            box-sizing: border-box;
+        }
+        #consentModal, #math-calculator-content {
+            background: var(--assistant-msg-bg);
+            padding: 25px;
+            border-radius: 15px;
+            max-width: 500px; /* Adjusted max-width for consent */
+            width: 100%;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        #math-calculator-content { /* Specific styles for math calculator */
+            max-width: 650px;
+            text-align: left;
+        }
+        #consentModal p, #consentModal label { font-size: 0.95em; opacity: 0.8; }
+        #consentModal input[type="checkbox"] { margin-right: 10px; }
+        #consentAcknowledgeBtn {
+            width: 100%;
+            padding: 12px;
+            margin-top: 20px;
+            background: var(--user-msg-bg);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #math-calculator-content label { display: block; margin-bottom: 5px; font-weight: bold; }
+        #math-calculator-content textarea,
+        #math-calculator-content select,
+        #math-calculator-content input[type="text"], /* Added for value input */
+        #math-calculator-content button {
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--input-bg);
+            color: var(--text-color);
+            font-size: 1em;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #math-calculator-content textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .context-assignment-group {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 10px;
+        }
+        .context-variable-group { /* New group for value input */
+            display: grid;
+            grid-template-columns: auto 1fr auto; /* Variable | Value Input | Add/Clear Buttons */
+            gap: 10px;
+            align-items: center;
+        }
+        .context-variable-group label { margin-bottom: 0; }
+        .context-variable-group input[type="text"] { flex: 1; }
+
+        .dropdown-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .dropdown-group select {
+            flex: 1;
+            min-width: 150px;
+        }
+        .calculator-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        #solve-equation-btn, #assign-context-btn {
+            background: var(--user-msg-bg);
+            color: white;
+        }
+        #clear-context-btn {
+            background: #c0392b;
+            color: white;
+        }
+        #close-calculator-btn {
+            background: #555;
+            color: white;
+        }
+        #assigned-contexts-display {
+            font-size: 0.8em;
+            color: #a9a9b3;
+            background: #202123;
+            padding: 8px;
+            border-radius: 4px;
+            min-height: 40px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        #assigned-contexts-display code, #math-calculator-content code {
+            background-color: #333;
+            padding: 2px 4px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+         #assigned-contexts-display abbr {
+             border-bottom: 1px dotted #a9a9b3;
+             cursor: help;
+             text-decoration: none; /* Remove default underline */
+         }
+
+
+        /* --- Responsive Layout Logic --- */
+        @media (max-width: 768px) {
+            #sidebar {
+                position: fixed; height: 100%;
+                margin-left: -260px;
+            }
+            #sidebar.active {
+                margin-left: 0;
+                box-shadow: 10px 0 25px rgba(0,0,0,0.3);
+            }
+            #menu-btn { display: block; }
+            #close-sidebar-btn { display: block; }
+            main {
+                border-left: none;
+            }
+            .context-assignment-group {
+                grid-template-columns: 1fr;
+            }
+            .context-variable-group {
+                 grid-template-columns: 1fr;
+                 gap: 5px;
+            }
+            .context-variable-group input[type="text"] { margin-top: 5px; }
+            .context-variable-group button { width: auto; margin-top: 5px; }
+
+            #chat-window::before {
+                left: 50%;
+            }
+            #scroll-controls {
+                bottom: 100px; right: 15px;
+            }
+
+             /* Adjust canvas panel size for smaller screens */
+            #ash-canvas-panel {
+                 width: 95%;
+                 height: 95%;
+                 padding: 10px;
+            }
+             #ash-canvas-panel .toolbar .draggable {
+                 width: 40px; height: 40px; font-size: 1em;
+             }
+             #ash-canvas-panel .canvas-controls button {
+                 width: 28px; height: 28px; font-size: 16px;
+             }
+
+             /* Adjust math calculator modal for smaller screens */
+             #math-calculator-content {
+                 padding: 15px;
+                 max-width: 95%;
+             }
+        }
+
+        @media (min-width: 769px) {
+            #sidebar {
+                position: relative;
+            }
+            #menu-btn { display: none; }
+            #close-sidebar-btn { display: none; }
+        }
+
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <!-- Sidebar Panel -->
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <button id="new-chat-btn">＋ New Chat</button>
+                <button id="close-sidebar-btn" title="Close Menu">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div id="chat-history"></div>
+            <div class="extensions-panel">
+                <h4>Extensions</h4>
+                <div class="extension-item" data-extension="math">
+                    <div class="checkbox" id="toggle-math-extension"></div><span>Math Functionality</span>
+                </div>
+                <div class="extension-item" data-extension="ash-canvas">
+                    <div class="checkbox" id="toggle-ash-canvas-extension"></div><span>Ash Canvas</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main>
+            <header id="chat-header">
+                <button id="menu-btn">☰</button>
+                <span class="header-title">Lead Edge Ash Tree Reflex</span>
+            </header>
+            <div id="chat-window">
+                <!-- Chat messages rendered here by JavaScript -->
+            </div>
+            <div id="input-area-wrapper">
+                <form id="input-form">
+                    <textarea id="userInput" placeholder="Ask anything..." rows="1"></textarea>
+                    <button id="sendButton" type="submit" title="Send message" disabled>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </main>
+
+        <!-- Ash Canvas Overlay -->
+        <div id="ash-canvas-overlay">
+            <div id="ash-canvas-panel">
+              <!-- draggable nodes -->
+              <div class="toolbar">
+                <div class="draggable" draggable="true" data-type="M">M</div>
+                <div class="draggable" draggable="true" data-type="P">P</div>
+                <div class="draggable" draggable="true" data-type="E">E</div>
+                <div class="draggable" draggable="true" data-type="H">H</div>
+                <div class="draggable" draggable="true" data-type="S">S</div>
+                <div class="draggable" draggable="true" data-type="K">K</div>
+                <div class="draggable" draggable="true" data-type="R">R</div>
+              </div>
+
+              <!-- icon toolbar -->
+              <div class="circuit-container">
+                <div class="canvas-controls">
+                  <button id="linkBtn"    title="Link Mode 🔗">🔗</button>
+                  <button id="unlinkBtn"  title="Unlink Mode ❌">❌</button>
+                  <button id="undoBtn"    title="Undo ↶">↶</button>
+                  <button id="redoBtn"    title="Redo ↷">↷</button>
+                  <button id="zoomIn"     title="Zoom In ➕">➕</button>
+                  <button id="zoomOut"    title="Zoom Out ➖">➖</button>
+                  <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+                </div>
+                <div class="canvas-scroll">
+                  <div class="panzoom">
+                    <svg xmlns="http://www.w3.org/2000/svg">
+                      <defs>
+                        <marker
+                          id="arrowhead"
+                          viewBox="0 0 10 10"
+                          refX="10"
+                          refY="5"
+                          markerWidth="8"
+                          markerHeight="8"
+                          orient="auto-start-reverse">
+                          <path d="M 0 0 L 10 5 L 0 10 z" fill="#000"/>
+                        </marker>
+                      </defs>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <!-- Canvas Action Buttons -->
+                <div class="canvas-action-buttons">
+                    <button id="close-canvas-btn-overlay">Close Canvas</button>
+                    <button id="submit-canvas-btn">Add to Prompt Context</button>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Scroll to Top/Bottom Buttons -->
+        <div id="scroll-controls">
+            <button id="scroll-up-btn" class="scroll-btn" title="Scroll to top">↑</button>
+            <button id="scroll-down-btn" class="scroll-btn" title="Scroll to bottom">↓</button>
+        </div>
+
+        <!-- Consent Modal -->
+        <div id="consentModalOverlay">
+            <div id="consentModal">
+                <h4>Sentient Journaling & Context</h4>
+                <p>For this chat session, you can enhance the AI's reflexive capabilities.</p>
+                <div style="text-align: left; margin: 15px auto; display: table;">
+                    <input type="checkbox" id="crossChatConsent">
+                    <label for="crossChatConsent" style="margin-left: 10px;">Allow context-channeling from other chats.</label>
+                </div>
+                <div style="text-align: left; margin: 15px auto; display: table;">
+                    <input type="checkbox" id="publicShareConsent">
+                    <label for="publicShareConsent" style="margin-left: 10px;">Allow journaled insights to inform public optimizations.</label>
+                </div>
+                <button id="consentAcknowledgeBtn">Acknowledge & Continue</button>
+                <p style="font-size: 0.8em; opacity: 0.7; margin-top: 20px;">
+                    These settings apply only to the AI's internal journaling system for this chat. All other network data handling is governed by the
+                    <a href="https://www.dartmeadow.com/privacy-policy" target="_blank" rel="noopener noreferrer" style="color:var(--user-msg-bg)">DART Meadow Privacy Policy</a>.
+                </p>
+            </div>
+        </div>
+
+        <!-- Math Calculator Overlay -->
+        <div id="math-calculator-overlay">
+            <div id="math-calculator-content">
+                <h4>Math Solver & Context Assignment</h4>
+                <div class="input-group">
+                    <label for="algebraic-equation">Equation / Formula</label>
+                    <textarea id="algebraic-equation" placeholder="e.g., F = m * a" rows="2"></textarea>
+                </div>
+                <div class="context-assignment-group">
+                    <select id="variable-select-dropdown">
+                        <option value="">-- Select Variable --</option>
+                    </select>
+                    <button id="assign-context-btn">Assign Context ↓</button>
+                    <button id="clear-context-btn">Clear Selected</button>
+                </div>
+                <div class="context-variable-group">
+                    <label for="variable-value-input">Value:</label>
+                    <input type="text" id="variable-value-input" placeholder="Enter numerical value or expression">
+                    <button id="add-value-btn">Add Value</button>
+                </div>
+                <div class="dropdown-group">
+                    <select id="special-operator-dropdown">
+                        <option value="">-- Assign Special Operator --</option>
+                        <optgroup label="Common Functions">
+                            <option value="delta_function">Delta Function (Δ)</option>
+                            <option value="gamma_function">Gamma Function (Γ)</option>
+                            <option value="zeta_function">Zeta Function (ζ)</option>
+                        </optgroup>
+                        <optgroup label="Physics Constants">
+                            <option value="gravitational_constant">Gravitational Constant (G)</option>
+                            <option value="planck_constant">Planck's Constant (h)</option>
+                            <option value="speed_of_light">Speed of Light (c)</option>
+                            <option value="boltzmann_constant">Boltzmann Constant (kB)</option>
+                            <option value="elementary_charge">Elementary Charge (e)</option>
+                        </optgroup>
+                        <optgroup label="Astronomy">
+                            <option value="rydberg_formula">Rydberg Formula</option>
+                            <option value="astronomical_unit">Astronomical Unit (AU)</option>
+                            <option value="parsec">Parsec (pc)</option>
+                            <option value="light_year">Light-year (ly)</option>
+                            <option value="solar_mass">Solar Mass (M☉)</option>
+                        </optgroup>
+                         <optgroup label="Units">
+                            <option value="meter">Meter (m)</option>
+                            <option value="kilogram">Kilogram (kg)</option>
+                            <option value="second">Second (s)</option>
+                             <option value="ampere">Ampere (A)</option>
+                             <option value="kelvin">Kelvin (K)</option>
+                             <option value="mole">Mole (mol)</option>
+                             <option value="candela">Candela (cd)</option>
+                             <option value="newton">Newton (N)</option>
+                             <option value="joule">Joule (J)</option>
+                             <option value="watt">Watt (W)</option>
+                        </optgroup>
+                    </select>
+                    <select id="math-operation-dropdown">
+                        <option value="">-- Assign Math Operation --</option>
+                        <option value="add">Addition (+)</option>
+                        <option value="subtract">Subtraction (-)</option>
+                        <option value="multiply">Multiplication (*)</option>
+                        <option value="divide">Division (/)</option>
+                        <option value="power">Exponent (^)</option>
+                        <option value="sqrt">Square Root (√)</option>
+                        <option value="log">Logarithm (log)</option>
+                        <option value="sin">Sine (sin)</option>
+                        <option value="cos">Cosine (cos)</option>
+                        <option value="tan">Tangent (tan)</option>
+                    </select>
+                    <select id="physics-field-dropdown">
+                        <option value="">-- Assign Physics Field --</option>
+                        <option value="mass">Mass</option>
+                        <option value="volume">Volume</option>
+                        <option value="weight">Weight</option>
+                        <option value="density">Density</option>
+                        <option value="temperature">Temperature</option>
+                        <option value="velocity">Velocity</option>
+                        <option value="acceleration">Acceleration</option>
+                        <option value="force">Force</option>
+                        <option value="energy">Energy</option>
+                        <option value="power">Power</option>
+                         <option value="pressure">Pressure</option>
+                         <option value="frequency">Frequency</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Assigned Contexts</label>
+                    <div id="assigned-contexts-display">No contexts assigned yet.</div>
+                </div>
+                <div class="calculator-actions">
+                    <button id="close-calculator-btn">Close</button>
+                    <button id="solve-equation-btn">Solve & Report</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // =========================================================================================
+    // ARCHITECTURE V17: INTERACTIVE & PERSISTENT EXTENSIONS
+    // =========================================================================================
+
+    // --- UI Elements Mapping ---
+    const ui = {
+        appContainer: document.getElementById('app-container'),
+        chatWindow: document.getElementById('chat-window'),
+        userInput: document.getElementById('userInput'),
+        sendButton: document.getElementById('sendButton'),
+        sidebar: document.getElementById('sidebar'),
+        menuBtn: document.getElementById('menu-btn'),
+        closeSidebarBtn: document.getElementById('close-sidebar-btn'),
+        newChatBtn: document.getElementById('new-chat-btn'),
+        inputForm: document.getElementById('input-form'),
+        chatHistoryEl: document.getElementById('chat-history'),
+        // Extension Toggles
+        toggleMathExtension: document.getElementById('toggle-math-extension'),
+        toggleAshCanvasExtension: document.getElementById('toggle-ash-canvas-extension'),
+        // Consent Modal
+        consentModalOverlay: document.getElementById('consentModalOverlay'),
+        crossChatConsent: document.getElementById('crossChatConsent'),
+        publicShareConsent: document.getElementById('publicShareConsent'),
+        consentAcknowledgeBtn: document.getElementById('consentAcknowledgeBtn'),
+        // Scroll Controls
+        scrollUpBtn: document.getElementById('scroll-up-btn'),
+        scrollDownBtn: document.getElementById('scroll-down-btn'),
+        // Ash Canvas Overlay Elements
+        ashCanvasOverlay: document.getElementById('ash-canvas-overlay'),
+        ashCanvasPanel: document.getElementById('ash-canvas-panel'), // Inner panel
+        canvasLinkBtn: document.getElementById('linkBtn'),
+        canvasUnlinkBtn: document.getElementById('unlinkBtn'),
+        canvasZoomInBtn: document.getElementById('zoomIn'),
+        canvasZoomOutBtn: document.getElementById('zoomOut'),
+        canvasClearBtn: document.getElementById('clearCanvas'),
+        canvasUndoBtn: document.getElementById('undoBtn'),
+        canvasRedoBtn: document.getElementById('redoBtn'),
+        canvasDraggables: document.querySelectorAll('#ash-canvas-panel .toolbar .draggable'), // Select within panel
+        canvasContainer: document.querySelector('#ash-canvas-panel .canvas-scroll'), // Select within panel
+        canvasPanzoom: document.querySelector('#ash-canvas-panel .panzoom'), // Select within panel
+        canvasSvg: document.querySelector('#ash-canvas-panel .panzoom svg'), // Select within panel
+        submitCanvasBtn: document.getElementById('submit-canvas-btn'),
+        closeCanvasBtnOverlay: document.getElementById('close-canvas-btn-overlay'),
+        // Math Calculator Elements
+        mathCalculatorOverlay: document.getElementById('math-calculator-overlay'),
+        algebraicEquationInput: document.getElementById('algebraic-equation'),
+        variableSelectDropdown: document.getElementById('variable-select-dropdown'),
+        specialOperatorDropdown: document.getElementById('special-operator-dropdown'),
+        mathOperationDropdown: document.getElementById('math-operation-dropdown'),
+        physicsFieldDropdown: document.getElementById('physics-field-dropdown'),
+        assignContextBtn: document.getElementById('assign-context-btn'),
+        clearContextBtn: document.getElementById('clear-context-btn'),
+        assignedContextsDisplay: document.getElementById('assigned-contexts-display'),
+        closeCalculatorBtn: document.getElementById('close-calculator-btn'),
+        solveEquationBtn: document.getElementById('solve-equation-btn'),
+        // Math Solver Value Input Elements
+        variableValueInput: document.getElementById('variable-value-input'),
+        addValueBtn: document.getElementById('add-value-btn')
+    };
+
+    // --- Global State Variables ---
+    let chatState = { chatHistory: [], currentChatIndex: -1 };
+    let pendingPrompt = null; // Stores prompt if consent is pending
+    let globalConsentAcknowledged = false;
+    let extensions = { math: false, ashCanvas: false }; // Tracks active extensions
+    let variableContexts = {}; // For math solver context assignment: { varName: { value: '10', operator: '', field: '' } }
+    let editingMessageIndex = null; // For editing math report messages
+    let pendingCanvasContext = null; // Stores captured canvas state to be sent with the next prompt
+
+
+    // --- Ash Canvas State and Logic ---
+    let canvasState = {
+      gridSize: 60,
+      scale: 1,
+      drawMode: false,
+      unlinkMode: false,
+      startNode: null,
+      nodeCounter: 0, // Used for both node and link IDs
+      undoStack: [],
+      redoStack: []
+    };
+
+    // Canvas Helper Functions
+    const toggleActive = (btn, state) => btn.classList.toggle('active', state);
+    const setCanvasScale = s => {
+      canvasState.scale = Math.max(0.4, Math.min(s, 3));
+      ui.canvasPanzoom.style.transform = `scale(${canvasState.scale})`;
+    };
+    const updateCanvasButtons = () => {
+      ui.canvasUndoBtn.disabled = !canvasState.undoStack.length;
+      ui.canvasRedoBtn.disabled = !canvasState.redoStack.length;
+    };
+    const pushCanvasAction = (act) => {
+      canvasState.undoStack.push(act);
+      canvasState.redoStack.length = 0; // Clear redo stack on new action
+      updateCanvasButtons();
+    };
+
+    // Helper to add event listeners to a node element after creation or recreation
+    function addNodeEventListeners(n) {
+         n.onclick = (event) => {
+            event.stopPropagation();
+            if (canvasState.unlinkMode) {
+              Array.from(ui.canvasSvg.querySelectorAll(`polyline[data-a="${n.id}"], polyline[data-b="${n.id}"]`)).forEach(l => {
+                 pushCanvasAction({ type: 'delete_link', id: l.id, data_a: l.dataset.a, data_b: l.dataset.b, points: l.getAttribute('points') });
+                 l.remove();
+               });
+              return;
+            }
+            if (!canvasState.drawMode) return;
+            if (!canvasState.startNode) { canvasState.startNode = n; n.classList.add('selected'); }
+            else if (canvasState.startNode !== n) {
+               const linkExists = Array.from(ui.canvasSvg.querySelectorAll('polyline')).some(l =>
+                  (l.dataset.a === canvasState.startNode.id && l.dataset.b === n.id) ||
+                  (l.dataset.a === n.id && l.dataset.b === canvasState.startNode.id)
+               );
+               if (!linkExists) {
+                  n.classList.add('selected');
+                  drawLink(canvasState.startNode, n);
+               }
+              canvasState.startNode.classList.remove('selected');
+              n.classList.remove('selected');
+              canvasState.startNode = null;
+            } else { // Clicked the same node again
+              canvasState.startNode.classList.remove('selected');
+              canvasState.startNode = null;
+            }
+         };
+
+        let offX, offY;
+        n.onpointerdown = (event) => {
+            if(canvasState.drawMode||canvasState.unlinkMode) return;
+            event.preventDefault();
+            const rect=n.getBoundingClientRect();
+            offX=(event.clientX-rect.left)/canvasState.scale;
+            offY=(event.clientY-rect.top)/canvasState.scale;
+            n.setPointerCapture(event.pointerId);
+            n.onpointermove = drag;
+            n.onpointerup   = drop;
+             // Store original position for undo
+            n.dataset.originalX = parseFloat(n.style.left);
+            n.dataset.originalY = parseFloat(n.style.top);
+        };
+
+         // drag and drop functions need to be defined or accessible here
+         function drag(event){
+            const r=ui.canvasContainer.getBoundingClientRect();
+            const rawX=(event.clientX-r.left+ui.canvasContainer.scrollLeft)/canvasState.scale-offX;
+            const rawY=(event.clientY-r.top+ui.canvasContainer.scrollTop)/canvasState.scale-offY;
+            const x=Math.round(rawX/canvasState.gridSize)*canvasState.gridSize;
+            const y=Math.round(rawY/canvasState.gridSize)*canvasState.gridSize;
+            n.style.left=`${x}px`; n.style.top=`${y}px`;
+            updateLinks(n);
+          }
+          function drop(event){
+            n.releasePointerCapture(event.pointerId);
+            n.onpointermove=null; n.onpointerup=null;
+             // Log move action
+             const finalX = parseFloat(n.style.left);
+             const finalY = parseFloat(n.style.top);
+             const originalX = parseFloat(n.dataset.originalX);
+             const originalY = parseFloat(n.dataset.originalY);
+             if (finalX !== originalX || finalY !== originalY) {
+                  pushCanvasAction({
+                      type: 'move_node',
+                      nodeId: n.id,
+                      oldX: originalX,
+                      oldY: originalY,
+                      newX: finalX,
+                      newY: finalY
+                  });
+              }
+              delete n.dataset.originalX;
+              delete n.dataset.originalY;
+          }
+    }
+
+
+    function createNode(type, e) {
+      const rect = ui.canvasContainer.getBoundingClientRect();
+      const rawX = (e.clientX - rect.left + ui.canvasContainer.scrollLeft) / canvasState.scale;
+      const rawY = (e.clientY - rect.top + ui.canvasContainer.scrollTop) / canvasState.scale;
+      const x = Math.round(rawX / canvasState.gridSize) * canvasState.gridSize;
+      const y = Math.round(rawY / canvasState.gridSize) * canvasState.gridSize;
+
+      const n = document.createElement('div');
+      n.className = 'node';
+      n.id = 'n' + (++canvasState.nodeCounter);
+      n.textContent = type;
+      n.style.left = `${x}px`;
+      n.style.top = `${y}px`;
+      ui.canvasPanzoom.appendChild(n);
+
+      addNodeEventListeners(n); // Attach event listeners
+
+      // Log node creation for undo/redo
+      pushCanvasAction({ type: 'create_node', nodeId: n.id, x: x, y: y, nodeType: type });
+      return n; // Return the created node element
+    }
+
+    function drawLink(a, b) {
+      const allNodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node'));
+      const pathPoints = calculateFlowchartPath(a, b, allNodes);
+      const pts = pathPoints.map(p => `${p.x},${p.y}`).join(' ');
+      const pl = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+      pl.setAttribute('points', pts);
+      pl.dataset.a = a.id;
+      pl.dataset.b = b.id;
+      pl.id = 'link' + (++canvasState.nodeCounter); // Assign a unique ID
+      ui.canvasSvg.appendChild(pl);
+      attachLinkListener(pl);
+      pushCanvasAction({ type: 'create_link', id: pl.id, data_a: a.id, data_b: b.id, points: pts }); // Store data for undo
+    }
+
+    function updateLinks(node) {
+      Array.from(ui.canvasSvg.querySelectorAll('polyline')).forEach(pl => {
+        if (pl.dataset.a === node.id || pl.dataset.b === node.id) {
+          const na = document.getElementById(pl.dataset.a);
+          const nb = document.getElementById(pl.dataset.b);
+          if (na && nb) { // Ensure both nodes still exist
+            const allNodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node'));
+            const newPathPoints = calculateFlowchartPath(na, nb, allNodes);
+            pl.setAttribute('points', newPathPoints.map(p => `${p.x},${p.y}`).join(' '));
+          } else {
+             // If a connected node is missing (e.g., deleted without updating links)
+             // remove the polyline. A more robust system would handle this on node deletion.
+             pl.remove();
+          }
+        }
+      });
+    }
+
+    function isSegmentIntersectingObstacles(p1, p2, obstacleRects, margin) {
+      // Adjust points by margin for hit detection
+      const buffer = margin;
+      const segMinX = Math.min(p1.x, p2.x) - buffer;
+      const segMaxX = Math.max(p1.x, p2.x) + buffer;
+      const segMinY = Math.min(p1.y, p2.y) - buffer;
+      const segMaxY = Math.max(p1.y, p2.y) + buffer;
+
+      for (const rect of obstacleRects) {
+        const rectMinX = rect.left;
+        const rectMaxX = rect.right;
+        const rectMinY = rect.top;
+        const rectMaxY = rect.bottom;
+
+        if (segMaxX < rectMinX || segMinX > rectMaxX || segMaxY < rectMinY || segMinY > rectMaxY) {
+            continue;
+        }
+
+        if (p1.y === p2.y) { // Horizontal segment
+            if (p1.y > rectMinY && p1.y < rectMaxY && segMaxX > rectMinX && segMinX < rectMaxX) return true;
+        } else if (p1.x === p2.x) { // Vertical segment
+             if (p1.x > rectMinX && p1.x < rectMaxX && segMaxY > rectMinY && segMinY < rectMaxY) return true;
+        }
+         // Diagonal check omitted for simplicity as per original.
+      }
+      return false;
+    }
+
+
+    function calculateFlowchartPath(startNode, endNode, allNodes) {
+      const s = { x: parseFloat(startNode.style.left) + 25, y: parseFloat(startNode.style.top) + 25 };
+      const e = { x: parseFloat(endNode.style.left) + 25, y: parseFloat(endNode.style.top) + 25 };
+      const obstacles = allNodes.filter(n => n !== startNode && n !== endNode).map(n => ({ left: parseFloat(n.style.left), top: parseFloat(n.style.top), right: parseFloat(n.style.left) + 50, bottom: parseFloat(n.style.top) + 50 }));
+      const m = 5; // Margin for collision detection
+
+      // Try H-V path (Horizontal then Vertical)
+      const mid_hv = { x: e.x, y: s.y };
+      if (!isSegmentIntersectingObstacles(s, mid_hv, obstacles, m) && !isSegmentIntersectingObstacles(mid_hv, e, obstacles, m)) return [s, mid_hv, e];
+
+      // Try V-H path (Vertical then Horizontal)
+      const mid_vh = { x: s.x, y: e.y };
+      if (!isSegmentIntersectingObstacles(s, mid_vh, obstacles, m) && !isSegmentIntersectingObstacles(mid_vh, e, obstacles, m)) return [s, mid_vh, e];
+
+      // Fallback path (H-V)
+      return [s, mid_hv, e];
+    }
+
+     function attachLinkListener(pl) {
+        pl.onpointerdown = (event) => {
+            event.stopPropagation();
+            if (canvasState.unlinkMode) {
+                 // Store info for undo before removing
+                 pushCanvasAction({
+                     type: 'delete_link',
+                     id: pl.id,
+                     data_a: pl.dataset.a,
+                     data_b: pl.dataset.b,
+                     points: pl.getAttribute('points')
+                 });
+                 pl.remove();
+            }
+        };
+    }
+
+    // Canvas Undo/Redo Handlers
+    function undoCanvasAction() {
+        const act = canvasState.undoStack.pop();
+        if (!act) return;
+
+        let redoAct = null; // Prepare action for redo stack
+
+        if (act.type === 'create_link') {
+            const pl = ui.canvasSvg.getElementById(act.id);
+            if (pl) pl.remove();
+             redoAct = { type: 'create_link', id: act.id, data_a: act.data_a, data_b: act.data_b, points: act.points };
+        } else if (act.type === 'delete_link') {
+            const pl_recreated = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+            pl_recreated.setAttribute('points', act.points);
+            pl_recreated.dataset.a = act.data_a;
+            pl_recreated.dataset.b = act.data_b;
+            pl_recreated.id = act.id;
+            ui.canvasSvg.appendChild(pl_recreated);
+            attachLinkListener(pl_recreated);
+             redoAct = { type: 'delete_link', id: pl_recreated.id, data_a: pl_recreated.dataset.a, data_b: pl_recreated.dataset.b, points: pl_recreated.getAttribute('points') };
+        } else if (act.type === 'create_node') {
+            const node = ui.canvasPanzoom.getElementById(act.nodeId);
+            if (node) {
+                 node.remove();
+                 // Also remove links connected to this node for consistency with creation
+                 Array.from(ui.canvasSvg.querySelectorAll(`polyline[data-a="${act.nodeId}"], polyline[data-b="${act.nodeId}"]`)).forEach(link => {
+                     // Note: Undoing node creation doesn't push link deletion to redo stack in this simplified model
+                     link.remove();
+                 });
+            }
+             redoAct = { type: 'create_node', nodeId: act.nodeId, x: act.x, y: act.y, nodeType: act.nodeType };
+        } else if (act.type === 'move_node') {
+            const node = ui.canvasPanzoom.getElementById(act.nodeId);
+            if (node) {
+                node.style.left = `${act.oldX}px`;
+                node.style.top = `${act.oldY}px`;
+                updateLinks(node);
+                 redoAct = { type: 'move_node', nodeId: act.nodeId, oldX: act.oldX, oldY: act.oldY, newX: act.newX, newY: act.newY };
+            }
+        } else if (act.type === 'delete_node') {
+             // Recreate node
+             const n = document.createElement('div');
+             n.className = 'node';
+             n.id = act.nodeId;
+             n.textContent = act.nodeType;
+             n.style.left = `${act.x}px`;
+             n.style.top = `${act.y}px`;
+             ui.canvasPanzoom.appendChild(n);
+             addNodeEventListeners(n);
+             // Recreate associated links - this would require storing link data with the delete_node action
+             // For simplicity, links removed with a node are NOT recreated on node undo here.
+             // A proper implementation needs to store links removed with the node.
+            redoAct = { type: 'delete_node', nodeId: act.nodeId, x: act.x, y: act.y, nodeType: act.nodeType }; // Store data for redo
+
+        }
+
+
+        if (redoAct) {
+             canvasState.redoStack.push(redoAct);
+        }
+        updateCanvasButtons();
+    }
+
+    function redoCanvasAction() {
+        const act = canvasState.redoStack.pop();
+        if (!act) return;
+
+        let undoAct = null; // Prepare action for undo stack
+
+        if (act.type === 'create_link') {
+            const pl_recreated = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+            pl_recreated.setAttribute('points', act.points);
+            pl_recreated.dataset.a = act.data_a;
+            pl_recreated.dataset.b = act.data_b;
+            pl_recreated.id = act.id;
+            ui.canvasSvg.appendChild(pl_recreated);
+            attachLinkListener(pl_recreated);
+             undoAct = { type: 'delete_link', id: pl_recreated.id, data_a: pl_recreated.dataset.a, data_b: pl_recreated.dataset.b, points: pl_recreated.getAttribute('points') };
+        } else if (act.type === 'delete_link') {
+            const pl = ui.canvasSvg.getElementById(act.id);
+            if (pl) pl.remove();
+             undoAct = { type: 'create_link', id: act.id, data_a: act.data_a, data_b: act.data_b, points: act.points };
+        } else if (act.type === 'create_node') {
+            const n = document.createElement('div');
+             n.className = 'node';
+             n.id = act.nodeId;
+             n.textContent = act.nodeType;
+             n.style.left = `${act.x}px`;
+             n.style.top = `${act.y}px`;
+             ui.canvasPanzoom.appendChild(n);
+             addNodeEventListeners(n);
+             // Redo action is to delete this node
+             undoAct = { type: 'delete_node', nodeId: n.id }; // Again, lacks link info
+        } else if (act.type === 'move_node') {
+            const node = ui.canvasPanzoom.getElementById(act.nodeId);
+            if (node) {
+                node.style.left = `${act.newX}px`;
+                node.style.top = `${act.newY}px`;
+                updateLinks(node);
+                 undoAct = { type: 'move_node', nodeId: act.nodeId, oldX: act.oldX, oldY: act.oldY, newX: act.newX, newY: act.newY };
+            }
+        } else if (act.type === 'delete_node') {
+             const node = ui.canvasPanzoom.getElementById(act.nodeId);
+             if (node) {
+                  node.remove();
+                   // Remove links connected to this node
+                 Array.from(ui.canvasSvg.querySelectorAll(`polyline[data-a="${act.nodeId}"], polyline[data-b="${act.nodeId}"]`)).forEach(link => link.remove());
+             }
+             undoAct = { type: 'create_node', nodeId: act.nodeId, x: act.x, y: act.y, nodeType: act.nodeType }; // Store data for undo
+
+        }
+
+        if (undoAct) {
+             canvasState.undoStack.push(undoAct);
+        }
+        updateCanvasButtons();
+    }
+
+    // Function to capture the current state of the Ash Canvas
+    function captureCanvasState() {
+        const nodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node')).map(node => ({
+            id: node.id,
+            type: node.textContent,
+            x: parseFloat(node.style.left),
+            y: parseFloat(node.style.top)
+        }));
+        const links = Array.from(ui.canvasSvg.querySelectorAll('polyline')).map(link => ({
+            id: link.id,
+            from: link.dataset.a,
+            to: link.dataset.b,
+            points: link.getAttribute('points') // Store points to recreate path exactly
+        }));
+        return { nodes, links };
+    }
+
+    // --- Core Chat Logic & LEATR Pipeline ---
+    const welcomeHTML = `
+        <div id="welcome-screen" style="height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
+            <img style="width: 300px; height: 300px; margin-bottom: 20px;" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeWhite.png" alt="Ash Tree Logo">
+            <h2 style="font-size: 1.8em; font-weight: 500; margin: 0 0 30px 0;">How can I help you today?</h2>
+            <div class="prompt-suggestions" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 600px;">
+                <button class="suggestion-btn" style="background: var(--assistant-msg-bg); border: 1px solid var(--border-color); color: var(--text-color); padding: 10px 15px; border-radius: 12px; cursor: pointer;">Explain quantum computing</button>
+                <button class="suggestion-btn" style="background: var(--assistant-msg-bg); border: 1px solid var(--border-color); color: var(--text-color); padding: 10px 15px; border-radius: 12px; cursor: pointer;">What is Stoicism?</button>
+            </div>
+        </div>`;
+
+    const fetchWordInfo_memo = {}; // Memoization cache for dictionary lookups
+    async function fetchWordInfo_memoized(word) {
+        if (!word) return { word: '', pos: 'unknown', definition: 'No key concept provided.', synonyms: [], antonyms: [] };
+        const lowerWord = word.toLowerCase();
+        if (fetchWordInfo_memo.hasOwnProperty(lowerWord)) return fetchWordInfo_memo[lowerWord];
+        try {
+            const resp = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${lowerWord}`);
+            if (!resp.ok) throw new Error('API request failed');
+            const data = await resp.json();
+            if (Array.isArray(data) && data.length > 0 && data[0].meanings.length > 0) {
+                const meaning = data[0].meanings[0];
+                const definition = meaning.definitions[0];
+                const result = { word, pos: meaning.partOfSpeech || "unknown", definition: definition?.definition || "No definition found.", synonyms: [...(meaning.synonyms || []), ...(definition?.synonyms || [])], antonyms: [...(meaning.antonyms || []), ...(definition?.antonyms || [])] };
+                fetchWordInfo_memo[lowerWord] = result;
+                return result;
+            }
+        } catch (e) { console.error(`Dictionary API failed for "${word}":`, e); }
+        return { word, pos: 'unknown', definition: 'Definition not found.', synonyms: [], antonyms: [] };
+    }
+
+    // Simulated Internal Math Glossary
+    const mathGlossary = {
+        '+': 'Addition: Combining two or more quantities.',
+        '-': 'Subtraction: Finding the difference between two quantities.',
+        '*': 'Multiplication: Repeated addition; scaling a quantity.',
+        '/': 'Division: Splitting a quantity into equal parts; finding how many times one quantity is contained in another.',
+        '^': 'Exponentiation: Raising a quantity to a power (e.g., x^2 is x times x).',
+        'sqrt': 'Square Root: Finding the quantity that when multiplied by itself gives the original quantity.',
+        'log': 'Logarithm: Finding the power to which a base number must be raised to get another number.',
+        'sin': 'Sine: A trigonometric function representing the ratio of the opposite side to the hypotenuse in a right-angled triangle.',
+        'cos': 'Cosine: A trigonometric function representing the ratio of the adjacent side to the hypotenuse in a right-angled triangle.',
+        'tan': 'Tangent: A trigonometric function representing the ratio of the opposite side to the adjacent side in a right-angled triangle.',
+        'delta_function': 'Delta Function (Δ): Often represents a change or difference (e.g., Δx means "change in x"). In some contexts, a Dirac delta function is a generalized function.',
+        'gamma_function': "Gamma Function (Γ): An extension of the factorial function to real and complex numbers.",
+        'zeta_function': "Zeta Function (ζ): A function important in number theory, particularly the Riemann zeta function.",
+        'gravitational_constant': "Gravitational Constant (G): A fundamental constant in physics representing the force of gravitational attraction between two bodies.",
+        'planck_constant': "Planck's Constant (h): A fundamental constant in quantum mechanics relating the energy of a photon to its frequency.",
+        'speed_of_light': "Speed of Light (c): The speed at which all massless particles and field perturbations travel in vacuum.",
+        'boltzmann_constant': "Boltzmann Constant (kB): Relates the average kinetic energy of particles in a gas with the thermodynamic temperature.",
+        'elementary_charge': "Elementary Charge (e): The electric charge carried by a single proton, or equivalently, the negative of the electric charge carried by a single electron.",
+         'meter': 'Meter (m): The base unit of length in the International System of Units (SI).',
+         'kilogram': 'Kilogram (kg): The base unit of mass in the International System of Units (SI).',
+         'second': 'Second (s): The base unit of time in the International System of Units (SI).',
+         'ampere': 'Ampere (A): The base unit of electric current in the International System of Units (SI).',
+         'kelvin': 'Kelvin (K): The base unit of thermodynamic temperature in the International System of Units (SI).',
+         'mole': 'Mole (mol): The base unit of amount of substance in the International System of Units (SI).',
+         'candela': 'Candela (cd): The base unit of luminous intensity in the International System of Units (SI).',
+         'newton': 'Newton (N): The SI unit of force.',
+         'joule': 'Joule (J): The SI unit of energy, work, or amount of heat.',
+         'watt': 'Watt (W): The SI unit of power.',
+         'acceleration': 'Acceleration: The rate at which the velocity of a body changes with time.',
+         'density': 'Density: Mass per unit volume.',
+         'energy': 'Energy: The capacity for doing work.',
+         'force': 'Force: An influence that can change the motion of an object.',
+         'frequency': 'Frequency: The number of occurrences of a repeating event per unit of time.',
+         'mass': 'Mass: A measure of the amount of matter in an object.',
+         'power': 'Power: The rate at which work is done or energy is transferred.',
+         'pressure': 'Pressure: Force applied perpendicular to the surface of an object per unit area over which that force is distributed.',
+         'temperature': 'Temperature: A physical quantity that expresses degrees of hotness or coldness.',
+         'velocity': 'Velocity: The rate of change of position, or a speed in a given direction.',
+         'volume': 'Volume: The amount of three-dimensional space occupied by a substance or object.',
+         'weight': "Weight: The force exerted by gravity on an object's mass."
+    };
+
+     // Helper function to get definition from math glossary
+     function getMathDefinition(term) {
+         const lowerTerm = String(term).toLowerCase();
+         return mathGlossary[lowerTerm] || null;
+     }
+
+
+    function performDeepStructuralAnalysis(text) {
+        const words = text.match(/\b[\w']+\b/g) || [];
+        const sentences = text.split(/[.!?]+/).filter(Boolean);
+        // Basic proper noun detection: capitalized word not at the start of a sentence
+        const properNouns = words.filter(w => w.length > 1 && w[0] === w[0].toUpperCase() && (words.indexOf(w) > 0 || words.length === 1));
+        return {
+            charCount: text.length,
+            wordCount: words.length,
+            sentenceCount: sentences.length,
+            words,
+            properNouns: [...new Set(properNouns)],
+            vowelCount: (text.match(/[aeiou]/gi) || []).length,
+            consonantCount: (text.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length,
+            isQuestion: text.includes('?') || ['what', 'how', 'why', 'who', 'when', 'where', 'explain'].includes(words[0]?.toLowerCase()),
+        };
+    }
+
+    async function generateContentResponse(prompt, synthesis, promptDNA, strategy, canvasStateData) { // Added canvasStateData parameter
+        const { mainFoundationNode, overallBehavioralContext } = synthesis;
+        const action = strategy.generativeAction;
+        let coreAnswer = "", comparisonAnalysis = "", resourceDNA = null;
+        let canvasContextExplanation = ""; // New variable for canvas explanation
+
+        // Explain canvas context if present
+        if (canvasStateData && (canvasStateData.nodes.length > 0 || canvasStateData.links.length > 0)) {
+             canvasContextExplanation = `**Canvas Context:** An Ash Canvas diagram was provided. It contains ${canvasStateData.nodes.length} nodes and ${canvasStateData.links.length} links. This visual structure suggests a flow or relationship map. The nodes represent concepts, and the links indicate connections or transitions. I will consider this structure in my response.`;
+        }
+
+
+        switch (action) {
+            case 'introduction_response':
+                const name = promptDNA.properNouns[0] || 'there';
+                coreAnswer = `${canvasContextExplanation ? canvasContextExplanation + '\n\n' : ''}Hello, ${name}! It's a pleasure to meet you. My analysis indicates this is an introduction.`;
+                resourceDNA = performDeepStructuralAnalysis(`A standard greeting protocol.`);
+                break;
+            case 'define_and_enrich':
+            case 'generate_code':
+            default: // General response or unknown strategy action
+                const info = await fetchWordInfo_memoized(mainFoundationNode);
+                coreAnswer = `${canvasContextExplanation ? canvasContextExplanation + '\n\n' : ''}Based on the **${overallBehavioralContext}** reflex, the system understands the core intent is to explore the concept of **'${mainFoundationNode}'**. In essence, this refers to: *${info.definition}*\n\nTo enrich this, related concepts include: *${info.synonyms.slice(0, 3).join(', ') || 'N/A'}*.`;
+                resourceDNA = performDeepStructuralAnalysis(info.definition);
+                break;
+        }
+
+        if (resourceDNA) {
+            comparisonAnalysis = `**Structural Comparison:**\n> Your prompt's DNA: ${promptDNA.wordCount} words, ${promptDNA.charCount} characters. Resource DNA: ${resourceDNA.wordCount} words, ${resourceDNA.charCount} characters. This comparison informs the final formation's tone.`;
+        }
+
+        return { coreAnswer, comparisonAnalysis, promptDNA, resourceDNA };
+    }
+
+    // LEATR Combinatorial Pipeline Functions
+    // These functions are responsible for analyzing the prompt and determining the AI's response strategy.
+    function identifyPivotNodes(nodes) {
+        const relevantNodes = ['Envelope', 'Hammer', 'Knife', 'Catalyst']; // M, P, E, H, S, K, R maps to these?
+        // In a real system, the node *type* (M, P, etc.) from the canvas might map to these reflex tools.
+        // For now, relying on the word-based component analysis.
+        return nodes.filter(n => n.reflex && n.reflex.behavioralTool && relevantNodes.includes(n.reflex.behavioralTool));
+    }
+    function generateAnalysisPermutations(nodes) {
+        if (nodes.length === 0) return [[]];
+        let permutations = [];
+        const generate = (arr, currentPermutation = []) => {
+            if (permutations.length >= 24) return; // Limit permutations for performance
+            if (arr.length === 0) {
+                permutations.push(currentPermutation);
+            } else {
+                for (let i = 0; i < arr.length; i++) {
+                    if (permutations.length >= 24) break;
+                    const nextArr = arr.slice();
+                    const nextNode = nextArr.splice(i, 1)[0];
+                    generate(nextArr, currentPermutation.concat(nextNode));
+                }
+            }
+        };
+        generate(nodes);
+        return permutations;
+    }
+    function synthesizeSinglePath(path) {
+        const reflexCounts = path.reduce((counts, node) => {
+            const reflexType = node.reflex.behavioralTool;
+            counts[reflexType] = (counts[reflexType] || 0) + 1;
+            return counts;
+        }, {});
+
+        let dominantReflex = 'Envelope', maxCount = 0;
+        for (const reflex in reflexCounts) {
+            if (reflexCounts[reflex] > maxCount) {
+                maxCount = reflexCounts[reflex];
+                dominantReflex = reflex;
+            }
+        }
+        return { path: path.map(n => n.component), dominantReflex };
+    }
+    function synthesizeFinalSigma(analyses) {
+        if (!analyses || analyses.length === 0) return { overallBehavioralContext: "Indeterminate" };
+
+        const contextDistribution = analyses.reduce((dist, analysis) => {
+            dist[analysis.dominantReflex] = (dist[analysis.dominantReflex] || 0) + 1;
+            return dist;
+        }, {});
+
+        let primaryContext = "Indeterminate", maxCount = 0;
+        for (const context in contextDistribution) {
+            if (contextDistribution[context] > maxCount) {
+                maxCount = contextDistribution[context];
+                primaryContext = context;
+            }
+        }
+
+        let alternativeContext = null;
+        if (analyses.length > 1) {
+            const alternate = analyses.find(a => a.dominantReflex !== primaryContext);
+            if (alternate) alternativeContext = { context: alternate.dominantReflex, path: alternate.path };
+        }
+
+        return {
+            pathAnalyses: analyses,
+            overallBehavioralContext: primaryContext,
+            contextDistribution,
+            alternativeContext,
+            mainFoundationNode: analyses[0]?.path[0] // Use the first component of the first path as the main foundation
+        };
+    }
+    function establishRootFoundation(prompt) {
+        return { prompt, componentNodes: [] };
+    }
+    async function buildComponentNodes(state, strategy) {
+        const defaultReflexMap = {'noun': 'Envelope', 'verb': 'Hammer', 'adjective': 'Knife'};
+        const words = state.prompt.match(/\b[\w']+\b/g) || [];
+        for (const word of words) {
+            const wordInfo = await fetchWordInfo_memoized(word);
+            let node = {
+                component: word,
+                foundation: wordInfo,
+                reflex: {}
+            };
+            // Assign reflex based on overrides, part of speech, or default
+            node.reflex.behavioralTool = strategy.overrides?.[word.toLowerCase()] || defaultReflexMap[wordInfo.pos] || 'Puzzle';
+            state.componentNodes.push(node);
+        }
+        return state;
+    }
+    function craftFinalResponse(synthesis, generativeContent) {
+        const { pathAnalyses, overallBehavioralContext } = synthesis; // Removed alternativeContext from destructuring
+        let response = `**LEATR Combinatorial Sigma Report:**\n> Explored **${pathAnalyses.length}** distinct interpretive pathways. Dominant context: **${overallBehavioralContext}**.\n\n`;
+        response += `${generativeContent.comparisonAnalysis || ''}\n\n`;
+        response += `**Final Formation (Answer):**\n> ${generativeContent.coreAnswer.replace(/\n/g, '\n> ')}`; // Format core answer as blockquote
+
+        return response;
+    }
+
+    // Main LEATR Pipeline Orchestration
+    async function runLeatrPipeline(prompt, chatSession, useJournal, canvasStateData = null) { // Added canvasStateData parameter
+        const promptDNA = performDeepStructuralAnalysis(prompt);
+        // Determine strategy: use Journal if available and enabled, otherwise general response
+        const strategy = (typeof Journal !== 'undefined' && useJournal) ? Journal.determineExecutionStrategy(prompt, promptDNA) : { generativeAction: 'general_response' };
+
+        let state = establishRootFoundation(prompt);
+        state = await buildComponentNodes(state, strategy);
+        const pivotNodes = identifyPivotNodes(state.componentNodes);
+        const analysisPermutations = generateAnalysisPermutations(pivotNodes);
+        const synthesizedAnalyses = analysisPermutations.map(path => synthesizeSinglePath(path));
+        state.synthesis = synthesizeFinalSigma(synthesizedAnalyses);
+
+        const generativeContent = await generateContentResponse(prompt, state.synthesis, promptDNA, strategy, canvasStateData); // Pass canvasStateData
+        const finalResponse = craftFinalResponse(state.synthesis, generativeContent);
+
+        autoTitleChat(state, chatSession); // Update chat title if needed
+
+        // Aggregate all analysis data for potential future use or display
+        const fullAnalysis = {
+             prompt,
+             promptDNA,
+             leatrAnalysis: state.synthesis,
+             generativeContent: generativeContent, // Store generative content details
+             canvasState: canvasStateData || null // Include canvas state if provided
+        };
+        return { fullAnalysis, generativeResponse: finalResponse };
+    }
+
+    // --- UI and State Management ---
+    function renderCurrentChat() {
+        const chatWindow = ui.chatWindow;
+        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
+
+        if (!currentChat || currentChat.messages.length === 0) {
+            chatWindow.innerHTML = welcomeHTML;
+            // Add event listeners to suggestion buttons on the welcome screen
+            chatWindow.querySelectorAll('.suggestion-btn').forEach(button =>
+                button.addEventListener('click', handleSuggestionClick)
+            );
+            return;
+        }
+
+        chatWindow.innerHTML = currentChat.messages.map(message => {
+            // Sanitize and format message text for HTML display
+            let formattedText = message.text
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') // Bold
+                .replace(/\*(.+?)\*/g, '<em>$1</em>') // Italic
+                .replace(/\n/g, '<br>') // Newlines to <br>
+                // Specific formatting for code blocks (adjust regex to handle <br>)
+                 .replace(/```python<br>(.*?)<br>```/gs, (match, code) => {
+                     // Remove <br> inside the code block for proper pre/code formatting
+                     const cleanCode = code.replace(/<br>/g, '\n');
+                     return `<pre style="background:#111; padding:10px; border-radius:8px; white-space:pre-wrap; word-wrap:break-word;"><code class="language-python">${cleanCode}</code></pre>`;
+                 })
+                // Blockquotes (adjust regex to handle <br> but apply to each line starting with >)
+                .replace(/^&gt; (.*)$/gm, '<blockquote style="margin: 0; padding-left: 10px; border-left: 2px solid #555;">$1</blockquote>');
+
+
+            // Add edit button for assistant messages that are math reports
+            const editButton = message.sender === 'assistant' && message.type === 'math_report'
+                ? `<button class="edit-btn" data-message-index="${currentChat.messages.indexOf(message)}">✎</button>`
+                : '';
+
+            // Details section for showing full analysis if available
+            const analysisDetails = message.analysis ? `
+                <details style="margin-top: 10px; cursor: pointer;">
+                    <summary style="font-size: 0.8em; opacity: 0.7;">Show Full Analysis</summary>
+                    <pre style="font-size: 11px; white-space:pre-wrap; word-wrap:break-word;">${JSON.stringify(message.analysis, null, 2)}</pre>
+                </details>` : '';
+
+            // Construct the message wrapper
+            return `<div class="message-wrapper">
+                        <div class="message ${message.sender}-message">${formattedText}${analysisDetails}${editButton}</div>
+                    </div>`;
+        }).join('');
+
+        // Scroll to the bottom of the chat window
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // Handles clicks on suggestion buttons in the welcome screen
+    function handleSuggestionClick(event) {
+        const suggestionText = event.target.textContent;
+        ui.userInput.value = suggestionText;
+        ui.sendButton.disabled = false;
+        // Trigger the prompt submission process
+        handleUserPrompt(new Event('submit', { cancelable: true }));
+    }
+
+    // Handles the submission of a user prompt
+    function handleUserPrompt(event) {
+        event.preventDefault();
+        const promptText = ui.userInput.value.trim();
+
+        // If the input is empty AND there's no pending canvas context, do nothing
+        if (!promptText && !pendingCanvasContext) return;
+
+        // If consent is not yet granted, show the consent modal
+        if (!globalConsentAcknowledged) {
+            // If there's a prompt or canvas context, store it
+            pendingPrompt = { text: promptText, canvas: pendingCanvasContext };
+            pendingCanvasContext = null; // Clear the pending context after storing
+            showConsentModal();
+            return;
+        }
+
+        // Process the prompt and get a response
+        processAndRespond(promptText, pendingCanvasContext); // Pass pending canvas context
+        pendingCanvasContext = null; // Clear the pending context after sending
+
+        // Clear the input field and disable the send button until processing is complete
+        ui.userInput.value = '';
+        ui.userInput.style.height = 'auto'; // Reset height
+        ui.sendButton.disabled = true;
+
+    }
+
+    // Processes the user prompt through the LEATR pipeline
+    async function processAndRespond(promptText, canvasStateData = null) { // Added canvasStateData parameter
+        // If no chat is active, create a new one
+        if(chatState.currentChatIndex < 0) createNewChat();
+        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
+
+        // Add the user's message to the chat history
+        // Include a note about canvas context in the user message if it was sent
+        let displayPromptText = promptText;
+        if(canvasStateData && (canvasStateData.nodes.length > 0 || canvasStateData.links.length > 0)){
+             displayPromptText = `(Canvas Context Included: ${canvasStateData.nodes.length} nodes, ${canvasStateData.links.length} links)\n${promptText}`;
+        }
+        addMessageToHistory({ sender: 'user', text: displayPromptText });
+        renderCurrentChat(); // Render the UI with the user's message
+
+        // Add a placeholder for the assistant's response to show a loading state
+        const placeholderIndex = addMessageToHistory({ sender: 'assistant', text: '...', type: 'placeholder' });
+        renderCurrentChat(); // Render the placeholder
+
+        try {
+            // Determine if the Journal should be used (based on consent and availability)
+            const useJournal = ui.crossChatConsent.checked && (typeof Journal !== 'undefined');
+
+            // Run the LEATR pipeline to get the response, passing canvas data
+            const result = await runLeatrPipeline(promptText, currentChat, useJournal, canvasStateData);
+
+            // Update the placeholder message with the actual assistant response
+            currentChat.messages[placeholderIndex] = {
+                sender: 'assistant',
+                text: result.generativeResponse,
+                analysis: result.fullAnalysis,
+                // Assign type based on content to potentially enable features like editing
+                type: result.generativeResponse.includes('Math Solver Report') ? 'math_report' : 'standard_response' // Check the generated text for type
+            };
+
+            // If Journal is enabled, add the insight
+            if (useJournal && typeof Journal !== 'undefined') { // Check if Journal is defined before using it
+                 Journal.addInsight(result.fullAnalysis, { publicShare: ui.publicShareConsent.checked });
+            }
+        } catch (error) {
+            // Handle any errors during the pipeline execution
+            console.error("Pipeline Error:", error);
+            currentChat.messages[placeholderIndex] = {
+                sender: 'assistant',
+                text: `An error occurred during the reflexive process: ${error.message}`,
+                analysis: { error: error.message, stack: error.stack }
+            };
+        }
+
+        renderCurrentChat(); // Re-render the chat window with the final response
+        renderChatHistory(); // Update the chat history list in the sidebar
+    }
+
+    // Handles the acknowledgment of the consent modal
+    function acknowledgeConsent() {
+        globalConsentAcknowledged = true;
+        sessionStorage.setItem('leatrConsentAcknowledged', 'true'); // Persist consent in session storage
+        ui.consentModalOverlay.style.display = 'none'; // Hide the modal
+
+        // If there was a pending prompt (text + canvas), process it now
+        if (pendingPrompt) {
+            const promptToProcess = pendingPrompt.text;
+            const canvasToProcess = pendingPrompt.canvas;
+            pendingPrompt = null;
+            processAndRespond(promptToProcess, canvasToProcess);
+        }
+    }
+
+    // Creates a new chat session and updates the UI
+    function createNewChat() {
+        const newChat = { id: Date.now(), title: 'New Chat', messages: [] };
+        chatState.chatHistory.push(newChat);
+        chatState.currentChatIndex = chatState.chatHistory.length - 1; // Set the new chat as active
+        renderCurrentChat();
+        renderChatHistory();
+    }
+
+    // Switches the active chat and updates the UI
+    function switchChat(chatIndex) {
+        if (chatIndex === chatState.currentChatIndex) return; // Do nothing if it's the same chat
+        chatState.currentChatIndex = chatIndex;
+        renderCurrentChat();
+        renderChatHistory();
+        // Close the sidebar on mobile when switching chats
+        if (window.innerWidth <= 768) ui.sidebar.classList.remove('active');
+    }
+
+    // Displays the consent modal overlay
+    function showConsentModal() {
+        ui.consentModalOverlay.style.display = 'flex';
+    }
+
+    // Automatically titles a chat based on its content if it's a new chat
+    function autoTitleChat(pipelineState, chatSession) {
+        if (chatSession && chatSession.title === 'New Chat' && pipelineState.synthesis.mainFoundationNode) {
+            const foundation = pipelineState.synthesis.mainFoundationNode;
+            const context = pipelineState.synthesis.overallBehavioralContext;
+            // Capitalize the first letter of the foundation word
+            chatSession.title = `${foundation.charAt(0).toUpperCase() + foundation.slice(1)} (${context})`;
+        }
+    }
+
+    // Adds a message to the current chat's history
+    function addMessageToHistory(message) {
+        if (chatState.currentChatIndex < 0) createNewChat(); // Ensure a chat is active
+        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
+        currentChat.messages.push(message);
+        // Return the index of the added message, useful for placeholders
+        return currentChat.messages.length - 1;
+    }
+
+    // Renders the list of chats in the sidebar
+    function renderChatHistory() {
+        ui.chatHistoryEl.innerHTML = chatState.chatHistory.map((chat, index) =>
+            `<div class="history-item ${index === chatState.currentChatIndex ? 'active' : ''}" onclick="switchChat(${index})">
+                <input type="text" class="history-title" value="${chat.title}" onchange="updateChatTitle(${index}, this.value)">
+            </div>`
+        ).join('');
+    }
+
+    // Updates the title of a chat in the history
+    function updateChatTitle(index, newTitle) {
+        if (chatState.chatHistory[index]) {
+            chatState.chatHistory[index].title = newTitle;
+        }
+    }
+
+    // Sets the --vh CSS variable for responsive height calculations
+    function setViewportHeight() {
+        document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+    }
+
+    // --- Math Solver Functions ---
+    // Updates the dropdown list of variables based on the current equation
+    function updateVariableSelector() {
+        const equation = ui.algebraicEquationInput.value;
+        // Extract potential variables (sequences of letters)
+        const variables = [...new Set(equation.match(/[a-zA-Z]+/g) || [])];
+        const currentSelection = ui.variableSelectDropdown.value;
+
+        // Clear existing options
+        ui.variableSelectDropdown.innerHTML = '<option value="">-- Select Variable --</option>';
+        // Populate with new variables, indicating those with assigned contexts
+        variables.forEach(v => {
+            const option = document.createElement('option');
+            option.value = v;
+            option.textContent = v + (variableContexts[v] ? ' ✓' : ''); // Add checkmark if context exists
+            ui.variableSelectDropdown.appendChild(option);
+        });
+        // Restore selection if the variable is still present
+        if (variables.includes(currentSelection)) {
+             ui.variableSelectDropdown.value = currentSelection;
+        }
+    }
+
+    // Assigns context (operator, field, value) to a selected variable
+    function assignVariableContext() {
+        const selectedVar = ui.variableSelectDropdown.value;
+        // Value input is handled by the Add Value button separately now
+
+        if (!selectedVar) { alert('Please select a variable from the dropdown first.'); return; }
+
+        // Get current context or create a new one if none exists
+        if (!variableContexts[selectedVar]) {
+             variableContexts[selectedVar] = {}; // Create empty context if it doesn't exist
+        }
+
+        // Assign selected dropdown values if they are not empty
+        if (ui.specialOperatorDropdown.value) variableContexts[selectedVar].specialOperator = ui.specialOperatorDropdown.value;
+        if (ui.physicsFieldDropdown.value) variableContexts[selectedVar].physicsField = ui.physicsFieldDropdown.value;
+        // Math operation dropdown is more for general math context, not specific variable assignment.
+
+        updateAssignedContextsDisplay(); // Refresh the display of assigned contexts
+        updateVariableSelector(); // Update the variable dropdown to show the context indicator
+
+        // Clear dropdowns after assignment (value input stays unless 'Add Value' is used)
+        ui.specialOperatorDropdown.value = '';
+        ui.physicsFieldDropdown.value = '';
+    }
+
+    // Clears the context for a selected variable
+    function clearVariableContext() {
+        const selectedVar = ui.variableSelectDropdown.value;
+        if (!selectedVar) return; // Do nothing if no variable is selected
+
+        delete variableContexts[selectedVar]; // Remove the variable's context
+        updateAssignedContextsDisplay(); // Refresh the display
+        updateVariableSelector(); // Update the variable selector
+
+        // Clear the value and dropdowns after clearing context
+        ui.variableValueInput.value = '';
+        ui.specialOperatorDropdown.value = '';
+        ui.physicsFieldDropdown.value = '';
+    }
+
+    // Refreshes the display area showing assigned variable contexts
+    function updateAssignedContextsDisplay() {
+        let contextHtml = Object.entries(variableContexts).map(([variableName, context]) => {
+            // Display variable, its value (if set), and its associated contexts
+            const valueDisplay = context.value ? `: <code>${context.value}</code>` : '';
+            const contextParts = [context.specialOperator, context.physicsField].filter(Boolean).map(term => {
+                 // Get definition from glossary if available
+                 const definition = getMathDefinition(term);
+                 return definition ? `<abbr title="${definition}">${term}</abbr>` : term;
+             }).join(', ');
+
+            return `<b>${variableName}</b>${valueDisplay} (${contextParts || 'No context'})`;
+        }).join('<br>');
+
+        // Show default message if no contexts are assigned
+        ui.assignedContextsDisplay.innerHTML = contextHtml || 'No contexts assigned yet.';
+    }
+
+    // Generates the report text from the equation and assigned contexts (Updated for dictionary)
+    function generateReportText(equation, contexts) {
+        let evaluationResult;
+        let evaluatedScope = {};
+        let contextReport = [];
+        let interpretation = []; // New array for interpretation
+
+
+        // Add equation operators/functions to interpretation list for lookup
+        const equationTerms = equation.match(/[+\-*/^()]|sqrt|log|sin|cos|tan|[a-zA-Z]+/g) || [];
+         equationTerms.forEach(term => {
+             const def = getMathDefinition(term);
+             if (def) {
+                  interpretation.push(`The term \`${term}\` refers to: ${def}`);
+             }
+         });
+
+
+        try {
+            // Prepare the scope for math.evaluate
+            for (const [varName, contextData] of Object.entries(contexts)) {
+                let valueString = contextData.value || '0'; // Default to 0 if no value assigned
+                try {
+                     evaluatedScope[varName] = math.evaluate(valueString);
+                } catch (e) {
+                     evaluatedScope[varName] = NaN;
+                     contextReport.push(`Variable \`${varName}\`: Invalid value expression \`${valueString}\``);
+                     console.warn(`Invalid value expression for ${varName}: ${valueString}`, e);
+                     continue;
+                }
+
+                // Build context report string for this variable AND add to interpretation
+                let varContexts = [];
+                if (contextData.value) varContexts.push(`Value: \`${contextData.value}\``);
+
+                if (contextData.specialOperator) {
+                     varContexts.push(`Op: \`${contextData.specialOperator}\``);
+                     const def = getMathDefinition(contextData.specialOperator);
+                     if (def) interpretation.push(`The special operator \`${contextData.specialOperator}\` assigned to \`${varName}\` indicates: ${def}`);
+                 }
+                 if (contextData.physicsField) {
+                     varContexts.push(`Field: \`${contextData.physicsField}\``);
+                     const def = getMathDefinition(contextData.physicsField);
+                     if (def) interpretation.push(`The physics field \`${contextData.physicsField}\` assigned to \`${varName}\` relates to: ${def}`);
+                 }
+
+                if (varContexts.length > 0) {
+                     contextReport.push(`Variable \`${varName}\`: ${varContexts.join(', ')}`);
+                } else {
+                     contextReport.push(`Variable \`${varName}\`: No specific context assigned.`);
+                }
+            }
+
+            // Attempt to evaluate the entire equation with the prepared scope
+            evaluationResult = math.evaluate(equation, evaluatedScope);
+
+            // Format the result
+            let formattedResult = typeof evaluationResult === 'number' ? evaluationResult.toFixed(4) : String(evaluationResult);
+            if (typeof formattedResult === 'string' && formattedResult.length > 200) {
+                formattedResult = formattedResult.substring(0, 200) + '...';
+            }
+
+            // Build the final report message
+            let report = `**Math Solver Report:**\nEquation: \`${equation}\``;
+            if (contextReport.length > 0) {
+                 report += '\nAssigned Contexts:\n> ' + contextReport.join('\n> ');
+            } else {
+                 report += '\n> No specific variable contexts assigned.';
+            }
+
+            // Add interpretation section
+            if (interpretation.length > 0) {
+                 report += '\n\nInterpretation of Terms & Contexts:\n> ' + interpretation.join('\n> ');
+            }
+
+            // Add result section
+            if (equation.includes('=')) {
+                report += `\n\nAnalysis: This likely defines a relationship. Evaluating the expression part with contexts yields approximately: \`${formattedResult}\``;
+                 // Add a basic interpretation of the result based on context/fields if possible
+                 const resultInterpretation = interpretResult(equation, evaluatedScope, evaluationResult, contexts);
+                 if (resultInterpretation) report += `\n> Meaning of Result: ${resultInterpretation}`;
+
+            } else {
+                 report += `\n\nResult: \`${formattedResult}\``;
+                 const resultInterpretation = interpretResult(equation, evaluatedScope, evaluationResult, contexts);
+                 if (resultInterpretation) report += `\n> Meaning of Result: ${resultInterpretation}`;
+            }
+
+
+            return report;
+
+        } catch(e) {
+            // If evaluation fails, report the error
+            let report = `**Math Solver Report:**\nEquation: \`${equation}\``;
+             if (contextReport.length > 0) {
+                  report += '\nAssigned Contexts:\n> ' + contextReport.join('\n> ');
+             } else {
+                  report += '\n> No specific variable contexts assigned.';
+             }
+             if (interpretation.length > 0) {
+                 report += '\n\nInterpretation of Terms & Contexts:\n> ' + interpretation.join('\n> ');
+             }
+             report += `\n\nCould not fully process equation. Error: \`${e.message}\``;
+            return report;
+        }
+    }
+
+    // Simple interpretation of the result based on assigned physics fields
+    function interpretResult(equation, scope, result, contexts) {
+         // Look for assigned physics fields, particularly the one the equation might solve FOR
+         // This is a very basic interpretation. A real system would need symbolic analysis.
+         // For example, if the equation is F = m*a and 'm' has field 'mass' and 'a' has 'acceleration',
+         // and the equation is solved for F, the result means 'Force'.
+         // If it's solved for 'a', the result means 'Acceleration'.
+         // Since math.evaluate just gives a number, we have to guess or rely on user context.
+         // Let's look at the physics fields assigned to any variable *not* being solved for (if it's an equation).
+
+        const variablesInEquation = (equation.match(/[a-zA-Z]+/g) || []);
+        const assignedFields = Object.entries(contexts)
+            .filter(([varName, ctx]) => variablesInEquation.includes(varName) && ctx.physicsField)
+            .map(([varName, ctx]) => ctx.physicsField);
+
+        const uniqueFields = [...new Set(assignedFields)];
+
+        if (uniqueFields.length === 1) {
+            return `Given the context, the result likely represents a value related to **${uniqueFields[0]}**.`;
+        } else if (uniqueFields.length > 1) {
+            return `Given the contexts (${uniqueFields.join(', ')}), the result is a numerical value derived from these physical properties.`;
+        } else {
+            // Could try to infer based on common formulas? Too complex for this scope.
+            return 'The result is a numerical value.';
+        }
+    }
+
+
+    // Solves the equation and generates a report message
+    function solveAndReport() {
+        const equation = ui.algebraicEquationInput.value.trim();
+        if (!equation) { alert('Please enter an equation or formula.'); return; }
+
+        // Generate the report text including evaluation result and contexts
+        const reportText = generateReportText(equation, variableContexts);
+        const messageData = {
+            equation: equation,
+            contexts: { ...variableContexts }, // Store a copy of the current contexts
+            // Note: evaluation result is in the text, not stored separately here
+        };
+
+        // If editing an existing message, update it; otherwise, add a new one
+        if (editingMessageIndex !== null) {
+            const chat = chatState.chatHistory[chatState.currentChatIndex];
+            chat.messages[editingMessageIndex].text = reportText; // Update message text
+            chat.messages[editingMessageIndex].data = messageData; // Update associated data
+             // Re-render to show the updated message
+            renderCurrentChat();
+        } else {
+            // Add a new message for the report
+            addMessageToHistory({ sender: 'assistant', text: reportText, type: 'math_report', data: messageData });
+            // Re-render to show the new message and scroll to bottom
+             renderCurrentChat();
+        }
+
+        closeMathSolver(); // Close the solver overlay
+        renderChatHistory(); // Update history in case a new chat was created
+    }
+
+    // Opens the math solver in edit mode for an existing math report message
+    function openMathSolverForEdit(messageIndex) {
+        const currentChat = chatState.chatHistory[chatState.currentChatIndex];
+        const message = currentChat.messages[messageIndex];
+
+        // Ensure it's a valid math report message
+        if (!message || message.type !== 'math_report' || !message.data) return;
+
+        editingMessageIndex = messageIndex; // Set the index of the message being edited
+        // Load existing contexts and equation into the solver UI
+        variableContexts = message.data.contexts ? { ...message.data.contexts } : {};
+        ui.algebraicEquationInput.value = message.data.equation || '';
+
+        ui.variableValueInput.value = ''; // Clear value input initially
+        ui.specialOperatorDropdown.value = ''; // Clear operator dropdown initially
+        ui.physicsFieldDropdown.value = ''; // Clear field field dropdown initially
+
+        updateVariableSelector(); // Populate variable dropdown
+        updateAssignedContextsDisplay(); // Show assigned contexts
+        ui.mathCalculatorOverlay.style.display = 'flex'; // Show the solver overlay
+
+        // Activate the math extension toggle visually
+        extensions.math = true;
+        ui.toggleMathExtension.classList.add('checked');
+    }
+
+    // Opens the math solver for a new equation entry
+    function openNewMathSolver() {
+        editingMessageIndex = null; // Reset editing state
+        variableContexts = {}; // Clear any previous contexts
+        ui.algebraicEquationInput.value = ''; // Clear equation input
+        ui.variableValueInput.value = ''; // Clear value input
+        ui.specialOperatorDropdown.value = ''; // Clear operator dropdown
+        ui.physicsFieldDropdown.value = ''; // Clear field field dropdown
+        updateVariableSelector(); // Update variable list
+        updateAssignedContextsDisplay(); // Update display
+        ui.mathCalculatorOverlay.style.display = 'flex'; // Show the solver overlay
+
+        // Activate the math extension toggle visually
+        extensions.math = true;
+        ui.toggleMathExtension.classList.add('checked');
+    }
+
+    // Closes the math solver overlay and resets related state
+    function closeMathSolver() {
+        ui.mathCalculatorOverlay.style.display = 'none'; // Hide the overlay
+        // Deactivate the math extension toggle visually
+         extensions.math = false; // Ensure state is off
+         ui.toggleMathExtension.classList.remove('checked');
+    }
+
+    // --- Event Listeners Setup ---
+    document.addEventListener('DOMContentLoaded', () => {
+        // Adjusts the --vh CSS variable on window resize for consistent height calculations
+        setViewportHeight();
+        window.addEventListener('resize', setViewportHeight);
+
+        // Handle initial consent check
+        if (sessionStorage.getItem('leatrConsentAcknowledged') !== 'true') {
+            showConsentModal(); // Show consent modal if consent not given
+        } else {
+            globalConsentAcknowledged = true; // Set flag if consent was previously given
+        }
+
+        // --- Main UI Event Listeners ---
+        ui.inputForm.addEventListener('submit', handleUserPrompt); // Submit prompt on Enter
+        ui.userInput.addEventListener('input', () => {
+            ui.userInput.style.height = 'auto'; // Auto-adjust textarea height
+            ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px';
+            // Enable send button only when there's input OR pending canvas context
+            ui.sendButton.disabled = ui.userInput.value.trim().length === 0 && pendingCanvasContext === null;
+        });
+        ui.newChatBtn.addEventListener('click', () => {
+            createNewChat(); // Create a new chat when button is clicked
+            // Close sidebar on mobile after creating new chat
+            if (window.innerWidth <= 768) ui.sidebar.classList.remove('active');
+        });
+        ui.closeSidebarBtn.addEventListener('click', () => ui.sidebar.classList.remove('active')); // Close sidebar
+        ui.menuBtn.addEventListener('click', () => ui.sidebar.classList.add('active')); // Open sidebar
+
+        // Consent Modal Interactions
+        ui.consentAcknowledgeBtn.addEventListener('click', acknowledgeConsent); // Handle consent confirmation
+
+        // Scroll Controls: Show/hide buttons based on scroll position
+        ui.chatWindow.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = ui.chatWindow;
+            const isAtTop = scrollTop < 50; // Threshold for being at the top
+            const isAtBottom = scrollTop + clientHeight >= scrollHeight - 50; // Threshold for being at the bottom
+            // Show scroll buttons only when necessary
+            ui.scrollUpBtn.style.display = !isAtTop && scrollHeight > clientHeight ? 'flex' : 'none';
+            ui.scrollDownBtn.style.display = !isAtBottom && scrollHeight > clientHeight ? 'flex' : 'none';
+        });
+        ui.scrollUpBtn.addEventListener('click', () => ui.chatWindow.scrollTo({ top: 0, behavior: 'smooth' })); // Scroll to top smoothly
+        ui.scrollDownBtn.addEventListener('click', () => ui.chatWindow.scrollTo({ top: ui.chatWindow.scrollHeight, behavior: 'smooth' })); // Scroll to bottom smoothly
+
+        // --- Extension Toggles ---
+        ui.toggleMathExtension.parentElement.addEventListener('click', () => {
+            extensions.math = !extensions.math; // Toggle math extension state
+            ui.toggleMathExtension.classList.toggle('checked', extensions.math); // Update checkbox visual
+             // Open/close solver UI - only open if activated, close if deactivated or if canvas is opened
+             if (extensions.math) {
+                 openNewMathSolver();
+                 // If canvas is open, close it when opening math solver
+                 if (extensions.ashCanvas) {
+                     extensions.ashCanvas = false;
+                     ui.toggleAshCanvasExtension.classList.remove('checked');
+                     ui.ashCanvasOverlay.style.display = 'none'; // Close canvas overlay
+                     // Reset canvas modes
+                     canvasState.drawMode = canvasState.unlinkMode = false;
+                     ui.canvasLinkBtn.classList.remove('active');
+                     ui.canvasUnlinkBtn.classList.remove('active');
+                     if (canvasState.startNode) {
+                         canvasState.startNode.classList.remove('selected');
+                         canvasState.startNode = null;
+                     }
+                 }
+             } else {
+                 closeMathSolver();
+             }
+        });
+        ui.toggleAshCanvasExtension.parentElement.addEventListener('click', () => {
+            extensions.ashCanvas = !extensions.ashCanvas; // Toggle canvas extension state
+            ui.toggleAshCanvasExtension.classList.toggle('checked', extensions.ashCanvas); // Update checkbox visual
+            ui.ashCanvasOverlay.style.display = extensions.ashCanvas ? 'flex' : 'none'; // Show/hide canvas overlay
+
+            // If canvas is open, close math solver if it's open
+            if (extensions.ashCanvas && extensions.math) {
+                 extensions.math = false;
+                 ui.toggleMathExtension.classList.remove('checked');
+                 closeMathSolver(); // Use the close function to hide the modal
+            }
+
+            // If canvas is closed, reset canvas linking/unlinking modes
+            if (!extensions.ashCanvas) {
+                 canvasState.drawMode = canvasState.unlinkMode = false;
+                 ui.canvasLinkBtn.classList.remove('active');
+                 ui.canvasUnlinkBtn.classList.remove('active');
+                 if (canvasState.startNode) {
+                     canvasState.startNode.classList.remove('selected');
+                     canvasState.startNode = null;
+                 }
+            }
+        });
+
+
+        // --- Math Calculator Interactions ---
+        // Listen for clicks on the edit button within math report messages (Delegated)
+        ui.chatWindow.addEventListener('click', e => {
+            if (e.target.classList.contains('edit-btn')) {
+                openMathSolverForEdit(parseInt(e.target.dataset.messageIndex)); // Open solver for editing
+            }
+        });
+        ui.algebraicEquationInput.addEventListener('input', updateVariableSelector); // Update variable list when equation changes
+        ui.assignContextBtn.addEventListener('click', assignVariableContext); // Assign context to variable
+        ui.clearContextBtn.addEventListener('click', clearVariableContext); // Clear context for selected variable
+        ui.closeCalculatorBtn.addEventListener('click', closeMathSolver); // Close the solver UI (should also update extension state)
+        ui.solveEquationBtn.addEventListener('click', solveAndReport); // Solve and generate report
+        ui.addValueBtn.addEventListener('click', () => { // Handle adding a value to a variable context
+            const selectedVar = ui.variableSelectDropdown.value;
+            if (!selectedVar) { alert('Please select a variable first.'); return; }
+            const value = ui.variableValueInput.value.trim();
+            if (!value) { alert('Please enter a value.'); return; }
+            // Update the context with the value
+            if (!variableContexts[selectedVar]) {
+                 variableContexts[selectedVar] = {}; // Create empty context if it doesn't exist
+            }
+            variableContexts[selectedVar].value = value;
+
+            updateAssignedContextsDisplay(); // Refresh display
+            updateVariableSelector(); // Update variable dropdown indicator
+            ui.variableValueInput.value = ''; // Clear value input after adding
+        });
+
+
+        // --- Ash Canvas Interactions ---
+        // Enable drag-and-drop for node creation
+        ui.canvasDraggables.forEach(draggable => {
+          draggable.ondragstart = e => e.dataTransfer.setData('text/plain', draggable.dataset.type);
+        });
+        ui.canvasContainer.ondragover = e => e.preventDefault(); // Allow dropping
+        ui.canvasContainer.ondrop = e => { // Handle node drop to create it
+          e.preventDefault();
+          const nodeType = e.dataTransfer.getData('text/plain');
+          createNode(nodeType, e); // Create the node at the drop location
+        };
+
+        // Canvas control button actions
+        ui.canvasLinkBtn.onclick = () => {
+            canvasState.drawMode = !canvasState.drawMode;
+            canvasState.unlinkMode = false;
+            toggleActive(ui.canvasLinkBtn, canvasState.drawMode);
+            toggleActive(ui.canvasUnlinkBtn, false);
+            if (!canvasState.drawMode && canvasState.startNode) { // Deselect start node if exiting draw mode
+                canvasState.startNode.classList.remove('selected');
+                canvasState.startNode = null;
+            }
+        };
+        ui.canvasUnlinkBtn.onclick = () => {
+            canvasState.unlinkMode = !canvasState.unlinkMode;
+            canvasState.drawMode = false;
+            toggleActive(ui.canvasUnlinkBtn, canvasState.unlinkMode);
+            toggleActive(ui.canvasLinkBtn, false);
+        };
+        ui.canvasZoomInBtn.onclick  = () => setCanvasScale(canvasState.scale + 0.2); // Zoom in
+        ui.canvasZoomOutBtn.onclick = () => setCanvasScale(canvasState.scale - 0.2); // Zoom out
+        ui.canvasClearBtn.onclick = () => {
+            if (confirm('Are you sure you want to clear the entire canvas? This cannot be undone (except by using the undo history which will be cleared too).')) {
+                 // Remove all nodes and links from the canvas
+                 ui.canvasPanzoom.querySelectorAll('.node, polyline').forEach(el => el.remove()); // Note: Assuming no special groups exist
+                 canvasState.startNode = null; // Reset canvas state
+                 canvasState.nodeCounter = 0; // Reset node/link counter - IMPORTANT for unique IDs
+                 canvasState.undoStack.length = canvasState.redoStack.length = 0; // Clear undo/redo history
+                 updateCanvasButtons();
+            }
+        };
+        ui.canvasUndoBtn.onclick = undoCanvasAction; // Use the dedicated undo function
+        ui.canvasRedoBtn.onclick = redoCanvasAction; // Use the dedicated redo function
+
+        // Canvas Overlay Action Buttons
+        ui.closeCanvasBtnOverlay.addEventListener('click', () => {
+             // Close the overlay, reset the toggle visually, and reset canvas modes
+             ui.ashCanvasOverlay.style.display = 'none';
+             extensions.ashCanvas = false;
+             ui.toggleAshCanvasExtension.classList.remove('checked');
+             canvasState.drawMode = canvasState.unlinkMode = false;
+             ui.canvasLinkBtn.classList.remove('active');
+             ui.canvasUnlinkBtn.classList.remove('active');
+             if (canvasState.startNode) {
+                 canvasState.startNode.classList.remove('selected');
+                 canvasState.startNode = null;
+             }
+        });
+
+        ui.submitCanvasBtn.addEventListener('click', () => {
+             // Capture the current canvas state
+             pendingCanvasContext = captureCanvasState();
+             console.log("Captured Canvas State:", pendingCanvasContext); // Log for verification
+
+             // Enable the send button in the main chat input area
+             ui.sendButton.disabled = false;
+
+             // Close the canvas overlay (re-use the close logic)
+             ui.closeCanvasBtnOverlay.click();
+
+             // Optionally, provide visual feedback that canvas state is pending
+             // A small icon next to the input, or change send button style?
+             // For now, just enabling the button is the feedback.
+        });
+
+
+        // Initialize canvas buttons state
+        updateCanvasButtons();
+
+
+        // --- Initial Setup ---
+        createNewChat(); // Start with a new chat session
+
+        // If the Journal script is loaded, set up periodic processing
+        if (typeof Journal !== 'undefined') {
+            setInterval(() => Journal.processInsightsOnIdle(), 60000); // Process insights every minute
+        }
+    });
+</script>
+</body>
+</html>
