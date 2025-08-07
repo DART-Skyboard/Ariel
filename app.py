@@ -76,7 +76,9 @@ def chat():
 
 @app.route('/feed.xml')
 def feed():
-    return send_from_directory('templates', 'feed.xml')
+
+    return send_from_directory('static', 'feed.xml')
+    
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
