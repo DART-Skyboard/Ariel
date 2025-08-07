@@ -36,6 +36,11 @@ def sysleatr():
     return render_template("leatr.html")
 
 # <-- New route to serve your mockup -->
+@app.route("/brpn.html")
+def lvbrpn():
+    return render_template("brpn.html")
+    
+# <-- New route to serve your mockup -->
 @app.route("/amino.html")
 def lvamino():
     return render_template("amino.html")
