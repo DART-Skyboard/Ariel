@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(
@@ -73,6 +73,10 @@ def chat():
     # reply = bot.send(user_msg)
     reply = f"You said: {user_msg}"
     return jsonify({"reply": reply})
+
+@app.route('/feed.xml')
+def feed():
+    return send_from_directory('static', 'feed.xml')
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
