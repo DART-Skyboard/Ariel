@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arc Edge Web App - Single File</title>
+    <style>
+        /* --- CSS Styles --- */
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #222;
+            color: #eee;
+            display: flex;
+            height: 100vh; /* Full viewport height */
+            box-sizing: border-box;
+        }
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1; /* Behind UI */
+            pointer-events: auto; /* Ensure canvas can receive pointer events */
+        }
+        #ui-container {
+            position: absolute; /* Changed to absolute for sliding effect */
+            top: 0;
+            left: 0; /* Starts at the left edge */
+            width: 320px; /* Fixed width for the UI panel */
+            height: 100vh; /* Full viewport height */
+            background-color: rgba(30, 30, 30, 0.95);
+            padding: 15px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transform: translateX(-100%); /* Hidden by default */
+            transition: transform 0.3s ease-in-out; /* Smooth transition */
+            z-index: 10; /* Above the canvas */
+        }
+        #ui-container.expanded {
+            transform: translateX(0); /* Show the menu */
+        }
+        .menu-toggle-button {
+            position: absolute;
+            top: 10px;
+            left: 10px; /* Position it on the edge of the viewport */
+            z-index: 11; /* Above the menu itself */
+            background-color: #007acc;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95em;
+            transition: transform 0.3s ease-in-out;
+            width: 50px; /* Small fixed size */
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+        }
+        /* Adjusted the positioning and transform for the toggle button */
+        .menu-toggle-button.collapsed {
+            transform: translateX(0); /* Show the tab on the left */
+        }
+        .menu-toggle-button.expanded {
+            transform: translateX(calc(320px + 15px)); /* Move it past the expanded menu */
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #87CEEB; /* Sky Blue */
+            text-align: center;
+            font-size: 1.4em;
+        }
+        .controls-section {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .controls-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .controls-section h3 {
+            margin: 0 0 5px 0;
+            font-size: 1.1em;
+            color: #00BFFF; /* Deep Sky Blue */
+            border-bottom: 1px dashed #00BFFF;
+            padding-bottom: 3px;
+        }
+        .input-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 5px;
+            flex-wrap: wrap; /* Allow items to wrap */
+        }
+        .input-row label {
+            flex-shrink: 0;
+            width: 80px; /* Fixed width for labels */
+            text-align: right;
+            font-size: 0.9em;
+        }
+        .input-row input[type="number"],
+        .input-row input[type="range"] {
+            flex-grow: 1;
+            padding: 5px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            background-color: #333;
+            color: #eee;
+            box-sizing: border-box;
+        }
+        .input-row input[type="number"] { width: 70px; } /* Specific width for number inputs */
+        .input-row input[type="range"] { margin-top: 3px; }
+
+        button {
+            background-color: #007acc; /* Blue */
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95em;
+            transition: background-color 0.2s ease;
+        }
+        button:hover {
+            background-color: #005fa3;
+        }
+        button:active {
+            background-color: #004d80;
+        }
+        #measureResults {
+            margin-top: 8px;
+            padding: 5px;
+            background-color: rgba(50, 50, 50, 0.7);
+            border-radius: 3px;
+            font-size: 0.85em;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 5px 8px;
+        }
+        #measureResults span {
+            font-weight: bold;
+            color: #FFFFE0; /* Light Yellow */
+        }
+        .slider-container {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch; /* Stretch input to fill width */
+            gap: 5px;
+        }
+        .slider-container label {
+            width: auto; /* Override fixed width */
+            text-align: left;
+            font-size: 0.9em;
+        }
+        .slider-container input[type="range"] {
+            cursor: pointer;
+        }
+        .clear-button {
+            background-color: #cc0000; /* Red */
+            padding: 6px 10px;
+            font-size: 0.85em;
+        }
+        .clear-button:hover {
+            background-color: #aa0000;
+        }
+        .clear-scene-button {
+            background-color: #ff8c00; /* Dark Orange */
+            margin-top: 10px;
+        }
+        .clear-scene-button:hover {
+            background-color: #cc6600;
+        }
+        .view-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 5px;
+        }
+        .view-controls button {
+            background-color: #444;
+            padding: 5px 10px;
+            font-size: 0.8em;
+        }
+        .view-controls button:hover {
+            background-color: #666;
+        }
+        /* Style for the download button */
+        .download-button {
+            background-color: #008080; /* Teal */
+            margin-top: 15px;
+            padding: 10px 15px;
+            font-size: 1em;
+        }
+        .download-button:hover {
+            background-color: #006666;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-container">
+        <!-- UI elements will be generated here by JavaScript -->
+    </div>
+    <button id="menu-toggle-button" class="menu-toggle-button collapsed">☰</button>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // --- IMPORT THREE.JS ---
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Global Variables ---
+        let scene, camera, renderer, controls;
+        let arcObjects = []; // Store our created arcs
+        let uiContainer;
+        let menuToggleButton;
+        let currentProgress = 0;
+        let animationTimer = null;
+        let measureOperationActive = false;
+        let selectedObject = null; // For object selection
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let gridHelper; // For the 3D grid
+        let isOrthographic = false; // To track the current view mode
+        const frustumSizeDefault = 20; // Base size for the orthographic camera
+        let canvasElement; // To hold the canvas element for pointer events
+
+        // --- Doc-Based Math Functions (Translated from Python) ---
+        function docCircumference(d) {
+            return d * 3;
+        }
+
+        // --- ARC CREATION: Tube Mesh Arcs (Using doc-based math for deviation and theta) ---
+        function createArcTubeMesh(name, x, y, z, resolution, deviation, tubeRadius = 0.1, crossSeg = 8) {
+            const group = new THREE.Group();
+            group.name = name;
+
+            // --- Path Points Calculation ---
+            const pathPoints = [];
+            for (let i = 0; i <= resolution; i++) {
+                const t = i / resolution;
+                // Doc-based deviation logic: py += sin(3 * t) * deviation
+                const pyOffset = Math.sin(3 * t) * deviation;
+                pathPoints.push(new THREE.Vector3(t * x, t * y + pyOffset, t * z));
+            }
+
+            // --- Create Geometry using Ring-to-Ring approach ---
+            const ringPoints = []; // Stores vertices for each ring
+            for (let i = 0; i < pathPoints.length; i++) {
+                const center = pathPoints[i];
+                const ring = [];
+                for (let c = 0; c < crossSeg; c++) {
+                    // Doc-based theta: 2.0 * 3 * (c / crossSeg)
+                    const theta = 2.0 * 3 * (c / crossSeg);
+                    const localX = tubeRadius * Math.sin(theta);
+                    const localZ = tubeRadius * Math.cos(theta);
+
+                    // Determine orientation of the ring at this point
+                    let segmentDir;
+                    if (i === 0) {
+                        segmentDir = new THREE.Vector3().subVectors(pathPoints[1], pathPoints[0]).normalize();
+                    } else if (i === pathPoints.length - 1) {
+                        segmentDir = new THREE.Vector3().subVectors(pathPoints[i], pathPoints[i - 1]).normalize();
+                    } else {
+                        // Average direction for intermediate points
+                        segmentDir = new THREE.Vector3().subVectors(pathPoints[i + 1], pathPoints[i - 1]).normalize();
+                    }
+                    segmentDir.normalize();
+
+                    // Create an orthonormal basis for the ring's orientation
+                    let perpendicular1;
+                    // Pick a non-parallel vector to cross with segmentDir
+                    if (Math.abs(segmentDir.x) > 0.9 || Math.abs(segmentDir.y) > 0.9) { // If segmentDir is close to X or Y axis
+                        perpendicular1 = new THREE.Vector3(1, 0, 0).cross(segmentDir).normalize();
+                    } else { // Otherwise use Y axis as reference
+                        perpendicular1 = new THREE.Vector3(0, 1, 0).cross(segmentDir).normalize();
+                    }
+                    // Ensure perpendicular1 is not zero vector if segmentDir is parallel to (1,0,0)
+                    if (perpendicular1.lengthSq() === 0) {
+                         perpendicular1 = new THREE.Vector3(0, 0, 1).cross(segmentDir).normalize();
+                    }
+                    const perpendicular2 = segmentDir.clone().cross(perpendicular1).normalize();
+
+                    // Position of a vertex in the local ring space
+                    const localVertex = new THREE.Vector3(localX, 0, localZ);
+
+                    // Rotate the local vertex into world space based on the segment orientation
+                    const rotatedVertex = new THREE.Vector3(
+                        localVertex.x * perpendicular1.x + localVertex.y * perpendicular2.x + localVertex.z * segmentDir.x,
+                        localVertex.x * perpendicular1.y + localVertex.y * perpendicular2.y + localVertex.z * segmentDir.y,
+                        localVertex.x * perpendicular1.z + localVertex.y * perpendicular2.z + localVertex.z * segmentDir.z
+                    );
+
+                    const finalVertex = new THREE.Vector3().addVectors(center, rotatedVertex);
+                    ring.push(finalVertex);
+                }
+                ringPoints.push(ring);
+            }
+
+            // --- Create BufferGeometry from Ring Points ---
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const indices = [];
+            const normals = [];
+
+            for (let i = 0; i < ringPoints.length; i++) {
+                for (let c = 0; c < crossSeg; c++) {
+                    const vertex = ringPoints[i][c];
+                    vertices.push(vertex.x, vertex.y, vertex.z);
+
+                    // Calculate normal: Outward direction from the center of the ring segment.
+                    const localNormal = new THREE.Vector3(Math.sin(2.0 * 3 * (c / crossSeg)), 0, Math.cos(2.0 * 3 * (c / crossSeg))).normalize();
+
+                    // Re-orient the local normal to world space using the same basis as vertices
+                    let segmentDir;
+                    if (i === 0) segmentDir = new THREE.Vector3().subVectors(pathPoints[1], pathPoints[0]).normalize();
+                    else if (i === pathPoints.length - 1) segmentDir = new THREE.Vector3().subVectors(pathPoints[i], pathPoints[i - 1]).normalize();
+                    else segmentDir = new THREE.Vector3().subVectors(pathPoints[i + 1], pathPoints[i - 1]).normalize();
+                    segmentDir.normalize();
+
+                    let perpendicular1;
+                    if (Math.abs(segmentDir.x) > 0.9 || Math.abs(segmentDir.y) > 0.9) perpendicular1 = new THREE.Vector3(1, 0, 0).cross(segmentDir).normalize();
+                    else perpendicular1 = new THREE.Vector3(0, 1, 0).cross(segmentDir).normalize();
+                    if (perpendicular1.lengthSq() === 0) perpendicular1 = new THREE.Vector3(0, 0, 1).cross(segmentDir).normalize();
+                    const perpendicular2 = segmentDir.clone().cross(perpendicular1).normalize();
+
+                    const rotatedNormal = new THREE.Vector3(
+                        localNormal.x * perpendicular1.x + localNormal.y * perpendicular2.x + localNormal.z * segmentDir.x,
+                        localNormal.x * perpendicular1.y + localNormal.y * perpendicular2.y + localNormal.z * segmentDir.y,
+                        localNormal.x * perpendicular1.z + localNormal.y * perpendicular2.z + localNormal.z * segmentDir.z
+                    );
+                    normals.push(rotatedNormal.x, rotatedNormal.y, rotatedNormal.z);
+                }
+            }
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+
+            // Create faces (quads turned into two triangles)
+            for (let i = 0; i < ringPoints.length - 1; i++) {
+                const ringA_start_idx = i * crossSeg;
+                const ringB_start_idx = (i + 1) * crossSeg;
+
+                for (let c = 0; c < crossSeg; c++) {
+                    const c_next = (c + 1) % crossSeg; // Wrap around for the last segment
+                    const v1 = ringA_start_idx + c;
+                    const v2 = ringA_start_idx + c_next;
+                    const v3 = ringB_start_idx + c_next;
+                    const v4 = ringB_start_idx + c;
+
+                    // Two triangles for each quad face
+                    indices.push(v1, v2, v3); // Triangle 1
+                    indices.push(v1, v3, v4); // Triangle 2
+                }
+            }
+            geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+            geometry.computeVertexNormals(); // Ensure normals are correct for shading
+
+            // --- Mesh Creation ---
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x87CEEB, // Sky Blue, similar to the overlay's teal
+                roughness: 0.5,
+                metalness: 0.1,
+                side: THREE.DoubleSide // Render both sides of faces
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = name;
+
+            // Store arc parameters for potential future updates or measurement
+            const arcParams = {
+                x: x, y: y, z: z,
+                resolution: resolution,
+                deviation: deviation,
+                radius: tubeRadius
+            };
+            // Store as string to mimic Blender's "arc_params" attribute
+            mesh.userData["arc_params"] = JSON.stringify(arcParams);
+            arcObjects.push(mesh); // Add to our list of created arcs
+
+            return mesh;
+        }
+
+        // --- MEASUREMENT FUNCTIONS ---
+        function measureAnyObject(obj) {
+            if (!obj) return 0.0, "No object provided";
+
+            // Check for custom 'arc_params' attribute
+            if (obj.userData && obj.userData["arc_params"]) {
+                try {
+                    const params = JSON.parse(obj.userData["arc_params"]);
+                    // For 'arc_params', we need to calculate the geometric length of the arc path
+                    // This is an approximation based on resolution and radius.
+                    // A more accurate measurement would require re-sampling the curve.
+                    const diameter = params.radius * 2;
+                    return diameter, `ArcParamsApproxDiam: ${diameter.toFixed(2)}`;
+                } catch (e) {
+                    console.error("Error parsing arc_params:", e);
+                    return 0.0, "Error parsing arc_params";
+                }
+            }
+            // If it's a Mesh, measure total edge length (approximation for complex meshes)
+            else if (obj.type === 'Mesh') {
+                if (!(obj.geometry instanceof THREE.BufferGeometry)) {
+                    console.warn("Mesh is not a BufferGeometry, edge measurement might be slow or fail.");
+                    return 0.0, "Non-BufferMesh";
+                }
+                const positionAttribute = obj.geometry.getAttribute('position');
+                const indexAttribute = obj.geometry.getIndex();
+
+                if (!positionAttribute) return 0.0, "No Position Attribute";
+
+                let totalLength = 0;
+                const vertices = positionAttribute.array;
+
+                if (indexAttribute) {
+                    const indices = indexAttribute.array;
+                    for (let i = 0; i < indices.length; i += 3) {
+                        const v1_idx = indices[i];
+                        const v2_idx = indices[i + 1];
+                        const v3_idx = indices[i + 2];
+
+                        const v1 = new THREE.Vector3(vertices[v1_idx * 3], vertices[v1_idx * 3 + 1], vertices[v1_idx * 3 + 2]);
+                        const v2 = new THREE.Vector3(vertices[v2_idx * 3], vertices[v2_idx * 3 + 1], vertices[v2_idx * 3 + 2]);
+                        const v3 = new THREE.Vector3(vertices[v3_idx * 3], vertices[v3_idx * 3 + 1], vertices[v3_idx * 3 + 2]);
+
+                        totalLength += v1.distanceTo(v2);
+                        totalLength += v2.distanceTo(v3);
+                        totalLength += v3.distanceTo(v1);
+                    }
+                } else { // No indices, assume segments of 2 vertices
+                    for (let i = 0; i < vertices.length; i += 6) {
+                        const v1 = new THREE.Vector3(vertices[i], vertices[i + 1], vertices[i + 2]);
+                        const v2 = new THREE.Vector3(vertices[i + 3], vertices[i + 4], vertices[i + 5]);
+                        totalLength += v1.distanceTo(v2);
+                    }
+                }
+                return totalLength, `MeshEdges (approx): ${totalLength.toFixed(2)}`;
+            }
+            // For LineSegments
+            else if (obj.type === 'LineSegments' || obj.type === 'LineLoop' || obj.type === 'Line') {
+                const positionAttribute = obj.geometry.getAttribute('position');
+                if (!positionAttribute) return 0.0, "No Position Attribute";
+                const vertices = positionAttribute.array;
+                let totalLength = 0;
+                for (let i = 0; i < vertices.length - 3; i += 3) {
+                    const v1 = new THREE.Vector3(vertices[i], vertices[i + 1], vertices[i + 2]);
+                    const v2 = new THREE.Vector3(vertices[i + 3], vertices[i + 4], vertices[i + 5]);
+                    totalLength += v1.distanceTo(v2);
+                }
+                return totalLength, `LineSegments: ${totalLength.toFixed(2)}`;
+            }
+            return 0.0, "Unsupported object type";
+        }
+
+        function getBoundingSphereDiameter(obj) {
+            if (!obj || !obj.geometry) return 0;
+            obj.geometry.computeBoundingSphere();
+            if (obj.geometry.boundingSphere) {
+                return obj.geometry.boundingSphere.radius * 2;
+            }
+            return 0;
+        }
+
+        // --- OVERLAY DRAWING (Simulated using Three.js Objects) ---
+        function drawOverlayElements(scene) {
+            // Remove previous overlay elements if they exist
+            scene.traverse(function(node) {
+                if (node.name && node.name.startsWith("OverlayLine_")) {
+                    scene.remove(node);
+                }
+            });
+
+            const base_x = 120;
+            const base_y = 160;
+
+            // Big circle (teal) with doc diameter = 40
+            const bigCircleGeometry = new THREE.CircleGeometry(20, 64); // Radius = diameter/2
+            bigCircleGeometry.translate(base_x, base_y, 0); // Position (cx, cy)
+            // Use LineLoop as LineStrip was causing the error
+            const bigCircleLine = new THREE.LineLoop(bigCircleGeometry, new THREE.LineBasicMaterial({ color: 0x008080, linewidth: 2 })); // Teal
+            bigCircleLine.name = "OverlayLine_BigCircle";
+            scene.add(bigCircleLine);
+
+            // Small circle (orange) with doc diameter = 20
+            const smallCircleGeometry = new THREE.CircleGeometry(10, 32);
+            smallCircleGeometry.translate(base_x + 100, base_y, 0);
+            const smallCircleLine = new THREE.LineLoop(smallCircleGeometry, new THREE.LineBasicMaterial({ color: 0xFFA500, linewidth: 2 })); // Orange
+            smallCircleLine.name = "OverlayLine_SmallCircle";
+            scene.add(smallCircleLine);
+
+            // Partial arc #1 (white) with doc diameter = 30 from 10% to 70%
+            const arc1Geometry = new THREE.BufferGeometry();
+            const arc1Vertices = [];
+            const diameterArc1 = 30;
+            const radiusArc1 = diameterArc1 / 2;
+            const circArc1 = docCircumference(diameterArc1);
+            const startAngleArc1 = (0.1 * circArc1) / radiusArc1;
+            const endAngleArc1 = (0.7 * circArc1) / radiusArc1;
+            const stepsArc1 = 32;
+
+            for (let i = 0; i <= stepsArc1; i++) {
+                const angle = startAngleArc1 + (endAngleArc1 - startAngleArc1) * (i / stepsArc1);
+                const x = base_x + 100 + 200 + radiusArc1 * Math.cos(angle);
+                const y = base_y + radiusArc1 * Math.sin(angle);
+                arc1Vertices.push(x, y, 0);
+            }
+            arc1Geometry.setAttribute('position', new THREE.Float32BufferAttribute(arc1Vertices, 3));
+            // Use LineStrip for this arc as it's a defined path
+            const arc1Line = new THREE.LineStrip(arc1Geometry, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
+            arc1Line.name = "OverlayLine_Arc1";
+            scene.add(arc1Line);
+
+            // Partial arc #2 (pink) with doc diameter = 20 from 0% to 50%
+            const arc2Geometry = new THREE.BufferGeometry();
+            const arc2Vertices = [];
+            const diameterArc2 = 20;
+            const radiusArc2 = diameterArc2 / 2;
+            const circArc2 = docCircumference(diameterArc2);
+            const startAngleArc2 = (0.0 * circArc2) / radiusArc2;
+            const endAngleArc2 = (0.5 * circArc2) / radiusArc2;
+            const stepsArc2 = 24;
+
+            for (let i = 0; i <= stepsArc2; i++) {
+                const angle = startAngleArc2 + (endAngleArc2 - startAngleArc2) * (i / stepsArc2);
+                const x = base_x + 100 + 250 + radiusArc2 * Math.cos(angle);
+                const y = base_y + 40 + radiusArc2 * Math.sin(angle);
+                arc2Vertices.push(x, y, 0);
+            }
+            arc2Geometry.setAttribute('position', new THREE.Float32BufferAttribute(arc2Vertices, 3));
+            const arc2Line = new THREE.LineStrip(arc2Geometry, new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 })); // Pink
+            arc2Line.name = "OverlayLine_Arc2";
+            scene.add(arc2Line);
+
+            // --- Progress bar ---
+            const barWidth = 100;
+            const barHeight = 10;
+            const barX = base_x;
+            const barY = base_y - 50;
+            const fillWidth = barWidth * (currentProgress / 100.0);
+
+            // Remove previous progress elements
+            scene.traverse(function(node) {
+                if (node.name && node.name.startsWith("OverlayProgress_")) {
+                    scene.remove(node);
+                }
+            });
+
+            // Fill
+            const fillGeometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(barX, barY, 0),
+                new THREE.Vector3(barX + fillWidth, barY, 0),
+                new THREE.Vector3(barX + fillWidth, barY + barHeight, 0),
+                new THREE.Vector3(barX, barY + barHeight, 0)
+            ]);
+            fillGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 1, 2, 0, 2, 3]), 1));
+            // Use MeshBasicMaterial for progress fill as it's simpler and doesn't need lighting
+            const fillMesh = new THREE.Mesh(fillGeometry, new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.7 }));
+            fillMesh.name = "OverlayProgress_Fill";
+            scene.add(fillMesh);
+
+            // Outline
+            const outlineGeometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(barX, barY, 0),
+                new THREE.Vector3(barX + barWidth, barY, 0),
+                new THREE.Vector3(barX + barWidth, barY + barHeight, 0),
+                new THREE.Vector3(barX, barY + barHeight, 0)
+            ]);
+            outlineGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array([0, 1, 2, 0, 2, 3, 0]), 1)); // Closing the loop
+            const outlineLine = new THREE.LineLoop(outlineGeometry, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1 }));
+            outlineLine.name = "OverlayProgress_Outline";
+            scene.add(outlineLine);
+        }
+
+        // --- SCENE SETUP FOR CYCLES (Advanced Node-Based Materials) ---
+        function createSceneSetupCycles() {
+            // Remove existing spheres
+            scene.traverse(function(node) {
+                if (node.name.startsWith("MainSphere") || node.name.startsWith("MedianSphere") || node.name.startsWith("KeySphere_")) {
+                    scene.remove(node);
+                }
+            });
+
+            // MainSphere (Cycles Material Simulation)
+            const mainSphereGeom = new THREE.SphereGeometry(5, 32, 16);
+            const mainSphereMat = new THREE.MeshStandardMaterial({
+                color: 0x87CEEB, // Sky Blue base color
+                roughness: 0.2,
+                metalness: 0.1,
+                transparent: true,
+                opacity: 0.5,
+                side: THREE.DoubleSide
+            });
+            const mainSphere = new THREE.Mesh(mainSphereGeom, mainSphereMat);
+            mainSphere.name = "MainSphere";
+            scene.add(mainSphere);
+
+            // MedianSphere (Cycles Material Simulation)
+            const medianSphereGeom = new THREE.SphereGeometry(2.5, 32, 16);
+            const medianSphereMat = new THREE.MeshStandardMaterial({
+                color: 0xFF6347, // Tomato Red
+                roughness: 0.3,
+                metalness: 0.0,
+                side: THREE.DoubleSide
+            });
+            const medianSphere = new THREE.Mesh(medianSphereGeom, medianSphereMat);
+            medianSphere.name = "MedianSphere";
+            scene.add(medianSphere);
+
+            // KeySpheres (Cycles Material Simulation)
+            const keySphereGeom = new THREE.SphereGeometry(0.625, 32, 16);
+            const keySphereMat = new THREE.MeshStandardMaterial({
+                color: 0x00BFFF, // Deep Sky Blue
+                roughness: 0.3,
+                metalness: 0.1,
+                side: THREE.DoubleSide
+            });
+            const positions = [
+                new THREE.Vector3(-1.8, 1.8, -1.8),
+                new THREE.Vector3(1.8, 1.8, 1.8),
+                new THREE.Vector3(-1.8, -1.8, -1.8),
+                new THREE.Vector3(1.8, -1.8, 1.8)
+            ];
+            positions.forEach((pos, i) => {
+                const keySphere = new THREE.Mesh(keySphereGeom, keySphereMat);
+                keySphere.position.copy(pos);
+                keySphere.name = `KeySphere_${i + 1}`;
+                scene.add(keySphere);
+            });
+
+            console.log("Scene setup for Cycles created.");
+        }
+
+        // --- SCENE SETUP FOR EEVEE (Simple Diffuse) ---
+        function createSceneSetupEevee() {
+            // Remove existing spheres
+            scene.traverse(function(node) {
+                if (node.name.startsWith("MainSphere") || node.name.startsWith("MedianSphere") || node.name.startsWith("SmallSphere_")) {
+                    scene.remove(node);
+                }
+            });
+
+            // MainSphere (Eevee Material Simulation)
+            const mainSphereGeom = new THREE.SphereGeometry(5, 32, 16);
+            const mainSphereMat = new THREE.MeshBasicMaterial({
+                color: 0x87CEEB, // Sky Blue
+                transparent: true,
+                opacity: 0.25,
+                side: THREE.DoubleSide
+            });
+            const mainSphere = new THREE.Mesh(mainSphereGeom, mainSphereMat);
+            mainSphere.name = "MainSphere";
+            scene.add(mainSphere);
+
+            // MedianSphere (Eevee Material Simulation)
+            const medianSphereGeom = new THREE.SphereGeometry(2.5, 32, 16);
+            const medianSphereMat = new THREE.MeshBasicMaterial({
+                color: 0xFF6347, // Tomato Red
+                side: THREE.DoubleSide
+            });
+            const medianSphere = new THREE.Mesh(medianSphereGeom, medianSphereMat);
+            medianSphere.name = "MedianSphere";
+            scene.add(medianSphere);
+
+            // SmallSpheres (Eevee Material Simulation)
+            const smallSphereGeom = new THREE.SphereGeometry(0.625, 32, 16);
+            const smallSphereMat = new THREE.MeshBasicMaterial({
+                color: 0x00BFFF, // Deep Sky Blue
+                side: THREE.DoubleSide
+            });
+            const positions = [
+                new THREE.Vector3(-1.8, 1.8, -1.8),
+                new THREE.Vector3(1.8, 1.8, 1.8),
+                new THREE.Vector3(-1.8, -1.8, -1.8),
+                new THREE.Vector3(1.8, -1.8, 1.8)
+            ];
+            positions.forEach((pos, i) => {
+                const smallSphere = new THREE.Mesh(smallSphereGeom, smallSphereMat);
+                smallSphere.position.copy(pos);
+                smallSphere.name = `SmallSphere_${i + 1}`;
+                scene.add(smallSphere);
+            });
+
+            console.log("Scene setup for Eevee created.");
+        }
+
+        // --- UI GENERATION ---
+        function generateUI() {
+            uiContainer = document.getElementById('ui-container');
+            uiContainer.innerHTML = ''; // Clear previous content
+
+            menuToggleButton = document.getElementById('menu-toggle-button');
+
+            // Helper to create input elements
+            const createInput = (type, id, label, value, step, min, max) => {
+                const div = document.createElement('div');
+                div.className = 'input-row';
+                div.innerHTML = `
+                    <label for="${id}">${label}:</label>
+                    <input type="${type}" id="${id}" value="${value}" ${step !== undefined ? `step="${step}"` : ''} ${min !== undefined ? `min="${min}"` : ''} ${max !== undefined ? `max="${max}"` : ''}>
+                `;
+                return div;
+            };
+
+            // Helper to create a controls section
+            const createSection = (title, idPrefix, initialValues) => {
+                const sectionDiv = document.createElement('div');
+                sectionDiv.className = 'controls-section';
+                sectionDiv.innerHTML = `<h3>${title}</h3>`;
+
+                const posRow = document.createElement('div');
+                posRow.className = 'input-row';
+                posRow.appendChild(createInput('number', `${idPrefix}_x`, 'X', initialValues.x, 0.1));
+                posRow.appendChild(createInput('number', `${idPrefix}_y`, 'Y', initialValues.y, 0.1));
+                posRow.appendChild(createInput('number', `${idPrefix}_z`, 'Z', initialValues.z, 0.1));
+                sectionDiv.appendChild(posRow);
+
+                sectionDiv.appendChild(createInput('number', `${idPrefix}_deviation`, 'Deviation', initialValues.deviation, 0.1));
+                sectionDiv.appendChild(createInput('number', `${idPrefix}_resolution`, 'Resolution', initialValues.resolution, 1, 2, 256));
+
+                const buttonRow = document.createElement('div');
+                buttonRow.style.display = 'flex';
+                buttonRow.style.justifyContent = 'space-between';
+                buttonRow.style.gap = '5px';
+
+                const createButton = document.createElement('button');
+                createButton.textContent = `Create ${title}`;
+                createButton.onclick = () => {
+                    const x = parseFloat(document.getElementById(`${idPrefix}_x`).value);
+                    const y = parseFloat(document.getElementById(`${idPrefix}_y`).value);
+                    const z = parseFloat(document.getElementById(`${idPrefix}_z`).value);
+                    const deviation = parseFloat(document.getElementById(`${idPrefix}_deviation`).value);
+                    const resolution = parseInt(document.getElementById(`${idPrefix}_resolution`).value);
+
+                    const newArc = createArcTubeMesh(`Arc_${idPrefix.split('_')[1]}`, x, y, z, resolution, deviation);
+                    scene.add(newArc);
+                    console.log(`Created ${newArc.name}`);
+                };
+                buttonRow.appendChild(createButton);
+
+                const clearButton = document.createElement('button');
+                clearButton.textContent = `Clear Arc`;
+                clearButton.className = 'clear-button';
+                clearButton.onclick = () => {
+                    const arcId = idPrefix.split('_')[1]; // e.g., '1' from 'arc1_x'
+                    clearArc(`Arc_${arcId}`);
+                };
+                buttonRow.appendChild(clearButton);
+
+                sectionDiv.appendChild(buttonRow);
+                uiContainer.appendChild(sectionDiv);
+            };
+
+            // --- Arc Controls ---
+            createSection("Arc 1", "arc1", { x: 0, y: 0, z: 0, deviation: 0, resolution: 8 });
+            createSection("Arc 2", "arc2", { x: 0, y: 0, z: 0, deviation: 0, resolution: 8 });
+            createSection("Arc 3", "arc3", { x: 0, y: 0, z: 0, deviation: 0, resolution: 8 });
+
+            // --- Clear Scene Button ---
+            const clearSceneButton = document.createElement('button');
+            clearSceneButton.textContent = 'Clear All Arcs';
+            clearSceneButton.className = 'clear-scene-button';
+            clearSceneButton.onclick = clearScene;
+            uiContainer.appendChild(clearSceneButton);
+
+
+            // --- Measure Controls ---
+            const measureSection = document.createElement('div');
+            measureSection.className = 'controls-section';
+            measureSection.innerHTML = `
+                <h3>Measure Selected Arc</h3>
+                <button id="measureArcButton">Measure Arc</button>
+                <div id="measureResults">
+                    <div>Raw Arc Length:</div><span id="arcLengthOutput"> 0.0000</span>
+                    <div>1/8th Cir | Arc Match:</div><span id="minCircleOutput"> 0.0000</span>
+                    <div>Max Circle Diam:</div><span id="maxCircleOutput"> 0.0000</span>
+                    <div>Match Report:</div><span id="matchedReportOutput"> -</span>
+                </div>
+                <div class="slider-container">
+                    <label for="loaderProgressSlider">Progress:</label>
+                    <input type="range" id="loaderProgressSlider" min="0" max="100" value="0" disabled>
+                </div>
+            `;
+            uiContainer.appendChild(measureSection);
+
+            document.getElementById('measureArcButton').onclick = () => {
+                if (selectedObject) {
+                    measureAndAnimate(selectedObject);
+                } else {
+                    alert("Please select an arc object first.");
+                }
+            };
+
+            // --- Scene Setup Buttons ---
+            const sceneSetupSection = document.createElement('div');
+            sceneSetupSection.className = 'controls-section';
+            sceneSetupSection.innerHTML = `
+                <h3>Gimbal (Spheres)</h3>
+                <div class="input-row">
+                    <button onclick="window.createSceneSetupCycles()">Cycles Setup</button>
+                    <button onclick="window.createSceneSetupEevee()">Eevee Setup</button>
+                </div>
+            `;
+            uiContainer.appendChild(sceneSetupSection);
+
+            // --- Viewport Controls ---
+            const viewControlsSection = document.createElement('div');
+            viewControlsSection.className = 'controls-section';
+            viewControlsSection.innerHTML = `
+                <h3>Viewport Controls</h3>
+                <div class="view-controls">
+                    <button onclick="setView('front')">Front</button>
+                    <button onclick="setView('back')">Back</button>
+                    <button onclick="setView('top')">Top</button>
+                    <button onclick="setView('bottom')">Bottom</button>
+                    <button onclick="setView('left')">Left</button>
+                    <button onclick="setView('right')">Right</button>
+                    <button onclick="resetView()">Reset</button>
+                    <button onclick="toggleOrthographic()">Toggle Ortho</button>
+                </div>
+            `;
+            uiContainer.appendChild(viewControlsSection);
+
+            // Add the download button
+            const downloadButton = document.createElement('button');
+            downloadButton.textContent = 'Download Code';
+            downloadButton.className = 'download-button';
+            downloadButton.onclick = downloadCode;
+            uiContainer.appendChild(downloadButton);
+        }
+
+        // --- ANIMATION / MODAL OPERATOR REPLACEMENT ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update camera aspect ratio on window resize
+            const canvas = renderer.domElement;
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            if (canvas.width !== width || canvas.height !== height) {
+                renderer.setSize(width, height, false);
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                // Update orthographic camera aspect ratio if it's active
+                if (isOrthographic && camera instanceof THREE.OrthographicCamera) {
+                    camera.left = frustumSizeDefault * camera.aspect / -2;
+                    camera.right = frustumSizeDefault * camera.aspect / 2;
+                    camera.updateProjectionMatrix();
+                }
+            }
+
+            controls.update();
+
+            // Update progress bar if measurement is active
+            if (measureOperationActive) {
+                const currentSlider = document.getElementById('loaderProgressSlider');
+                if (currentSlider) {
+                    currentSlider.value = currentProgress;
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function measureAndAnimate(targetObject) {
+            if (measureOperationActive) {
+                alert("Measurement is already in progress!");
+                return;
+            }
+
+            measureOperationActive = true;
+            let rawLength, reportStr;
+
+            // Simulate the measurement duration (similar to Blender's default)
+            const simulatedMeasureTime = 2.0; // seconds
+            let startTime = performance.now();
+            currentProgress = 0;
+
+            // Perform the actual measurement
+            const measurementResult = measureAnyObject(targetObject);
+            rawLength = measurementResult[0];
+            reportStr = measurementResult[1];
+
+            const docBasedCirc = docCircumference(rawLength);
+
+            // Update UI with measurement results
+            document.getElementById('arcLengthOutput').textContent = rawLength.toFixed(4);
+            document.getElementById('minCircleOutput').textContent = docBasedCirc.toFixed(4);
+            document.getElementById('maxCircleOutput').textContent = (2 * rawLength).toFixed(4);
+            document.getElementById('matchedReportOutput').textContent = reportStr;
+
+            // Simulate progress animation using requestAnimationFrame
+            const animateProgress = () => {
+                const currentTime = performance.now();
+                const elapsedTime = (currentTime - startTime) / 1000; // elapsed time in seconds
+                const progressRatio = Math.min(elapsedTime / simulatedMeasureTime, 1.0);
+                currentProgress = progressRatio * 100;
+
+                const currentSlider = document.getElementById('loaderProgressSlider');
+                if (currentSlider) {
+                    currentSlider.value = currentProgress;
+                }
+
+                if (progressRatio < 1.0) {
+                    requestAnimationFrame(animateProgress);
+                } else {
+                    // Finish animation after a small delay
+                    setTimeout(() => {
+                        measureOperationActive = false;
+                        alert("Measurement complete!");
+                    }, 300);
+                }
+            };
+
+            // Draw the overlay elements for the measurement visual
+            drawOverlayElements(scene);
+
+            // Start the progress animation
+            requestAnimationFrame(animateProgress);
+        }
+
+        // --- Object Selection Logic ---
+        function onPointerDown(event) {
+            // Prevent interaction if the menu is open and the click is within the menu area
+            const menuRect = uiContainer.getBoundingClientRect();
+            if (uiContainer.classList.contains('expanded') &&
+                event.clientX >= menuRect.left && event.clientX <= menuRect.right &&
+                event.clientY >= menuRect.top && event.clientY <= menuRect.bottom) {
+                return; // Clicked inside the menu, do nothing for selection
+            }
+
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // Intersect with arc objects only
+            const intersects = raycaster.intersectObjects(arcObjects);
+
+            // Deselect previous object
+            if (selectedObject) {
+                selectedObject.material.emissive = new THREE.Color(0x000000); // Turn off emissive
+                selectedObject = null;
+            }
+
+            if (intersects.length > 0) {
+                // Select the first intersected object
+                selectedObject = intersects[0].object;
+                selectedObject.material.emissive = new THREE.Color(0x00ff00); // Highlight in green
+                selectedObject.material.emissiveIntensity = 0.5;
+            }
+        }
+
+        // --- Clear Functions ---
+        function clearArc(arcName) {
+            const objectToRemove = scene.getObjectByName(arcName);
+            if (objectToRemove) {
+                scene.remove(objectToRemove);
+                // Remove from arcObjects array as well
+                arcObjects = arcObjects.filter(obj => obj.name !== arcName);
+                console.log(`Cleared arc: ${arcName}`);
+            }
+        }
+
+        function clearScene() {
+            while(arcObjects.length > 0) {
+                clearArc(arcObjects[0].name);
+            }
+            // Also clear any other non-arc objects if needed
+            scene.traverse(function(node) {
+                if (node.name.startsWith("MainSphere") || node.name.startsWith("MedianSphere") || node.name.startsWith("KeySphere_") || node.name.startsWith("SmallSphere_")) {
+                    scene.remove(node);
+                }
+            });
+            console.log("Cleared the entire scene.");
+        }
+
+        // --- Viewport Control Functions ---
+        function setView(direction) {
+            const defaultZoom = 15; // Adjust this value as needed for camera distance
+            let targetPosition = new THREE.Vector3();
+            let upDirection = new THREE.Vector3(0, 1, 0); // Default up direction
+
+            // Keep current target, or reset to origin if no object is targeted
+            const currentTarget = controls.target.clone();
+
+            switch (direction) {
+                case 'front':
+                    targetPosition.set(0, 0, defaultZoom);
+                    break;
+                case 'back':
+                    targetPosition.set(0, 0, -defaultZoom);
+                    break;
+                case 'top':
+                    targetPosition.set(0, defaultZoom, 0);
+                    upDirection.set(0, 0, -1); // For top view, Y is up, Z is forward
+                    break;
+                case 'bottom':
+                    targetPosition.set(0, -defaultZoom, 0);
+                    upDirection.set(0, 0, 1); // For bottom view, Y is down, Z is backward
+                    break;
+                case 'right':
+                    targetPosition.set(defaultZoom, 0, 0);
+                    break;
+                case 'left':
+                    targetPosition.set(-defaultZoom, 0, 0);
+                    break;
+            }
+
+            // Update camera position and controls target
+            camera.position.copy(targetPosition);
+            controls.target.copy(currentTarget); // Use the stored target
+            controls.up.copy(upDirection); // Set the new up direction
+            controls.update();
+        }
+
+        function resetView() {
+            camera.position.set(0, 5, 15); // Reset to initial camera position
+            controls.target.set(0, 0, 0); // Reset target to center
+            controls.up.set(0, 1, 0); // Reset up direction
+            controls.update();
+        }
+
+        function toggleOrthographic() {
+            const currentTarget = controls.target.clone();
+            const currentPosition = camera.position.clone();
+            const aspect = window.innerWidth / window.innerHeight;
+
+            if (!isOrthographic) {
+                // Switch to orthographic
+                camera = new THREE.OrthographicCamera(
+                    frustumSizeDefault * aspect / -2,
+                    frustumSizeDefault * aspect / 2,
+                    frustumSizeDefault / 2,
+                    frustumSizeDefault / -2,
+                    0.1,
+                    1000
+                );
+                camera.position.copy(currentPosition); // Maintain position
+                controls.object = camera; // Update controls to use the new camera
+                controls.enablePan = true; // Panning is essential for ortho
+                controls.enableZoom = true; // Zoom is also useful
+
+                // Re-initialize controls for the new camera type
+                // Keep target from previous camera state
+                controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.screenSpacePanning = false;
+                controls.maxDistance = 100;
+                controls.target.copy(currentTarget); // Set the target
+
+                isOrthographic = true;
+                console.log("Switched to Orthographic View");
+            } else {
+                // Switch back to perspective
+                const fov = 35; // The original FOV for perspective
+
+                camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.copy(currentPosition); // Maintain position
+                controls.object = camera; // Update controls to use the new camera
+                controls.enablePan = false; // Pan in perspective is handled by OrbitControls differently
+                controls.enableZoom = true;
+
+                // Re-initialize controls for the new camera type
+                // Keep target from previous camera state
+                controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.screenSpacePanning = false;
+                controls.maxDistance = 100;
+                controls.target.copy(currentTarget); // Set the target
+
+                isOrthographic = false;
+                console.log("Switched to Perspective View");
+            }
+            controls.update();
+        }
+
+        // Function to download the current code as an HTML file
+        function downloadCode() {
+            const htmlContent = document.documentElement.outerHTML;
+            const blob = new Blob([htmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'arc_edge_app.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+
+        // --- Initialization Function ---
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222); // Dark background
+
+            // Grid Helper
+            gridHelper = new THREE.GridHelper(100, 100); // Size, divisions
+            scene.add(gridHelper);
+
+            // Camera
+            // Set FOV to 35 degrees as requested
+            camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 15); // Adjusted for better initial view
+
+            // Renderer
+            canvasElement = document.createElement('canvas'); // Store canvas element
+            const container = document.createElement('div');
+            container.style.position = 'absolute';
+            container.style.top = '0px';
+            container.style.left = '0px';
+            container.style.width = '100%';
+            container.style.height = '100%';
+            container.style.zIndex = '-1';
+            document.body.appendChild(container);
+            container.appendChild(canvasElement);
+
+            renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // Controls (OrbitControls)
+            // OrbitControls will be re-initialized in toggleOrthographic and setView for proper camera handling
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // an animation loop is required when either damping or auto-rotation are enabled
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false; // prefer this if you want to pan the camera along the screen
+            controls.maxDistance = 100;
+            controls.target.set(0, 0, 0); // Target the center of the scene
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // Generate UI elements dynamically
+            generateUI();
+
+            // Event listener for object selection
+            window.addEventListener('pointerdown', onPointerDown);
+
+            // Set up the menu toggle button
+            menuToggleButton = document.getElementById('menu-toggle-button');
+            if (menuToggleButton) {
+                menuToggleButton.onclick = toggleMenu;
+            }
+
+            // Start animation loop
+            animate();
+
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                const canvas = renderer.domElement;
+                const width = canvas.clientWidth;
+                const height = canvas.clientHeight;
+                if (canvas.width !== width || canvas.height !== height) {
+                    renderer.setSize(width, height, false);
+                    camera.aspect = width / height;
+                    camera.updateProjectionMatrix();
+                    // Update orthographic camera aspect ratio if it's active
+                    if (isOrthographic && camera instanceof THREE.OrthographicCamera) {
+                        camera.left = frustumSizeDefault * camera.aspect / -2;
+                        camera.right = frustumSizeDefault * camera.aspect / 2;
+                        camera.updateProjectionMatrix();
+                    }
+                }
+            });
+
+            // Initial draw of overlay elements (empty at start)
+            drawOverlayElements(scene);
+        }
+
+        // --- Menu Toggle Functionality ---
+        function toggleMenu() {
+            if (uiContainer.classList.contains('expanded')) {
+                // Collapse menu
+                uiContainer.classList.remove('expanded');
+                menuToggleButton.classList.remove('expanded');
+                menuToggleButton.classList.add('collapsed');
+                // Position the button back on the left edge when collapsed
+                menuToggleButton.style.transform = `translateX(0px)`;
+                menuToggleButton.textContent = '☰'; // Change to hamburger icon
+
+                // When menu is collapsed, allow pointer events to pass through to the 3D canvas
+                if (canvasElement) canvasElement.style.pointerEvents = 'auto';
+                gridHelper.visible = true; // Make grid visible again
+
+            } else {
+                // Expand menu
+                uiContainer.classList.add('expanded');
+                menuToggleButton.classList.remove('collapsed');
+                menuToggleButton.classList.add('expanded');
+                // Calculate the transform based on the menu's width and its padding
+                const menuWidth = uiContainer.offsetWidth || 320; // Use actual width or default if not rendered yet
+                const menuPadding = 15; // From CSS padding
+                menuToggleButton.style.transform = `translateX(${menuWidth + menuPadding}px)`;
+                menuToggleButton.textContent = '✖'; // Change to close icon
+
+                // When menu is expanded, block pointer events from passing through to the 3D canvas
+                if (canvasElement) canvasElement.style.pointerEvents = 'none';
+                gridHelper.visible = false; // Hide grid when menu is open to avoid visual clutter
+            }
+        }
+
+
+        // --- GLOBAL FUNCTIONS FOR UI BUTTONS ---
+        // Make sure these functions are accessible globally for button onclick handlers
+        // This is necessary because the button onclick handlers are defined in HTML strings.
+        window.createSceneSetupCycles = createSceneSetupCycles;
+        window.createSceneSetupEevee = createSceneSetupEevee;
+        window.clearArc = clearArc;
+        window.clearScene = clearScene;
+        window.setView = setView;
+        window.resetView = resetView;
+        window.toggleOrthographic = toggleOrthographic;
+
+        // --- INITIALIZE THE APPLICATION ---
+        init();
+
+    </script>
+</body>
+</html>
