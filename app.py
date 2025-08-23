@@ -56,6 +56,11 @@ def sysmn():
     return render_template("mn.html")
 
 # <-- New route to serve your mockup -->
+@app.route("/arcmeadow.html")
+def sysamd():
+    return render_template("arcmeadow.html")
+
+# <-- New route to serve your mockup -->
 @app.route("/dartedgeaiide.html")
 def syside():
     return render_template("dartedgeaiide.html")
