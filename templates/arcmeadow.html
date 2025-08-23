@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arc Meadow - 3D Modeler</title>
+    <!-- Embedded CSS -->
+    <style>
+        :root {
+            --bg-deep-dark: #121212;
+            --bg-dark: #1e1e1e;
+            --bg-medium: #2a2a2a;
+            --bg-light-hover: #3c3c3c;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0a0;
+            --accent-blue: #0095ff;
+            --accent-blue-dark: #007acc;
+            --border-color: #333333;
+            --input-bg: #1a1a1a;
+        }
+        body {
+            margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-deep-dark); color: var(--text-primary);
+            display: flex; flex-direction: column; height: 100vh;
+        }
+        #header {
+            background-color: var(--bg-dark); padding: 10px 20px;
+            border-bottom: 1px solid var(--border-color); z-index: 101;
+            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+        }
+        .header-title { font-size: 1.3em; color: var(--text-primary); font-weight: 600; }
+        .header-subtitle { font-size: 0.8em; color: var(--text-secondary); }
+        #main-content {
+            display: flex;
+            flex-grow: 1;
+            overflow: hidden;
+            position: relative;
+        }
+        #canvas-container {
+            flex-grow: 1;
+            position: relative;
+            background-color: #1a1a1a;
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        #panel-splitter {
+            flex-shrink: 0; width: 8px; background-color: var(--bg-dark);
+            cursor: col-resize; position: relative; z-index: 101;
+            transition: background-color 0.2s;
+        }
+        #panel-splitter:hover, body.resizing #panel-splitter {
+            background-color: var(--accent-blue);
+        }
+        body.resizing { cursor: col-resize; user-select: none; }
+
+        #controls-panel {
+            width: 350px; flex-shrink: 0; background-color: var(--bg-dark);
+            overflow-y: auto; display: flex; flex-direction: column;
+            gap: 20px; padding: 20px; z-index: 100;
+            transition: width 0.3s ease-out, transform 0.3s ease-out, padding 0.3s ease-out;
+            transform: translateX(0);
+        }
+        #controls-panel.collapsed {
+            width: 0 !important; padding-left: 0; padding-right: 0;
+            transform: translateX(20px); overflow: hidden; border-left: none;
+        }
+
+        #panel-toggle-tab {
+            position: absolute; top: 50%; right: 358px;
+            transform: translateY(-50%); width: 25px; height: 80px;
+            background-color: var(--bg-dark);
+            border: 1px solid var(--border-color); border-right: none;
+            border-radius: 8px 0 0 8px;
+            cursor: pointer; z-index: 99;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.2em; color: var(--text-secondary);
+            transition: right 0.3s ease-in-out;
+        }
+        #panel-toggle-tab:hover { background-color: var(--bg-light-hover); color: var(--accent-primary); }
+        #controls-panel.collapsed + #panel-toggle-tab {
+            right: 0;
+        }
+
+        #controls-panel h3 { margin: 0 0 15px 0; text-align: center; color: var(--accent-blue); font-size: 1.2em; border-bottom: 2px solid var(--accent-blue); padding-bottom: 8px; font-weight: 500;}
+        #controls-panel fieldset { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; background-color: var(--bg-medium); margin: 0; }
+        #controls-panel legend { color: var(--text-secondary); font-weight: 600; padding: 0 8px; }
+
+        .slider-container { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+        .slider-container label { font-size: 0.9em; color: var(--text-secondary); min-width: 35px; text-align: right; }
+        .slider-container input[type="range"] { flex-grow: 1; accent-color: var(--accent-blue); }
+        .slider-container input[type="number"] {
+            width: 50px; background-color: var(--input-bg);
+            border: 1px solid var(--border-color); color: var(--text-primary);
+            border-radius: 4px; text-align: center; font-size: 0.85em; padding: 4px;
+            -moz-appearance: textfield;
+        }
+        .slider-container input[type="number"]::-webkit-outer-spin-button,
+        .slider-container input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none; margin: 0;
+        }
+        
+        button { padding: 10px 15px; background-color: var(--bg-medium); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 5px; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s; font-weight: 500;}
+        button:hover { background-color: var(--bg-light-hover); border-color: var(--accent-primary); }
+        .action-buttons-row { display: flex; justify-content: space-around; gap: 8px; margin-top: 15px; }
+        .transform-radio-group { display: flex; justify-content: space-around; margin: 10px 0; }
+        .transform-radio-group label { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); cursor: pointer; }
+        .transform-radio-group input[type="radio"] { accent-color: var(--accent-blue); }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            #main-content { flex-direction: column-reverse; }
+            #panel-splitter { width: 100%; height: 8px; cursor: row-resize; }
+            #controls-panel { width: 100%; height: 300px; border-left: none; border-top: 1px solid var(--border-color); }
+        }
+        /* --- New CSS for Header Logo --- */
+.header-left {
+    display: flex;
+    align-items: center; /* This vertically aligns the logo and the title text */
+    gap: 15px;         /* This adds some space between the logo and the title */
+}
+
+.header-logo {
+    height: 32px;      /*  <-- KEY PART: Set a specific height to scale the image down. Adjust as needed. */
+    width: auto;       /*  <-- This makes the width adjust automatically to maintain the aspect ratio. */
+}
+    </style>
+</head>
+<body>
+<div id="header">
+    <div class="header-left">
+        <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/templates/arcmeadow.png" alt="Logo" class="header-logo">
+        <span class="header-title">Arc Meadow</span>
+    </div>
+    <span class="header-subtitle">Arc Edge and Stylus Booleans</span>
+</div>
+
+    <div id="main-content">
+        <div id="canvas-container">
+            <canvas id="3d-canvas"></canvas>
+        </div>
+        <div id="panel-splitter"></div>
+        <div id="controls-panel">
+            <!-- Dynamically loaded controls -->
+        </div>
+        <div id="panel-toggle-tab" title="Toggle Controls Panel">&#9776;</div>
+    </div>
+
+    <!-- Libraries from CDNs -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+
+    <!-- Embedded Application JavaScript -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+        // --- Declare Global Namespaces Once ---
+        const Core = {};
+        const Modules = {};
+
+        // --- core/mathUtils.js ---
+        Core.MathUtils = (function() {
+            function init() {} // All modules must have an init function
+            function calculateArcPathLength(params) {
+                let length = 0;
+                const path = [];
+                const p = { y: 0, z: 0, ...params };
+                for (let i = 0; i <= p.resolution; i++) {
+                    const t = i / p.resolution;
+                    const deviatedY = (t * p.y) + Math.sin(3 * t) * p.deviation;
+                    path.push(new THREE.Vector3(t * p.x, deviatedY, t * p.z));
+                }
+                for (let i = 0; i < path.length - 1; i++) { length += path[i].distanceTo(path[i + 1]); }
+                return length;
+            }
+            return { init, calculateArcPathLength };
+        })();
+
+        // --- core/threeManager.js ---
+        Core.ThreeManager = (function() {
+            let scene, camera, renderer, orbitControls;
+            function init() {
+                const container = document.getElementById('canvas-container');
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color('#1a1a1a');
+                camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+                camera.position.set(15, 20, 35);
+                camera.lookAt(0, 0, 0);
+                renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('3d-canvas'), antialias: true });
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.shadowMap.enabled = true;
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                scene.add(ambientLight);
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                dirLight.position.set(20, 30, 20);
+                dirLight.castShadow = true;
+                scene.add(dirLight);
+                const gridHelper = new THREE.GridHelper(200, 200, 0x444444, 0x888888);
+                scene.add(gridHelper);
+                const axesHelper = new THREE.AxesHelper(10);
+                axesHelper.setColors(new THREE.Color(0xff3b30), new THREE.Color(0x34c759), new THREE.Color(0x0095ff));
+                scene.add(axesHelper);
+                orbitControls = new OrbitControls(camera, renderer.domElement);
+                orbitControls.enableDamping = true;
+                window.addEventListener('resize', onWindowResize);
+                onWindowResize();
+            }
+            function onWindowResize() {
+                const container = document.getElementById('canvas-container');
+                if (container.clientWidth > 0 && container.clientHeight > 0) {
+                    camera.aspect = container.clientWidth / container.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(container.clientWidth, container.clientHeight);
+                }
+            }
+            function animate() {
+                requestAnimationFrame(animate);
+                orbitControls.update();
+                renderer.render(scene, camera);
+            }
+            return { init, animate, onWindowResize, getScene: () => scene, getCamera: () => camera, getRenderer: () => renderer, getOrbitControls: () => orbitControls };
+        })();
+
+        // --- core/uiManager.js ---
+        Core.UIManager = (function() {
+            let controlsPanel, toggleTab;
+            function init() {
+                controlsPanel = document.getElementById('controls-panel');
+                toggleTab = document.getElementById('panel-toggle-tab');
+                if (toggleTab) {
+                    toggleTab.addEventListener('click', () => {
+                        controlsPanel.classList.toggle('collapsed');
+                        // Use a short timeout to allow the CSS transition to start before resizing the canvas
+                        setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                    });
+                }
+            }
+            function registerControls(moduleName, controlsHtml) {
+                const container = document.createElement('div');
+                container.id = `${moduleName}-controls`;
+                container.innerHTML = controlsHtml;
+                controlsPanel.appendChild(container);
+            }
+            function createRangeSlider(id, label, min, max, step, value) {
+                return `<div class="slider-container"><label for="${id}">${label}</label>
+                          <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
+                          <input type="number" id="${id}-input" min="${min}" max="${max}" step="${step}" value="${value}">
+                        </div>`;
+            }
+            function createButton(id, text) { return `<button id="${id}">${text}</button>`; }
+            function createRadioGroup(groupName, options, selected) {
+                let html = '<div class="transform-radio-group">';
+                options.forEach(opt => {
+                    html += `<label><input type="radio" name="${groupName}" value="${opt.value}" ${opt.value === selected ? 'checked' : ''}>${opt.label}</label>`;
+                });
+                return html + '</div>';
+            }
+            return { init, registerControls, createRangeSlider, createButton, createRadioGroup };
+        })();
+
+        // --- core/selectionManager.js ---
+        Core.SelectionManager = (function() {
+            let selectedObject = null;
+            const listeners = [];
+            let transformControls; // Reference to the gizmo
+            function init(gizmo) {
+                transformControls = gizmo;
+                const raycaster = new THREE.Raycaster();
+                const mouse = new THREE.Vector2();
+                Core.ThreeManager.getRenderer().domElement.addEventListener('pointerdown', (event) => {
+                    if (transformControls.dragging) return;
+                    const bounds = event.target.getBoundingClientRect();
+                    mouse.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+                    mouse.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+                    raycaster.setFromCamera(mouse, Core.ThreeManager.getCamera());
+                    const intersects = raycaster.intersectObjects(Core.ThreeManager.getScene().children, true);
+                    let newSelection = null;
+                    if (intersects.length > 0) {
+                        let obj = intersects[0].object;
+                        while(obj) { if (obj.userData.isSelectable) { newSelection = obj; break; } obj = obj.parent; }
+                    }
+                    selectObject(newSelection);
+                });
+            }
+            function selectObject(object) {
+                if (selectedObject === object) return;
+                if (selectedObject && selectedObject.material && selectedObject.material.emissive) {
+                    selectedObject.material.emissive.setHex(selectedObject.userData.originalEmissive || 0x000000);
+                }
+                selectedObject = object;
+                if (selectedObject && selectedObject.material && selectedObject.material.emissive) {
+                    selectedObject.userData.originalEmissive = selectedObject.material.emissive.getHex();
+                    selectedObject.material.emissive.setHex(0xaaaa00);
+                }
+                listeners.forEach(cb => cb(selectedObject));
+            }
+            return { init, addSelectionChangeListener: (cb) => listeners.push(cb) };
+        })();
+
+        // --- core/gestureManager.js ---
+        Core.GestureManager = (function() {
+            function init() { new Hammer(Core.ThreeManager.getRenderer().domElement); console.log("Gesture Manager initialized."); }
+            return { init };
+        })();
+
+        // --- core/splitterManager.js ---
+        Core.SplitterManager = (function() {
+            let splitter, panel, mainContent, toggleTab;
+            let isResizing = false;
+            const collapseThreshold = 50;
+            function init() {
+                splitter = document.getElementById('panel-splitter');
+                panel = document.getElementById('controls-panel');
+                mainContent = document.getElementById('main-content');
+                toggleTab = document.getElementById('panel-toggle-tab');
+                splitter.addEventListener('mousedown', startResize);
+                splitter.addEventListener('touchstart', startResize, { passive: false });
+            }
+            function startResize(e) {
+                isResizing = true; document.body.classList.add('resizing');
+                window.addEventListener('mousemove', handleResize);
+                window.addEventListener('mouseup', stopResize);
+                window.addEventListener('touchmove', handleResize, { passive: false });
+                window.addEventListener('touchend', stopResize);
+                e.preventDefault();
+            }
+            function handleResize(e) {
+                if (!isResizing) return;
+                const rect = mainContent.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const newWidth = rect.right - clientX;
+                if (newWidth < collapseThreshold) {
+                    panel.classList.add('collapsed');
+                    stopResize();
+                } else {
+                    panel.classList.remove('collapsed');
+                    panel.style.width = newWidth + 'px';
+                }
+                Core.ThreeManager.onWindowResize(); // Tell canvas to resize
+            }
+            function stopResize() {
+                if (!isResizing) return;
+                isResizing = false; document.body.classList.remove('resizing');
+                window.removeEventListener('mousemove', handleResize);
+                window.removeEventListener('mouseup', stopResize);
+                window.removeEventListener('touchmove', handleResize);
+                window.removeEventListener('touchend', stopResize);
+                if (!panel.classList.contains('collapsed')) {
+                     toggleTab.style.right = (panel.offsetWidth + splitter.offsetWidth) + 'px';
+                } else {
+                     toggleTab.style.right = '0px';
+                }
+            }
+            return { init };
+        })();
+        
+        // --- modules/arcGenerator.js (UPDATED with numeric inputs) ---
+        Modules.ArcGenerator = (function() {
+            let arcs = [null, null, null, null];
+            function init() {
+                const defaultParams = { x: 10, y: 0, z: 0, deviation: 1.5, resolution: 32 };
+                let controlsHtml = '<h3>Arc Generator</h3>';
+                for (let i = 1; i <= 3; i++) {
+                    controlsHtml += `<fieldset><legend>Arc ${i}</legend>
+                        ${Core.UIManager.createRangeSlider(`arc${i}_x`, 'X:', -20, 20, 0.1, defaultParams.x)}
+                        ${Core.UIManager.createRangeSlider(`arc${i}_dev`, 'Dev:', 0, 5, 0.1, defaultParams.deviation)}
+                        ${Core.UIManager.createRangeSlider(`arc${i}_res`, 'Res:', 8, 128, 1, defaultParams.resolution)}
+                        <div class="action-buttons-row">${Core.UIManager.createButton(`createArc${i}Btn`, `Create Arc ${i}`)}</div>
+                    </fieldset>`;
+                }
+                Core.UIManager.registerControls('ArcGenerator', controlsHtml);
+                for (let i = 1; i <= 3; i++) {
+                    const id = `arc${i}`;
+                    document.getElementById(`createArc${i}Btn`).addEventListener('click', () => createOrUpdateArc(i));
+                    // Link sliders to number inputs for 2-way data binding
+                    linkSliderAndInput(`${id}_x`);
+                    linkSliderAndInput(`${id}_dev`);
+                    linkSliderAndInput(`${id}_res`);
+                }
+            }
+            function linkSliderAndInput(baseId) {
+                const slider = document.getElementById(baseId);
+                const input = document.getElementById(`${baseId}-input`);
+                if (slider && input) {
+                    slider.addEventListener('input', () => input.value = slider.value);
+                    input.addEventListener('input', () => slider.value = input.value);
+                }
+            }
+            function createOrUpdateArc(index, manualParams) {
+                const defaults = { x: 10, y: 0, z: 0, deviation: 1.5, resolution: 32 };
+                let params = manualParams || {
+                    x: parseFloat(document.getElementById(`arc${index}_x-input`).value),
+                    deviation: parseFloat(document.getElementById(`arc${index}_dev-input`).value),
+                    resolution: parseInt(document.getElementById(`arc${index}_res-input`).value),
+                };
+                const finalParams = { ...defaults, ...params, tubeRadius: 0.1 };
+                if (arcs[index]) Core.ThreeManager.getScene().remove(arcs[index]);
+                const points = [];
+                for (let i = 0; i <= finalParams.resolution; i++) {
+                    const t = i / finalParams.resolution;
+                    const y = (t * finalParams.y) + Math.sin(3 * t) * finalParams.deviation;
+                    points.push(new THREE.Vector3(t * finalParams.x, y, t * finalParams.z));
+                }
+                const path = new THREE.CatmullRomCurve3(points);
+                const geo = new THREE.TubeGeometry(path, finalParams.resolution, finalParams.tubeRadius, 8, false);
+                const mat = new THREE.MeshStandardMaterial({ color: 0x0095ff, metalness: 0.2, roughness: 0.6 });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.name = `Arc ${index}`;
+                mesh.userData = { isSelectable: true, module: 'ArcGenerator', arcParams: finalParams };
+                mesh.castShadow = true;
+                arcs[index] = mesh;
+                Core.ThreeManager.getScene().add(mesh);
+            }
+            return { init, createOrUpdateArc };
+        })();
+        
+        // --- modules/arcMeasure.js ---
+        Modules.ArcMeasure = (function() {
+            function init() {
+                const html = `<h3>Measure Tools</h3><fieldset><legend>Arc Length</legend><div><span class="result-label">Selected Arc Length: </span><span class="result-value" id="arc-length-result">N/A</span></div></fieldset>`;
+                Core.UIManager.registerControls('ArcMeasure', html);
+                Core.SelectionManager.addSelectionChangeListener(updateMeasurement);
+            }
+            function updateMeasurement(selectedObject) {
+                const resultEl = document.getElementById('arc-length-result');
+                if (selectedObject && selectedObject.userData.module === 'ArcGenerator') {
+                    const length = Core.MathUtils.calculateArcPathLength(selectedObject.userData.arcParams);
+                    resultEl.textContent = length.toFixed(4) + ' units';
+                } else { resultEl.textContent = 'N/A'; }
+            }
+            return { init, updateMeasurement };
+        })();
+        
+        // --- modules/primitiveCreator.js (UPDATED for non-indexed geometry) ---
+        Modules.PrimitiveCreator = (function() {
+            let primitives = [];
+            function init() {
+                const controlsHtml = `<h3>Primitives</h3><div class="action-buttons-row">${Core.UIManager.createButton('createCubeBtn', 'Cube')} ${Core.UIManager.createButton('createCylinderBtn', 'Cylinder')}</div>`;
+                Core.UIManager.registerControls('PrimitiveCreator', controlsHtml);
+                document.getElementById('createCubeBtn').addEventListener('click', () => createPrimitive('Cube', { position: { x: (Math.random() - 0.5) * 40, y: 4, z: (Math.random() - 0.5) * 40 } }));
+                document.getElementById('createCylinderBtn').addEventListener('click', () => createPrimitive('Cylinder', { position: { x: (Math.random() - 0.5) * 40, y: 6, z: (Math.random() - 0.5) * 40 } }));
+            }
+            function createPrimitive(type, params) {
+                const defaults = { Cube: { size: 8, color: 0x9b59b6 }, Cylinder: { radiusTop: 4, height: 12, color: 0xe74c3c } };
+                const finalParams = { ...defaults[type], ...params };
+                let geometry;
+                if (type === 'Cube') { geometry = new THREE.BoxGeometry(finalParams.size, finalParams.size, finalParams.size); } 
+                else { geometry = new THREE.CylinderGeometry(finalParams.radiusTop, finalParams.radiusTop, finalParams.height, 32); }
+                const nonIndexedGeometry = geometry.toNonIndexed(); // Make faces individually selectable
+                geometry.dispose();
+                const mat = new THREE.MeshStandardMaterial({ color: finalParams.color, metalness: 0.2, roughness: 0.6 });
+                const mesh = new THREE.Mesh(nonIndexedGeometry, mat);
+                mesh.name = `${type} ${primitives.length + 1}`;
+                mesh.position.set(finalParams.position.x, finalParams.position.y, finalParams.position.z);
+                mesh.userData = { isSelectable: true, module: 'PrimitiveCreator' };
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                primitives.push(mesh);
+                Core.ThreeManager.getScene().add(mesh);
+            }
+            return { init, createPrimitive };
+        })();
+        
+        // --- modules/transformControls.js (UPDATED to be passed to SelectionManager) ---
+        Modules.TransformControls = (function() {
+            let transformControls;
+            function init() {
+                transformControls = new TransformControls(Core.ThreeManager.getCamera(), Core.ThreeManager.getRenderer().domElement);
+                transformControls.addEventListener('dragging-changed', (event) => { Core.ThreeManager.getOrbitControls().enabled = !event.value; });
+                Core.ThreeManager.getScene().add(transformControls);
+                const controlsHtml = `<h3>Transform Tool</h3>` + Core.UIManager.createRadioGroup('transformMode', [
+                    { label: 'Translate', value: 'translate' }, { label: 'Rotate', value: 'rotate' }, { label: 'Scale', value: 'scale' }
+                ], 'translate');
+                Core.UIManager.registerControls('TransformControls', controlsHtml);
+                document.querySelectorAll('input[name="transformMode"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => transformControls.setMode(e.target.value));
+                });
+                Core.SelectionManager.addSelectionChangeListener((selectedObject) => {
+                    if (selectedObject) { transformControls.attach(selectedObject); } 
+                    else { transformControls.detach(); }
+                });
+            }
+            return { init, getGizmo: () => transformControls };
+        })();
+
+        // --- app.js (Main Logic - UPDATED INITIALIZATION ORDER) ---
+        document.addEventListener('DOMContentLoaded', () => {
+            Core.MathUtils.init();
+            Core.ThreeManager.init();
+            Core.UIManager.init();
+            Core.GestureManager.init();
+            Core.SplitterManager.init();
+            Modules.TransformControls.init();
+            
+            // Pass the gizmo to SelectionManager now that it's created
+            Core.SelectionManager.init(Modules.TransformControls.getGizmo());
+            
+            // Initialize UI-dependent modules
+            Modules.ArcGenerator.init();
+            Modules.ArcMeasure.init();
+            Modules.PrimitiveCreator.init();
+            
+            // --- Initial Scene ---
+            Modules.PrimitiveCreator.createPrimitive('Cube', { size: 8, position: { x: -15, y: 4, z: 0 } });
+            Modules.PrimitiveCreator.createPrimitive('Cylinder', { radiusTop: 4, height: 12, position: { x: 15, y: 6, z: 0 } });
+            Modules.ArcGenerator.createOrUpdateArc(1);
+            
+            Core.ThreeManager.animate();
+        });
+    </script>
+</body>
+</html>
