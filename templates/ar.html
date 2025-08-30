@@ -1,0 +1,350 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Arc Lake &lt;model-viewer&gt; Integration</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    /* Base styles for dark, futuristic theme */
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      /* Dark background */
+      background: #ddaaff;; /* Deep blue-ish dark */
+      color: #00ffff; /* Cyan text */
+      font-family: 'Rajdhani', sans-serif; /* Futuristic font */
+      overflow: hidden;
+      position: relative; /* Needed for pseudo-element grid */
+    }
+
+    /* Optional: Add a subtle grid background */
+    body::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        pointer-events: none; /* Allows clicks to pass through */
+        background-image:
+            linear-gradient(to right, rgba(0, 255, 255, 0.05) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(0, 255, 255, 0.05) 1px, transparent 1px);
+        background-size: 20px 20px; /* Adjust grid size */
+        z-index: 0; /* Place behind content */
+    }
+
+    model-viewer {
+      width: 100%;
+      height: 100%;
+      background: transparent; /* Keep transparent for AR pass-through */
+      display: block;
+      position: relative; /* Ensure it's above the grid background */
+      z-index: 1;
+    }
+
+    #toolbar {
+      position: absolute;
+      top: 20px; /* Increased top margin */
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10; /* Ensure it's above model-viewer */
+      display: flex;
+      gap: 12px; /* Increased gap */
+      padding: 15px 25px; /* Padding around buttons */
+      background: rgba(10, 31, 56, 0.7); /* Semi-transparent dark background */
+      border: 1px solid #00ffff; /* Cyan border */
+      border-radius: 8px;
+      box-shadow: 0 0 15px rgba(0, 255, 255, 0.5); /* Cyan glow */
+      backdrop-filter: blur(5px); /* Optional: Frosted glass effect */
+    }
+
+    #toolbar button {
+      padding: 8px 16px; /* Increased padding */
+      background: #00ffff; /* Cyan background */
+      color: #0a1f38; /* Dark text */
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+      text-transform: uppercase;
+    }
+
+    #toolbar button:hover:not(:disabled) {
+      background: #00e0e0; /* Slightly darker cyan on hover */
+      box-shadow: 0 0 10px rgba(0, 255, 255, 0.7); /* More intense glow on hover */
+    }
+
+    #toolbar button:active:not(:disabled) {
+       background: #00c0c0; /* Even darker cyan on active */
+    }
+
+    #toolbar button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+     /* Style the AR prompt built into model-viewer */
+     /* Note: Directly styling shadow DOM elements like the AR button is limited */
+     /* and depends on model-viewer's internal structure. This is a common approach, */
+     /* but might not always work or be stable across versions. */
+     /* This styles the *default* AR button model-viewer shows in 3D view on mobile, NOT the native app UI */
+     model-viewer::part(default-ar-button) {
+        /* Attempt to style the default AR button if it appears (often in 3D view on mobile) */
+        background-color: #00ffff;
+        color: #0a1f38;
+        border-radius: 4px;
+        padding: 8px 16px;
+        bottom: 20px;
+        right: 20px;
+        /* Match the futuristic button style */
+        border: none;
+        font-weight: bold;
+        font-size: 1rem;
+        text-transform: uppercase;
+        box-shadow: 0 0 10px rgba(0, 255, 255, 0.5); /* Cyan glow */
+     }
+
+
+     /* Add font import */
+     @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;700&display=swap');
+
+  </style>
+  <!-- Import the model-viewer component -->
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+</head>
+<body>
+  <div id="toolbar">
+    <div>For Best AR: Switch Browser to mobile.</div>
+    <button id="exportPNG">Export PNG</button>
+    <button id="exportGLB">Export GLB</button>
+    <!-- Combined AR button -->
+    <button id="toggleAR">Start AR</button>
+  </div>
+
+  <model-viewer
+    id="viewer"
+    src="https://static.wixstatic.com/3d/2451db_6db3fa005cd4440a9d47fd2216c13513.glb"
+	ios-src="https://github.com/DART-Skyboard/Ariel/blob/main/templates/DART%20Dovetail.usdz"
+    alt="Arc Lake 3D Model"
+    camera-controls
+    exposure="1"
+    environment-image="neutral"
+    shadow-intensity="1"
+    ar
+    ar-modes="webxr scene-viewer quick-look"
+    interaction-prompt="auto">
+  </model-viewer>
+
+  <script>
+    const viewer = document.getElementById('viewer');
+    const btnPNG = document.getElementById('exportPNG');
+    const btnGLB = document.getElementById('exportGLB');
+    const btnToggleAR = document.getElementById('toggleAR'); // Get the combined button
+
+    // Helper function to start AR
+    function startAR() {
+      // Check if viewer supports AR activation and trigger it
+      // Note: activateAR() is the modern way, enterAR() is older.
+      if (viewer.activateAR) {
+        console.log('Attempting to activate AR via activateAR()');
+        viewer.activateAR();
+      } else if (viewer.enterAR) {
+        console.log('Attempting to activate AR via enterAR()');
+        viewer.enterAR();
+      } else {
+        console.warn('AR activation methods (activateAR, enterAR) not available on viewer.');
+        // Provide feedback to the user if possible
+         alert('AR mode is not available on this device or browser.');
+      }
+    }
+
+     // Helper function to stop AR
+     // Note: Exiting native AR modes like Scene Viewer/Quick Look is often
+     // controlled by the native UI itself (e.g., the 'X' button or system back button).
+     // These methods might primarily work for WebXR sessions, or might signal to the native app to close.
+    function stopAR() {
+       // Check if viewer supports AR exit and trigger it
+       if (viewer.exitAR) {
+         console.log('Attempting to exit AR via exitAR()');
+         viewer.exitAR();
+       } else if (viewer.dismissAR) {
+          console.log('Attempting to exit AR via dismissAR()');
+          viewer.dismissAR();
+       } else {
+         console.warn('AR exit methods (exitAR, dismissAR) not available on viewer or not applicable to current AR mode.');
+         // Provide feedback to the user if possible
+         // In native modes (Scene Viewer/Quick Look), the user typically exits
+         // using the OS-provided UI, not the web page's button.
+          alert('To exit AR, look for controls provided by your device (e.g., a back button or X icon), or follow on-screen instructions.');
+       }
+    }
+
+
+    // Export PNG handler
+    btnPNG.addEventListener('click', () => {
+      // Using viewer.toDataURL is generally the recommended way to capture the model-viewer content
+      try {
+        // The toDataURL method on model-viewer captures the *3D scene*, not the live AR camera feed overlay.
+        const dataURL = viewer.toDataURL('image/png');
+
+        const win = window.open();
+        if (win) {
+            win.document.write(`
+              <html><body style="margin:0;background:#1a1a1a;text-align:center;color:#fff;">
+                <p style="margin-top: 20px;">Right-click (or long-press) the image to save.</p>
+                <img src="${dataURL}" style="max-width:95%;height:auto; border: 1px solid #00ffff;">
+                <p>Image exported from 3D model (desktop view). Note: This captures the 3D view, not the live AR camera view.</p>
+              </body></html>
+            `);
+             win.document.close(); // Close the document stream
+        } else {
+             alert('Popup blocked. Please allow popups to view the image.');
+        }
+      } catch (error) {
+          console.error('Error exporting PNG:', error);
+          alert('Failed to export PNG. Ensure the model is fully loaded and visible. This feature does not capture the live AR camera view.');
+      }
+    });
+
+    // Export GLB handler (downloads the source file)
+    btnGLB.addEventListener('click', () => {
+      const url = viewer.getAttribute('src');
+      if (!url) {
+          alert('Model source URL not found.');
+          return;
+      }
+      const a = document.createElement('a');
+      a.href = url;
+      // Suggest a filename based on the URL or a default
+      const filename = url.substring(url.lastIndexOf('/') + 1) || 'model.glb';
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+       console.log(`Downloading model from: ${url}`);
+    });
+
+    // Toggle AR button logic based on AR status events
+    btnToggleAR.addEventListener('click', () => {
+        // Check the current viewer.arStatus property to decide action
+         if (viewer.arStatus === 'session-started') {
+            stopAR(); // Attempt to stop if a session is active (might only work for WebXR)
+         } else if (viewer.arStatus !== 'unavailable' && viewer.arStatus !== 'activating') {
+            // Only attempt to start if AR is not unavailable and not already trying to activate
+            startAR();
+         } else if (viewer.arStatus === 'unavailable') {
+             alert('AR mode is unavailable on this device.');
+         }
+    });
+
+
+    // Listen for AR status changes to update the button text/state
+    viewer.addEventListener('ar-status', (e) => {
+      console.log('AR status changed:', e.detail.status);
+      switch (e.detail.status) {
+        case 'session-started':
+          btnToggleAR.textContent = 'Exit AR';
+          btnToggleAR.disabled = false; // Should always be able to exit (though native UI is preferred)
+          // Optionally hide the toolbar during native AR session if it obstructs the view
+           document.getElementById('toolbar').style.visibility = 'hidden';
+          break;
+        case 'not-presenting':
+          // AR is not active. Check if it's supported to enable the button.
+           btnToggleAR.textContent = 'Start AR';
+           btnToggleAR.disabled = false; // Enable button if AR is potentially available
+           document.getElementById('toolbar').style.visibility = 'visible'; // Show toolbar again
+          break;
+        case 'unavailable':
+          // AR is not supported or available on this device/browser
+          btnToggleAR.textContent = 'AR Unavailable';
+          btnToggleAR.disabled = true;
+           document.getElementById('toolbar').style.visibility = 'visible'; // Show toolbar even if AR is disabled
+          break;
+        case 'error':
+           // An error occurred
+           btnToggleAR.textContent = 'AR Error';
+           btnToggleAR.disabled = true;
+           console.error('AR Error:', e.detail.error);
+           document.getElementById('toolbar').style.visibility = 'visible'; // Show toolbar
+          break;
+         case 'session-ended':
+            // Session ended cleanly (e.g., exited via native UI)
+            btnToggleAR.textContent = 'Start AR'; // Go back to start state
+            btnToggleAR.disabled = false;
+            document.getElementById('toolbar').style.visibility = 'visible'; // Show toolbar again
+            break;
+         case 'activating':
+            // AR is trying to start - disable button briefly
+             btnToggleAR.textContent = 'Activating AR...';
+             btnToggleAR.disabled = true;
+             // Keep toolbar visible during activation attempt
+             document.getElementById('toolbar').style.visibility = 'visible';
+             break;
+         case 'ready':
+            // AR is supported and ready to start a session (often the initial state on mobile before activation)
+             btnToggleAR.textContent = 'Start AR';
+             btnToggleAR.disabled = false;
+             document.getElementById('toolbar').style.visibility = 'visible'; // Show toolbar
+            break;
+
+        default:
+           // Handle other potential statuses or just ignore
+           console.log(`Unhandled AR status: ${e.detail.status}`);
+           // Don't change button state or text for unknown states, assume usable unless told otherwise
+           // Ensure it's not stuck disabled if an unknown state occurs after 'activating'
+            if (btnToggleAR.textContent === 'Activating AR...') {
+                 console.warn('AR status stuck in activating or unknown state. Attempting to reset button.');
+                 btnToggleAR.textContent = 'Start AR'; // Assume it failed activation if status doesn't change
+                 btnToggleAR.disabled = false;
+            }
+           break;
+      }
+    });
+
+    // Log model load status
+    viewer.addEventListener('load', () => {
+      console.log('✅ Model loaded.');
+       // After model loads, check initial AR status to set button correctly
+       // This ensures the button state is correct on page load if AR is supported/unavailable.
+      // Use a small delay to ensure model-viewer has fully determined AR status
+      setTimeout(() => {
+        if (viewer.arStatus) {
+             console.log("Initial viewer.arStatus:", viewer.arStatus);
+             // Manually trigger the ar-status logic to set the button text/state correctly on load
+             viewer.dispatchEvent(new CustomEvent('ar-status', { detail: { status: viewer.arStatus } }));
+        } else {
+            // If arStatus property isn't immediately available, the first 'ar-status' event will handle it.
+            // The button will default to "Start AR" and become disabled only if 'unavailable' fires later.
+             console.log("viewer.arStatus not available shortly after load. Relying on first ar-status event.");
+        }
+      }, 100); // Reduced delay slightly
+    });
+
+     viewer.addEventListener('error', (e) => {
+        console.error('❌ Model failed to load:', e.detail.src || e);
+        alert('Failed to load the 3D model.');
+     });
+
+     // Initial check on page load, in case the 'load' event fires too early for arStatus
+     // or if the model is cached.
+     // Use a small delay to ensure model-viewer is fully initialized
+     setTimeout(() => {
+        if (viewer.arStatus) {
+             console.log("Initial check (delayed): viewer.arStatus:", viewer.arStatus);
+             viewer.dispatchEvent(new CustomEvent('ar-status', { detail: { status: viewer.arStatus } }));
+        } else {
+             console.log("Initial check (delayed): viewer.arStatus still not available.");
+        }
+     }, 500); // 500ms delay as a fallback
+
+
+  </script>
+</body>
+</html>
