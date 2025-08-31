@@ -68,8 +68,44 @@ def syside():
 @app.route("/leaudiovisualizer.html")
 def sysleav():
     return render_template("leaudiovisualizer.html")
-@app.route("/api/chat", methods=["POST"])
 
+@app.route("/ar.html")
+def ar():
+    return render_template("ar.html")
+
+@app.route("/Mockup.html")
+def mockup():
+    return render_template("Mockup.html")
+
+@app.route("/arielorg.html")
+def arielorg():
+    return render_template("arielorg.html")
+
+@app.route("/intermit.html")
+def intermit():
+    return render_template("intermit.html")
+
+@app.route("/leatrprotoliveorg.html")
+def leatrprotoliveorg():
+    return render_template("leatrprotoliveorg.html")
+
+@app.route("/lemazeashbackup.html")
+def lemazeashbackup():
+    return render_template("lemazeashbackup.html")
+
+@app.route("/ppreferenceform.html")
+def ppreferenceform():
+    return render_template("ppreferenceform.html")
+
+@app.route("/testbkp.html")
+def testbkp():
+    return render_template("testbkp.html")
+
+@app.route("/ai_studio_code (25).html")
+def ai_studio_code():
+    return render_template("ai_studio_code (25).html")
+
+@app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json() or {}
     user_msg = payload.get("message", "").strip()
