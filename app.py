@@ -54,7 +54,10 @@ def sysprotoleatr():
 @app.route("/mn.html")
 def sysmn():
     return render_template("mn.html")
-
+# <-- New route to serve your mockup -->
+@app.route("/altitude.html")
+def sysalt():
+    return render_template("altitude.html")
 # <-- New route to serve your mockup -->
 @app.route("/arcmeadow.html")
 def sysamd():
