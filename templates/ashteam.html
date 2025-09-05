@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ash Team Chat</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        :root{--background-primary:#1a1a1a;--background-secondary:#2c2c2c;--background-tertiary:#3a3a3a;--text-primary:#e0e0e0;--text-secondary:#a0a0a0;--accent-primary:#00bfa5;--accent-hover:#00a794;--border-color:#444;--font-family:'Inter',sans-serif}
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:var(--font-family);background-color:var(--background-primary);color:var(--text-primary);overflow:hidden}
+        .body-wrapper{display:flex;flex-direction:column;height:100dvh}
+        .container{display:flex;width:100%;flex-grow:1;overflow:hidden}
+        .sidebar{width:280px;background-color:var(--background-secondary);display:flex;flex-direction:column;border-right:1px solid var(--border-color);padding:20px;gap:15px;}
+        .sidebar-header{font-size:1.5rem;font-weight:700;color:var(--accent-primary);padding-bottom:15px;border-bottom:1px solid var(--border-color);flex-shrink:0;}
+        .sidebar-section{display:flex;flex-direction:column;overflow:hidden;min-height:0}
+        .sidebar-section.users{flex-basis:40%;}.sidebar-section.channels{flex-basis:60%;}
+        .sidebar-title{font-size:.9rem;font-weight:600;text-transform:uppercase;color:var(--text-secondary);margin-bottom:10px;flex-shrink:0}
+        #user-list{list-style:none;overflow-y:auto;padding-right:5px;}
+        #user-list li{padding:8px 12px;border-radius:6px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        #channel-list-container{overflow-y:auto;padding-right:5px;}
+        .channel-group summary{padding:10px 12px;font-weight:700;cursor:pointer;list-style:none;position:relative;border-radius:6px;transition:background-color .2s}
+        .channel-group summary:hover{background-color:var(--background-tertiary)}
+        .channel-group summary::-webkit-details-marker{display:none}
+        .channel-group summary::before{content:'>';position:absolute;left:0;transform:rotate(0);transition:transform .2s}
+        .channel-group[open] > summary::before{transform:rotate(90deg)}
+        .chat-list{list-style:none;padding-left:15px;margin:5px 0}
+        .chat-list li{padding:8px 12px;border-radius:6px;cursor:pointer;transition:background-color .2s;font-weight:500}
+        .chat-list li.active,.chat-list li:hover{background-color:var(--background-tertiary)}
+        .chat-list li.active::before{content:'# ';color:var(--accent-primary)}
+        .chat-area{flex-grow:1;display:flex;flex-direction:column;background-color:var(--background-primary);position:relative}
+        .chat-header{padding:20px;border-bottom:1px solid var(--border-color);background-color:var(--background-secondary);flex-shrink:0}
+        #current-channel-name{font-size:1.2rem;font-weight:600}
+        #current-chat-name{font-size:.9rem;color:var(--text-secondary);margin-top:4px}
+        .chat-input{padding:10px 20px;border-top:1px solid var(--border-color);background-color:var(--background-secondary);flex-shrink:0}
+        #message-form{display:flex;align-items:flex-end;gap:10px;background-color:var(--background-tertiary);padding:8px 12px;border-radius:8px;border:1px solid var(--border-color)}
+        #message-form:focus-within{border-color:var(--accent-primary);}
+        #message-input{flex-grow:1;border:none;background:0 0;color:var(--text-primary);font-size:1rem;resize:none;outline:0;font-family:var(--font-family);line-height:1.4;max-height:150px;overflow-y:auto}
+        #send-button{width:36px;height:36px;border-radius:50%;border:none;background-color:var(--accent-primary);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background-color .2s}
+        #send-button:hover{background-color:var(--accent-hover)}
+        #send-button svg{width:22px;height:22px}
+        #messages{flex-grow:1;padding:20px;overflow-y:auto;display:flex;flex-direction:column}
+        .message{margin-bottom:15px;max-width:80%;display:flex;flex-direction:column}
+        .message-sender{font-weight:600;font-size:.9rem;margin-bottom:5px}.message-sender .timestamp{font-size:.75rem;color:var(--text-secondary);font-weight:400;margin-left:8px}
+        .message-content{background-color:var(--background-secondary);padding:10px 15px;border-radius:8px;line-height:1.5;word-wrap:break-word;white-space:pre-wrap}
+        .system-message{text-align:center;color:var(--text-secondary);font-style:italic;font-size:.9rem;margin:10px 0}
+        .message.sent{align-self:flex-end;align-items:flex-end;}
+        .message.sent .message-content{background-color:var(--accent-primary);color:var(--background-primary);}
+        .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background-color:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:1000}.modal-content{background-color:var(--background-secondary);padding:30px;border-radius:8px;text-align:center;width:350px}.modal-content h2{margin-bottom:20px;color:var(--text-primary)}#username-input{width:100%;padding:12px;margin-bottom:20px;border-radius:6px;border:1px solid var(--border-color);background-color:var(--background-tertiary);color:var(--text-primary);font-size:1rem}#username-submit{width:100%;padding:12px;background-color:var(--accent-primary);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600}
+        .page-footer{width:100%;background-color:var(--background-secondary);border-top:1px solid var(--border-color);padding:15px 25px;flex-shrink:0}.footer-content{display:flex;align-items:center;justify-content:space-between;width:100%;font-size:.9rem;color:var(--text-secondary)}.footer-logos{display:flex;gap:15px;align-items:center}.footer-logos span{display:inline-block;width:30px;height:30px;background-color:var(--background-tertiary);border-radius:50%}
+        .scroll-buttons{position:absolute;bottom:95px;right:25px;z-index:10;display:flex;flex-direction:column;gap:8px;opacity:0;transition:opacity .3s ease-in-out;pointer-events:none}.scroll-buttons.visible{opacity:.7;pointer-events:auto}.scroll-buttons:hover{opacity:1}.scroll-btn{width:40px;height:40px;background-color:var(--background-tertiary);border:1px solid var(--border-color);color:var(--text-primary);border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background-color .2s,border-color .2s}.scroll-btn:hover{background-color:var(--accent-primary);border-color:var(--accent-primary)}.scroll-btn svg{width:20px;height:20px;fill:currentColor}
+    </style>
+</head>
+<body>
+    <div class="modal-overlay" id="username-modal"><div class="modal-content"><h2>Welcome to Ash Team</h2><p style="color:var(--text-secondary);margin-bottom:20px">Please enter a username to join.</p><form id="username-form"><input type="text" id="username-input" placeholder="Your Username" required autocomplete="off"><button type="submit" id="username-submit">Join Chat</button></form></div></div>
+    <div class="body-wrapper"><div class="container"><nav class="sidebar"><div class="sidebar-header">Ash Team</div><div class="sidebar-section users"><div class="sidebar-title">Users in Chat</div><ul id="user-list"></ul></div><div class="sidebar-section channels"><div class="sidebar-title">Live Channels</div><div id="channel-list-container"></div></div></nav><main class="chat-area"><header class="chat-header"><h2 id="current-channel-name">Select a Chat</h2><div id="current-chat-name"></div></header><div id="messages"></div><div class="scroll-buttons" id="scroll-buttons-container"><button id="scroll-to-top" class="scroll-btn" title="Scroll to top"><svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg></button><button id="scroll-to-bottom" class="scroll-btn" title="Scroll to bottom"><svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg></button></div><div class="chat-input"><form id="message-form"><textarea id="message-input" placeholder="Type a message..." rows="1" disabled></textarea><button type="submit" id="send-button" title="Send message" disabled><svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg></button></form></div></main></div><footer class="page-footer"><div class="footer-content"><div class="copyright">&copy; 2025 Ash Team. All Rights Reserved.</div><div class="footer-logos"><span></span><span></span></div></div></footer></div>
+    <script>
+        const WEBSOCKET_URL = 'http://localhost:8080';
+        const DOMElements = {modal:document.getElementById('username-modal'),usernameForm:document.getElementById('username-form'),usernameInput:document.getElementById('username-input'),messageForm:document.getElementById('message-form'),messageInput:document.getElementById('message-input'),sendButton:document.getElementById('send-button'),messagesContainer:document.getElementById('messages'),channelListContainer:document.getElementById('channel-list-container'),userList:document.getElementById('user-list'),currentChannelNameEl:document.getElementById('current-channel-name'),currentChatNameEl:document.getElementById('current-chat-name'),scrollButtonsContainer:document.getElementById('scroll-buttons-container'),scrollToTopBtn:document.getElementById('scroll-to-top'),scrollToBottomBtn:document.getElementById('scroll-to-bottom')};
+        let socket, username = '', currentChat = {};
+
+        DOMElements.usernameForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            username = DOMElements.usernameInput.value.trim();
+            if (username) { DOMElements.modal.style.display = 'none'; connectSocketIO(); }
+        });
+        DOMElements.messageForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const messageText = DOMElements.messageInput.value.trim();
+            if (messageText && socket.connected) {
+                socket.emit('message', { content: messageText });
+                DOMElements.messageInput.value = '';
+                DOMElements.messageInput.style.height = 'auto';
+            }
+        });
+        DOMElements.messageInput.addEventListener('input', () => { DOMElements.messageInput.style.height = 'auto'; DOMElements.messageInput.style.height = `${DOMElements.messageInput.scrollHeight}px`; });
+        DOMElements.scrollToTopBtn.addEventListener('click', () => { DOMElements.messagesContainer.scrollTop = 0; });
+        DOMElements.scrollToBottomBtn.addEventListener('click', () => { DOMElements.messagesContainer.scrollTop = DOMElements.messagesContainer.scrollHeight; });
+        DOMElements.messagesContainer.addEventListener('scroll', () => { DOMElements.scrollButtonsContainer.classList.toggle('visible', DOMElements.messagesContainer.scrollHeight > DOMElements.messagesContainer.clientHeight); });
+
+        function connectSocketIO() {
+            socket = io(WEBSOCKET_URL);
+            socket.on('connect', () => {
+                console.log('Connected to Ash Team server.');
+                const initialChat = { channelId: 'skyboard', chatId: 'dart' };
+                socket.emit('auth', { username, initialChat });
+            });
+            socket.on('initialData', (data) => renderChannels(data.channels));
+            socket.on('userListUpdate', (data) => updateUserList(data.usersInChannel));
+            socket.on('joinSuccess', (data) => updateChatHeader(data));
+            socket.on('newMessage', (payload) => addChatMessage(payload));
+            socket.on('systemMessage', (payload) => addSystemMessage(payload.content));
+            socket.on('channelHistory', (payload) => loadChannelHistory(payload));
+            socket.on('disconnect', () => { addSystemMessage('Connection lost. Reconnecting...'); });
+            socket.on('connect_error', (err) => {
+                console.error("Connection Error:", err.message);
+                addSystemMessage(`Could not connect to the server at ${WEBSOCKET_URL}. Is the server running?`);
+            });
+        }
+        function renderChannels(channels) {
+            DOMElements.channelListContainer.innerHTML = '';
+            for (const channelId in channels) {
+                const channel = channels[channelId];
+                const details = document.createElement('details');
+                details.className = 'channel-group';
+                if (channelId === 'skyboard') details.open = true;
+                const summary = document.createElement('summary');
+                summary.textContent = channel.name;
+                details.appendChild(summary);
+                const chatList = document.createElement('ul');
+                chatList.className = 'chat-list';
+                for (const chatId in channel.chats) {
+                    const chat = channel.chats[chatId];
+                    const li = document.createElement('li');
+                    li.textContent = chat.name;
+                    li.dataset.channelId = channelId;
+                    li.dataset.chatId = chatId;
+                    li.addEventListener('click', () => switchChat(channelId, chatId));
+                    chatList.appendChild(li);
+                }
+                details.appendChild(chatList);
+                DOMElements.channelListContainer.appendChild(details);
+            }
+        }
+        function updateUserList(users) {
+            DOMElements.userList.innerHTML = '';
+            users.forEach(user => {
+                const li = document.createElement('li');
+                li.textContent = user;
+                DOMElements.userList.appendChild(li);
+            });
+        }
+        function updateChatHeader({ channelName, chatName, channelId, chatId }) {
+            DOMElements.currentChannelNameEl.textContent = channelName;
+            DOMElements.currentChatNameEl.textContent = `# ${chatName}`;
+            currentChat = { channelId, chatId };
+            document.querySelectorAll('.chat-list li').forEach(el => { el.classList.toggle('active', el.dataset.channelId === channelId && el.dataset.chatId === chatId); });
+            DOMElements.messageInput.disabled = false;
+            DOMElements.sendButton.disabled = false;
+            console.log('Chat joined successfully. Input enabled.');
+        }
+        function switchChat(channelId, chatId) {
+            if (currentChat.channelId !== channelId || currentChat.chatId !== chatId) {
+                socket.emit('joinChat', { channelId, chatId });
+            }
+        }
+        function loadChannelHistory({ history }) {
+            DOMElements.messagesContainer.innerHTML = '';
+            history.forEach(msg => addChatMessage(msg, true));
+            DOMElements.messagesContainer.scrollTop = DOMElements.messagesContainer.scrollHeight;
+        }
+        function addChatMessage(msg, fromHistory = false) {
+            const isScrolledToBottom = DOMElements.messagesContainer.scrollHeight - DOMElements.messagesContainer.clientHeight <= DOMElements.messagesContainer.scrollTop + 50;
+            const messageEl = document.createElement('div');
+            messageEl.classList.add('message');
+            if (msg.sender === username) {
+                messageEl.classList.add('sent');
+            }
+            const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            messageEl.innerHTML = `<div class="message-sender">${msg.sender}<span class="timestamp">${time}</span></div><div class="message-content">${msg.content}</div>`;
+            DOMElements.messagesContainer.appendChild(messageEl);
+            if (!fromHistory && isScrolledToBottom) {
+                DOMElements.messagesContainer.scrollTop = DOMElements.messagesContainer.scrollHeight;
+            }
+        }
+        function addSystemMessage(text) {
+             const messageEl = document.createElement('div');
+             messageEl.classList.add('system-message');
+             messageEl.textContent = text;
+             DOMElements.messagesContainer.appendChild(messageEl);
+             DOMElements.messagesContainer.scrollTop = DOMElements.messagesContainer.scrollHeight;
+        }
+    </script>
+</body>
+</html>
