@@ -107,7 +107,9 @@ def testbkp():
 @app.route("/ai_studio_code (25).html")
 def ai_studio_code():
     return render_template("ai_studio_code (25).html")
-
+@app.route("/nu.html")
+def dmnu():
+    return render_template("nu.html")
 @app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json() or {}
