@@ -88,6 +88,10 @@ def arielorg():
 def intermit():
     return render_template("intermit.html")
 
+@app.route("/easterisland.html")
+def easter():
+    return render_template("easterisland.html")
+
 @app.route("/leatrprotoliveorg.html")
 def leatrprotoliveorg():
     return render_template("leatrprotoliveorg.html")
