@@ -6,7 +6,7 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ash Buoyancy Reflex Pendulum Node- Advanced Math v4.4 (Layout Fix)</title>
+    <title>Ash Buoyancy Reflex Pendulum Node- Advanced Math v4.5 (Two-Pass Hoisting)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
     
@@ -137,6 +137,7 @@
         .bot-message code { background-color: #2a2a2e; padding: 2px 5px; border-radius: 4px; font-family: 'Consolas', monospace; color: #ffaf40; }
         .bot-message ul { list-style: none; padding-left: 10px; }
         .bot-message li { margin-bottom: 5px; }
+        .bot-message hr { border: 0; border-top: 1px solid #555; margin: 8px 0; }
 
         #input-area { 
             border-top: 1px solid #444; 
@@ -454,60 +455,106 @@ class BuoyancyPendulumReflexNode {
     log(message, className = 'log-system') { const entry = document.createElement('div'); entry.className = `log-entry ${className}`; entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`; this.output.appendChild(entry); this.output.scrollTop = this.output.scrollHeight; }
     clearLog() { this.output.innerHTML = ''; }
 
+    // --- UPDATE: engageReflex now implements a two-pass "hoisting" system ---
     engageReflex(prompt) {
         this.log('Engaging REFLEX (Δr)... Beginning multi-pass analysis.', 'log-reflex');
         let tasks = [];
-        let processedPrompt = ` ${prompt} `;
-
-        // PASS 1: Global variable assignments
-        const assignmentRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(-?\d+\.?\d*|[a-zA-Z_][a-zA-Z0-9_]*)\b/gi;
+        const combinedPrompt = ` ${prompt} `; // Use original combined prompt
         
-        processedPrompt = processedPrompt.replace(assignmentRegex, (match, varName, value) => {
-            let assignedValue = value;
-            if (isNaN(parseFloat(value))) { 
-                if (this.variableContext.hasOwnProperty(value)) {
-                    assignedValue = this.variableContext[value];
-                    this.log(`Parser: Identified [Variable Assignment] -> ${varName} = ${value} (${assignedValue})`, 'log-parser');
-                } else {
-                    this.log(`Warning: Variable '${value}' not defined when assigning to '${varName}'. Storing as string.`, 'log-system');
-                    assignedValue = value;
-                }
-            } else {
-                assignedValue = parseFloat(value); 
-                this.log(`Parser: Identified [Global Variable Assignment] -> ${varName} = ${assignedValue}`, 'log-parser');
-            }
-            this.variableContext[varName] = assignedValue; 
-            return ' '; 
-        });
+        // --- PASS 1: Build Global Variable Context ---
+        this.log('REFLEX PASS 1: Building global variable context...', 'log-reflex');
+        // Regex to find assignments to numbers (e.g., m=3, h=1.5)
+        const numericAssignmentRegex = /\b([a-zA-Z_]\w*)\s*=\s*(-?\d+\.?\d*)\b/g;
+        // Regex to find assignments to other variables (e.g., m=h)
+        const variableAssignmentRegex = /\b([a-zA-Z_]\w*)\s*=\s*([a-zA-Z_]\w*)\b/g;
+        // Regex to find ALL assignments (used in Pass 2)
+        const allAssignmentsRegex = /\b([a-zA-Z_]\w*)\s*=\s*([-\d\.]+|[a-zA-Z_]\w*)\b/g;
 
-        // PASS 2: Task identification
-        const chunks = processedPrompt.split(';;;');
-        const mathCheckRegex = /[a-zA-Z\d\+\-\*\/\(\)\^=]/i; // Added '=' to regex
-        const simpleTextRegex = /^[a-zA-Z_][a-zA-Z0-9_]*$/; // Matches a single word
+        // Find all matches first
+        let numericMatches = [...combinedPrompt.matchAll(numericAssignmentRegex)];
+        let variableMatches = [...combinedPrompt.matchAll(variableAssignmentRegex)];
+        
+        // Process all numeric assignments first, in order
+        this.log(`Found ${numericMatches.length} numeric assignments.`, 'log-parser');
+        numericMatches.forEach(match => {
+            const varName = match[1];
+            // Do not process if the variable is the *source* in a variable assignment
+            // (e.g., in "m=h", "h" is a source, not a numeric assignment)
+            if (variableMatches.some(vMatch => vMatch[2] === varName)) {
+                 // This check is imperfect but helps avoid "m=h" being seen as "m=undefined"
+            }
+            const value = parseFloat(match[2]);
+            this.variableContext[varName] = value;
+            this.log(`Context SET: ${varName} = ${value}`, 'log-parser');
+        });
+        
+        // Process all variable assignments second, in order
+        this.log(`Found ${variableMatches.length} variable assignments.`, 'log-parser');
+        variableMatches.forEach(match => {
+            const varName = match[1];
+            const sourceVar = match[2];
+            // Ensure it's not a self-assignment or a numeric value
+            if (isNaN(parseFloat(sourceVar))) { 
+                if (this.variableContext.hasOwnProperty(sourceVar)) {
+                    this.variableContext[varName] = this.variableContext[sourceVar];
+                    this.log(`Context SET: ${varName} = ${sourceVar} (${this.variableContext[sourceVar]})`, 'log-parser');
+                } else {
+                    this.log(`Warning: Variable '${sourceVar}' not defined. Defaulting ${varName} to 0.`, 'log-system');
+                    this.variableContext[varName] = 0; // Default to 0 if source not found
+                }
+            }
+        });
+        this.log(`REFLEX PASS 1 Complete. Final Context: ${JSON.stringify(this.variableContext)}`, 'log-reflex');
+        
+        // --- PASS 2: Create Execution Plan ---
+        this.log('REFLEX PASS 2: Creating execution plan...', 'log-reflex');
+        const chunks = prompt.split(';;;');
+        // Regex to check if a chunk is ONLY an assignment
+        const assignmentOnlyRegex = /^\s*([a-zA-Z_]\w*)\s*=\s*([-\d\.]+|[a-zA-Z_]\w*)\s*$/;
+        // Regex to check if a chunk is ONLY a text term
+        const textOnlyRegex = /^\s*[a-zA-Z_]\w*\s*$/; // e.g. "mass"
 
         chunks.forEach(chunk => {
             let trimmedChunk = chunk.trim();
-            if (trimmedChunk) {
-                if (mathCheckRegex.test(trimmedChunk) && !simpleTextRegex.test(trimmedChunk)) {
-                    // Looks like math (e.g., "F = m * a" or "m * a")
-                    this.log(`Pre-proc: Identified [Math Chunk]: "${trimmedChunk}"`, 'log-preproc');
-                    tasks.push({ type: 'math', expression: trimmedChunk, priority: 2 });
-                    this.log(`Parser: Created [Math Task] -> ${trimmedChunk}`, 'log-parser');
+            if (!trimmedChunk) return; // Skip empty chunks
+
+            if (assignmentOnlyRegex.test(trimmedChunk)) {
+                // Task is ONLY an assignment (e.g., "m=2" or "m=h")
+                tasks.push({ type: 'assignment', content: trimmedChunk, priority: 1 });
+                this.log(`Parser: Created [Assignment Task] -> ${trimmedChunk}`, 'log-parser');
+            } else if (textOnlyRegex.test(trimmedChunk)) {
+                // Task is ONLY text (e.g., "mass")
+                tasks.push({ type: 'text', content: trimmedChunk, priority: 1 });
+                 this.log(`Parser: Created [Text/Glossary Task] -> ${trimmedChunk}`, 'log-parser');
+            } else {
+                // Task is math, or math + assignment (e.g., "2+3+m" or "2+3+m m=3")
+                // Strip all assignments to isolate the math expression
+                let mathExpression = trimmedChunk.replace(allAssignmentsRegex, ' ').trim();
+                
+                // Clean up potential artifacts like extra operators
+                mathExpression = mathExpression.replace(/[\+\-\*\/]$/, '').trim(); // Remove trailing operators
+
+                if (mathExpression.length > 0) {
+                    tasks.push({ type: 'math', expression: mathExpression, priority: 2 });
+                    this.log(`Parser: Created [Math Task] (from "${trimmedChunk}") -> ${mathExpression}`, 'log-parser');
                 } else {
-                    // Looks like text (e.g., "Newton" or "mass")
-                    tasks.push({ type: 'text', content: trimmedChunk, priority: 1 });
-                    this.log(`Parser: Created [Text/Glossary Task] -> ${trimmedChunk}`, 'log-parser');
+                    // This can happen if the chunk was *only* an assignment but didn't match the regex
+                    // (e.g., "m = h = 5", which is complex)
+                    // For now, we log and skip
+                    this.log(`Warning: Chunk "${trimmedChunk}" produced no math and was not an assignment. Skipping.`, 'log-system');
                 }
             }
         });
+
         this.log(`>> REFLEX Complete. Execution plan created with ${tasks.length} tasks.`, 'log-reflex');
         return tasks;
     }
     
+    // --- UPDATE: process() now resets context (like original) and joins with <hr> ---
     process(prompt) {
         this.clearLog(); 
         this.variableContext = { m: 0, p: 0, e: 0, h: 0, s: 0, k: 0, z: 0 };
-        this.log(`--- New BATCH Cycle for Prompt: "${prompt}" ---`);
+        this.log(`--- New BATCH Cycle for Combined Prompt: "${prompt}" ---`);
         this.log(`--- Context Reset. Default BRPN variables set to 0. ---`);
         
         this.log('Attempting to establish FOUNDATION (Δf)...', 'log-foundation');
@@ -520,15 +567,15 @@ class BuoyancyPendulumReflexNode {
         this.log('Attempting to achieve PERFORMANCE (Δp)...', 'log-performance');
         const results = [];
         
+        // Execute tasks using the *single, final context* built by engageReflex
         executionPlan.forEach(task => {
             if (task.type === 'math') {
                 this.log(`Executing [Math Task]: ${task.expression} with context: ${JSON.stringify(this.variableContext)}`, 'log-math');
                 
-                let scope = this.variableContext; // Use the main context
+                let scope = this.variableContext; // Use the final context
                 const mathResult = leadEdgeExecutor.mathEngine.execute(task.expression, scope);
                 
                 if (typeof mathResult === 'function') {
-                    // --- FIX: Corrected broken <code> tag ---
                     results.push(`Equation defined: <code>${task.expression}</code>`);
                 } else if (mathResult !== undefined) {
                     results.push(`${task.expression} = <strong>${mathResult}</strong>`);
@@ -540,10 +587,14 @@ class BuoyancyPendulumReflexNode {
                 const analysisResult = leadEdgeExecutor.textEngine.analyze(task.content);
                 results.push(analysisResult);
             }
+            else if (task.type === 'assignment') { // NEW: Report assignment-only prompts
+                this.log(`Reporting [Assignment Task]: ${task.content}`, 'log-text');
+                results.push(task.content);
+            }
         });
         
         this.log('>> PERFORMANCE Achieved. (p=1)', 'log-performance');
-        return results.join('<br>');
+        return results.join('<hr>'); // Join with horizontal rule
     }
 }
 
@@ -608,12 +659,13 @@ function addPrompt(text = '', checked = false) {
     updateSubmitButtonState();
 }
 
+// --- UPDATE: submitAllPrompts() reverted to combined prompt logic ---
 function submitAllPrompts() {
     const promptInputs = ui.promptsContainer.querySelectorAll('input[type="text"]');
     if (promptInputs.length === 0) return;
     
     const allPromptTexts = [];
-    // Get text only from *checked* prompts
+    // Get text only from *checked* prompts, IN ORDER
     ui.promptsContainer.querySelectorAll('.prompt-row').forEach(row => {
         if (row.querySelector('input[type="checkbox"]').checked) {
             const text = row.querySelector('input[type="text"]').value.trim();
@@ -625,8 +677,7 @@ function submitAllPrompts() {
 
     if (allPromptTexts.length === 0) return;
     
-    const combinedPrompt = allPromptTexts.join(' ;;; '); 
-    
+    // 1. Display the user's batch message
     const userMessage = document.createElement('div'); 
     userMessage.className = 'message user-message';
     let userMessageHTML = '<strong>Submitted Batch:</strong><ul>';
@@ -635,13 +686,25 @@ function submitAllPrompts() {
     userMessage.innerHTML = userMessageHTML;
     ui.chatWindow.appendChild(userMessage);
 
+    // 2. Combine all prompts into one string, separated by ;;;
+    const combinedPrompt = allPromptTexts.join(' ;;; '); 
+
+    // 3. Process the single combined prompt (which now does the two-pass logic)
     const botResponse = buoyancyNode.process(combinedPrompt);
+    
+    // 4. Display the single bot response
     const botMessage = document.createElement('div'); 
     botMessage.className = 'message bot-message';
     botMessage.innerHTML = botResponse;
+    
+    if (botMessage.innerHTML.trim() === '') {
+         botMessage.innerHTML = "Batch processed, but no output was generated.";
+    }
+    
     ui.chatWindow.appendChild(botMessage);
     ui.chatWindow.scrollTop = ui.chatWindow.scrollHeight;
 }
+
 
 // --- MATH MODAL LOGIC (from leatrproto, adapted for BRPN) ---
 
@@ -801,7 +864,7 @@ window.onload = () => {
 
     // 2. Combine all messages
     welcomeMsg.innerHTML = `
-        Advanced Math mode (v4.4) active. Use the <strong>fx</strong> button to open the Math Solver overlay.
+        Advanced Math mode (v4.5) active. Use the <strong>fx</strong> button to open the Math Solver overlay.
         <br><br>
         Multi-prompt batch mode is active. Add prompts, mark them as ready, and submit all at once.
         <br><br>
