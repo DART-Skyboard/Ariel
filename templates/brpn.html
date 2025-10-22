@@ -18,14 +18,25 @@
             --panel-color: #1e1e1e; 
             --text-color: #e0e0e0; 
             --input-bg: #2a2a2e;
+            --inputcanvas-bg: rgba(255, 255, 255, 0.35);
             --user-msg-bg: #007bff;
             --assistant-msg-bg: #3a3a3a;
+            --assistantcanvas-msg-bg: rgba(35, 35, 35, 0.35);
             --border-color: #444;
             --calculator-bg: rgba(35, 35, 35, 0.65);
             --calculator-btn-bg: #4a4d52; /* Button background */
             --calculator-btn-hover: #5a5d62;
             --calculator-btn-accent: #007bff; /* Accent for '=' */
             --calculator-btn-clear: #c0392b; /* Clear button */
+            
+            /* --- NEW Canvas CSS Variables (Adapted) --- */
+            --canvas-bg: var(--inputcanvas-bg); /* Use dark input background */
+            --canvas-link-stroke: var(--accent-color); /* Use bright accent for links */
+            --canvas-node-bg: var(--calculator-btn-bg);
+            --canvas-node-border: var(--border-color);
+            --canvas-controls-bg: var(--panel-color);
+            --canvas-controls-border: var(--border-color);
+            --canvas-controls-icon: var(--text-color);
         }
 
         /* --- THEME: Full-screen video background --- */
@@ -174,7 +185,8 @@
         #submit-all-btn { flex-grow: 1; background-color: #007bff; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; transition: all 0.3s; }
         #submit-all-btn:disabled { background-color: #555; cursor: not-allowed; opacity: 0.6; }
 
-        #math-solver-btn {
+        /* --- Updated for new Ash Canvas Button --- */
+        #math-solver-btn, #ash-canvas-btn {
             background-color: #2a2a2e;
             color: var(--accent-color);
             font-weight: bold;
@@ -184,6 +196,11 @@
             cursor: pointer;
             border-radius: 5px;
             flex-shrink: 0; 
+        }
+
+        #ash-canvas-btn {
+            font-size: 1.5em; /* Make symbol a bit larger */
+            line-height: 1.2em;
         }
 
         /* --- BRPN LOG STYLES --- */
@@ -294,6 +311,188 @@
              cursor: help;
              text-decoration: none;
          }
+         
+        /* --- START: ASH CANVAS STYLES (from test.html, adapted) --- */
+        
+        #ash-canvas-overlay {
+            /* Copied from #math-calculator-overlay */
+             position: fixed;
+             top: 0;
+             left: 0;
+             width: 100%;
+             height: 100%;
+             background: rgba(0, 0, 0, 0.4);
+             backdrop-filter: blur(5px);
+             display: none; 
+             align-items: center;
+             justify-content: center;
+             z-index: 3000; /* Just below math modal */
+             padding: 15px;
+             box-sizing: border-box;
+        }
+        
+        #ash-canvas-panel {
+            /* Copied from #math-calculator-content */
+            background: var(--assistantcanvas-msg-bg);
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            /* Canvas specific */
+            width: 90%; 
+            max-width: 900px; /* Wider for canvas */
+            height: 90%; 
+            max-height: 700px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        #ash-canvas-panel .toolbar { /* Styles for the draggable nodes toolbar */
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        #ash-canvas-panel .toolbar .draggable {
+            width: 45px;
+            height: 45px;
+            border: 2px solid var(--canvas-node-border);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1em;
+            font-weight: bold;
+            background: var(--canvas-node-bg);
+            color: var(--text-color);
+            cursor: grab;
+        }
+        #ash-canvas-panel .circuit-container { /* Styles for the canvas area itself */
+            flex: 1;
+            background: var(--canvas-bg); /* Adapted to dark theme */
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* This is key */
+        }
+        #ash-canvas-panel .canvas-controls { /* Styles for the controls toolbar above canvas */
+            display: flex;
+            justify-content: space-around;
+            background: var(--canvas-controls-bg);
+            border-bottom: 1px solid var(--canvas-controls-border);
+            padding: 4px 0;
+            flex-shrink: 0; 
+        }
+        #ash-canvas-panel .canvas-controls button {
+            width: 32px;
+            height: 32px;
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            font-size: 18px;
+            color: var(--canvas-controls-icon);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background .2s, color .2s;
+        }
+         #ash-canvas-panel .canvas-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #ash-canvas-panel .canvas-controls button.active {
+            background: var(--user-msg-bg);
+            color: #fff;
+        }
+        #ash-canvas-panel .canvas-scroll { /* Scrollable area holding the pan/zoom container */
+            flex: 1;
+            overflow: auto; /* This enables scrolling */
+            position: relative;
+        }
+
+        #ash-canvas-panel .panzoom { /* Container for nodes and SVG */
+            position: relative;
+            width: 2000px; /* Large fixed size */
+            height: 2000px; /* Large fixed size */
+            transform-origin: 0 0;
+            transform: scale(1); 
+        }
+        #ash-canvas-panel .panzoom svg { /* SVG for links */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* SVG doesn't capture mouse */
+        }
+         #ash-canvas-panel .panzoom svg polyline {
+            stroke: var(--canvas-link-stroke); /* Adapted to accent color */
+            stroke-width: 3;
+            fill: none;
+            pointer-events: stroke; /* Make lines clickable */
+            cursor: pointer;
+            marker-end: url(#arrowhead);
+        }
+         #ash-canvas-panel .panzoom svg marker path {
+             fill: var(--canvas-link-stroke); /* Adapted to accent color */
+        }
+
+        #ash-canvas-panel .node { /* Styles for draggable nodes on canvas */
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            border: 3px solid var(--canvas-node-border);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            background: var(--canvas-node-bg);
+            color: var(--text-color);
+            cursor: pointer;
+            user-select: none;
+        }
+        #ash-canvas-panel .node.selected { 
+            border-color: yellow !important;
+            box-shadow: 0 0 15px yellow;
+        }
+        
+        /* Canvas Action Buttons (at the bottom of the modal) */
+        .canvas-action-buttons {
+            /* Copied from .calculator-actions */
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+            flex-shrink: 0; /* Prevent shrinking */
+        }
+        
+        /* Shared button style for canvas actions */
+        #submit-canvas-btn, #close-canvas-btn-overlay {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+        }
+        
+        #submit-canvas-btn { 
+            background: var(--user-msg-bg); 
+            color: white; 
+        }
+        #close-canvas-btn-overlay { 
+            background: #555; 
+            color: white; 
+        }
+
+        /* --- END: ASH CANVAS STYLES --- */
+
 
         /* --- FLOATING CALCULATOR STYLES --- */
         #floating-calculator {
@@ -395,7 +594,8 @@
         <div id="input-area">
             <div id="prompts-container"></div>
             <div id="submission-controls">
-                <button id="math-solver-btn" onclick="openMathSolver()">fx</button>
+                <button id="math-solver-btn" title="Math Solver" onclick="openMathSolver()">fx</button>
+                <button id="ash-canvas-btn" title="Ash Canvas">❖</button>
                 <button id="submit-all-btn">Submit All Ready Prompts</button>
                 <button id="add-prompt-btn">+</button>
             </div>
@@ -524,6 +724,56 @@
     </div>
 </div>
 
+<div id="ash-canvas-overlay">
+    <div id="ash-canvas-panel">
+      <h4>Ash Canvas Influence</h4>
+      <div class="toolbar">
+        <div class="draggable" draggable="true" data-type="M">M</div>
+        <div class="draggable" draggable="true" data-type="P">P</div>
+        <div class="draggable" draggable="true" data-type="E">E</div>
+        <div class="draggable" draggable="true" data-type="H">H</div>
+        <div class="draggable" draggable="true" data-type="S">S</div>
+        <div class="draggable" draggable="true" data-type="K">K</div>
+        <div class="draggable" draggable="true" data-type="R">R</div>
+      </div>
+
+      <div class="circuit-container">
+        <div class="canvas-controls">
+          <button id="linkBtn"    title="Link Mode 🔗">🔗</button>
+          <button id="unlinkBtn"  title="Unlink Mode ❌">❌</button>
+          <button id="undoBtn"    title="Undo ↶" disabled>↶</button>
+          <button id="redoBtn"    title="Redo ↷" disabled>↷</button>
+          <button id="zoomIn"     title="Zoom In ➕">➕</button>
+          <button id="zoomOut"    title="Zoom Out ➖">➖</button>
+          <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+        </div>
+        <div class="canvas-scroll">
+          <div class="panzoom">
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arrowhead"
+                  viewBox="0 0 10 10"
+                  refX="10"
+                  refY="5"
+                  markerWidth="8"
+                  markerHeight="8"
+                  orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--canvas-link-stroke)"/>
+                </marker>
+              </defs>
+            </svg>
+            </div>
+        </div>
+      </div>
+      <div class="canvas-action-buttons">
+            <button id="close-canvas-btn-overlay">Close Canvas</button>
+            <button id="submit-canvas-btn">Add Influence to Batch</button>
+        </div>
+    </div>
+</div>
+
+
 <script>
 /**
  * Changes the height of the chat title logo on demand.
@@ -552,7 +802,7 @@ const leadEdgeExecutor = {
         hammer:   { variable: 'h' }, 
         stick:    { variable: 's' }, 
         knife:    { variable: 'k' },
-        scissors: { variable: 'z' }
+        scissors: { variable: 'z' } // Note: 'z' is scissors, maps to 'R' on canvas
     },
     
     // LEATR "math" mode
@@ -870,7 +1120,7 @@ const ui = {
     promptsContainer: document.getElementById('prompts-container'),
     submitAllBtn: document.getElementById('submit-all-btn'),
     addPromptBtn: document.getElementById('add-prompt-btn'),
-    // Modal Elements
+    // Math Modal Elements
     mathCalculatorOverlay: document.getElementById('math-calculator-overlay'),
     algebraicEquationInput: document.getElementById('algebraic-equation'),
     variableSelectDropdown: document.getElementById('variable-select-dropdown'),
@@ -885,7 +1135,24 @@ const ui = {
     variableValueInput: document.getElementById('variable-value-input'),
     addValueBtn: document.getElementById('add-value-btn'),
     // Floating Calculator
-    floatingCalculator: document.getElementById('floating-calculator')
+    floatingCalculator: document.getElementById('floating-calculator'),
+    // NEW Ash Canvas Elements
+    ashCanvasBtn: document.getElementById('ash-canvas-btn'),
+    ashCanvasOverlay: document.getElementById('ash-canvas-overlay'),
+    ashCanvasPanel: document.getElementById('ash-canvas-panel'),
+    canvasLinkBtn: document.getElementById('linkBtn'),
+    canvasUnlinkBtn: document.getElementById('unlinkBtn'),
+    canvasZoomInBtn: document.getElementById('zoomIn'),
+    canvasZoomOutBtn: document.getElementById('zoomOut'),
+    canvasClearBtn: document.getElementById('clearCanvas'),
+    canvasUndoBtn: document.getElementById('undoBtn'),
+    canvasRedoBtn: document.getElementById('redoBtn'),
+    canvasDraggables: document.querySelectorAll('#ash-canvas-panel .toolbar .draggable'),
+    canvasContainer: document.querySelector('#ash-canvas-panel .canvas-scroll'),
+    canvasPanzoom: document.querySelector('#ash-canvas-panel .panzoom'),
+    canvasSvg: document.querySelector('#ash-canvas-panel .panzoom svg'),
+    submitCanvasBtn: document.getElementById('submit-canvas-btn'),
+    closeCanvasBtnOverlay: document.getElementById('close-canvas-btn-overlay'),
 };
 
 const buoyancyNode = new BuoyancyPendulumReflexNode('output');
@@ -1173,6 +1440,387 @@ function handleCalculatorInput(value) {
 }
 
 
+// --- START: ASH CANVAS LOGIC (from test.html, adapted) ---
+
+// Map Canvas Node Types (M, P, R...) to Engine Variables (m, p, z...)
+const canvasNodeToVar = {
+    'M': 'm',
+    'P': 'p',
+    'E': 'e',
+    'H': 'h',
+    'S': 's',
+    'K': 'k',
+    'R': 'z' // 'R' on canvas maps to 'z' (scissors) in the engine
+};
+
+let canvasState = {
+  gridSize: 60,
+  scale: 1,
+  drawMode: false,
+  unlinkMode: false,
+  startNode: null,
+  nodeCounter: 0, 
+  undoStack: [],
+  redoStack: []
+};
+
+// Canvas Helper Functions
+const toggleActive = (btn, state) => btn.classList.toggle('active', state);
+const setCanvasScale = s => {
+  canvasState.scale = Math.max(0.4, Math.min(s, 3));
+  ui.canvasPanzoom.style.transform = `scale(${canvasState.scale})`;
+};
+const updateCanvasButtons = () => {
+  ui.canvasUndoBtn.disabled = !canvasState.undoStack.length;
+  ui.canvasRedoBtn.disabled = !canvasState.redoStack.length;
+};
+const pushCanvasAction = (act) => {
+  canvasState.undoStack.push(act);
+  canvasState.redoStack.length = 0; // Clear redo stack on new action
+  updateCanvasButtons();
+};
+
+function addNodeEventListeners(n) {
+     n.onclick = (event) => {
+        event.stopPropagation();
+        if (canvasState.unlinkMode) {
+          Array.from(ui.canvasSvg.querySelectorAll(`polyline[data-a="${n.id}"], polyline[data-b="${n.id}"]`)).forEach(l => {
+             pushCanvasAction({ type: 'delete_link', id: l.id, data_a: l.dataset.a, data_b: l.dataset.b, points: l.getAttribute('points') });
+             l.remove();
+           });
+          return;
+        }
+        if (!canvasState.drawMode) return;
+        if (!canvasState.startNode) { canvasState.startNode = n; n.classList.add('selected'); }
+        else if (canvasState.startNode !== n) {
+           const linkExists = Array.from(ui.canvasSvg.querySelectorAll('polyline')).some(l =>
+              (l.dataset.a === canvasState.startNode.id && l.dataset.b === n.id) ||
+              (l.dataset.a === n.id && l.dataset.b === canvasState.startNode.id)
+           );
+           if (!linkExists) {
+              n.classList.add('selected');
+              drawLink(canvasState.startNode, n);
+           }
+          canvasState.startNode.classList.remove('selected');
+          n.classList.remove('selected');
+          canvasState.startNode = null;
+        } else { // Clicked the same node again
+          canvasState.startNode.classList.remove('selected');
+          canvasState.startNode = null;
+        }
+     };
+
+    let offX, offY;
+    n.onpointerdown = (event) => {
+        if(canvasState.drawMode||canvasState.unlinkMode) return;
+        event.preventDefault();
+        const rect=n.getBoundingClientRect();
+        offX=(event.clientX-rect.left)/canvasState.scale;
+        offY=(event.clientY-rect.top)/canvasState.scale;
+        n.setPointerCapture(event.pointerId);
+        n.onpointermove = drag;
+        n.onpointerup   = drop;
+        n.dataset.originalX = parseFloat(n.style.left);
+        n.dataset.originalY = parseFloat(n.style.top);
+    };
+
+     function drag(event){
+        const r=ui.canvasContainer.getBoundingClientRect();
+        const rawX=(event.clientX-r.left+ui.canvasContainer.scrollLeft)/canvasState.scale-offX;
+        const rawY=(event.clientY-r.top+ui.canvasContainer.scrollTop)/canvasState.scale-offY;
+        const x=Math.round(rawX/canvasState.gridSize)*canvasState.gridSize;
+        const y=Math.round(rawY/canvasState.gridSize)*canvasState.gridSize;
+        n.style.left=`${x}px`; n.style.top=`${y}px`;
+        updateLinks(n);
+      }
+      function drop(event){
+        n.releasePointerCapture(event.pointerId);
+        n.onpointermove=null; n.onpointerup=null;
+         const finalX = parseFloat(n.style.left);
+         const finalY = parseFloat(n.style.top);
+         const originalX = parseFloat(n.dataset.originalX);
+         const originalY = parseFloat(n.dataset.originalY);
+         if (finalX !== originalX || finalY !== originalY) {
+              pushCanvasAction({
+                  type: 'move_node',
+                  nodeId: n.id,
+                  oldX: originalX,
+                  oldY: originalY,
+                  newX: finalX,
+                  newY: finalY
+              });
+          }
+          delete n.dataset.originalX;
+          delete n.dataset.originalY;
+      }
+}
+
+
+function createNode(type, e) {
+  const rect = ui.canvasContainer.getBoundingClientRect();
+  const rawX = (e.clientX - rect.left + ui.canvasContainer.scrollLeft) / canvasState.scale;
+  const rawY = (e.clientY - rect.top + ui.canvasContainer.scrollTop) / canvasState.scale;
+  const x = Math.round(rawX / canvasState.gridSize) * canvasState.gridSize;
+  const y = Math.round(rawY / canvasState.gridSize) * canvasState.gridSize;
+
+  const n = document.createElement('div');
+  n.className = 'node';
+  n.id = 'n' + (++canvasState.nodeCounter);
+  n.textContent = type;
+  n.style.left = `${x}px`;
+  n.style.top = `${y}px`;
+  ui.canvasPanzoom.appendChild(n);
+
+  addNodeEventListeners(n); 
+
+  pushCanvasAction({ type: 'create_node', nodeId: n.id, x: x, y: y, nodeType: type });
+  return n; 
+}
+
+function drawLink(a, b) {
+  const allNodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node'));
+  const pathPoints = calculateFlowchartPath(a, b, allNodes);
+  const pts = pathPoints.map(p => `${p.x},${p.y}`).join(' ');
+  const pl = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+  pl.setAttribute('points', pts);
+  pl.dataset.a = a.id;
+  pl.dataset.b = b.id;
+  pl.id = 'link' + (++canvasState.nodeCounter); 
+  ui.canvasSvg.appendChild(pl);
+  attachLinkListener(pl);
+  pushCanvasAction({ type: 'create_link', id: pl.id, data_a: a.id, data_b: b.id, points: pts });
+}
+
+function updateLinks(node) {
+  Array.from(ui.canvasSvg.querySelectorAll('polyline')).forEach(pl => {
+    if (pl.dataset.a === node.id || pl.dataset.b === node.id) {
+      const na = document.getElementById(pl.dataset.a);
+      const nb = document.getElementById(pl.dataset.b);
+      if (na && nb) { 
+        const allNodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node'));
+        const newPathPoints = calculateFlowchartPath(na, nb, allNodes);
+        pl.setAttribute('points', newPathPoints.map(p => `${p.x},${p.y}`).join(' '));
+      } else {
+         pl.remove();
+      }
+    }
+  });
+}
+
+function isSegmentIntersectingObstacles(p1, p2, obstacleRects, margin) {
+  const buffer = margin;
+  const segMinX = Math.min(p1.x, p2.x) - buffer;
+  const segMaxX = Math.max(p1.x, p2.x) + buffer;
+  const segMinY = Math.min(p1.y, p2.y) - buffer;
+  const segMaxY = Math.max(p1.y, p2.y) + buffer;
+
+  for (const rect of obstacleRects) {
+    const rectMinX = rect.left;
+    const rectMaxX = rect.right;
+    const rectMinY = rect.top;
+    const rectMaxY = rect.bottom;
+
+    if (segMaxX < rectMinX || segMinX > rectMaxX || segMaxY < rectMinY || segMinY > rectMaxY) {
+        continue;
+    }
+
+    if (p1.y === p2.y) { // Horizontal segment
+        if (p1.y > rectMinY && p1.y < rectMaxY && segMaxX > rectMinX && segMinX < rectMaxX) return true;
+    } else if (p1.x === p2.x) { // Vertical segment
+         if (p1.x > rectMinX && p1.x < rectMaxX && segMaxY > rectMinY && segMinY < rectMaxY) return true;
+    }
+  }
+  return false;
+}
+
+
+function calculateFlowchartPath(startNode, endNode, allNodes) {
+  const s = { x: parseFloat(startNode.style.left) + 25, y: parseFloat(startNode.style.top) + 25 };
+  const e = { x: parseFloat(endNode.style.left) + 25, y: parseFloat(endNode.style.top) + 25 };
+  const obstacles = allNodes.filter(n => n !== startNode && n !== endNode).map(n => ({ left: parseFloat(n.style.left), top: parseFloat(n.style.top), right: parseFloat(n.style.left) + 50, bottom: parseFloat(n.style.top) + 50 }));
+  const m = 5; // Margin
+
+  // Try H-V path
+  const mid_hv = { x: e.x, y: s.y };
+  if (!isSegmentIntersectingObstacles(s, mid_hv, obstacles, m) && !isSegmentIntersectingObstacles(mid_hv, e, obstacles, m)) return [s, mid_hv, e];
+
+  // Try V-H path
+  const mid_vh = { x: s.x, y: e.y };
+  if (!isSegmentIntersectingObstacles(s, mid_vh, obstacles, m) && !isSegmentIntersectingObstacles(mid_vh, e, obstacles, m)) return [s, mid_vh, e];
+
+  // Fallback 
+  return [s, mid_hv, e];
+}
+
+ function attachLinkListener(pl) {
+    pl.onpointerdown = (event) => {
+        event.stopPropagation();
+        if (canvasState.unlinkMode) {
+             pushCanvasAction({
+                 type: 'delete_link',
+                 id: pl.id,
+                 data_a: pl.dataset.a,
+                 data_b: pl.dataset.b,
+                 points: pl.getAttribute('points')
+             });
+             pl.remove();
+        }
+    };
+}
+
+function undoCanvasAction() {
+    const act = canvasState.undoStack.pop();
+    if (!act) return;
+    let redoAct = null; 
+
+    if (act.type === 'create_link') {
+        const pl = document.getElementById(act.id); // Search whole doc
+        if (pl) pl.remove();
+         redoAct = { ...act };
+    } else if (act.type === 'delete_link') {
+        const pl_recreated = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+        pl_recreated.setAttribute('points', act.points);
+        pl_recreated.dataset.a = act.data_a;
+        pl_recreated.dataset.b = act.data_b;
+        pl_recreated.id = act.id;
+        ui.canvasSvg.appendChild(pl_recreated);
+        attachLinkListener(pl_recreated);
+         redoAct = { ...act };
+    } else if (act.type === 'create_node') {
+        const node = document.getElementById(act.nodeId); // Search whole doc
+        if (node) {
+             node.remove();
+             Array.from(ui.canvasSvg.querySelectorAll(`polyline[data-a="${act.nodeId}"], polyline[data-b="${act.nodeId}"]`)).forEach(link => link.remove());
+        }
+         redoAct = { ...act };
+    } else if (act.type === 'move_node') {
+        const node = document.getElementById(act.nodeId);
+        if (node) {
+            node.style.left = `${act.oldX}px`;
+            node.style.top = `${act.oldY}px`;
+            updateLinks(node);
+             redoAct = { ...act };
+        }
+    } 
+    
+    if (redoAct) canvasState.redoStack.push(redoAct);
+    updateCanvasButtons();
+}
+
+function redoCanvasAction() {
+    const act = canvasState.redoStack.pop();
+    if (!act) return;
+    let undoAct = null; 
+
+    if (act.type === 'create_link') {
+        const pl_recreated = document.createElementNS(ui.canvasSvg.namespaceURI, 'polyline');
+        pl_recreated.setAttribute('points', act.points);
+        pl_recreated.dataset.a = act.data_a;
+        pl_recreated.dataset.b = act.data_b;
+        pl_recreated.id = act.id;
+        ui.canvasSvg.appendChild(pl_recreated);
+        attachLinkListener(pl_recreated);
+         undoAct = { ...act };
+    } else if (act.type === 'delete_link') {
+        const pl = document.getElementById(act.id);
+        if (pl) pl.remove();
+         undoAct = { ...act };
+    } else if (act.type === 'create_node') {
+        const n = document.createElement('div');
+         n.className = 'node';
+         n.id = act.nodeId;
+         n.textContent = act.nodeType;
+         n.style.left = `${act.x}px`;
+         n.style.top = `${act.y}px`;
+         ui.canvasPanzoom.appendChild(n);
+         addNodeEventListeners(n);
+         undoAct = { ...act };
+    } else if (act.type === 'move_node') {
+        const node = document.getElementById(act.nodeId);
+        if (node) {
+            node.style.left = `${act.newX}px`;
+            node.style.top = `${act.newY}px`;
+            updateLinks(node);
+             undoAct = { ...act };
+        }
+    } 
+
+    if (undoAct) canvasState.undoStack.push(undoAct);
+    updateCanvasButtons();
+}
+
+function captureCanvasState() {
+    const nodes = Array.from(ui.canvasPanzoom.querySelectorAll('.node')).map(node => ({
+        id: node.id,
+        type: node.textContent, // This is 'M', 'P', 'R', etc.
+        x: parseFloat(node.style.left),
+        y: parseFloat(node.style.top)
+    }));
+    const links = Array.from(ui.canvasSvg.querySelectorAll('polyline')).map(link => ({
+        id: link.id,
+        from: link.dataset.a, // e.g., 'n1'
+        to: link.dataset.b,   // e.g., 'n2'
+        points: link.getAttribute('points') 
+    }));
+    return { nodes, links };
+}
+
+function addCanvasInfluenceToBatch() {
+    const canvasData = captureCanvasState();
+    if (canvasData.links.length === 0) {
+        alert("No links drawn. Please link nodes to create dependencies.");
+        return;
+    }
+
+    const nodeMap = {}; // Map node ID ('n1') to engine variable ('m')
+    canvasData.nodes.forEach(node => {
+        // Use the canvasNodeToVar map to get the correct engine variable
+        const engineVar = canvasNodeToVar[node.type];
+        if (engineVar) {
+            nodeMap[node.id] = engineVar;
+        }
+    });
+
+    // Group dependencies: { 'p': ['m', 'e'], 'm': ['h'] }
+    const dependencies = {};
+    canvasData.links.forEach(link => {
+        const fromVar = nodeMap[link.from];
+        const toVar = nodeMap[link.to];
+        
+        if (fromVar && toVar) {
+            if (!dependencies[toVar]) {
+                dependencies[toVar] = [];
+            }
+            // Add the dependency, avoid duplicates
+            if (!dependencies[toVar].includes(fromVar)) {
+                dependencies[toVar].push(fromVar);
+            }
+        }
+    });
+
+    // Create and add assignment prompts
+    let promptsAdded = 0;
+    for (const [variable, deps] of Object.entries(dependencies)) {
+        if (deps.length > 0) {
+            // Create an assignment string, e.g., "p = m + e"
+            const assignmentString = `${variable} = ${deps.join(' + ')}`;
+            // Add this string as a new, checked prompt
+            addPrompt(assignmentString, true);
+            promptsAdded++;
+        }
+    }
+
+    if (promptsAdded > 0) {
+        // Close the canvas overlay
+        ui.ashCanvasOverlay.style.display = 'none';
+    } else {
+        alert("Could not generate dependency prompts. Make sure nodes are linked.");
+    }
+}
+
+// --- END: ASH CANVAS LOGIC ---
+
+
 // --- Initialize the UI (v8.0) ---
 window.onload = () => {
     // Wire up BRPN buttons
@@ -1203,78 +1851,52 @@ window.onload = () => {
     // Start with one blank prompt
     addPrompt(); 
     
-    // --- FLOATING CALCULATOR DRAG LOGIC (NEW) ---
+    // --- FLOATING CALCULATOR DRAG LOGIC ---
     const calculator = ui.floatingCalculator;
     let isDragging = false;
     let offsetX, offsetY;
 
     const startDrag = (e) => {
-        // Only start drag if the mousedown is not on a button
-        if (e.target.classList.contains('calc-btn')) {
-            return;
-        }
-        
+        if (e.target.classList.contains('calc-btn')) return;
         isDragging = true;
         const rect = calculator.getBoundingClientRect();
         const parentRect = calculator.parentElement.getBoundingClientRect();
-
-        // Use clientX/Y if it's a mouse event, or touch.clientX/Y if it's a touch event
         const clientX = e.clientX ?? e.touches[0].clientX;
         const clientY = e.clientY ?? e.touches[0].clientY;
-
         offsetX = clientX - rect.left;
         offsetY = clientY - rect.top;
-
-        // Set initial top/left based on current position
-        // This prevents the "jump"
         calculator.style.left = (rect.left - parentRect.left) + 'px';
         calculator.style.top = (rect.top - parentRect.top) + 'px';
-        
-        // Remove bottom/right positioning so top/left can take over
         calculator.style.right = 'auto';
         calculator.style.bottom = 'auto';
-        
         calculator.style.cursor = 'grabbing';
-        document.body.style.userSelect = 'none'; // Prevent text selection
-        if(e.preventDefault) e.preventDefault(); // Prevent text selection/scrolling
+        document.body.style.userSelect = 'none'; 
+        if(e.preventDefault) e.preventDefault(); 
     };
-
     const doDrag = (e) => {
         if (!isDragging) return;
-        
         const parentRect = calculator.parentElement.getBoundingClientRect();
         const clientX = e.clientX ?? e.touches[0].clientX;
         const clientY = e.clientY ?? e.touches[0].clientY;
-        
-        // New position is mouse position - offset, relative to parent
         let newLeft = clientX - parentRect.left - offsetX;
         let newTop = clientY - parentRect.top - offsetY;
-
-        // Constrain to parent boundaries
         newLeft = Math.max(0, Math.min(newLeft, parentRect.width - calculator.offsetWidth));
         newTop = Math.max(0, Math.min(newTop, parentRect.height - calculator.offsetHeight));
-
         calculator.style.left = newLeft + 'px';
         calculator.style.top = newTop + 'px';
-        if(e.preventDefault) e.preventDefault(); // Prevent text selection/scrolling
+        if(e.preventDefault) e.preventDefault(); 
     };
-
     const stopDrag = () => {
         isDragging = false;
         calculator.style.cursor = 'move';
         document.body.style.userSelect = 'auto';
     };
-
-    // Mouse events
     calculator.addEventListener('mousedown', startDrag);
     document.addEventListener('mousemove', doDrag);
     document.addEventListener('mouseup', stopDrag);
-
-    // Touch events
     calculator.addEventListener('touchstart', startDrag, { passive: false });
     document.addEventListener('touchmove', doDrag, { passive: false });
     document.addEventListener('touchend', stopDrag);
-
     // --- End of Drag Logic ---
 
 
@@ -1284,6 +1906,76 @@ window.onload = () => {
             handleCalculatorInput(button.dataset.value);
         });
     });
+
+    // --- START: ASH CANVAS WIRING ---
+    
+    // Open/Close
+    ui.ashCanvasBtn.onclick = () => {
+        ui.ashCanvasOverlay.style.display = 'flex';
+        // Ensure Math modal is closed
+        closeMathSolver(); 
+    };
+    ui.closeCanvasBtnOverlay.onclick = () => {
+        ui.ashCanvasOverlay.style.display = 'none';
+        // Reset modes
+        canvasState.drawMode = canvasState.unlinkMode = false;
+        toggleActive(ui.canvasLinkBtn, false);
+        toggleActive(ui.canvasUnlinkBtn, false);
+        if (canvasState.startNode) {
+            canvasState.startNode.classList.remove('selected');
+            canvasState.startNode = null;
+        }
+    };
+    
+    // Submit to Batch
+    ui.submitCanvasBtn.onclick = addCanvasInfluenceToBatch;
+
+    // Draggable node toolbar
+    ui.canvasDraggables.forEach(draggable => {
+      draggable.ondragstart = e => e.dataTransfer.setData('text/plain', draggable.dataset.type);
+    });
+    ui.canvasContainer.ondragover = e => e.preventDefault(); // Allow dropping
+    ui.canvasContainer.ondrop = e => { 
+      e.preventDefault();
+      const nodeType = e.dataTransfer.getData('text/plain');
+      createNode(nodeType, e); 
+    };
+
+    // Canvas control buttons
+    ui.canvasLinkBtn.onclick = () => {
+        canvasState.drawMode = !canvasState.drawMode;
+        canvasState.unlinkMode = false;
+        toggleActive(ui.canvasLinkBtn, canvasState.drawMode);
+        toggleActive(ui.canvasUnlinkBtn, false);
+        if (!canvasState.drawMode && canvasState.startNode) { 
+            canvasState.startNode.classList.remove('selected');
+            canvasState.startNode = null;
+        }
+    };
+    ui.canvasUnlinkBtn.onclick = () => {
+        canvasState.unlinkMode = !canvasState.unlinkMode;
+        canvasState.drawMode = false;
+        toggleActive(ui.canvasUnlinkBtn, canvasState.unlinkMode);
+        toggleActive(ui.canvasLinkBtn, false);
+    };
+    ui.canvasZoomInBtn.onclick  = () => setCanvasScale(canvasState.scale + 0.2); 
+    ui.canvasZoomOutBtn.onclick = () => setCanvasScale(canvasState.scale - 0.2); 
+    ui.canvasClearBtn.onclick = () => {
+        if (confirm('Are you sure you want to clear the entire canvas? This will clear the undo/redo history.')) {
+             ui.canvasPanzoom.querySelectorAll('.node').forEach(el => el.remove());
+             ui.canvasSvg.querySelectorAll('polyline').forEach(el => el.remove());
+             canvasState.startNode = null; 
+             canvasState.nodeCounter = 0;
+             canvasState.undoStack.length = 0;
+             canvasState.redoStack.length = 0;
+             updateCanvasButtons();
+        }
+    };
+    ui.canvasUndoBtn.onclick = undoCanvasAction; 
+    ui.canvasRedoBtn.onclick = redoCanvasAction; 
+    
+    // --- END: ASH CANVAS WIRING ---
+
 
     // Global focus listener
     ui.promptsContainer.addEventListener('focusin', (event) => {
@@ -1330,23 +2022,21 @@ window.onload = () => {
 
     // --- UPDATED Welcome Message for v8.0 ---
     welcomeMsg.innerHTML = `
-        Advanced Math mode (v8.0) active. Use the <strong>fx</strong> button to open the Math Solver overlay.
+        Advanced Math mode (v8.0) active.
         <br><br>
-        <strong>NEW FEATURE: Draggable Calculator!</strong>
+        <strong>NEW: Ash Canvas (❖)</strong>
         <br>
-        The floating calculator can now be dragged by its background. It inserts values into the currently focused prompt. The <code>=</code> button will check the box and submit the batch.
+        Use the Ash Canvas to visually define dependencies between natural tools. Draw links *from* a tool *to* another (e.g., <code>M</code> → <code>P</code>). When you "Add Influence to Batch," this will create assignment prompts (e.g., <code>p = m</code>) to influence the BRPN's dependency sort.
         <br><br>
         <strong>Architecture (BRPN Shell v8.0):</strong>
         <br>
-        1. <strong>(Parse)</strong> The BRPN Shell parses all prompts to identify tasks (e.g., math, text).
+        1. <strong>(Parse)</strong> The BRPN Shell parses all prompts to identify tasks.
         <br>
-        2. <strong>(Sort)</strong> The Shell "reflexes" by finding dependencies (e.g., <code>e=p</code> requires <code>p</code>) and <strong>re-orders all assignments</strong>.
+        2. <strong>(Sort)</strong> The Shell "reflexes" by finding dependencies (e.g., <code>e=p</code> or canvas <code>p = m</code>) and <strong>re-orders all assignments</strong>.
         <br>
-        3. <strong>(Execute)</strong> The Shell calls the multi-modal <strong>LEATR network</strong> (the <code>leadEdgeExecutor</code>) to run the sorted assignments in the correct "buoyancy" order.
+        3. <strong>(Execute)</strong> The Shell calls the multi-modal <strong>LEATR network</strong> to run the sorted assignments in the correct "buoyancy" order.
         <br>
         4. <strong>(Report)</strong> The Shell calls LEATR again to solve all math problems with the final values and generate a full report.
-        <br><br>
-        This fully implements the BRPN/LEATR hierarchy.
         <br><br>
         <strong>Available Natural Tool Variables:</strong>
         ${toolListHTML}
