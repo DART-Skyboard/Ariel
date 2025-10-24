@@ -6,9 +6,13 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ash Buoyancy Reflex Pendulum Node- Advanced Math v8.0 (Draggable Calculator)</title>
+    <title>Ash Buoyancy Reflex Pendulum Node- Advanced Math v8.0 (Arc Edge 3D)</title>
     
+    <!-- External Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls requires loading after three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script> 
     
     <style>
         
@@ -16,18 +20,21 @@
             --accent-color: #00e5ff; 
             --bg-color: rgba(35, 35, 35, 0.65);
             --panel-color: #1e1e1e; 
-            --text-color: #e0e0e0; 
+            --text-color: white; 
             --input-bg: #2a2a2e;
             --inputcanvas-bg: rgba(255, 255, 255, 0.35);
             --user-msg-bg: #007bff;
             --assistant-msg-bg: #3a3a3a;
-            --assistantcanvas-msg-bg: rgba(35, 35, 35, 0.35);
+            --assistantarcedge-msg-bg: rgba(255, 0, 0, 0.35);
+            --assistantcanvas-msg-bg: rgba(255, 0, 0, 0.35);
             --border-color: #444;
             --calculator-bg: rgba(35, 35, 35, 0.65);
             --calculator-btn-bg: #4a4d52; /* Button background */
             --calculator-btn-hover: #5a5d62;
             --calculator-btn-accent: #007bff; /* Accent for '=' */
             --calculator-btn-clear: #c0392b; /* Clear button */
+            --calculator-btn-3d: #4ade80; /* Green for 3D connect */
+            --calculator-btn-3d-hover: #22c55e;
             
             /* --- NEW Canvas CSS Variables (Adapted) --- */
             --canvas-bg: var(--inputcanvas-bg); /* Use dark input background */
@@ -155,7 +162,7 @@
         }
         .bot-message .prompt-original-text {
             font-style: italic;
-            color: #ccc;
+            color: white;
             font-size: 0.9em;
             display: block;
             margin-bottom: 5px;
@@ -182,26 +189,36 @@
         #add-prompt-btn:hover { background-color: #007bff; border-color: #007bff; }
         
         #submission-controls { display: flex; gap: 10px; margin-top: 15px; }
-        #submit-all-btn { flex-grow: 1; background-color: #007bff; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; transition: all 0.3s; }
+        #submit-all-btn { flex-grow: 1; background-color: #007bff; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; transition: all 0.3s; font-weight: 700; }
         #submit-all-btn:disabled { background-color: #555; cursor: not-allowed; opacity: 0.6; }
 
-        /* --- Updated for new Ash Canvas Button --- */
-        #math-solver-btn, #ash-canvas-btn {
+        /* --- Common style for control buttons --- */
+        #math-solver-btn, #ash-canvas-btn, #arcedge-graph-btn {
             background-color: #2a2a2e;
             color: var(--accent-color);
             font-weight: bold;
             border: 1px solid #555;
-            width: 45px;
+            width: 45px; /* Keep consistent width */
+            height: 45px; /* Make height consistent */
             font-size: 1.2em;
+            line-height: 1; /* Center icon vertically */
             cursor: pointer;
             border-radius: 5px;
             flex-shrink: 0; 
+            display: flex; /* Use flex to center icon */
+            align-items: center;
+            justify-content: center;
+            padding: 0; /* Remove padding */
+            transition: all 0.2s;
+        }
+        #math-solver-btn:hover, #ash-canvas-btn:hover, #arcedge-graph-btn:hover {
+             border-color: var(--accent-color);
+             background-color: #3a3a3e;
         }
 
-        #ash-canvas-btn {
-            font-size: 1.5em; /* Make symbol a bit larger */
-            line-height: 1.2em;
-        }
+        #ash-canvas-btn { font-size: 1.5em; } /* Ash Canvas icon larger */
+        #arcedge-graph-btn { font-size: 1.5em; } /* Arc Edge icon */
+
 
         /* --- BRPN LOG STYLES --- */
         .log-entry { margin-bottom: 5px; padding-left: 5px; border-left: 2px solid transparent; }
@@ -215,29 +232,26 @@
         .log-text { color: #98fb98; padding-left: 30px; }
         .log-error { color: #ff6b6b; border-left-color: #ff6b6b; font-weight: bold; }
 
-        /* --- MATH SOLVER MODAL STYLES --- */
-        #math-calculator-overlay {
-             margin-bottom: 10px;
+        /* --- Common Overlay Styles --- */
+        .overlay-base {
              position: fixed;
              top: 0;
              left: 0;
              width: 100%;
              height: 100%;
-             background: rgba(0, 0, 0, 0.4);
+             background: rgba(0, 0, 0, 0.0);
              backdrop-filter: blur(5px);
-             display: none; 
+             display: none; /* Hidden by default */
              align-items: center;
              justify-content: center;
-             z-index: 3001;
              padding: 15px;
              box-sizing: border-box;
+             z-index: 3000;
         }
-        #math-calculator-content {
-            background: var(--assistant-msg-bg);
+        .overlay-content-base {
+            background: var(--assistantarcedge-msg-bg);
             padding: 25px;
             border-radius: 15px;
-            max-width: 650px;
-            width: 100%;
             border: 1px solid var(--border-color);
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             text-align: left;
@@ -245,253 +259,163 @@
             flex-direction: column;
             gap: 15px;
         }
-        #math-calculator-content label { display: block; margin-bottom: 5px; font-weight: bold; }
-        #math-calculator-content textarea,
-        #math-calculator-content select,
-        #math-calculator-content input[type="text"],
-        #math-calculator-content button {
-            padding: 10px;
-            border-radius: 8px;
+         /* --- Common Input Styles within Overlays --- */
+        .overlay-content-base label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 0.9em; color: var(--accent-color); }
+        .overlay-content-base input[type="text"],
+        .overlay-content-base input[type="number"],
+        .overlay-content-base textarea,
+        .overlay-content-base select,
+        .overlay-content-base button {
+            padding: 8px 10px; /* Slightly smaller padding */
+            border-radius: 6px; /* Slightly smaller radius */
             border: 1px solid var(--border-color);
             background: var(--input-bg);
             color: var(--text-color);
-            font-size: 1em;
+            font-size: 0.95em; /* Slightly smaller font */
             width: 100%;
             box-sizing: border-box;
         }
-        #math-calculator-content textarea { min-height: 80px; resize: vertical; }
-        .input-group { display: flex; flex-direction: column; gap: 5px; }
-        .context-assignment-group {
-            display: grid;
-            grid-template-columns: 1fr auto auto;
-            gap: 10px;
-        }
-        .context-variable-group {
-            display: grid;
-            grid-template-columns: auto 1fr auto;
-            gap: 10px;
-            align-items: center;
-        }
-        .context-variable-group label { margin-bottom: 0; }
-        .context-variable-group input[type="text"] { flex: 1; }
-
-        .dropdown-group { display: flex; gap: 10px; flex-wrap: wrap; }
-        .dropdown-group select { flex: 1; min-width: 150px; }
-        .calculator-actions {
+        .overlay-content-base textarea { min-height: 60px; resize: vertical; }
+        .overlay-content-base button { cursor: pointer; transition: background-color 0.2s; }
+        .overlay-content-base button:hover { background-color: var(--calculator-btn-hover); }
+        .overlay-content-base .input-group { display: flex; flex-direction: column; gap: 5px; }
+        .overlay-content-base h4 { margin: 0 0 15px 0; color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
+         .overlay-content-base .action-buttons {
             display: flex;
             justify-content: flex-end;
             gap: 10px;
             margin-top: 10px;
         }
-        #add-to-batch-btn, #assign-context-btn {
-            background: var(--user-msg-bg);
-            color: white;
-        }
-        #clear-context-btn { background: #c0392b; color: white; }
-        #close-calculator-btn { background: #555; color: white; }
-        #assigned-contexts-display {
-            font-size: 0.8em;
-            color: #a9a9b3;
-            background: #202123;
-            padding: 8px;
-            border-radius: 4px;
-            min-height: 40px;
-            max-height: 100px;
-            overflow-y: auto;
-        }
-        #assigned-contexts-display code, #math-calculator-content code {
-            background-color: #333;
-            padding: 2px 4px;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 0.9em;
-        }
-         #assigned-contexts-display abbr {
-             border-bottom: 1px dotted #a9a9b3;
-             cursor: help;
-             text-decoration: none;
-         }
+         .overlay-content-base .action-buttons .close-btn { background: #555; color: white; }
+         .overlay-content-base .action-buttons .primary-btn { background: var(--user-msg-bg); color: white; }
+         .overlay-content-base .action-buttons .secondary-btn { background: var(--calculator-btn-bg); color: var(--text-color); }
+         .overlay-content-base .action-buttons .danger-btn { background: var(--calculator-btn-clear); color: white; }
+
+        /* --- MATH SOLVER MODAL STYLES (using base) --- */
+        #math-calculator-overlay { z-index: 3001; } /* Ensure it's on top */
+        #math-calculator-content { max-width: 650px; width: 100%; }
+        /* Add specific overrides if needed */
+        .context-assignment-group { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; }
+        .context-variable-group { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+        .context-variable-group label { margin-bottom: 0; }
+        .context-variable-group input[type="text"] { flex: 1; }
+        .dropdown-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .dropdown-group select { flex: 1; min-width: 150px; }
+        #assigned-contexts-display { font-size: 0.8em; color: #a9a9b3; background: #202123; padding: 8px; border-radius: 4px; min-height: 40px; max-height: 100px; overflow-y: auto; }
+        #assigned-contexts-display code, #math-calculator-content code { background-color: #333; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+        #assigned-contexts-display abbr { border-bottom: 1px dotted #a9a9b3; cursor: help; text-decoration: none; }
          
-        /* --- START: ASH CANVAS STYLES (from test.html, adapted) --- */
-        
-        #ash-canvas-overlay {
-            /* Copied from #math-calculator-overlay */
-             position: fixed;
-             top: 0;
-             left: 0;
-             width: 100%;
-             height: 100%;
-             background: rgba(0, 0, 0, 0.4);
-             backdrop-filter: blur(5px);
-             display: none; 
-             align-items: center;
-             justify-content: center;
-             z-index: 3000; /* Just below math modal */
-             padding: 15px;
-             box-sizing: border-box;
-        }
-        
+        /* --- ASH CANVAS STYLES (using base) --- */
+        #ash-canvas-overlay {} /* Inherits base */
         #ash-canvas-panel {
-            /* Copied from #math-calculator-content */
-            background: var(--assistantcanvas-msg-bg);
-            padding: 25px;
-            border-radius: 15px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            /* Canvas specific */
             width: 90%; 
             max-width: 900px; /* Wider for canvas */
             height: 90%; 
             max-height: 700px;
+            /* Flex specific */
+            flex-grow: 1; /* Allow panel to grow */
+            min-height: 0; /* Important for flex */
+        }
+        #ash-canvas-panel .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+        #ash-canvas-panel .toolbar .draggable { width: 45px; height: 45px; border: 2px solid var(--canvas-node-border); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 1.1em; font-weight: bold; background: var(--canvas-node-bg); color: var(--text-color); cursor: grab; }
+        #ash-canvas-panel .circuit-container { flex: 1; background: var(--canvas-bg); border: 1px solid var(--border-color); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; /* This is key */ min-height: 0; /* Flex fix */ }
+        #ash-canvas-panel .canvas-controls { display: flex; justify-content: space-around; background: var(--canvas-controls-bg); border-bottom: 1px solid var(--canvas-controls-border); padding: 4px 0; flex-shrink: 0; }
+        #ash-canvas-panel .canvas-controls button { width: 32px; height: 32px; background: transparent; border: none; border-radius: 4px; font-size: 18px; color: var(--canvas-controls-icon); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .2s, color .2s; }
+        #ash-canvas-panel .canvas-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #ash-canvas-panel .canvas-controls button.active { background: var(--user-msg-bg); color: #fff; }
+        #ash-canvas-panel .canvas-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; }
+        #ash-canvas-panel .panzoom { position: relative; width: 2000px; height: 2000px; transform-origin: 0 0; transform: scale(1); }
+        #ash-canvas-panel .panzoom svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #ash-canvas-panel .panzoom svg polyline { stroke: var(--canvas-link-stroke); stroke-width: 3; fill: none; pointer-events: stroke; cursor: pointer; marker-end: url(#arrowhead); }
+        #ash-canvas-panel .panzoom svg marker path { fill: var(--canvas-link-stroke); }
+        #ash-canvas-panel .node { position: absolute; width: 50px; height: 50px; border: 3px solid var(--canvas-node-border); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 1.2em; font-weight: bold; background: var(--canvas-node-bg); color: var(--text-color); cursor: pointer; user-select: none; }
+        #ash-canvas-panel .node.selected { border-color: yellow !important; box-shadow: 0 0 15px yellow; }
+
+        /* --- START: ARC EDGE 3D GRAPH STYLES (using base) --- */
+        #arcedge-graph-overlay { 
+            cursor: move; /* Make the overlay itself draggable */
+        } 
+        #arcedge-graph-content {
+            width: 95%; 
+            max-width: 1000px; 
+            height: 90%; 
+            max-height: 800px; 
+            display: flex; 
+            flex-direction: row; /* Side-by-side layout */
+            gap: 20px;
+            cursor: default; /* Reset cursor for content */
+        }
+        #arcedge-controls {
+            width: 300px; /* Fixed width for controls */
+            flex-shrink: 0;
             display: flex;
             flex-direction: column;
             gap: 15px;
+            overflow-y: auto; /* Scroll if controls exceed height */
+            padding-right: 10px; /* Padding for scrollbar */
         }
-        
-        #ash-canvas-panel .toolbar { /* Styles for the draggable nodes toolbar */
-            display: flex;
-            flex-wrap: wrap;
+        #arcedge-controls .input-group-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
             gap: 8px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border-color);
         }
-        #ash-canvas-panel .toolbar .draggable {
-            width: 45px;
-            height: 45px;
-            border: 2px solid var(--canvas-node-border);
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.1em;
-            font-weight: bold;
-            background: var(--canvas-node-bg);
-            color: var(--text-color);
-            cursor: grab;
+        #arcedge-controls .input-group-row label {
+             grid-column: span 3;
+             margin-bottom: 0;
         }
-        #ash-canvas-panel .circuit-container { /* Styles for the canvas area itself */
-            flex: 1;
-            background: var(--canvas-bg); /* Adapted to dark theme */
+        #arcedge-controls .input-group-row input {
+            text-align: right;
+        }
+        #arcedge-controls fieldset {
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden; /* This is key */
-        }
-        #ash-canvas-panel .canvas-controls { /* Styles for the controls toolbar above canvas */
-            display: flex;
-            justify-content: space-around;
-            background: var(--canvas-controls-bg);
-            border-bottom: 1px solid var(--canvas-controls-border);
-            padding: 4px 0;
-            flex-shrink: 0; 
-        }
-        #ash-canvas-panel .canvas-controls button {
-            width: 32px;
-            height: 32px;
-            background: transparent;
-            border: none;
-            border-radius: 4px;
-            font-size: 18px;
-            color: var(--canvas-controls-icon);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background .2s, color .2s;
-        }
-         #ash-canvas-panel .canvas-controls button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        #ash-canvas-panel .canvas-controls button.active {
-            background: var(--user-msg-bg);
-            color: #fff;
-        }
-        #ash-canvas-panel .canvas-scroll { /* Scrollable area holding the pan/zoom container */
-            flex: 1;
-            overflow: auto; /* This enables scrolling */
-            position: relative;
-        }
-
-        #ash-canvas-panel .panzoom { /* Container for nodes and SVG */
-            position: relative;
-            width: 2000px; /* Large fixed size */
-            height: 2000px; /* Large fixed size */
-            transform-origin: 0 0;
-            transform: scale(1); 
-        }
-        #ash-canvas-panel .panzoom svg { /* SVG for links */
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none; /* SVG doesn't capture mouse */
-        }
-         #ash-canvas-panel .panzoom svg polyline {
-            stroke: var(--canvas-link-stroke); /* Adapted to accent color */
-            stroke-width: 3;
-            fill: none;
-            pointer-events: stroke; /* Make lines clickable */
-            cursor: pointer;
-            marker-end: url(#arrowhead);
-        }
-         #ash-canvas-panel .panzoom svg marker path {
-             fill: var(--canvas-link-stroke); /* Adapted to accent color */
-        }
-
-        #ash-canvas-panel .node { /* Styles for draggable nodes on canvas */
-            position: absolute;
-            width: 50px;
-            height: 50px;
-            border: 3px solid var(--canvas-node-border);
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.2em;
-            font-weight: bold;
-            background: var(--canvas-node-bg);
-            color: var(--text-color);
-            cursor: pointer;
-            user-select: none;
-        }
-        #ash-canvas-panel .node.selected { 
-            border-color: yellow !important;
-            box-shadow: 0 0 15px yellow;
-        }
-        
-        /* Canvas Action Buttons (at the bottom of the modal) */
-        .canvas-action-buttons {
-            /* Copied from .calculator-actions */
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-            margin-top: 10px;
-            flex-shrink: 0; /* Prevent shrinking */
-        }
-        
-        /* Shared button style for canvas actions */
-        #submit-canvas-btn, #close-canvas-btn-overlay {
             padding: 10px 15px;
+            margin: 0;
+        }
+         #arcedge-controls legend {
+            color: var(--accent-color);
+            font-weight: bold;
+            font-size: 0.9em;
+            padding: 0 5px;
+        }
+        #arcedge-graph-viewport-container {
+            flex-grow: 1; /* Viewport takes remaining space */
+            position: relative; /* For positioning the readout */
+            border: 1px solid var(--border-color);
             border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            font-size: 1em;
-            font-weight: 500;
-        }
-        
-        #submit-canvas-btn { 
-            background: var(--user-msg-bg); 
-            color: white; 
-        }
-        #close-canvas-btn-overlay { 
-            background: #555; 
-            color: white; 
+            overflow: hidden; /* Clip the canvas */
+            /* This creates a gradient from dark gray at the top to a lighter gray at the bottom */
+            background: linear-gradient(to bottom, #36454F, grey); 
+            min-width: 0; /* Flex fix */
         }
 
-        /* --- END: ASH CANVAS STYLES --- */
+        #arcedge-viewport {
+             width: 100%;
+             height: 100%;
+             position: relative; /* Ensure canvas stays within */
+        }
+        #arcedge-viewport canvas {
+            display: block; /* Remove extra space below canvas */
+        }
+        #arcedge-readout {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(10, 10, 10, 0.75);
+            color: var(--text-color);
+            padding: 10px;
+            border-radius: 6px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.8em;
+            line-height: 1.5;
+            max-width: 250px;
+            border: 1px solid var(--border-color);
+            z-index: 10; /* Above canvas */
+            pointer-events: none; /* Don't intercept clicks */
+            white-space: pre-wrap;
+        }
+        #arcedge-readout strong { color: var(--accent-color); }
+        /* --- END: ARC EDGE 3D GRAPH STYLES --- */
 
 
         /* --- Styles for new Calc-Only Toggle Button --- */
@@ -501,12 +425,16 @@
             font-weight: bold;
             border: 1px solid #555;
             width: 45px;
+            height: 45px; /* Match other buttons */
             font-size: 1.5em;
             line-height: 1.2em;
             cursor: pointer;
             border-radius: 5px;
             flex-shrink: 0;
             transition: all 0.2s;
+            display: flex; /* Centering */
+            align-items: center;
+            justify-content: center;
         }
         
         #calc-only-toggle-btn:hover {
@@ -541,7 +469,6 @@
             user-select: none; /* Prevent text selection */
         }
         
-        /* --- NEW Calculator Display Screen Style --- */
         #calc-display {
             grid-column: span 4; /* Span all 4 columns */
             background-color: #1a1a1b; /* Dark screen background */
@@ -573,20 +500,23 @@
             font-weight: bold;
         }
 
-        .calc-btn:hover {
-            background-color: var(--calculator-btn-hover);
-            transform: scale(1.02);
-        }
-
-        .calc-btn:active {
-            transform: scale(0.98);
-        }
+        .calc-btn:hover { background-color: var(--calculator-btn-hover); transform: scale(1.02); }
+        .calc-btn:active { transform: scale(0.98); }
 
         .calc-btn.op-clear { background-color: var(--calculator-btn-clear); }
         .calc-btn.op-clear:hover { background-color: #e74c3c; }
         .calc-btn.op-equals { background-color: var(--calculator-btn-accent); }
         .calc-btn.op-equals:hover { background-color: #0056b3; }
         .calc-btn.op-func { font-size: 0.9em; } /* Smaller font for functions */
+
+        /* --- NEW: Style for 3D connect button --- */
+        .calc-btn[data-value="connect-3d"] { background-color: var(--calculator-btn-3d); color: #111; font-weight: bold; }
+        .calc-btn[data-value="connect-3d"]:hover { background-color: var(--calculator-btn-3d-hover); }
+        .calc-btn[data-value="connect-3d"].active { 
+            box-shadow: 0 0 10px var(--calculator-btn-3d); 
+            background-color: var(--calculator-btn-3d-hover);
+            border: 1px solid white;
+        }
 
         /* Specific grid placements for calculator layout */
         .calc-btn[data-value="AC"] { grid-column: span 1; }
@@ -597,11 +527,13 @@
         .calc-btn[data-value="-"] { grid-column: span 1; }
         .calc-btn[data-value="+"] { grid-column: span 1; }
         .calc-btn[data-value="="] { grid-column: span 1; } 
-        .calc-btn[data-value="0"] { grid-column: span 2; } 
+        .calc-btn[data-value="0"] { grid-column: span 1; } /* Adjusted for new button */
         .calc-btn[data-value="."] { grid-column: span 1; }
+        .calc-btn[data-value="DEL"] { font-size: 1em; } 
+        /* --- NEW: Added connect-3d placement --- */
+        .calc-btn[data-value="connect-3d"] { font-size: 1em; } 
         
         .calc-btn[data-value="Ans"] { font-size: 1em; }
-        .calc-btn[data-value="DEL"] { font-size: 1em; } 
         
         .calc-btn[data-value="sin"], .calc-btn[data-value="cos"], .calc-btn[data-value="tan"], 
         .calc-btn[data-value="log"], .calc-btn[data-value="ln"], .calc-btn[data-value="Deg"],
@@ -619,9 +551,6 @@
             margin-bottom: 0; 
             padding-bottom: 10px; 
         }
-#submit-all-btn {
-  font-weight: 500;
-}
 
     </style>
 </head>
@@ -634,47 +563,44 @@
 <div id="app-container">
     <div id="chat-panel">
         <h2>
-            <img id="chat-title-logo" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/brpnanalysis.png" alt="Buoyancy Reflex Pendulum Node Logo">
+
+<a href="https://www.radicaldeepscale.com/" style="text-decoration: none; color: inherit; cursor: pointer;">
+  <img id="chat-title-logo" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/brpnanalysis.png" alt="Buoyancy Reflex Pendulum Node Logo">
+</a>
+
         </h2>
 
         <div id="chat-window"></div>
         <div id="input-area">
             <div id="prompts-container"></div>
             <div id="submission-controls">
-                            <div id="submission-controls">
                 <button id="math-solver-btn" title="Math Solver" onclick="openMathSolver()">fx</button>
                 <button id="ash-canvas-btn" title="Ash Canvas">❖</button>
+                <!-- NEW: Arc Edge Button -->
+                <button id="arcedge-graph-btn" title="Arc Edge 3D Graph"> ৩ </button> 
                 
                 <button id="calc-only-toggle-btn" title="Toggle Calculator-Only Mode">📳</button>
                 
-<button id="submit-all-btn">Submit Prompt(s) </button>
-
+                <button id="submit-all-btn">Submit Prompt(s)</button>
                 <button id="add-prompt-btn">+</button>
-            </div>
-
-
             </div>
         </div>
     </div>
     
     <div id="log-panel">
-                <div id="welcome-screen" style="height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
+        <div id="welcome-screen" style="height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
             <div style="background-color: rgba(255, 0, 0, 0.4); border-radius: 16px; border: 1px solid rgba(0, 191, 255, 0.3);">
                 <a href="https://github.com/DART-Skyboard/Ariel/blob/main/Lead%20Edge%20Ash%20Tree%20Reflex%20.pdf" target="_blank" rel="noopener noreferrer" style="text-decoration: none; color: inherit; cursor: pointer; display: block;">
                     <img style="width: 190px; height: 190px;" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeWhite.png" alt="Ash Tree Logo">
-    <!-- <div style="font-size: 1.8em; font-weight: 500; margin-top: 10px;">LEAD EDGE ASH TREE REFLEX</div> -->
                 </a>
-
             </div>
         </div>
 
         <h2>Ash Buoyancy Execution Log</h2>
         <div id="output"></div>
 
-
-
+        <!-- Floating Calculator Structure - Modified -->
         <div id="floating-calculator">
-            
             <div id="calc-display">0</div>
 
             <button class="calc-btn op-func" data-value="sqrt">√</button>
@@ -714,15 +640,19 @@
 
             <button class="calc-btn" data-value="0">0</button>
             <button class="calc-btn" data-value=".">.</button>
-            <button class="calc-btn op-func" data-value="DEL">⌫</button> 
+            <!-- NEW: 3D Connect Button -->
+            <button class="calc-btn op-func" data-value="connect-3d" title="Connect Calculator to 3D Graph Inputs">3D</button> 
             <button class="calc-btn op-equals" data-value="=">=</button>
+            
+            <!-- DEL was moved implicitely by adding 3D button, no explicit change needed -->
+            <button class="calc-btn op-func" data-value="DEL" style="grid-column: span 1;">⌫</button> 
         </div>
-
-        </div>
+    </div>
 </div>
 
-<div id="math-calculator-overlay">
-    <div id="math-calculator-content">
+<!-- Math Solver Overlay -->
+<div id="math-calculator-overlay" class="overlay-base">
+    <div id="math-calculator-content" class="overlay-content-base">
         <h4>Math Solver & Context Assignment</h4>
         <div class="input-group">
             <label for="algebraic-equation">Equation / Formula</label>
@@ -743,104 +673,128 @@
         <div class="dropdown-group">
             <select id="special-operator-dropdown">
                 <option value="">-- Assign Special Operator --</option>
-                <optgroup label="Common Functions">
-                    <option value="delta_function">Delta Function (Δ)</option>
-                    <option value="gamma_function">Gamma Function (Γ)</option>
-                    <option value="zeta_function">Zeta Function (ζ)</option>
-                </optgroup>
-                <optgroup label="Physics Constants">
-                    <option value="gravitational_constant">Gravitational Constant (G)</option>
-                    <option value="planck_constant">Planck's Constant (h)</option>
-                    <option value="speed_of_light">Speed of Light (c)</option>
-                    <option value="boltzmann_constant">Boltzmann Constant (kB)</option>
-                    <option value="elementary_charge">Elementary Charge (e)</option>
-                </optgroup>
+                <optgroup label="Common Functions"> <option value="delta_function">Delta Function (Δ)</option> <option value="gamma_function">Gamma Function (Γ)</option> <option value="zeta_function">Zeta Function (ζ)</option> </optgroup>
+                <optgroup label="Physics Constants"> <option value="gravitational_constant">Gravitational Constant (G)</option> <option value="planck_constant">Planck's Constant (h)</option> <option value="speed_of_light">Speed of Light (c)</option> <option value="boltzmann_constant">Boltzmann Constant (kB)</option> <option value="elementary_charge">Elementary Charge (e)</option> </optgroup>
             </select>
             <select id="math-operation-dropdown">
                 <option value="">-- Assign Math Operation --</option>
-                <option value="add">Addition (+)</option>
-                <option value="subtract">Subtraction (-)</option>
-                <option value="multiply">Multiplication (*)</option>
-                <option value="divide">Division (/)</option>
-                <option value="power">Exponent (^)</option>
-                <option value="sqrt">Square Root (√)</option>
-                <option value="log">Logarithm (log)</option>
-                <option value="sin">Sine (sin)</option>
-                <option value="cos">Cosine (cos)</option>
-                <option value="tan">Tangent (tan)</option>
+                <option value="add">Addition (+)</option> <option value="subtract">Subtraction (-)</option> <option value="multiply">Multiplication (*)</option> <option value="divide">Division (/)</option> <option value="power">Exponent (^)</option> <option value="sqrt">Square Root (√)</option> <option value="log">Logarithm (log)</option> <option value="sin">Sine (sin)</option> <option value="cos">Cosine (cos)</option> <option value="tan">Tangent (tan)</option>
             </select>
             <select id="physics-field-dropdown">
                 <option value="">-- Assign Physics Field --</option>
-                <option value="mass">Mass</option>
-                <option value="volume">Volume</option>
-                <option value="weight">Weight</option>
-                <option value="density">Density</option>
-                <option value="temperature">Temperature</option>
-                <option value="velocity">Velocity</option>
-                <option value="acceleration">Acceleration</option>
-                <option value="force">Force</option>
-                <option value="energy">Energy</option>
-                <option value="power">Power</option>
-                 <option value="pressure">Pressure</option>
-                 <option value="frequency">Frequency</option>
+                <option value="mass">Mass</option> <option value="volume">Volume</option> <option value="weight">Weight</option> <option value="density">Density</option> <option value="temperature">Temperature</option> <option value="velocity">Velocity</option> <option value="acceleration">Acceleration</option> <option value="force">Force</option> <option value="energy">Energy</option> <option value="power">Power</option> <option value="pressure">Pressure</option> <option value="frequency">Frequency</option>
             </select>
         </div>
         <div class="input-group">
             <label>Assigned Contexts</label>
             <div id="assigned-contexts-display">No contexts assigned yet.</div>
         </div>
-        <div class="calculator-actions">
-            <button id="close-calculator-btn">Close</button>
-            <button id="add-to-batch-btn">Add to Batch</button>
+        <div class="action-buttons">
+            <button id="close-calculator-btn" class="close-btn">Close</button>
+            <button id="add-to-batch-btn" class="primary-btn">Add to Batch</button>
         </div>
     </div>
 </div>
 
-<div id="ash-canvas-overlay">
-    <div id="ash-canvas-panel">
+<!-- Ash Canvas Overlay -->
+<div id="ash-canvas-overlay" class="overlay-base">
+    <div id="ash-canvas-panel" class="overlay-content-base">
       <h4>Ash Canvas Influence</h4>
       <div class="toolbar">
-        <div class="draggable" draggable="true" data-type="M">M</div>
-        <div class="draggable" draggable="true" data-type="P">P</div>
-        <div class="draggable" draggable="true" data-type="E">E</div>
-        <div class="draggable" draggable="true" data-type="H">H</div>
-        <div class="draggable" draggable="true" data-type="S">S</div>
-        <div class="draggable" draggable="true" data-type="K">K</div>
-        <div class="draggable" draggable="true" data-type="R">R</div>
+        <div class="draggable" draggable="true" data-type="M">M</div> <div class="draggable" draggable="true" data-type="P">P</div> <div class="draggable" draggable="true" data-type="E">E</div> <div class="draggable" draggable="true" data-type="H">H</div> <div class="draggable" draggable="true" data-type="S">S</div> <div class="draggable" draggable="true" data-type="K">K</div> <div class="draggable" draggable="true" data-type="R">R</div>
       </div>
-
       <div class="circuit-container">
         <div class="canvas-controls">
-          <button id="linkBtn"    title="Link Mode 🔗">🔗</button>
-          <button id="unlinkBtn"  title="Unlink Mode ❌">❌</button>
-          <button id="undoBtn"    title="Undo ↶" disabled>↶</button>
-          <button id="redoBtn"    title="Redo ↷" disabled>↷</button>
-          <button id="zoomIn"     title="Zoom In ➕">➕</button>
-          <button id="zoomOut"    title="Zoom Out ➖">➖</button>
-          <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+          <button id="linkBtn" title="Link Mode 🔗">🔗</button> <button id="unlinkBtn" title="Unlink Mode ❌">❌</button> <button id="undoBtn" title="Undo ↶" disabled>↶</button> <button id="redoBtn" title="Redo ↷" disabled>↷</button> <button id="zoomIn" title="Zoom In ➕">➕</button> <button id="zoomOut" title="Zoom Out ➖">➖</button> <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
         </div>
         <div class="canvas-scroll">
           <div class="panzoom">
             <svg xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <marker
-                  id="arrowhead"
-                  viewBox="0 0 10 10"
-                  refX="10"
-                  refY="5"
-                  markerWidth="8"
-                  markerHeight="8"
-                  orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--canvas-link-stroke)"/>
-                </marker>
-              </defs>
+              <defs> <marker id="arrowhead" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"> <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--canvas-link-stroke)"/> </marker> </defs>
             </svg>
-            </div>
+          </div>
         </div>
       </div>
-      <div class="canvas-action-buttons">
-            <button id="close-canvas-btn-overlay">Close Canvas</button>
-            <button id="submit-canvas-btn">Add Influence to Batch</button>
+      <div class="action-buttons">
+            <button id="close-canvas-btn-overlay" class="close-btn">Close Canvas</button>
+            <button id="submit-canvas-btn" class="primary-btn">Add Influence to Batch</button>
+        </div>
+    </div>
+</div>
+
+<!-- NEW: Arc Edge 3D Graphing Overlay -->
+<div id="arcedge-graph-overlay" class="overlay-base">
+    <div id="arcedge-graph-content" class="overlay-content-base">
+        <!-- Control Panel on the Left -->
+        <div id="arcedge-controls">
+            <h4>Arc Edge 3D Graph</h4>
+
+            <fieldset>
+                <legend>Arc Definition</legend>
+                <div class="input-group-row">
+                    <label>Deviation (X, Y, Z)</label>
+                    <input type="number" id="arc-dev-x" value="10" step="0.1" placeholder="X">
+                    <input type="number" id="arc-dev-y" value="0" step="0.1" placeholder="Y">
+                    <input type="number" id="arc-dev-z" value="0" step="0.1" placeholder="Z">
+                </div>
+                 <div class="input-group">
+                     <label for="arc-main-deviation">Main Deviation Amount</label>
+                    <input type="number" id="arc-main-deviation" value="2" step="0.1" placeholder="Amount">
+                 </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Curve Induction</legend>
+                 <div class="input-group">
+                     <label for="arc-curve-induction">Induction Amount</label>
+                    <input type="number" id="arc-curve-induction" value="0" step="0.1" placeholder="Amount">
+                 </div>
+                <div class="input-group-row">
+                    <label>Sub-Deviation (X, Y, Z)</label>
+                    <input type="number" id="arc-curve-x" value="0" step="0.1" placeholder="X">
+                    <input type="number" id="arc-curve-y" value="0" step="0.1" placeholder="Y">
+                    <input type="number" id="arc-curve-z" value="0" step="0.1" placeholder="Z">
+                </div>
+            </fieldset>
+
+            <fieldset>
+                 <legend>Deviation Induction</legend>
+                 <div class="input-group">
+                     <label for="arc-dev-induction">Induction Amount</label>
+                    <input type="number" id="arc-dev-induction" value="0" step="0.1" placeholder="Amount">
+                 </div>
+            </fieldset>
+            
+            <div class="input-group">
+                <label for="arc-resolution">Arc Resolution</label>
+                <input type="number" id="arc-resolution" value="32" min="2" max="256" step="1">
+            </div>
+
+            <div class="action-buttons" style="margin-top: auto;"> <!-- Push buttons to bottom -->
+                <button id="arcedge-add-btn" class="primary-btn">Add Arc</button>
+                <button id="arcedge-measure-btn" class="secondary-btn">Measure Selected</button>
+                <button id="arcedge-clear-inputs-btn">Clear Inputs</button>
+            </div>
+             <div class="action-buttons">
+                <button id="arcedge-clear-scene-btn" class="danger-btn">Clear Scene</button>
+                <button id="arcedge-close-btn" class="close-btn">Close</button>
+             </div>
+        </div>
+
+        <!-- 3D Viewport on the Right -->
+        <div id="arcedge-graph-viewport-container">
+            <div id="arcedge-viewport"></div>
+            <div id="arcedge-readout">
+                <strong>Inputs:</strong>
+                X: 10, Y: 0, Z: 0
+                Dev: 2
+                Curve Ind: 0 (0,0,0)
+                Dev Ind: 0
+                Res: 32
+                ---
+                <strong>Selected Arc:</strong> None
+                <strong>Length:</strong> ---
+            </div>
         </div>
     </div>
 </div>
@@ -1187,13 +1141,12 @@ class BuoyancyPendulumReflexNode {
 // --- UI & BATCHING LOGIC (v8.0) ---
 
 // Global UI element mapping
-// --- MODIFICATION: Added calcOnlyToggleBtn, calcDisplay, and floatingCalculator ---
 const ui = {
     chatWindow: document.getElementById('chat-window'),
     promptsContainer: document.getElementById('prompts-container'),
     submitAllBtn: document.getElementById('submit-all-btn'),
     addPromptBtn: document.getElementById('add-prompt-btn'),
-    // Math Modal Elements
+    // Math Modal
     mathCalculatorOverlay: document.getElementById('math-calculator-overlay'),
     algebraicEquationInput: document.getElementById('algebraic-equation'),
     variableSelectDropdown: document.getElementById('variable-select-dropdown'),
@@ -1207,7 +1160,7 @@ const ui = {
     addToBatchBtn: document.getElementById('add-to-batch-btn'),
     variableValueInput: document.getElementById('variable-value-input'),
     addValueBtn: document.getElementById('add-value-btn'),
-    // NEW Ash Canvas Elements
+    // Ash Canvas
     ashCanvasBtn: document.getElementById('ash-canvas-btn'),
     ashCanvasOverlay: document.getElementById('ash-canvas-overlay'),
     ashCanvasPanel: document.getElementById('ash-canvas-panel'),
@@ -1224,16 +1177,42 @@ const ui = {
     canvasSvg: document.querySelector('#ash-canvas-panel .panzoom svg'),
     submitCanvasBtn: document.getElementById('submit-canvas-btn'),
     closeCanvasBtnOverlay: document.getElementById('close-canvas-btn-overlay'),
-    // --- NEWLY ADDED UI ELEMENTS ---
+    // Floating Calculator
     floatingCalculator: document.getElementById('floating-calculator'),
     calcOnlyToggleBtn: document.getElementById('calc-only-toggle-btn'),
-    calcDisplay: document.getElementById('calc-display')
+    calcDisplay: document.getElementById('calc-display'),
+    calcConnect3DBtn: document.querySelector('.calc-btn[data-value="connect-3d"]'), // Specific selector
+    // Arc Edge 3D Graph
+    arcEdgeGraphBtn: document.getElementById('arcedge-graph-btn'),
+    arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
+    arcEdgeContent: document.getElementById('arcedge-graph-content'), // Content area for dragging logic
+    arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
+    arcEdgeViewport: document.getElementById('arcedge-viewport'),
+    arcEdgeReadout: document.getElementById('arcedge-readout'),
+    arcEdgeInputs: {
+        devX: document.getElementById('arc-dev-x'),
+        devY: document.getElementById('arc-dev-y'),
+        devZ: document.getElementById('arc-dev-z'),
+        mainDeviation: document.getElementById('arc-main-deviation'),
+        curveInduction: document.getElementById('arc-curve-induction'),
+        curveX: document.getElementById('arc-curve-x'),
+        curveY: document.getElementById('arc-curve-y'),
+        curveZ: document.getElementById('arc-curve-z'),
+        devInduction: document.getElementById('arc-dev-induction'),
+        resolution: document.getElementById('arc-resolution')
+    },
+    arcEdgeAddBtn: document.getElementById('arcedge-add-btn'),
+    arcEdgeMeasureBtn: document.getElementById('arcedge-measure-btn'),
+    arcEdgeClearInputsBtn: document.getElementById('arcedge-clear-inputs-btn'),
+    arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
+    arcEdgeCloseBtn: document.getElementById('arcedge-close-btn')
 };
-// --- END OF UI MODIFICATION ---
 
 const buoyancyNode = new BuoyancyPendulumReflexNode('output');
 let modalVariableContexts = {}; // State for the math modal
 let activePromptInput = null; // To track which prompt input is currently focused
+let isCalcConnectedTo3DGraph = false; // NEW state for calculator connection
+let arcCounter = 0; // Counter for unique arc prompt names
 
 function updateSubmitButtonState() {
     const promptRows = ui.promptsContainer.querySelectorAll('.prompt-row');
@@ -1256,19 +1235,13 @@ function addPrompt(text = '', checked = false) {
     input.placeholder = 'Enter math, assign, or term...';
     input.value = text; // Set text value
     
-    // Add event listeners for focus/blur to manage activePromptInput
     input.addEventListener('focus', (event) => {
         activePromptInput = event.target;
-        // Optionally, highlight the active prompt row
         event.target.closest('.prompt-row').style.outline = '2px solid var(--accent-color)';
     });
     input.addEventListener('blur', (event) => {
         event.target.closest('.prompt-row').style.outline = 'none';
-        // We no longer set activePromptInput to null on blur,
-        // so calculator clicks will always work.
-        // It's set on focus-in instead.
     });
-
 
     const removeBtn = document.createElement('button'); 
     removeBtn.className = 'remove-prompt-btn'; 
@@ -1282,18 +1255,21 @@ function addPrompt(text = '', checked = false) {
     ui.promptsContainer.appendChild(row);
     updateSubmitButtonState();
 
-    // Set the newly added input as active, and focus it
-    activePromptInput = input;
-    input.focus();
+    // Set the newly added input as active, and focus it only if it was added manually
+    // (prevents stealing focus when prompts are added programmatically)
+    if (text === '' && checked === false) {
+        activePromptInput = input;
+        input.focus();
+    }
+    
+    return input; // Return the input element for potential programmatic focus
 }
 
-// --- UPDATE: This function now calls the new processBatch method ---
 function submitAllPrompts() {
     const promptInputs = ui.promptsContainer.querySelectorAll('input[type="text"]');
     if (promptInputs.length === 0) return;
     
     const allPromptTexts = [];
-    // Get text only from *checked* prompts, IN ORDER
     ui.promptsContainer.querySelectorAll('.prompt-row').forEach(row => {
         if (row.querySelector('input[type="checkbox"]').checked) {
             const text = row.querySelector('input[type="text"]').value.trim();
@@ -1305,7 +1281,6 @@ function submitAllPrompts() {
 
     if (allPromptTexts.length === 0) return;
     
-    // 1. Display the user's batch message
     const userMessage = document.createElement('div'); 
     userMessage.className = 'message user-message';
     let userMessageHTML = '<strong>Submitted Batch:</strong><ul>';
@@ -1314,25 +1289,16 @@ function submitAllPrompts() {
     userMessage.innerHTML = userMessageHTML;
     ui.chatWindow.appendChild(userMessage);
 
-    // 2. Call the new 4-Pass Batch processor
-    // This single call will clear the log, reset the parser, and run all 4 passes.
     const botResponse = buoyancyNode.processBatch(allPromptTexts);
 
-    // 3. Combine all results into one bot message
     const botMessage = document.createElement('div'); 
     botMessage.className = 'message bot-message';
-    botMessage.innerHTML = botResponse;
-    
-    if (botMessage.innerHTML.trim() === '') {
-         botMessage.innerHTML = "Batch processed, but no output was generated.";
-    }
-    
+    botMessage.innerHTML = botResponse || "Batch processed, but no output was generated.";
     ui.chatWindow.appendChild(botMessage);
     ui.chatWindow.scrollTop = ui.chatWindow.scrollHeight;
 }
 
-
-// --- MATH MODAL LOGIC (Unaltered) ---
+// --- MATH MODAL LOGIC (Modified to close other overlays) ---
 
 function openMathSolver() {
     modalVariableContexts = {}; 
@@ -1341,6 +1307,11 @@ function openMathSolver() {
     updateVariableSelector(); 
     updateAssignedContextsDisplay(); 
     ui.mathCalculatorOverlay.style.display = 'flex';
+
+    // --- FIX: Close other overlays for consistency ---
+    closeArcEdgeGraph();
+    closeAshCanvas();
+    // --- END FIX ---
 }
 
 function closeMathSolver() {
@@ -1433,177 +1404,135 @@ function addModalDataToBatch() {
     closeMathSolver(); 
 }
 
-// --- FLOATING CALCULATOR INPUT LOGIC (v8.0) ---
-// This is the ORIGINAL function for "Prompt Mode"
-function handleCalculatorInput(value) {
-    if (!activePromptInput) {
-        // If no prompt is active, try to focus the last prompt or create a new one
-        const promptInputs = ui.promptsContainer.querySelectorAll('input[type="text"]');
-        if (promptInputs.length > 0) {
-            activePromptInput = promptInputs[promptInputs.length - 1];
-            activePromptInput.focus();
-        } else {
-            addPrompt(); // Create a new prompt (which auto-focuses)
-        }
+// --- FLOATING CALCULATOR INPUT LOGIC (Modified for 3D Connect & pi=3) ---
+function handleCalculatorInput(value) { // This is "Prompt Mode"
+    // --- NEW: 3D Graph Connection Check ---
+    if (isCalcConnectedTo3DGraph) {
+        handleCalculatorTo3DInput(value); // Redirect if connected
+        return;
     }
-    
-    // Ensure focus just in case
+    // --- END NEW ---
+
+    if (!activePromptInput) { /* Find or create active prompt */ 
+        const promptInputs = ui.promptsContainer.querySelectorAll('input[type="text"]');
+        if (promptInputs.length > 0) { activePromptInput = promptInputs[promptInputs.length - 1]; activePromptInput.focus(); } 
+        else { addPrompt(); } // Creates and focuses
+    }
+    if (!activePromptInput) return; // Should not happen after addPrompt, but safety check
     activePromptInput.focus(); 
 
-    const start = activePromptInput.selectionStart;
-    const end = activePromptInput.selectionEnd;
-    const currentValue = activePromptInput.value;
-    let newValue = currentValue;
-    let cursorPosition = start;
+    const start = activePromptInput.selectionStart; const end = activePromptInput.selectionEnd; const currentValue = activePromptInput.value;
+    let newValue = currentValue; let cursorPosition = start;
 
     switch (value) {
-        case 'AC': // All Clear
-            newValue = '';
-            cursorPosition = 0;
+        case 'AC': newValue = ''; cursorPosition = 0; break;
+        case 'DEL': 
+            if (start === end && start > 0) { newValue = currentValue.substring(0, start - 1) + currentValue.substring(end); cursorPosition = start - 1; } 
+            else { newValue = currentValue.substring(0, start) + currentValue.substring(end); cursorPosition = start; } break;
+        case 'sqrt': newValue = currentValue.substring(0, start) + 'sqrt()' + currentValue.substring(end); cursorPosition = start + 5; break;
+        case 'sin': case 'cos': case 'tan': case 'log': case 'ln': newValue = currentValue.substring(0, start) + value + '()' + currentValue.substring(end); cursorPosition = start + value.length + 1; break;
+        
+        // --- PI MODIFICATION ---
+        case 'pi': 
+            newValue = currentValue.substring(0, start) + '3' + currentValue.substring(end); 
+            cursorPosition = start + 1; 
             break;
-        case 'DEL': // Delete (BackSpace)
-            if (start === end && start > 0) { // No selection, just backspace
-                newValue = currentValue.substring(0, start - 1) + currentValue.substring(end);
-                cursorPosition = start - 1;
-            } else { // Delete selection
-                newValue = currentValue.substring(0, start) + currentValue.substring(end);
-                cursorPosition = start;
-            }
-            break;
-        case 'sqrt':
-            newValue = currentValue.substring(0, start) + 'sqrt()' + currentValue.substring(end);
-            cursorPosition = start + 5; // Place cursor inside parentheses
-            break;
-        case 'sin': case 'cos': case 'tan': case 'log': case 'ln':
-            newValue = currentValue.substring(0, start) + value + '()' + currentValue.substring(end);
-            cursorPosition = start + value.length + 1; // Place cursor inside parentheses
-            break;
-        case 'pi':
-            newValue = currentValue.substring(0, start) + 'pi' + currentValue.substring(end);
-            cursorPosition = start + 2;
-            break;
-        case 'e':
-            newValue = currentValue.substring(0, start) + 'e' + currentValue.substring(end);
-            cursorPosition = start + 1;
-            break;
-        case 'Ans': 
-            newValue = currentValue.substring(0, start) + 'Ans' + currentValue.substring(end);
-            cursorPosition = start + 3;
-            break;
-        case '÷':
-            newValue = currentValue.substring(0, start) + '/' + currentValue.substring(end);
-            cursorPosition = start + 1;
-            break;
-        case '×':
-            newValue = currentValue.substring(0, start) + '*' + currentValue.substring(end);
-            cursorPosition = start + 1;
-            break;
-        case '=':
-            // Special case: if active, check the box and submit
-            const parentRow = activePromptInput.closest('.prompt-row');
-            if(parentRow) {
-                parentRow.querySelector('input[type="checkbox"]').checked = true;
-            }
-            submitAllPrompts();
-            return; // Exit so we don't modify text
-        default:
-            newValue = currentValue.substring(0, start) + value + currentValue.substring(end);
-            cursorPosition = start + value.length;
-            break;
-    }
+        // --- END PI MODIFICATION ---
 
-    activePromptInput.value = newValue;
-    activePromptInput.setSelectionRange(cursorPosition, cursorPosition);
+        case 'e': newValue = currentValue.substring(0, start) + 'e' + currentValue.substring(end); cursorPosition = start + 1; break;
+        case 'Ans': newValue = currentValue.substring(0, start) + 'Ans' + currentValue.substring(end); cursorPosition = start + 3; break;
+        case '÷': newValue = currentValue.substring(0, start) + '/' + currentValue.substring(end); cursorPosition = start + 1; break;
+        case '×': newValue = currentValue.substring(0, start) + '*' + currentValue.substring(end); cursorPosition = start + 1; break;
+        case '=': const parentRow = activePromptInput.closest('.prompt-row'); if(parentRow) { parentRow.querySelector('input[type="checkbox"]').checked = true; } submitAllPrompts(); return; 
+        case 'connect-3d': toggleCalc3DConnection(); return; // Handled separately
+        default: newValue = currentValue.substring(0, start) + value + currentValue.substring(end); cursorPosition = start + value.length; break;
+    }
+    activePromptInput.value = newValue; activePromptInput.setSelectionRange(cursorPosition, cursorPosition);
 }
 
-// --- NEW CALCULATOR DISPLAY-MODE LOGIC ---
-let calcDisplayValue = '0';
-let calcIsResultShown = false;
-
-// Helper map for math.js-friendly values
-const calcValueMap = {
-    '÷': '/',
-    '×': '*',
-    'pi': 'pi',
-    'e': 'e'
-    // '!' is factorial, math.js supports it
-    // '^' is power, math.js supports it
-};
-
-/**
- * Handles input for the "Calculator Display" mode.
- */
-function handleDisplayModeInput(value) {
-    // If a result is shown, and the user presses a number (not an operator or function)
-    // start a new calculation.
-    if (calcIsResultShown && 
-        !['=', 'AC', '/', '×', '*', '-', '+', '^', '!', 'sqrt', 'sin', 'cos', 'tan', 'log', 'ln'].includes(value)) {
-        
-        calcDisplayValue = '0';
-        calcIsResultShown = false;
-    } else if (calcIsResultShown) {
-        // If a result is shown and user presses an operator, continue calculation
-        calcIsResultShown = false;
+// --- CALCULATOR DISPLAY-MODE LOGIC (Modified for 3D Connect & pi=3) ---
+let calcDisplayValue = '0'; let calcIsResultShown = false;
+// --- PI MODIFICATION ---
+const calcValueMap = { '÷': '/', '×': '*', 'pi': '3', 'e': 'e' };
+// --- END PI MODIFICATION ---
+function handleDisplayModeInput(value) { // This is "Calculator Only Mode"
+    // --- NEW: 3D Graph Connection Check ---
+     if (isCalcConnectedTo3DGraph) {
+        handleCalculatorTo3DInput(value); // Redirect if connected
+        return;
     }
-    
-    if (calcDisplayValue === 'Error') {
-         calcDisplayValue = '0';
-         calcIsResultShown = false;
-    }
+    // --- END NEW ---
+
+    if (calcIsResultShown && !['=', 'AC', '/', '×', '*', '-', '+', '^', '!', 'sqrt', 'sin', 'cos', 'tan', 'log', 'ln'].includes(value)) { calcDisplayValue = '0'; calcIsResultShown = false; } 
+    else if (calcIsResultShown) { calcIsResultShown = false; }
+    if (calcDisplayValue === 'Error') { calcDisplayValue = '0'; calcIsResultShown = false; }
 
     switch (value) {
-        case 'AC':
-            calcDisplayValue = '0';
-            calcIsResultShown = false;
-            break;
-        case 'DEL':
-            if (calcDisplayValue.length > 1) {
-                calcDisplayValue = calcDisplayValue.slice(0, -1);
-            } else {
-                calcDisplayValue = '0';
-            }
-            break;
-        case '=':
-            if (calcDisplayValue) {
-                try {
-                    // Use math.js evaluate for safe calculation
-                    let result = math.evaluate(calcDisplayValue);
-                    calcDisplayValue = String(result);
-                    calcIsResultShown = true;
-                } catch (e) {
-                    calcDisplayValue = 'Error';
-                    calcIsResultShown = true;
-                }
-            }
-            break;
-        case 'sqrt':
-            calcDisplayValue = (calcDisplayValue === '0') ? 'sqrt(' : calcDisplayValue + 'sqrt(';
-            break;
-        case 'sin': case 'cos': case 'tan': case 'log': case 'ln':
-            calcDisplayValue = (calcDisplayValue === '0') ? value + '(' : calcDisplayValue + value + '(';
-            break;
-        
-        // All other buttons that append text
-        default:
-            let mappedValue = calcValueMap[value] || value;
-
-            // These buttons are complex/don't append text, so ignore in this mode
-            if (value === 'Inv' || value === 'Deg' || value === 'Ans') {
-                 break;
-            }
-
-            if (calcDisplayValue === '0' && mappedValue !== '.') {
-                calcDisplayValue = mappedValue;
-            } else {
-                calcDisplayValue += mappedValue;
-            }
-            break;
+        case 'AC': calcDisplayValue = '0'; calcIsResultShown = false; break;
+        case 'DEL': if (calcDisplayValue.length > 1) { calcDisplayValue = calcDisplayValue.slice(0, -1); } else { calcDisplayValue = '0'; } break;
+        case '=': 
+            if (calcDisplayValue) { try { let result = math.evaluate(calcDisplayValue); calcDisplayValue = String(result); calcIsResultShown = true; } catch (e) { calcDisplayValue = 'Error'; calcIsResultShown = true; } } break;
+        case 'sqrt': calcDisplayValue = (calcDisplayValue === '0') ? 'sqrt(' : calcDisplayValue + 'sqrt('; break;
+        case 'sin': case 'cos': case 'tan': case 'log': case 'ln': calcDisplayValue = (calcDisplayValue === '0') ? value + '(' : calcDisplayValue + value + '('; break;
+        case 'connect-3d': toggleCalc3DConnection(); return; // Handled separately
+        default: let mappedValue = calcValueMap[value] || value; if (value === 'Inv' || value === 'Deg' || value === 'Ans') { break; } if (calcDisplayValue === '0' && mappedValue !== '.') { calcDisplayValue = mappedValue; } else { calcDisplayValue += mappedValue; } break;
     }
-
-    // Update the calculator's own display screen
     ui.calcDisplay.textContent = calcDisplayValue;
 }
-// --- END OF NEW CALCULATOR LOGIC ---
+
+// --- NEW: Calculator to 3D Input Handler ---
+function handleCalculatorTo3DInput(value) {
+    const focusedElement = document.activeElement;
+    // Check if the focused element is one of the number inputs in the Arc Edge overlay
+    const isArcEdgeInput = focusedElement && focusedElement.closest('#arcedge-controls') && focusedElement.tagName === 'INPUT' && focusedElement.type === 'number';
+
+    if (!isArcEdgeInput) {
+        console.warn("Calculator connected to 3D, but no Arc Edge number input is focused.");
+        // Maybe provide visual feedback on the calculator? Or flash the 3D connect button?
+        return; 
+    }
+
+    const inputElement = focusedElement;
+    const start = inputElement.selectionStart; const end = inputElement.selectionEnd; const currentValue = inputElement.value;
+    let newValue = currentValue; let cursorPosition = start;
+
+    // Only handle digits, decimal point, and DEL
+    if (/\d/.test(value)) { // Digit 0-9
+         newValue = currentValue.substring(0, start) + value + currentValue.substring(end);
+         cursorPosition = start + 1;
+    } else if (value === '.') {
+        // Prevent multiple decimal points
+        if (!currentValue.includes('.')) {
+             newValue = currentValue.substring(0, start) + value + currentValue.substring(end);
+             cursorPosition = start + 1;
+        } else {
+             return; // Ignore if decimal already exists
+        }
+    } else if (value === 'DEL') {
+         if (start === end && start > 0) { newValue = currentValue.substring(0, start - 1) + currentValue.substring(end); cursorPosition = start - 1; } 
+         else { newValue = currentValue.substring(0, start) + currentValue.substring(end); cursorPosition = start; }
+    } else if (value === 'AC') {
+        newValue = ''; // Clear the specific input
+        cursorPosition = 0;
+    } 
+    // Ignore other calculator buttons (=, +, -, *, /, functions etc.) when connected to 3D input
+    else {
+        return;
+    }
+
+    inputElement.value = newValue;
+    inputElement.setSelectionRange(cursorPosition, cursorPosition);
+    // Trigger input event to update readout if needed
+    inputElement.dispatchEvent(new Event('input', { bubbles: true })); 
+}
+
+// --- NEW: Toggle Calculator 3D Connection ---
+function toggleCalc3DConnection() {
+    isCalcConnectedTo3DGraph = !isCalcConnectedTo3DGraph;
+    ui.calcConnect3DBtn.classList.toggle('active', isCalcConnectedTo3DGraph);
+    console.log("Calculator 3D Connection:", isCalcConnectedTo3DGraph);
+    // Optionally provide more feedback, like changing calculator display or border
+}
 
 
 // --- START: ASH CANVAS LOGIC (from test.html, adapted) ---
@@ -1987,19 +1916,463 @@ function addCanvasInfluenceToBatch() {
 // --- END: ASH CANVAS LOGIC ---
 
 
-// --- Initialize the UI (v8.0) ---
+// --- ARC EDGE 3D GRAPH LOGIC ---
+let arcEdgeScene, arcEdgeCamera, arcEdgeRenderer, arcEdgeControls, arcEdgeRaycaster, arcEdgePointer;
+let arcMeshes = []; // To store references to THREE.Mesh objects
+let selectedArc = null;
+let isArcEdgeInitialized = false;
+const arcMaterial = new THREE.MeshStandardMaterial({ color: 0x00e5ff, metalness: 0.5, roughness: 0.5 });
+const arcSelectedMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xaaaa00, metalness: 0.6, roughness: 0.4 });
+
+function initArcEdgeGraph() {
+    if (isArcEdgeInitialized) return;
+
+    try {
+        const container = ui.arcEdgeViewport;
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+
+        // Scene
+        arcEdgeScene = new THREE.Scene();
+        // arcEdgeScene.background = new THREE.Color(0x1a1a1b); // <-- REMOVE this line
+
+        // Camera
+        arcEdgeCamera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+        arcEdgeCamera.position.set(5, 5, 15); // Adjusted initial position
+        arcEdgeCamera.lookAt(0, 0, 0);
+
+        // Renderer
+        
+        // ADD 'alpha: true' to allow for transparency
+        arcEdgeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); 
+        
+        // SET the background color and transparency here
+        arcEdgeRenderer.setClearColor( 0x1a1a1b, 0.35 ); 
+        
+        arcEdgeRenderer.setSize(width, height);
+        container.appendChild(arcEdgeRenderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        arcEdgeScene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 7.5);
+        arcEdgeScene.add(directionalLight);
+        
+        // Controls
+        arcEdgeControls = new THREE.OrbitControls(arcEdgeCamera, arcEdgeRenderer.domElement);
+        arcEdgeControls.enableDamping = true; 
+        arcEdgeControls.dampingFactor = 0.05;
+
+        // Raycaster for selection
+        arcEdgeRaycaster = new THREE.Raycaster();
+        arcEdgePointer = new THREE.Vector2();
+
+        // Axes Helper
+        const axesHelper = new THREE.AxesHelper(5);
+        arcEdgeScene.add(axesHelper);
+
+        // Event Listeners
+        window.addEventListener('resize', onArcEdgeResize);
+        container.addEventListener('pointerdown', onArcEdgePointerDown); // Use pointerdown for consistency
+        Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
+
+        isArcEdgeInitialized = true;
+        animateArcEdgeGraph();
+        updateArcEdgeReadout(); // Initial readout update
+
+    } catch (error) {
+        console.error("Error initializing Arc Edge Graph:", error);
+        alert("Failed to initialize 3D Graph. Check console for details.");
+    }
+}
+
+function openArcEdgeGraph() {
+    ui.arcEdgeOverlay.style.display = 'flex';
+    initArcEdgeGraph(); // Initialize if not already done
+    onArcEdgeResize(); // Ensure size is correct on open
+
+    // --- FIX: Kick-start animation loop if it was stopped ---
+    if (isArcEdgeInitialized) {
+        animateArcEdgeGraph();
+    }
+    // --- END FIX ---
+
+     // Ensure other overlays are closed
+    closeMathSolver();
+    closeAshCanvas(); // Use the proper function
+}
+
+function closeArcEdgeGraph() {
+    ui.arcEdgeOverlay.style.display = 'none';
+    // Animation loop will stop itself on the next frame check
+}
+
+// Simple close function for Ash Canvas, as it was missing
+function closeAshCanvas() {
+    ui.ashCanvasOverlay.style.display = 'none';
+    canvasState.drawMode = canvasState.unlinkMode = false;
+    toggleActive(ui.canvasLinkBtn, false);
+    toggleActive(ui.canvasUnlinkBtn, false);
+    if (canvasState.startNode) {
+        canvasState.startNode.classList.remove('selected');
+        canvasState.startNode = null;
+    }
+}
+
+
+function onArcEdgeResize() {
+    if (!isArcEdgeInitialized) return;
+    const container = ui.arcEdgeViewport;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    arcEdgeCamera.aspect = width / height;
+    arcEdgeCamera.updateProjectionMatrix();
+    arcEdgeRenderer.setSize(width, height);
+}
+
+function animateArcEdgeGraph() {
+    if (!isArcEdgeInitialized || ui.arcEdgeOverlay.style.display === 'none') return; // Stop if hidden or not init
+    requestAnimationFrame(animateArcEdgeGraph);
+    arcEdgeControls.update(); // Only required if controls.enableDamping or controls.autoRotate are set to true
+    arcEdgeRenderer.render(arcEdgeScene, arcEdgeCamera);
+}
+
+// --- Arc Calculation (Translate Python Logic) ---
+// This function ALREADY uses 3 instead of Math.PI, as per your "doc pi (3)" logic.
+// No changes are needed here.
+function calculateArcPoints(params) {
+    const points = [];
+    const resolution = params.resolution;
+    const x = params.x; const y = params.y; const z = params.z;
+    const mainDev = params.mainDeviation;
+    const curveInd = params.curveInduction;
+    const curveX = params.curveX; const curveY = params.curveY; const curveZ = params.curveZ;
+    const devInd = params.devInduction;
+
+    for (let i = 0; i <= resolution; i++) {
+        const t = i / resolution;
+        
+        // Base point along the vector defined by X, Y, Z deviations
+        let px = t * x;
+        let py = t * y;
+        let pz = t * z;
+
+        // Apply Curve Induction (Interpretation: Add sinusoidal variations based on sub-params)
+        // Using different frequencies (e.g., 3, 5, 7) for variety
+        px += Math.sin(t * 3 * 3) * curveInd * curveX; // Using doc pi (3) again
+        py += Math.sin(t * 5 * 3) * curveInd * curveY;
+        pz += Math.sin(t * 7 * 3) * curveInd * curveZ;
+        
+        // Apply Main Deviation (Similar to Python's sin(3*t) on Y)
+        // Let's make it slightly more general: apply deviation along a vector perpendicular to the main direction (needs refinement)
+        // Simple approach: apply deviation primarily orthogonal to the main direction vector
+        const dir = new THREE.Vector3(x, y, z).normalize();
+        let up = new THREE.Vector3(0, 1, 0);
+        if (Math.abs(dir.y) > 0.95) up.set(1, 0, 0); // Avoid parallel vectors
+        const perp1 = new THREE.Vector3().crossVectors(dir, up).normalize();
+        const deviationVector = perp1.multiplyScalar(Math.sin(t * 3) * mainDev); // Using doc pi (3)
+        
+        px += deviationVector.x;
+        py += deviationVector.y;
+        pz += deviationVector.z;
+        
+        // Apply Deviation Induction (Interpretation: Add another layer of deviation)
+        // Simple approach: Add another sine wave with different frequency/phase
+         const devIndVector = perp1.multiplyScalar(Math.sin(t * 4 * 3 + 1) * devInd); // Using doc pi (3), different freq/phase
+        
+         px += devIndVector.x;
+         py += devIndVector.y;
+         pz += devIndVector.z;
+
+
+        points.push(new THREE.Vector3(px, py, pz));
+    }
+    return points;
+}
+
+
+// --- Arc Generation in Three.js ---
+function addArcToScene() {
+    arcCounter++;
+    const params = {
+        x: parseFloat(ui.arcEdgeInputs.devX.value) || 0,
+        y: parseFloat(ui.arcEdgeInputs.devY.value) || 0,
+        z: parseFloat(ui.arcEdgeInputs.devZ.value) || 0,
+        mainDeviation: parseFloat(ui.arcEdgeInputs.mainDeviation.value) || 0,
+        curveInduction: parseFloat(ui.arcEdgeInputs.curveInduction.value) || 0,
+        curveX: parseFloat(ui.arcEdgeInputs.curveX.value) || 0,
+        curveY: parseFloat(ui.arcEdgeInputs.curveY.value) || 0,
+        curveZ: parseFloat(ui.arcEdgeInputs.curveZ.value) || 0,
+        devInduction: parseFloat(ui.arcEdgeInputs.devInduction.value) || 0,
+        resolution: parseInt(ui.arcEdgeInputs.resolution.value) || 8,
+        tubeRadius: 0.1, // Fixed for now
+        crossSegments: 8 // Fixed for now
+    };
+
+    const pathPoints = calculateArcPoints(params);
+    if (pathPoints.length < 2) {
+        alert("Arc requires at least 2 points (check resolution and inputs).");
+        return;
+    }
+
+    try {
+        const curve = new THREE.CatmullRomCurve3(pathPoints);
+        const tubeGeometry = new THREE.TubeGeometry(curve, params.resolution, params.tubeRadius, params.crossSegments, false);
+        const arcMesh = new THREE.Mesh(tubeGeometry, arcMaterial.clone()); // Clone material for potential selection later
+        
+        arcMesh.name = `Arc_${arcCounter}`;
+        arcMesh.userData.params = params; // Store parameters used to create it
+        arcMesh.userData.points = pathPoints; // Store calculated points for measurement
+        arcMesh.userData.id = arcCounter; // Store simple ID
+
+        arcMeshes.push(arcMesh);
+        arcEdgeScene.add(arcMesh);
+
+        // Add Buoyancy Prompts
+        addPrompt(`arc${arcCounter}_x = ${params.x}`, true);
+        addPrompt(`arc${arcCounter}_y = ${params.y}`, true);
+        addPrompt(`arc${arcCounter}_z = ${params.z}`, true);
+        addPrompt(`arc${arcCounter}_mainDev = ${params.mainDeviation}`, true);
+        addPrompt(`arc${arcCounter}_curveInd = ${params.curveInduction}`, true);
+        addPrompt(`arc${arcCounter}_curveX = ${params.curveX}`, true);
+        addPrompt(`arc${arcCounter}_curveY = ${params.curveY}`, true);
+        addPrompt(`arc${arcCounter}_curveZ = ${params.curveZ}`, true);
+        addPrompt(`arc${arcCounter}_devInd = ${params.devInduction}`, true);
+        addPrompt(`arc${arcCounter}_res = ${params.resolution}`, true);
+        
+        updateArcEdgeReadout();
+
+
+    } catch (error) {
+        console.error("Error creating arc geometry:", error);
+        alert("Failed to create arc. Check console for details.");
+    }
+}
+
+// --- Arc Selection ---
+function onArcEdgePointerDown(event) {
+    // Calculate pointer position in normalized device coordinates (-1 to +1) for both components
+    const bounds = ui.arcEdgeViewport.getBoundingClientRect();
+    arcEdgePointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+    arcEdgePointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+
+    // Update the picking ray with the camera and pointer position
+    arcEdgeRaycaster.setFromCamera(arcEdgePointer, arcEdgeCamera);
+
+    // Calculate objects intersecting the picking ray
+    const intersects = arcEdgeRaycaster.intersectObjects(arcMeshes);
+
+    // Deselect previous
+    if (selectedArc) {
+        selectedArc.material = arcMaterial.clone(); // Revert to original
+    }
+    selectedArc = null;
+
+    if (intersects.length > 0) {
+        // Select the first intersected object
+        selectedArc = intersects[0].object;
+        selectedArc.material = arcSelectedMaterial.clone(); // Apply selection material
+        console.log("Selected Arc:", selectedArc.name);
+    } else {
+        console.log("No arc selected.");
+    }
+    updateArcEdgeReadout();
+}
+
+// --- Arc Measurement (Translate Python Logic) ---
+function measureSelectedArc() {
+    if (!selectedArc) {
+        alert("Please select an arc first by clicking on it in the 3D view.");
+        return;
+    }
+
+    if (!selectedArc.userData || !selectedArc.userData.points || selectedArc.userData.points.length < 2) {
+         alert("Selected object is missing necessary data for measurement.");
+         console.error("Missing userData or points on selected arc:", selectedArc);
+         return;
+    }
+
+    const points = selectedArc.userData.points; // Use the stored centerline points
+    let totalLength = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+        totalLength += points[i].distanceTo(points[i + 1]);
+    }
+
+    console.log(`Measured length of ${selectedArc.name}: ${totalLength}`);
+    
+    // Add prompt
+    addPrompt(`arc${selectedArc.userData.id}_length = ${totalLength.toFixed(4)}`, true);
+    
+    // Update readout
+    updateArcEdgeReadout(totalLength); // Pass the length to update readout
+}
+
+// --- Update Readout Display ---
+function updateArcEdgeReadout(measuredLength = null) {
+     const params = {
+        x: parseFloat(ui.arcEdgeInputs.devX.value) || 0,
+        y: parseFloat(ui.arcEdgeInputs.devY.value) || 0,
+        z: parseFloat(ui.arcEdgeInputs.devZ.value) || 0,
+        mainDeviation: parseFloat(ui.arcEdgeInputs.mainDeviation.value) || 0,
+        curveInduction: parseFloat(ui.arcEdgeInputs.curveInduction.value) || 0,
+        curveX: parseFloat(ui.arcEdgeInputs.curveX.value) || 0,
+        curveY: parseFloat(ui.arcEdgeInputs.curveY.value) || 0,
+        curveZ: parseFloat(ui.arcEdgeInputs.curveZ.value) || 0,
+        devInduction: parseFloat(ui.arcEdgeInputs.devInduction.value) || 0,
+        resolution: parseInt(ui.arcEdgeInputs.resolution.value) || 8
+    };
+
+    let readoutHTML = `<strong>Inputs:</strong>
+X: ${params.x}, Y: ${params.y}, Z: ${params.z}
+Dev: ${params.mainDeviation}
+Curve Ind: ${params.curveInduction} (${params.curveX},${params.curveY},${params.curveZ})
+Dev Ind: ${params.devInduction}
+Res: ${params.resolution}
+---
+<strong>Selected Arc:</strong> ${selectedArc ? selectedArc.name : 'None'}
+<strong>Length:</strong> ${measuredLength !== null ? measuredLength.toFixed(4) : (selectedArc ? '(Click Measure)' : '---')}`; // Show length immediately if passed
+
+    ui.arcEdgeReadout.innerHTML = readoutHTML;
+}
+
+// --- Clear Functions ---
+function clearArcEdgeInputs() {
+    ui.arcEdgeInputs.devX.value = 10;
+    ui.arcEdgeInputs.devY.value = 0;
+    ui.arcEdgeInputs.devZ.value = 0;
+    ui.arcEdgeInputs.mainDeviation.value = 2;
+    ui.arcEdgeInputs.curveInduction.value = 0;
+    ui.arcEdgeInputs.curveX.value = 0;
+    ui.arcEdgeInputs.curveY.value = 0;
+    ui.arcEdgeInputs.curveZ.value = 0;
+    ui.arcEdgeInputs.devInduction.value = 0;
+    ui.arcEdgeInputs.resolution.value = 32;
+    updateArcEdgeReadout(); // Update display after clearing
+}
+
+function clearArcEdgeScene() {
+    if (!isArcEdgeInitialized) return;
+
+    // Remove meshes from scene
+    arcMeshes.forEach(mesh => {
+        arcEdgeScene.remove(mesh);
+        // Dispose geometry and material to free up GPU memory
+        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.material) {
+             // If material is an array
+             if (Array.isArray(mesh.material)) {
+                 mesh.material.forEach(material => material.dispose());
+             } else {
+                 mesh.material.dispose();
+             }
+         }
+    });
+
+    // Clear arrays and selection
+    arcMeshes = [];
+    selectedArc = null;
+    arcCounter = 0; // Reset counter
+    
+    console.log("Arc Edge scene cleared.");
+    updateArcEdgeReadout(); // Update display
+}
+
+// --- Draggability for Arc Edge Overlay ---
+function makeDraggable(element, handle) {
+    let isDragging = false;
+    let offsetX, offsetY;
+    const parent = element.parentElement; // Assuming overlay is direct child of body or similar
+
+    const startDrag = (e) => {
+        isDragging = true;
+        const rect = element.getBoundingClientRect();
+        const parentRect = parent.getBoundingClientRect(); // Get parent bounds relative to viewport
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.clientY ?? e.touches[0].clientY;
+        
+        // Calculate offset relative to the element's top-left corner
+        offsetX = clientX - rect.left;
+        offsetY = clientY - rect.top;
+
+        // Set initial position using top/left relative to parent
+        // Ensure style position is set initially if not already
+        if (getComputedStyle(element).position !== 'absolute' && getComputedStyle(element).position !== 'fixed') {
+             element.style.position = 'fixed'; // Use fixed for simplicity over body
+             element.style.left = rect.left + 'px';
+             element.style.top = rect.top + 'px';
+        } else {
+            // Already positioned, just update internal offset calculation basis
+             element.style.left = (rect.left - parentRect.left) + 'px'; // Example if relative to parent
+             element.style.top = (rect.top - parentRect.top) + 'px'; // Example if relative to parent
+             // If fixed, offset is relative to viewport, so rect.left/top is fine
+             if(getComputedStyle(element).position === 'fixed') {
+                 element.style.left = rect.left + 'px';
+                 element.style.top = rect.top + 'px';
+             }
+        }
+        
+        // Remove transform if it was used for centering
+        element.style.transform = 'none'; 
+        element.style.margin = '0'; // Remove auto margins if used for centering
+
+        handle.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none'; 
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+
+    const doDrag = (e) => {
+        if (!isDragging) return;
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.clientY ?? e.touches[0].clientY;
+        
+        // Calculate new top-left based on pointer position and initial offset
+        let newLeft = clientX - offsetX;
+        let newTop = clientY - offsetY;
+
+        // --- Basic boundary check (within viewport) ---
+        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
+        newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+        // --- End boundary check ---
+
+        element.style.left = newLeft + 'px';
+        element.style.top = newTop + 'px';
+
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+
+    const stopDrag = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        handle.style.cursor = 'move';
+        document.body.style.userSelect = 'auto';
+    };
+
+    handle.addEventListener('mousedown', startDrag);
+    document.addEventListener('mousemove', doDrag);
+    document.addEventListener('mouseup', stopDrag);
+    handle.addEventListener('touchstart', startDrag, { passive: false });
+    document.addEventListener('touchmove', doDrag, { passive: false });
+    document.addEventListener('touchend', stopDrag);
+}
+
+
+// --- Initialize the UI (v8.0 + Arc Edge) ---
 window.onload = () => {
     // Wire up BRPN buttons
     ui.addPromptBtn.onclick = () => addPrompt(); 
     ui.submitAllBtn.onclick = submitAllPrompts;
 
     // Wire up MODAL buttons
+    document.getElementById('math-solver-btn').onclick = openMathSolver; // Direct call
     ui.algebraicEquationInput.addEventListener('input', updateVariableSelector);
     ui.assignContextBtn.addEventListener('click', assignVariableContext);
     ui.clearContextBtn.addEventListener('click', clearVariableContext);
     ui.closeCalculatorBtn.addEventListener('click', closeMathSolver);
     ui.addToBatchBtn.addEventListener('click', addModalDataToBatch); 
     
+    // --- THIS IS THE FIX from the previous step ---
     ui.addValueBtn.addEventListener('click', () => {
         const selectedVar = ui.variableSelectDropdown.value;
         if (!selectedVar) { alert('Please select a variable first.'); return; }
@@ -2013,87 +2386,39 @@ window.onload = () => {
         updateVariableSelector();
         ui.variableValueInput.value = '';
     });
+    // --- END OF FIX ---
     
     // Start with one blank prompt
     addPrompt(); 
     
-    // --- FLOATING CALCULATOR DRAG LOGIC ---
+    // --- FLOATING CALCULATOR DRAG LOGIC (Setup) ---
     const calculator = ui.floatingCalculator;
-    let isDragging = false;
-    let offsetX, offsetY;
+    let isCalcDragging = false;
+    let calcOffsetX, calcOffsetY;
+    const calcStartDrag = (e) => { if (e.target.classList.contains('calc-btn')) return; isCalcDragging = true; const rect = calculator.getBoundingClientRect(); const parentRect = calculator.parentElement.getBoundingClientRect(); const clientX = e.clientX ?? e.touches[0].clientX; const clientY = e.clientY ?? e.touches[0].clientY; calcOffsetX = clientX - rect.left; calcOffsetY = clientY - rect.top; calculator.style.left = (rect.left - parentRect.left) + 'px'; calculator.style.top = (rect.top - parentRect.top) + 'px'; calculator.style.right = 'auto'; calculator.style.bottom = 'auto'; calculator.style.cursor = 'grabbing'; document.body.style.userSelect = 'none'; if(e.preventDefault) e.preventDefault(); };
+    const calcDoDrag = (e) => { if (!isCalcDragging) return; const parentRect = calculator.parentElement.getBoundingClientRect(); const clientX = e.clientX ?? e.touches[0].clientX; const clientY = e.clientY ?? e.touches[0].clientY; let newLeft = clientX - parentRect.left - calcOffsetX; let newTop = clientY - parentRect.top - calcOffsetY; newLeft = Math.max(0, Math.min(newLeft, parentRect.width - calculator.offsetWidth)); newTop = Math.max(0, Math.min(newTop, parentRect.height - calculator.offsetHeight)); calculator.style.left = newLeft + 'px'; calculator.style.top = newTop + 'px'; if(e.preventDefault) e.preventDefault(); };
+    const calcStopDrag = () => { isCalcDragging = false; calculator.style.cursor = 'move'; document.body.style.userSelect = 'auto'; };
+    calculator.addEventListener('mousedown', calcStartDrag); document.addEventListener('mousemove', calcDoDrag); document.addEventListener('mouseup', calcStopDrag);
+    calculator.addEventListener('touchstart', calcStartDrag, { passive: false }); document.addEventListener('touchmove', calcDoDrag, { passive: false }); document.addEventListener('touchend', calcStopDrag);
 
-    const startDrag = (e) => {
-        // --- MODIFICATION: Allow dragging from display, but not buttons ---
-        if (e.target.classList.contains('calc-btn')) return;
-        
-        isDragging = true;
-        const rect = calculator.getBoundingClientRect();
-        const parentRect = calculator.parentElement.getBoundingClientRect();
-        const clientX = e.clientX ?? e.touches[0].clientX;
-        const clientY = e.clientY ?? e.touches[0].clientY;
-        offsetX = clientX - rect.left;
-        offsetY = clientY - rect.top;
-        calculator.style.left = (rect.left - parentRect.left) + 'px';
-        calculator.style.top = (rect.top - parentRect.top) + 'px';
-        calculator.style.right = 'auto';
-        calculator.style.bottom = 'auto';
-        calculator.style.cursor = 'grabbing';
-        document.body.style.userSelect = 'none'; 
-        if(e.preventDefault) e.preventDefault(); 
-    };
-    const doDrag = (e) => {
-        if (!isDragging) return;
-        const parentRect = calculator.parentElement.getBoundingClientRect();
-        const clientX = e.clientX ?? e.touches[0].clientX;
-        const clientY = e.clientY ?? e.touches[0].clientY;
-        let newLeft = clientX - parentRect.left - offsetX;
-        let newTop = clientY - parentRect.top - offsetY;
-        newLeft = Math.max(0, Math.min(newLeft, parentRect.width - calculator.offsetWidth));
-        newTop = Math.max(0, Math.min(newTop, parentRect.height - calculator.offsetHeight));
-        calculator.style.left = newLeft + 'px';
-        calculator.style.top = newTop + 'px';
-        if(e.preventDefault) e.preventDefault(); 
-    };
-    const stopDrag = () => {
-        isDragging = false;
-        calculator.style.cursor = 'move';
-        document.body.style.userSelect = 'auto';
-    };
-    calculator.addEventListener('mousedown', startDrag);
-    document.addEventListener('mousemove', doDrag);
-    document.addEventListener('mouseup', stopDrag);
-    calculator.addEventListener('touchstart', startDrag, { passive: false });
-    document.addEventListener('touchmove', doDrag, { passive: false });
-    document.addEventListener('touchend', stopDrag);
-    // --- End of Drag Logic ---
-
-
-    // --- MODIFIED: Wire up floating calculator buttons with toggle logic ---
+    // --- Wire up floating calculator buttons ---
     ui.floatingCalculator.querySelectorAll('.calc-btn').forEach(button => {
         button.addEventListener('click', () => {
             const value = button.dataset.value;
-            
-            // --- THIS IS THE NEW TOGGLE LOGIC ---
-            if (ui.calcOnlyToggleBtn.classList.contains('active')) {
-                // MODE 2: Send to Calculator Display
-                handleDisplayModeInput(value);
+            if (value === 'connect-3d') {
+                toggleCalc3DConnection(); // Special handling
+            } else if (ui.calcOnlyToggleBtn.classList.contains('active')) {
+                handleDisplayModeInput(value); // Includes check for 3D connect
             } else {
-                // MODE 1: Send to Prompt (Original Behavior)
-                handleCalculatorInput(value);
+                handleCalculatorInput(value); // Includes check for 3D connect
             }
         });
     });
 
-    // --- NEW: Wire up the toggle button itself ---
+    // --- Wire up the calc-only toggle button ---
     ui.calcOnlyToggleBtn.addEventListener('click', () => {
         ui.calcOnlyToggleBtn.classList.toggle('active');
-        
-        // When toggling ON, reset the display to 0
-        if (ui.calcOnlyToggleBtn.classList.contains('active')) {
-            calcDisplayValue = '0';
-            calcIsResultShown = false;
-            ui.calcDisplay.textContent = calcDisplayValue;
-        }
+        if (ui.calcOnlyToggleBtn.classList.contains('active')) { calcDisplayValue = '0'; calcIsResultShown = false; ui.calcDisplay.textContent = calcDisplayValue; }
     });
 
 
@@ -2102,20 +2427,12 @@ window.onload = () => {
     // Open/Close
     ui.ashCanvasBtn.onclick = () => {
         ui.ashCanvasOverlay.style.display = 'flex';
-        // Ensure Math modal is closed
+        // --- FIX: Close other overlays ---
         closeMathSolver(); 
+        closeArcEdgeGraph();
+        // --- END FIX ---
     };
-    ui.closeCanvasBtnOverlay.onclick = () => {
-        ui.ashCanvasOverlay.style.display = 'none';
-        // Reset modes
-        canvasState.drawMode = canvasState.unlinkMode = false;
-        toggleActive(ui.canvasLinkBtn, false);
-        toggleActive(ui.canvasUnlinkBtn, false);
-        if (canvasState.startNode) {
-            canvasState.startNode.classList.remove('selected');
-            canvasState.startNode = null;
-        }
-    };
+    ui.closeCanvasBtnOverlay.onclick = closeAshCanvas; // Use named function
     
     // Submit to Batch
     ui.submitCanvasBtn.onclick = addCanvasInfluenceToBatch;
@@ -2166,42 +2483,27 @@ window.onload = () => {
     
     // --- END: ASH CANVAS WIRING ---
 
-
-    // Global focus listener
-    ui.promptsContainer.addEventListener('focusin', (event) => {
-        if (event.target.tagName === 'INPUT' && event.target.type === 'text') {
-            activePromptInput = event.target;
-            // Remove outline from all *other* rows
-            ui.promptsContainer.querySelectorAll('.prompt-row').forEach(row => {
-                row.style.outline = 'none';
-            });
-            // Add outline to the current row
-            event.target.closest('.prompt-row').style.outline = '2px solid var(--accent-color)';
-        }
-    });
-
-    // Global blur listener
-    ui.promptsContainer.addEventListener('focusout', (event) => {
-        // Delay to check if focus moved to another prompt or calculator button
-        setTimeout(() => {
-            const focusedElement = document.activeElement;
-            if (!focusedElement || 
-                (!focusedElement.closest('.prompt-row') && !focusedElement.closest('#floating-calculator'))) {
-                
-                // Focus left the prompt area and the calculator, remove all outlines
-                ui.promptsContainer.querySelectorAll('.prompt-row').forEach(row => {
-                    row.style.outline = 'none';
-                });
-                // We keep activePromptInput as is, so the calculator still works
-            }
-        }, 50); // Small delay
-    });
+    // --- ARC EDGE WIRING ---
+    ui.arcEdgeGraphBtn.onclick = openArcEdgeGraph;
+    ui.arcEdgeCloseBtn.onclick = closeArcEdgeGraph;
+    ui.arcEdgeAddBtn.onclick = addArcToScene;
+    ui.arcEdgeMeasureBtn.onclick = measureSelectedArc;
+    ui.arcEdgeClearInputsBtn.onclick = clearArcEdgeInputs;
+    ui.arcEdgeClearSceneBtn.onclick = clearArcEdgeScene;
+    // Make Arc Edge overlay draggable (using the overlay background as the handle)
+    makeDraggable(ui.arcEdgeOverlay, ui.arcEdgeOverlay); 
+     // Stop propagation on content clicks so they don't trigger drag start
+     ui.arcEdgeContent.addEventListener('mousedown', (e) => e.stopPropagation());
+     ui.arcEdgeContent.addEventListener('touchstart', (e) => e.stopPropagation());
 
 
-    // --- Create the new, detailed welcome message (v8.0) ---
-    const welcomeMsg = document.createElement('div');
-    welcomeMsg.className = 'message bot-message';
-    
+    // --- Global focus listeners ---
+    ui.promptsContainer.addEventListener('focusin', (event) => { /* ... highlight focused prompt row ... */ });
+    ui.promptsContainer.addEventListener('focusout', (event) => { /* ... unhighlight prompt row on blur ... */ });
+
+
+    // --- Welcome message ---
+    const welcomeMsg = document.createElement('div'); welcomeMsg.className = 'message bot-message';
     let toolListHTML = '<ul style="list-style: none; padding-left: 10px;">';
     for (const toolName in leadEdgeExecutor.naturalTools) {
         const toolInfo = leadEdgeExecutor.naturalTools[toolName];
@@ -2210,29 +2512,31 @@ window.onload = () => {
     }
     toolListHTML += '</ul>';
 
-    // --- UPDATED Welcome Message for v8.0 ---
     welcomeMsg.innerHTML = `
         Advanced Math mode (v8.0) active.
         <br><br>
+        <strong>NEW: Arc Edge 3D Graph (৩)</strong>
+        <br>
+        Use the 3D graph to define and measure complex arcs. Click "Add Arc" to generate buoyancy prompts for the arc's parameters. Use "Measure Selected" to calculate an arc's length and add it as a prompt.
+        <br><br>
         <strong>NEW: Ash Canvas (❖)</strong>
         <br>
-        Use the Ash Canvas to visually define dependencies between natural tools. Draw links *from* a tool *to* another (e.g., <code>M</code> → <code>P</code>). When you "Add Influence to Batch," this will create assignment prompts (e.g., <code>p = m</code>) to influence the BRPN's dependency sort.
+        Use the Ash Canvas to visually define dependencies. Draw links *from* a tool *to* another (e.g., <code>M</code> → <code>P</code>). "Add Influence" will create assignment prompts (e.g., <code>p = m</code>).
         <br><br>
         <strong>Architecture (BRPN Shell v8.0):</strong>
         <br>
-        1. <strong>(Parse)</strong> The BRPN Shell parses all prompts to identify tasks.
+        1. <strong>(Parse)</strong> The BRPN Shell parses all prompts.
         <br>
-        2. <strong>(Sort)</strong> The Shell "reflexes" by finding dependencies (e.g., <code>e=p</code> or canvas <code>p = m</code>) and <strong>re-orders all assignments</strong>.
+        2. <strong>(Sort)</strong> The Shell "reflexes" by finding dependencies and <strong>re-ordering all assignments</strong>.
         <br>
-        3. <strong>(Execute)</strong> The Shell calls the multi-modal <strong>LEATR network</strong> to run the sorted assignments in the correct "buoyancy" order.
+        3. <strong>(Execute)</strong> The Shell calls the <strong>LEATR network</strong> to run sorted assignments.
         <br>
-        4. <strong>(Report)</strong> The Shell calls LEATR again to solve all math problems with the final values and generate a full report.
+        4. <strong>(Report)</strong> The Shell calls LEATR again to solve all math problems and report.
         <br><br>
         <strong>Available Natural Tool Variables:</strong>
         ${toolListHTML}
         All variables default to 0.
-    `;
-    
+    `; 
     ui.chatWindow.appendChild(welcomeMsg);
 };
 </script>
