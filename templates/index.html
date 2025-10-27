@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -351,7 +352,6 @@
       padding-top: 50px;
       background: transparent !important;
     }
-    #chat-header { text-align: center; margin-bottom: 30px; }
     #chat-header .chat-logo { width: 425px; object-fit: contain; }
     #messageWindow {
       height: 300px; border: 1px solid var(--theme-input-border); padding: 8px;
@@ -573,10 +573,14 @@
       font-weight: bold;
     }
     .physics-grid {
+      /* Dynamic grid based on selection (6 inputs for Atom/Floor, 7 for Scene) */
       display: grid; 
       grid-template-columns: repeat(3, 1fr); 
       gap: 10px; 
       margin-bottom: 10px;
+    }
+    .physics-grid.scene-mode {
+         grid-template-columns: repeat(4, 1fr); /* 4 columns for 7 inputs + empty slot */
     }
     .physics-grid label {
         margin: 0; /* Remove default label margin */
@@ -591,6 +595,17 @@
         border: 1px solid var(--theme-input-border);
         border-radius: 4px;
         box-sizing: border-box;
+    }
+    
+    /* Style for the new select dropdown */
+    #physicsTargetSelect {
+        padding: 8px;
+        background: var(--theme-input-bg);
+        color: var(--theme-text);
+        border: 1px solid var(--theme-panel-border);
+        border-radius: 5px;
+        width: 300px;
+        margin-bottom: 10px;
     }
 
 
@@ -942,55 +957,71 @@ DART Meadow
   
   <div class="menu">
       <div class="menu-row">
-          <button id="startSimulationButton">Arc Edge | Start</button>
-          <button id="stopSimulationButton">Arc Edge | Stop</button>
+          <button id="startSimulationButton">Articren Wave | Start</button>
+          <button id="stopSimulationButton">Articren Wave | Stop</button>
       </div>
       <div class="menu-row">
           <button id="exportButton">Export as PNG</button>
           <button id="exportGLTFButton">Export as GLTF</button>
       </div>
       
+      <!-- NEW: Physics Target Select Dropdown -->
+      <div class="menu-row">
+        <select id="physicsTargetSelect">
+          <option value="">-- Select Scene/Group/Floor --</option>
+        </select>
+      </div>
+      
       <!-- NEW: Dynamic Physics Controls -->
       <div class="menu-row">
           <fieldset class="physics-fieldset">
               <legend>Dynamic Physics Controls (Arc Edge Factor)</legend>
-              <div class="physics-grid">
-                  <!-- Row 1 -->
-                  <label>Mass (M)
+              <div class="physics-grid" id="physicsGrid">
+                  <!-- Row 1/2 (Populated by JS based on selection) -->
+                  <label id="labelMass">Mass (M)
                       <input type="number" id="physicsMass" value="1.0" step="0.1" min="0.1" title="Atomic Mass / Scaling Factor">
                   </label>
-                  <label>Volume (Vol)
+                  <label id="labelVolume">Volume (Vol)
                       <input type="number" id="physicsVolume" value="1.0" step="0.1" min="0.1" title="Atomic Scale / Inches (Scaled)">
                   </label>
-                  <label>Weight (Wt)
+                  <label id="labelWeight">Weight (Wt)
                       <input type="number" id="physicsWeight" value="1.0" step="0.1" min="0.1" title="Scaled Weight / Pounds">
                   </label>
-                  <!-- Row 2 -->
-                  <label>Density (D)
+                  
+                  <label id="labelDensity">Density (D)
                       <input type="number" id="physicsDensity" value="1.0" step="0.1" min="0.1" title="Mass/Volume Ratio">
                   </label>
-                  <label>Temperature (°F)
+                  <label id="labelTemp">Temperature (°F)
                       <input type="number" id="physicsTemp" value="70.0" step="1.0" title="Temperature in Fahrenheit">
                   </label>
-                  <label>Velocity (MPH)
+                  <label id="labelVelocity">Velocity (MPH)
                       <input type="number" id="physicsVelocity" value="0.0" step="1.0" title="Velocity in Miles Per Hour">
                   </label>
+                  
+                  <!-- Global/Scene-specific Gravity Input -->
+                  <label id="labelGravity" style="display: none;">Gravity (G-Force Factor)
+                      <input type="number" id="physicsGravity" value="9.8" step="0.1" min="0.0" title="Gravity Factor (9.8 = Earth)">
+                  </label>
+                  
               </div>
-              <label>Gravity (G-Force Factor)
-                  <input type="number" id="physicsGravity" value="9.8" step="0.1" min="0.0" title="Gravity Factor (9.8 = Earth)">
-              </label>
           </fieldset>
       </div>
       
-      <div class="menu-row" style="justify-content: space-evenly; width: 400px; margin-left: auto; margin-right: auto; margin-top: 20px;">
+      <!-- NEW: Checkboxes for Simulation Modes -->
+      <div class="menu-row" style="justify-content: space-evenly; width: 600px; margin-left: auto; margin-right: auto; margin-top: 20px;">
         <div style="display: flex; align-items: center;">
           <label for="multiSelectToggle" style="color: white; margin: 0;">Multiple Selection Mode</label>
           <input type="checkbox" id="multiSelectToggle" style="margin-left: 10px;">
         </div>
         <div style="display: flex; align-items: center;">
-          <!-- NEW: Linked Simulation Checkbox -->
+          <!-- KEPT: Linked Simulation Checkbox (for inter-group reaction) -->
           <label for="linkedSimToggle" style="color: white; margin: 0;">Link Physics Simulation</label>
           <input type="checkbox" id="linkedSimToggle" style="margin-left: 10px;">
+        </div>
+        <!-- KEPT: Floor Plane Checkbox -->
+        <div style="display: flex; align-items: center;">
+          <label for="floorSimToggle" style="color: white; margin: 0;">Enable Floor Plane</label>
+          <input type="checkbox" id="floorSimToggle" style="margin-left: 10px;">
         </div>
       </div>
       
@@ -1444,8 +1475,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const multiSelectToggle = document.getElementById('multiSelectToggle');
     const periodicTable = document.getElementById('periodicTable');
     
-    // --- NEW PHYSICS UI ELEMENTS ---
+    // --- NEW PHYSICS UI ELEMENTS & STATE ---
     const linkedSimToggle = document.getElementById('linkedSimToggle');
+    const floorSimToggle = document.getElementById('floorSimToggle');
+    const physicsTargetSelect = document.getElementById('physicsTargetSelect'); 
+    const physicsGrid = document.getElementById('physicsGrid');
+
     const inputMass = document.getElementById('physicsMass');
     const inputVolume = document.getElementById('physicsVolume');
     const inputWeight = document.getElementById('physicsWeight');
@@ -1453,116 +1488,290 @@ document.addEventListener('DOMContentLoaded', function() {
     const inputTemp = document.getElementById('physicsTemp');
     const inputVelocity = document.getElementById('physicsVelocity');
     const inputGravity = document.getElementById('physicsGravity');
+    
+    // Global defaults (used for initialization)
+    const DEFAULT_PHYSICS = {
+        mass: 1.0, volume: 1.0, weight: 9.8, density: 1.0, 
+        temp: 70.0, velocity: 0.0, gravity: 9.8 
+    };
 
-    if (!startSimulationButton || !stopSimulationButton || !exportButton || !exportGLTFButton || !multiSelectToggle || !periodicTable || !linkedSimToggle || !inputGravity) {
+    if (!startSimulationButton || !stopSimulationButton || !exportButton || !exportGLTFButton || !multiSelectToggle || !periodicTable || !linkedSimToggle || !inputGravity || !floorSimToggle || !physicsTargetSelect) {
         console.error('One or more UI elements are missing!');
         return;
     }
     
-    // --- NEW PHYSICS STATE ---
-    const physicsInputs = {
-        mass: 1.0, volume: 1.0, weight: 1.0, density: 1.0, 
-        temp: 70.0, 
-        velocity: 0.0, 
-        gravity: 9.8 
+    let atomGroups = []; 
+    let groupCounter = 0;
+    
+    // NEW: Scene/Global Physics Settings
+    let scenePhysicsSettings = {
+        id: 'scene_global',
+        name: 'Overall Scene',
+        physics: { 
+            mass: 0.0, volume: 0.0, weight: 0.0, density: 0.0, 
+            temp: 70.0, velocity: 0.0, gravity: 9.8 // Only Gravity is relevant globally
+        }
     };
-
-    let atomGroups = []; // [{ center: Vector3, nucleusMeshes: [], electronMeshes: [], stableForce: Number, maxRadius: Number, index: Number, nucleusCenter: Vector3, isNucleusActive: boolean, nucleusVelocity: Vector3, nucleusFriction: Number }]
+    let floorPhysicsSettings = null; 
+    let selectedPhysicsTargetId = 'scene_global'; // Default to scene
+    
     let isSimulating = false;
     let multiSelectMode = false;
     let isLinkedSimulation = false;
-    let nucleusThresholdFactor = 100; // Arbitrary stability threshold
+    let isFloorActive = false; 
+    let floorPlaneMesh = null; 
+    const FLOOR_Y_POS = -10.0; 
+    const FLOOR_THICKNESS = 1.0;
+    
+    let nucleusThresholdFactor = 100; 
+    
+    // --- UTILITY: Update the input visibility and grid layout ---
+    function updateInputDisplay(targetId) {
+        const isScene = targetId === 'scene_global';
+        const isFloor = targetId === 'floor_plane';
 
-    // Initial sync and listeners
-    function syncPhysicsInputs() {
-        physicsInputs.mass = parseFloat(inputMass.value) || 1.0;
-        physicsInputs.volume = parseFloat(inputVolume.value) || 1.0;
-        physicsInputs.weight = parseFloat(inputWeight.value) || 1.0;
-        physicsInputs.density = parseFloat(inputDensity.value) || 1.0;
-        physicsInputs.temp = parseFloat(inputTemp.value) || 70.0;
-        physicsInputs.velocity = parseFloat(inputVelocity.value) || 0.0;
-        physicsInputs.gravity = parseFloat(inputGravity.value) || 9.8;
+        // Toggle Grid Layout
+        physicsGrid.classList.toggle('scene-mode', isScene);
+
+        // Hide/Show Gravity input label and input
+        document.getElementById('labelGravity').style.display = isScene ? 'block' : 'none';
+        
+        // Hide/Show Mass/Volume/Weight/Density/Velocity/Temp (all except Gravity for Scene)
+        document.getElementById('labelMass').style.display = isScene ? 'none' : 'block';
+        document.getElementById('labelVolume').style.display = isScene ? 'none' : 'block';
+        document.getElementById('labelWeight').style.display = isScene ? 'none' : 'block';
+        document.getElementById('labelDensity').style.display = isScene ? 'none' : 'block';
+        document.getElementById('labelTemp').style.display = 'block'; // Temp/Velocity still influence ArcEdge
+        document.getElementById('labelVelocity').style.display = 'block'; 
+        
+        // Final adjustment for scene-mode inputs that are visible
+        document.getElementById('labelTemp').style.gridColumn = isScene ? 'span 2' : 'span 1';
+        document.getElementById('labelVelocity').style.gridColumn = isScene ? 'span 2' : 'span 1';
+        document.getElementById('labelGravity').style.gridColumn = isScene ? 'span 4' : 'span 1';
+        
+        // Clear/Set titles and disable status based on floor/scene
+        inputMass.title = isFloor ? "Floor's Mass (for its own gravity field)" : "Atomic Mass / Scaling Factor";
+        inputMass.disabled = isScene;
+        inputVolume.disabled = isScene;
+        inputWeight.disabled = isScene;
+        inputDensity.disabled = isScene;
     }
     
-    Object.values(document.querySelectorAll('#physicsMass, #physicsVolume, #physicsWeight, #physicsDensity, #physicsTemp, #physicsVelocity, #physicsGravity'))
-        .forEach(input => input.addEventListener('input', syncPhysicsInputs));
+    // --- UTILITY: Get current target object ---
+    function getCurrentTarget() {
+        if (selectedPhysicsTargetId === 'scene_global') return scenePhysicsSettings;
+        if (selectedPhysicsTargetId === 'floor_plane' && floorPhysicsSettings) return floorPhysicsSettings;
+        return atomGroups.find(g => g.id === selectedPhysicsTargetId) || null;
+    }
+    
+    // --- UTILITY: Load settings from selected target to UI inputs ---
+    function loadTargetSettings(targetId) {
+        const target = targetId === 'scene_global' ? scenePhysicsSettings : 
+                       targetId === 'floor_plane' ? floorPhysicsSettings : 
+                       atomGroups.find(g => g.id === targetId);
+                       
+        updateInputDisplay(targetId);
 
-    linkedSimToggle.addEventListener('change', () => {
-        isLinkedSimulation = linkedSimToggle.checked;
+        if (!target || !target.physics) {
+            [inputMass, inputVolume, inputWeight, inputDensity, inputTemp, inputVelocity, inputGravity].forEach(input => {
+                input.value = ''; input.disabled = true;
+            });
+            selectedPhysicsTargetId = '';
+            return;
+        }
+        
+        selectedPhysicsTargetId = targetId;
+        const p = target.physics;
+        
+        if (targetId !== 'scene_global') {
+            inputMass.value = p.mass.toFixed(2);
+            inputVolume.value = p.volume.toFixed(2);
+            inputWeight.value = p.weight.toFixed(2);
+            inputDensity.value = p.density.toFixed(2);
+        }
+        
+        inputTemp.value = p.temp.toFixed(2);
+        inputVelocity.value = p.velocity.toFixed(2);
+
+        if (targetId === 'scene_global') {
+            inputGravity.value = p.gravity.toFixed(2);
+        }
+        
+        // Enable inputs based on display status
+        [inputMass, inputVolume, inputWeight, inputDensity, inputTemp, inputVelocity, inputGravity].forEach(input => {
+             input.disabled = input.parentElement.style.display === 'none';
+        });
+    }
+    
+    // --- UTILITY: Save current UI inputs back to selected target object ---
+    function saveCurrentSettings() {
+        const target = getCurrentTarget();
+        if (!target) return;
+
+        target.physics.temp = parseFloat(inputTemp.value) || 0;
+        target.physics.velocity = parseFloat(inputVelocity.value) || 0;
+        
+        if (target.id === 'scene_global') {
+            target.physics.gravity = parseFloat(inputGravity.value) || 0;
+        } else {
+            target.physics.mass = parseFloat(inputMass.value) || 0;
+            target.physics.volume = parseFloat(inputVolume.value) || 0;
+            target.physics.weight = parseFloat(inputWeight.value) || 0;
+            target.physics.density = parseFloat(inputDensity.value) || 0;
+        }
+    }
+    
+    // --- UTILITY: Update the dropdown list ---
+    function updatePhysicsDropdown() {
+        const currentId = selectedPhysicsTargetId;
+        physicsTargetSelect.innerHTML = ''; // Clear options
+        
+        // Add Scene Global
+        let option = document.createElement('option');
+        option.value = scenePhysicsSettings.id;
+        option.textContent = scenePhysicsSettings.name;
+        physicsTargetSelect.appendChild(option);
+        
+        // Add Atom Groups
+        atomGroups.forEach(group => {
+            const option = document.createElement('option');
+            option.value = group.id;
+            option.textContent = group.name;
+            physicsTargetSelect.appendChild(option);
+        });
+        
+        // Add Floor Plane
+        if (floorPhysicsSettings) {
+            option = document.createElement('option');
+            option.value = floorPhysicsSettings.id;
+            option.textContent = floorPhysicsSettings.name;
+            physicsTargetSelect.appendChild(option);
+        }
+        
+        physicsTargetSelect.value = currentId;
+        // If the current selection was removed (e.g. floor disabled), fallback to scene
+        if (!physicsTargetSelect.value) {
+            physicsTargetSelect.value = scenePhysicsSettings.id;
+        }
+        
+        loadTargetSettings(physicsTargetSelect.value);
+    }
+    
+    // Wire up dropdown change event
+    physicsTargetSelect.addEventListener('change', (e) => {
+        saveCurrentSettings(); // Save settings of the *previous* target
+        loadTargetSettings(e.target.value); // Load settings of the *new* target
     });
-    // --- END NEW PHYSICS STATE ---
     
+    // Wire up all input change events to save the settings immediately
+    [inputMass, inputVolume, inputWeight, inputDensity, inputTemp, inputVelocity, inputGravity].forEach(input => {
+        input.addEventListener('input', saveCurrentSettings);
+    });
+
+    // --- NEW FLOOR LOGIC ---
+    function createFloorPlane() {
+        if (floorPlaneMesh) return; 
+
+        const floorGeometry = new THREE.BoxGeometry(100, FLOOR_THICKNESS, 100); 
+        const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x555555, transparent: true, opacity: 0.5 });
+        
+        floorPlaneMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+        floorPlaneMesh.position.y = FLOOR_Y_POS; 
+        floorPlaneMesh.name = 'FloorPlane';
+        floorPlaneMesh.userData.isStaticBody = true; 
+        
+        // Initialize floor settings (Mass/Weight are for *emission* not scene gravity interaction)
+        floorPhysicsSettings = {
+            id: 'floor_plane',
+            name: 'Floor Plane',
+            physics: { 
+                mass: 1000.0, volume: 100.0, weight: 9800.0, density: 10.0, 
+                temp: 70.0, velocity: 0.0, gravity: 0.0 // Gravity is now handled by the Scene target
+            }
+        };
+
+        scene.add(floorPlaneMesh);
+        updatePhysicsDropdown();
+    }
+
+    function removeFloorPlane() {
+        if (floorPlaneMesh) {
+            scene.remove(floorPlaneMesh);
+            floorPlaneMesh.geometry.dispose();
+            floorPlaneMesh.material.dispose();
+            floorPlaneMesh = null;
+        }
+        
+        const wasSelected = selectedPhysicsTargetId === 'floor_plane';
+        floorPhysicsSettings = null;
+        
+        updatePhysicsDropdown();
+    }
     
-    // --- Arc Edge Iteration Logic (Adapted from brpnadvanced) ---
+    floorSimToggle.addEventListener('change', () => {
+        isFloorActive = floorSimToggle.checked;
+        if (isFloorActive) {
+            createFloorPlane();
+        } else {
+            removeFloorPlane();
+        }
+    });
+    // --- END NEW FLOOR LOGIC ---
+
     
     /**
-     * Generates a deviation vector based on T, V, G inputs using the Arc Edge principles.
-     * @param {number} t - Time factor (0 to 1, or just a random seed for consistent deviation).
-     * @param {Object} params - The physics inputs (temp, velocity, gravity, density).
-     * @param {number} shellInfluence - The decay factor (1.0 for closest shell, less for outer).
-     * @returns {THREE.Vector3} - The deviation vector.
+     * Generates a deviation vector based on T, V, D inputs using the Arc Edge principles.
      */
-    function getArcEdgeDeviation(t, params, shellInfluence) {
-        const { temp, velocity, gravity, density } = params;
+    function getArcEdgeDeviation(t, params) { // Removed 'gravity' from params/logic
+        const { temp, velocity, density } = params;
         
-        // 1. Calculate an aggregated 'Influence Factor'
         const normalizedDensity = Math.max(0.1, density);
-        const normalizedVelocity = Math.max(0.1, velocity) / 100; // MPH scale
-        const normalizedTemp = Math.max(0.1, temp) / 100; // Fahrenheit scale
-        const normalizedGravity = gravity / 9.8; // G-Force scale
+        const normalizedVelocity = Math.max(0.1, velocity) / 100; 
+        const normalizedTemp = Math.max(0.1, temp) / 100; 
 
-        // Main Deviation is driven by T, V, G, and is dampened by D
-        const mainDeviationMagnitude = ((normalizedTemp + normalizedVelocity) * normalizedGravity / normalizedDensity) * 0.5; // Max Deviation ~3
+        // Removed Gravity influence from Arc Edge Magnitude Calculation
+        const mainDeviationMagnitude = ((normalizedTemp + normalizedVelocity) / normalizedDensity) * 0.5; 
 
-        // Use the structure of arc-edge iteration parameters:
-        const x = 1.0; const y = 0.5; const z = 0; // Simple deviation bias direction
-        const curveInd = normalizedVelocity * 3; // Curve Induction driven by velocity
-        const devInd = normalizedTemp * 3; // Deviation Induction driven by temperature
+        const x = 1.0; const y = 0.5; const z = 0; 
+        const curveInd = normalizedVelocity * 3; 
+        const devInd = normalizedTemp * 3; 
 
-        // Apply shell decay: Influence is lower for farther shells
+        // Shell influence is calculated in the main loop and passed via params
+        const shellInfluence = params.shellInfluence; 
+        
         const adjustedMainDev = mainDeviationMagnitude * shellInfluence;
         const adjustedCurveInd = curveInd * shellInfluence;
         const adjustedDevInd = devInd * shellInfluence;
 
-        // Note: The original logic in brpnadvanced was complex. This simplifies 
-        // it to generate a deviation vector based on the core math principles.
-        
-        let px = 0; // Start at 0 for deviation vector
-        let py = 0; 
-        let pz = 0;
+        let px = 0; let py = 0; let pz = 0;
 
-        // The base vector for perpendicular deviation
         const dir = new THREE.Vector3(x, y, z).normalize();
         let up = new THREE.Vector3(0, 1, 0);
         if (Math.abs(dir.y) > 0.95) up.set(1, 0, 0); 
         const perp1 = new THREE.Vector3().crossVectors(dir, up).normalize();
         
-        // Apply Main Deviation (Using 3 instead of Math.PI as per brpn constraint)
         const deviationVector = perp1.clone().multiplyScalar(Math.sin(t * 3) * adjustedMainDev); 
         
         px += deviationVector.x;
         py += deviationVector.y;
         pz += deviationVector.z;
         
-        // Apply Curve Induction (Sinusoidal variation, using 3 instead of Math.PI as per brpn constraint)
         px += Math.sin(t * 3 * 3) * adjustedCurveInd * x; 
         py += Math.sin(t * 5 * 3) * adjustedCurveInd * y;
         pz += Math.sin(t * 7 * 3) * adjustedCurveInd * z;
         
-        // Apply Deviation Induction
         const devIndVector = perp1.clone().multiplyScalar(Math.sin(t * 4 * 3 + 1) * adjustedDevInd); 
         
-        px += devIndVector.x;
-        py += devIndVector.y;
-        pz += devIndVector.z;
+         px += devIndVector.x;
+         py += devIndVector.y;
+         pz += devIndVector.z;
         
         return new THREE.Vector3(px, py, pz);
     }
     // --- End Arc Edge Adaptation ---
-
     
+    // ... (fetchData, createPeriodicTable, handleElementClick, clearSelectedElements, updateSelectedElements remain the same) ...
     function fetchData() {
-        // ... (existing fetchData logic)
         const scriptURL = 'https://script.google.com/macros/s/AKfycbyDI4FsSWKaG9nklipdE_vxTcWJQAZLMkiBV2DgAhU9-gh3iQyxpCbbvQtKUkxzk5wqYg/exec?range=A2:A128,D2:D128';
         fetch(scriptURL)
         .then(response => {
@@ -1585,7 +1794,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function createPeriodicTable(elements) {
-        // ... (existing createPeriodicTable logic)
         const periodicTable = document.getElementById('periodicTable');
         elements.forEach((element, index) => {
             const elementDiv = document.createElement('div');
@@ -1600,7 +1808,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
             periodicTable.appendChild(elementDiv);
 
-            // Insert placeholders as necessary
             if (index === 0) {
                 for (let i = 0; i < 16; i++) {
                     const placeholderDiv = document.createElement('div');
@@ -1637,22 +1844,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateSelectedElements() {
         const selectedElements = document.querySelectorAll('.element.selected');
-        clearScene(); // Clear scene also clears atomGroups
+        clearScene(); 
         selectedElements.forEach((el, idx) => {
             const atom = JSON.parse(el.dataset.elementData);
             loadAtom(atom, idx);
         });
+        
+        if (atomGroups.length > 0) {
+            loadTargetSettings(atomGroups[0].id);
+        } else if (isFloorActive) {
+            loadTargetSettings('floor_plane');
+        } else {
+            loadTargetSettings('scene_global');
+        }
     }
-
+    
     function loadAtom(atom, index) {
         const spacing = 5; 
         const protons = parseInt(atom.protons);
         const neutrons = parseInt(atom.neutrons);
-        // const electrons = parseInt(atom.electrons); // Not strictly needed
         const orbits = atom.electronOrbits;
+        
+        const atomId = `group_${groupCounter++}`;
+        const atomName = `${atom.elementName} (${atomId.split('_')[1]})`;
 
-        // --- NEW: Group tracking for physics ---
         const atomGroup = { 
+            id: atomId,
+            name: atomName,
             center: new THREE.Vector3(index * spacing, 0, 0),
             nucleusMeshes: [], 
             electronMeshes: [],
@@ -1662,11 +1880,11 @@ document.addEventListener('DOMContentLoaded', function() {
             nucleusCenter: new THREE.Vector3(),
             isNucleusActive: false,
             nucleusVelocity: new THREE.Vector3(0,0,0),
-            nucleusFriction: 0.99
+            nucleusFriction: 0.99,
+            physics: { ...DEFAULT_PHYSICS, weight: (protons + neutrons) * DEFAULT_PHYSICS.gravity } // Inherit global gravity for weight calculation
         };
         atomGroups.push(atomGroup);
         
-        // --- Updated Materials (kept original) ---
         const protonColor = 'blue'; 
         const neutronColor = 'darkblue'; 
         const electronColor = 'deepskyblue'; 
@@ -1674,52 +1892,26 @@ document.addEventListener('DOMContentLoaded', function() {
         const neutronEmissive = 'black'; 
         const electronEmissive = 'red'; 
 
-        const protonMaterial = new THREE.MeshPhongMaterial({
-          color: protonColor,
-          emissive: protonEmissive, 
-          emissiveIntensity: 0.8,
-        });
-
-        const neutronMaterial = new THREE.MeshPhongMaterial({
-          color: neutronColor,
-          emissive: neutronEmissive, 
-          emissiveIntensity: 0.9,
-        });
-
-        const electronMaterial = new THREE.MeshPhongMaterial({
-          color: electronColor,
-          emissive: electronEmissive, 
-          emissiveIntensity: 2.0,
-        });
-        // --- End of Updates ---
+        const protonMaterial = new THREE.MeshPhongMaterial({ color: protonColor, emissive: protonEmissive, emissiveIntensity: 0.8 });
+        const neutronMaterial = new THREE.MeshPhongMaterial({ color: neutronColor, emissive: neutronEmissive, emissiveIntensity: 0.9 });
+        const electronMaterial = new THREE.MeshPhongMaterial({ color: electronColor, emissive: electronEmissive, emissiveIntensity: 2.0 });
         
-        // Create protons
         for (let i = 0; i < protons; i++) {
             const proton = new THREE.Mesh(new THREE.SphereGeometry(0.3, 32, 32), protonMaterial);
-            proton.position.set(
-                (Math.random() - 0.5) + index * spacing, 
-                (Math.random() - 0.5), 
-                (Math.random() - 0.5)
-            ).multiplyScalar(2);
+            proton.position.set((Math.random() - 0.5) + index * spacing, (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(2);
             addPhysicsAttributes(proton, 'proton');
             atomGroup.nucleusMeshes.push(proton);
             scene.add(proton);
         }
 
-        // Create neutrons
         for (let i = 0; i < neutrons; i++) {
             const neutron = new THREE.Mesh(new THREE.SphereGeometry(0.3, 32, 32), neutronMaterial);
-            neutron.position.set(
-                (Math.random() - 0.5) + index * spacing, 
-                (Math.random() - 0.5), 
-                (Math.random() - 0.5)
-            ).multiplyScalar(2);
+            neutron.position.set((Math.random() - 0.5) + index * spacing, (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(2);
             addPhysicsAttributes(neutron, 'neutron');
             atomGroup.nucleusMeshes.push(neutron);
             scene.add(neutron);
         }
 
-        // Calculate the center of the nucleus (used as arc origin)
         let nucleusCenter = new THREE.Vector3();
         let neutronCount = 0;
         atomGroup.nucleusMeshes.forEach(m => {
@@ -1728,11 +1920,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (neutronCount > 0) {
             nucleusCenter.divideScalar(neutronCount);
         } else {
-            nucleusCenter = atomGroup.center.clone(); // Fallback if no neutrons (e.g. H-1)
+            nucleusCenter = atomGroup.center.clone(); 
         }
         atomGroup.nucleusCenter = nucleusCenter; 
 
-        // Create electron orbits
         orbits.forEach((electronsInOrbit, orbitIndex) => {
             const radius = 4 + orbitIndex * 2;
             atomGroup.maxRadius = Math.max(atomGroup.maxRadius, radius);
@@ -1742,7 +1933,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const y = Math.sin(angle) * radius;
                 const electron = new THREE.Mesh(new THREE.SphereGeometry(0.1, 32, 32), electronMaterial);
                 
-                // Position relative to the true nucleus center
                 electron.position.set(x, y, 0).add(nucleusCenter);
                 
                 addPhysicsAttributes(electron, 'electron', orbitIndex, radius, nucleusCenter); 
@@ -1751,47 +1941,45 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
         
-        // Initial input preset based on atom
-        if (index === 0 && !multiSelectMode) { 
-            const totalNucleons = protons + neutrons;
-            inputMass.value = totalNucleons.toFixed(2);
-            inputVolume.value = (atomGroup.maxRadius / 5).toFixed(2); 
-            inputWeight.value = (totalNucleons * physicsInputs.gravity).toFixed(2);
-            inputDensity.value = (totalNucleons / (atomGroup.maxRadius / 5)).toFixed(2);
-            syncPhysicsInputs(); 
-        }
+        // --- INITIALIZE PHYSICS FOR THIS NEW GROUP (with inherited Scene Gravity) ---
+        const totalNucleons = protons + neutrons;
+        atomGroup.physics.mass = totalNucleons;
+        atomGroup.physics.volume = (atomGroup.maxRadius / 5); 
+        atomGroup.physics.weight = totalNucleons * scenePhysicsSettings.physics.gravity;
+        atomGroup.physics.density = totalNucleons / atomGroup.physics.volume;
+        // --- END INITIALIZE ---
         
         renderer.render(scene, camera); 
 
-        // Store initial positions
         scene.children.forEach((obj) => {
             if (obj instanceof THREE.Mesh) {
-                // Initial position is now relative to its nucleus center
                 obj.userData.initialOffset = obj.position.clone().sub(nucleusCenter); 
+                obj.userData.initialPosition = obj.position.clone(); 
             }
         });
+        
+        updatePhysicsDropdown();
     }
-
+    
     function addPhysicsAttributes(obj, type, orbitIndex = -1, initialRadius = 0, nucleusCenter = new THREE.Vector3()) {
         obj.userData = {
             type: type, 
             initialPosition: obj.position.clone(),
-            // For Arc Edge calculation
-            initialOffset: new THREE.Vector3(), // Calculated in loadAtom
+            initialOffset: new THREE.Vector3(), 
             orbitIndex: orbitIndex, 
             initialRadius: initialRadius,
-            // Nucleus state
-            isNucleusActive: false,
-            nucleusVelocity: new THREE.Vector3(0,0,0),
-            nucleusFriction: 0.99 
         };
     }
 
     function clearScene() {
         while (scene.children.length > 0) {
             const obj = scene.children[0];
-            if (obj instanceof THREE.Mesh) {
-                // Dispose resources
+            if (obj instanceof THREE.Mesh && obj.userData.isStaticBody) {
+                if (obj.userData.isStaticBody) {
+                    scene.remove(obj);
+                    floorPlaneMesh = null;
+                }
+            } else if (obj instanceof THREE.Mesh) {
                 if (obj.geometry) obj.geometry.dispose();
                 if (obj.material) {
                     if (Array.isArray(obj.material)) {
@@ -1800,64 +1988,93 @@ document.addEventListener('DOMContentLoaded', function() {
                         obj.material.dispose();
                     }
                 }
+                scene.remove(obj);
+            } else {
+                 scene.remove(obj); 
             }
-            scene.remove(obj);
         }
-        // Re-add static scene objects
         scene.add(light1);
         scene.add(light2);
         scene.add(light3);
-        // Clear global atom state
+        if (isFloorActive) createFloorPlane(); 
+
         atomGroups = [];
+        groupCounter = 0;
+        updatePhysicsDropdown();
+        loadTargetSettings('scene_global'); 
     }
     
     // --- NEW: Physics Application Loop ---
     function applyNewPhysics() {
         if (!isSimulating) return;
 
-        syncPhysicsInputs(); 
+        const globalGravity = scenePhysicsSettings.physics.gravity;
+        const globalGravityVector = new THREE.Vector3(0, -0.00005 * globalGravity, 0); 
+        
+        // 1. Scene Gravity (Applies to all active atom groups)
+        atomGroups.forEach(group => {
+            // Apply Scene Gravity
+            if (group.isNucleusActive) {
+                group.nucleusVelocity.add(globalGravityVector); 
+            }
+        });
 
-        const influenceBase = physicsInputs.temp * physicsInputs.velocity * physicsInputs.gravity; 
 
         atomGroups.forEach(group => {
-            // 1. Calculate Nucleus Center (Recalculate average position of all nucleus meshes)
+            const p = group.physics; 
+            // Arc Edge influence based on T, V, D (NO G)
+            const arcEdgeInfluenceBase = p.temp * p.velocity; 
+            
+            // 2. Calculate Nucleus Center & Check Threshold
             let nucleusCenter = new THREE.Vector3();
             let nucleusCount = 0;
-            group.nucleusMeshes.forEach(m => {
-                 // Use all nucleus parts for center of volume
-                 nucleusCenter.add(m.position);
-                 nucleusCount++;
-            });
-            if (nucleusCount > 0) {
-                nucleusCenter.divideScalar(nucleusCount);
-            } else {
-                 nucleusCenter = group.nucleusCenter; // Fallback
-            }
-            group.nucleusCenter = nucleusCenter; // Update for inter-group calculation
+            group.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
+            if (nucleusCount > 0) nucleusCenter.divideScalar(nucleusCount);
+            group.nucleusCenter = nucleusCenter; 
 
-            // 2. Check Nucleus Activation Threshold
-            // Threshold is exceeded when T*V*G is very high relative to the atom's stability (stableForce)
-            const isThresholdExceeded = influenceBase > (group.stableForce * nucleusThresholdFactor);
+            // Threshold is T*V*(Global G) vs stability * factor
+            const isThresholdExceeded = (p.temp * p.velocity * globalGravity) > (group.stableForce * nucleusThresholdFactor);
             if (isThresholdExceeded) {
                 group.isNucleusActive = true;
                 if (group.nucleusVelocity.length() === 0) {
-                     // Initial blast force when threshold is first exceeded
-                     group.nucleusVelocity.set(Math.random() * 0.1 - 0.05, Math.random() * 0.1 - 0.05, Math.random() * 0.1 - 0.05);
+                     group.nucleusVelocity.set(Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005);
                 }
             }
             
-            // 3. Apply Nucleus Movement (if active)
-            if (group.isNucleusActive) {
-                group.nucleusMeshes.forEach(n => {
-                    // Slight outward force (blow apart)
-                    const blastDir = new THREE.Vector3().subVectors(n.position, nucleusCenter).normalize();
-                    n.position.add(blastDir.multiplyScalar(0.005 * influenceBase / (group.stableForce * nucleusThresholdFactor))); 
-                    n.position.add(group.nucleusVelocity); // Apply main nucleus movement
+            // 3. Floor Collision Check & Reaction (Nucleus)
+            if (isFloorActive) {
+                const meshRadius = 0.3; 
+                const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2); 
+                const gravityFactor = globalGravity / 9.8; 
+                const restitution = Math.max(0.1, 0.9 - gravityFactor * 0.2); 
+                
+                group.nucleusMeshes.forEach(mesh => {
+                    if (mesh.position.y - meshRadius <= floorY) {
+                        if (group.nucleusVelocity.y < 0) { 
+                            group.nucleusVelocity.y *= -restitution; 
+                            group.nucleusVelocity.x *= 0.95; 
+                            group.nucleusVelocity.z *= 0.95; 
+                            group.isNucleusActive = true; 
+                        }
+                        mesh.position.y = floorY + meshRadius;
+                    }
                 });
-                group.nucleusVelocity.multiplyScalar(group.nucleusFriction); // Decay motion
+            }
+
+            // 4. Apply Nucleus Movement
+            if (group.isNucleusActive) {
+                const blastForce = isThresholdExceeded ? (0.001 * arcEdgeInfluenceBase * globalGravity / (group.stableForce * nucleusThresholdFactor)) : 0;
+                group.nucleusMeshes.forEach(n => {
+                    if (blastForce > 0) {
+                         const blastDir = new THREE.Vector3().subVectors(n.position, nucleusCenter).normalize();
+                         n.position.add(blastDir.multiplyScalar(blastForce)); 
+                    }
+                    n.position.add(group.nucleusVelocity); 
+                });
+                group.nucleusVelocity.multiplyScalar(group.nucleusFriction); 
             }
             
-            // 4. Apply Arc Edge Iteration to Electrons
+            // 5. Apply Arc Edge Iteration to Electrons
             let totalShells = group.electronMeshes.reduce((max, e) => Math.max(max, e.userData.orbitIndex), -1) + 1;
             const t = performance.now() * 0.0001; 
 
@@ -1865,66 +2082,78 @@ document.addEventListener('DOMContentLoaded', function() {
                 const shellIndex = e.userData.orbitIndex;
                 const distanceFactor = totalShells > 0 ? (totalShells - shellIndex) / totalShells : 1.0; 
                 
-                // 4.1. Calculate Deviation Vector using Arc Edge Logic
                 const shellInfluence = distanceFactor;
-                const deviationVector = getArcEdgeDeviation(t, physicsInputs, shellInfluence);
+                p.shellInfluence = shellInfluence; // Pass decay factor via the params object
+                const deviationVector = getArcEdgeDeviation(t, p); 
 
-                // 4.2. Determine Target Position: NucleusCenter + Original_Offset + Deviation
-                // Re-calculate the stable offset relative to the LATEST nucleus center
-                const stableOrbit = e.userData.initialOffset.clone(); // The original vector from group.center to electron
+                const stableOrbit = e.userData.initialOffset.clone(); 
                 
-                const targetPosition = nucleusCenter.clone() // Arc Origin (Neutron Center)
-                    .add(stableOrbit) // Stable orbit position relative to LATEST nucleus center
-                    .add(deviationVector.multiplyScalar(1)); // Apply the Arc Edge deviation
+                const targetPosition = nucleusCenter.clone() 
+                    .add(stableOrbit) 
+                    .add(deviationVector.multiplyScalar(1)); 
 
-                // 4.3. Move Electron (Interpolate towards target for smooth animation)
                 e.position.lerp(targetPosition, 0.1); 
+                
+                // Clip electrons to the floor if active
+                 if (isFloorActive) {
+                     const electronRadius = 0.1;
+                     const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2);
+                     if (e.position.y - electronRadius < floorY) {
+                          e.position.y = floorY + electronRadius;
+                     }
+                 }
             });
+            
+            // 6. Floor Plane as Gravity Emitter (if enabled)
+            if (isFloorActive && floorPhysicsSettings) {
+                const floorP = floorPhysicsSettings.physics;
+                const floorMass = floorP.mass; 
+                
+                if (floorMass > 100) {
+                    const floorCenter = floorPlaneMesh.position.clone();
+                    const distVec = new THREE.Vector3().subVectors(floorCenter, nucleusCenter);
+                    const distSq = distVec.lengthSq();
+                    
+                    if (distSq < 100) { 
+                        const attractionDir = new THREE.Vector3(0, -1, 0); 
+                        const attractionForce = (floorMass * p.mass / 1000) * 0.0000001; 
+                        
+                        group.nucleusVelocity.add(attractionDir.multiplyScalar(attractionForce));
+                        group.isNucleusActive = true; 
+                    }
+                }
+            }
         });
 
-        // 5. Inter-Group Linked Simulation (if active)
+        // 7. Inter-Group Linked Simulation (Collision/Repulsion)
         if (isLinkedSimulation) {
             for (let i = 0; i < atomGroups.length; i++) {
                 for (let j = i + 1; j < atomGroups.length; j++) {
                     const groupA = atomGroups[i];
                     const groupB = atomGroups[j];
                     
+                    const pA = groupA.physics;
+                    const pB = groupB.physics;
+                    
+                    const influenceBase = (pA.temp + pB.temp) * (pA.velocity + pB.velocity);
+                    
                     const dist = groupA.nucleusCenter.distanceTo(groupB.nucleusCenter);
-                    const proximityThreshold = groupA.maxRadius + groupB.maxRadius + 3; // Reaction starts when they are close
+                    const proximityThreshold = groupA.maxRadius + groupB.maxRadius + 3; 
 
                     if (dist < proximityThreshold) {
                         const repulsionDir = new THREE.Vector3().subVectors(groupA.nucleusCenter, groupB.nucleusCenter).normalize();
-                        const forceMagnitude = influenceBase / dist * 0.001; 
+                        const forceMagnitude = influenceBase * globalGravity / dist * 0.001; 
 
                         const reactionForce = repulsionDir.clone().multiplyScalar(forceMagnitude);
                         
-                        // Apply force to nucleus center
                         groupA.nucleusVelocity.add(reactionForce.clone().multiplyScalar(0.01));
                         groupB.nucleusVelocity.sub(reactionForce.clone().multiplyScalar(0.01));
                         
-                        // Apply force to electron center
-                        groupA.electronMeshes.forEach(m => m.position.add(reactionForce.clone().multiplyScalar(0.1)));
-                        groupB.electronMeshes.forEach(m => m.position.sub(reactionForce.clone().multiplyScalar(0.1)));
-
-                        // Activate nucleus if the force is significant
-                        if (forceMagnitude > 0.0005) {
-                            groupA.isNucleusActive = true;
-                            groupB.isNucleusActive = true;
-                        }
+                        groupA.isNucleusActive = true;
+                        groupB.isNucleusActive = true;
                     }
                 }
             }
-        }
-        
-        // 6. Apply Global Gravity to Nucleus if active (since gravity input is a factor)
-        if (physicsInputs.gravity > 0.1) {
-            const gravityVector = new THREE.Vector3(0, -0.00005 * physicsInputs.gravity, 0); 
-            atomGroups.forEach(group => {
-                // Gravity applies to the entire atom group if the nucleus is active
-                if (group.isNucleusActive) {
-                     group.nucleusVelocity.add(gravityVector); // Add to velocity for cumulative fall
-                }
-            });
         }
     }
 
@@ -1958,8 +2187,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function startSimulation() {
+        saveCurrentSettings(); 
         isSimulating = true;
-        // Reset nucleus state on start to avoid residual forces from a previous simulation
         atomGroups.forEach(group => {
             group.isNucleusActive = false;
             group.nucleusVelocity.set(0, 0, 0);
@@ -1968,19 +2197,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function stopSimulation() {
         isSimulating = false;
-        // Reset particles to initial positions when stopping
-        scene.children.forEach(obj => {
-            if (obj instanceof THREE.Mesh && obj.userData.initialPosition) {
-                // If the nucleus was active, the initialOffset is relative to the start center, 
-                // so we just reset to the stored initial position
-                obj.position.copy(obj.userData.initialPosition);
-            }
-        });
-        // Reset all nucleus activity state
         atomGroups.forEach(group => {
             group.isNucleusActive = false;
             group.nucleusVelocity.set(0, 0, 0);
+            group.nucleusMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
+            group.electronMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
         });
+
         renderer.render(scene, camera); 
     }
 
@@ -1997,8 +2220,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Ensure initial physics sync
-    syncPhysicsInputs();
+    loadTargetSettings('scene_global'); 
     fetchData();
     animate(); 
 });
@@ -2015,4 +2237,3 @@ function getStateClass(electrons) {
 </body>
 </html>
 
---- END OF FILE index (4).html ---
