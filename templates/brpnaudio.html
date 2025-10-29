@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arc Edge 3D Audio Visualizer (v4 - Scrubbing)</title>
+    <title>Arc Edge 3D Audio Visualizer (v6 - Roller Measure)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -301,7 +301,7 @@
             </fieldset>
             
             <fieldset>
-                <legend>3. Measurement</legend>
+                <legend>3. Measurement (Doc Formula)</legend>
                 <div class="action-buttons" style="justify-content: space-between;">
                     <button id="arcedge-measure-btn" class="secondary-btn" style="flex-grow: 1;">Measure Selected</button>
                 </div>
@@ -328,7 +328,9 @@
                     <strong>RMS:</strong> ---
                     ---
                     <strong>Selected:</strong> None
-                    <strong>Length:</strong> ---
+                    <strong>Raw Unit Arc Length:</strong> ---
+                    <strong>Unit Circumference:</strong> ---
+                    <strong>Arc Edge Length (v6):</strong> ---
                 </div>
             </div>
             
@@ -390,8 +392,8 @@ let loadedBuffer = null;
 let loadedFileName = "None";
 let currentAudioSource = null;
 let audioAnalysisData = {
-    time: null, // Float32Array of waveform data
-    freq: null, // Float32Array of frequency delta data (0.0 - 1.0)
+    time: null,
+    freq: null,
     maxFrequency: 22050
 };
 
@@ -424,7 +426,7 @@ window.onload = () => {
 
 function setupEventListeners() {
     ui.mp3Upload.addEventListener('change', handleAudioUpload);
-    ui.audioPlayBtn.addEventListener('click', () => playAudio()); // Play from beginning
+    ui.audioPlayBtn.addEventListener('click', () => playAudio());
     ui.audioPauseBtn.addEventListener('click', pauseAudio);
     ui.audioStopBtn.addEventListener('click', stopAudio);
     ui.audioGenerateBtn.addEventListener('click', generate3DAudioCurves);
@@ -435,7 +437,6 @@ function setupEventListeners() {
     
     Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
     
-    // Setup 2D Canvas Listeners with Scrub-to-Play
     setupCanvasMouseListeners(ui.timeCanvas, ui.timePlayhead, ui.timeReadout, updateTimeReadout);
     setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout);
 }
@@ -470,32 +471,26 @@ function handleAudioUpload(event) {
     reader.readAsArrayBuffer(file);
 }
 
-// --- Audio Control Functions (UPDATED for Scrub-to-Play) ---
+// --- Audio Control Functions ---
 
-function playAudio(startTime = 0) { // Can now specify a start time
+function playAudio(startTime = 0) {
     if (!loadedBuffer) return;
-
     if (audioContext.state === 'suspended') {
         audioContext.resume();
     }
-    
-    // Stop any existing source before creating a new one
     if (currentAudioSource) {
-        currentAudioSource.onended = null; // Remove old handler to prevent conflicts
+        currentAudioSource.onended = null;
         currentAudioSource.stop();
     }
-    
     currentAudioSource = audioContext.createBufferSource();
     currentAudioSource.buffer = loadedBuffer;
     currentAudioSource.connect(audioContext.destination);
-    
     currentAudioSource.onended = () => {
         currentAudioSource = null;
         if (audioContext.state === 'suspended') audioContext.resume();
         updateAudioButtons();
     };
-    
-    currentAudioSource.start(0, startTime); // Start at the specified offset
+    currentAudioSource.start(0, startTime);
     updateAudioButtons();
 }
 
@@ -548,13 +543,11 @@ function generate3DAudioCurves() {
         return;
     }
     
-    // Generate TIME curve using time data
     const timePoints = generatePoints(audioAnalysisData.time, params, 'time');
-    create3DTube(timePoints, 'time', timeMaterial);
+    create3DTube(timePoints, 'time', timeMaterial, params);
     
-    // Generate FREQUENCY curve using frequency (delta) data
     const freqPoints = generatePoints(audioAnalysisData.freq, params, 'frequency');
-    create3DTube(freqPoints, 'frequency', freqMaterial);
+    create3DTube(freqPoints, 'frequency', freqMaterial, params);
     
     addPrompt("Generated 3D curves for: " + loadedFileName);
 }
@@ -587,7 +580,6 @@ function generatePoints(audioData, params, type) {
             x = Math.cos(t) * radius;
             y = Math.sin(t) * radius;
         } else {
-            // Use the 'frequency' data (0.0 to 1.0)
             const radius = baseRadius + (sampleValue * params.scaleX);
             x = Math.cos(t) * radius;
             y = Math.sin(t) * baseRadius + (sampleValue * params.scaleY);
@@ -618,7 +610,7 @@ function generatePoints(audioData, params, type) {
 }
 
 
-function create3DTube(points, name, material) {
+function create3DTube(points, name, material, params) { // Added params
     try {
         const curve = new THREE.CatmullRomCurve3(points);
         const tubeGeometry = new THREE.TubeGeometry(curve, points.length, 0.1, 8, false);
@@ -627,6 +619,7 @@ function create3DTube(points, name, material) {
         arcMesh.userData.points = points;
         arcMesh.userData.type = name;
         arcMesh.userData.id = arcMeshes.length + 1;
+        arcMesh.userData.params = params; // Store params used to create this
         arcMeshes.push(arcMesh);
         arcEdgeScene.add(arcMesh);
     } catch (error) {
@@ -634,13 +627,12 @@ function create3DTube(points, name, material) {
     }
 }
 
-// --- 2D Canvas Drawing (UPDATED with new Frequency logic) ---
+// --- 2D Canvas Drawing ---
 
 function analyzeAndDrawAll(buffer) {
     const timeData = buffer.getChannelData(0);
     audioAnalysisData.time = timeData;
     
-    // --- NEW: Generate Frequency (Delta) Signal ---
     const freqData = new Float32Array(timeData.length);
     let maxDelta = 0;
     for (let i = 1; i < timeData.length; i++) {
@@ -648,16 +640,13 @@ function analyzeAndDrawAll(buffer) {
         freqData[i] = delta;
         if (delta > maxDelta) maxDelta = delta;
     }
-    // Normalize the delta signal to 0.0 - 1.0
     if (maxDelta > 0) {
         for (let i = 1; i < freqData.length; i++) {
             freqData[i] /= maxDelta;
         }
     }
     audioAnalysisData.freq = freqData;
-    // --- END NEW ---
 
-    // Draw both canvases with their respective data
     draw2DTimeCanvas(buffer, audioAnalysisData.time);
     draw2DFreqCanvas(buffer, audioAnalysisData.freq);
 }
@@ -707,7 +696,6 @@ function drawTimeScale(ctx, width, height, duration) {
 }
 
 function draw2DFreqCanvas(buffer, freqData) {
-    // This now draws a line graph, not bars
     const canvas = ui.freqCanvas;
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
@@ -715,25 +703,23 @@ function draw2DFreqCanvas(buffer, freqData) {
     
     ctx.fillStyle = '#2a2a2e';
     ctx.fillRect(0, 0, width, height);
-    ctx.strokeStyle = '#ffff00'; // Yellow color
+    ctx.strokeStyle = '#ffff00';
     ctx.lineWidth = 1;
     ctx.beginPath();
     
     const step = Math.floor(freqData.length / width);
     for (let i = 0; i < width; i++) {
         const dataIndex = Math.min(i * step, freqData.length - 1);
-        const y = height - (freqData[dataIndex] * height); // Inverted (0.0 is top, 1.0 is bottom)
+        const y = height - (freqData[dataIndex] * height);
         if (i === 0) ctx.moveTo(i, y);
         else ctx.lineTo(i, y);
     }
     ctx.stroke();
-    
-    // Draw the *same* time scale on this graph
     drawTimeScale(ctx, width, height, buffer.duration);
 }
 
 
-// --- 2D Canvas Interaction (UPDATED with Scrub-to-Play) ---
+// --- 2D Canvas Interaction ---
 
 function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
     let isDragging = false;
@@ -764,13 +750,11 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
         handlePointerMove(e);
         canvas.setPointerCapture(e.pointerId);
         
-        // --- NEW: Scrub-to-Play ---
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
         const percent = x / canvas.width;
         const timeInSeconds = percent * loadedBuffer.duration;
         playAudio(timeInSeconds);
-        // --- END NEW ---
     };
 
     const handlePointerDrag = (e) => {
@@ -784,13 +768,11 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
             isDragging = false;
             canvas.releasePointerCapture(e.pointerId);
             
-            // --- NEW: Scrub-to-Play on drag release ---
             const rect = canvas.getBoundingClientRect();
             const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
             const percent = x / canvas.width;
             const timeInSeconds = percent * loadedBuffer.duration;
             playAudio(timeInSeconds);
-            // --- END NEW ---
         }
     };
     
@@ -813,13 +795,12 @@ function updateTimeReadout(x, canvasWidth, readoutElement) {
 }
 
 function updateFreqReadout(x, canvasWidth, readoutElement) {
-    // UPDATED to use new freq (delta) data
     if (!audioAnalysisData.freq) return;
     const percent = x / canvasWidth;
     const data = audioAnalysisData.freq;
     const sampleIndex = Math.min(Math.floor(percent * data.length), data.length - 1);
     const timeInSeconds = (sampleIndex / loadedBuffer.sampleRate);
-    const freqContent = data[sampleIndex]; // 0.0 to 1.0
+    const freqContent = data[sampleIndex];
     readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Content: ${freqContent.toFixed(3)}`;
 }
 
@@ -879,7 +860,7 @@ function onArcEdgeResize() {
     arcEdgeRenderer.setSize(width, height);
 }
 
-// --- Selection & Measurement ---
+// --- Selection & Measurement (UPDATED with Roller v6 Logic) ---
 
 function onArcEdgePointerDown(event) {
     const bounds = ui.arcEdgeViewport.getBoundingClientRect();
@@ -900,33 +881,121 @@ function onArcEdgePointerDown(event) {
     updateArcEdgeReadout();
 }
 
+/**
+ * Calculates circumference using the doc formula: diameter * 3
+ * @param {number} diameter - The input diameter (or in our case, the raw arc length)
+ * @returns {number} The calculated circumference.
+ */
+function doc_circumference(diameter) {
+    return diameter * 3;
+}
+
 function measureSelectedArc() {
     if (!selectedArc) {
         alert("Please select a 3D curve first by clicking on it.");
         return;
     }
-    if (!selectedArc.userData || !selectedArc.userData.points || selectedArc.userData.points.length < 2) {
+    if (!selectedArc.userData || !selectedArc.userData.points || !selectedArc.userData.params) {
          alert("Selected object is missing data for measurement.");
          return;
     }
+    
+    // ---
+    // 1. SIMPLE (v5) CALCULATION (like the Python script)
+    // ---
     const points = selectedArc.userData.points;
-    let totalLength = 0;
+    let simpleTotalLength = 0;
     for (let i = 0; i < points.length - 1; i++) {
-        totalLength += points[i].distanceTo(points[i + 1]);
+        simpleTotalLength += points[i].distanceTo(points[i + 1]);
     }
+    const simpleDocCirc = doc_circumference(simpleTotalLength);
     const curveType = selectedArc.userData.type;
-    addPrompt(`<code>${curveType}_curve_length = ${totalLength.toFixed(4)}</code>`);
-    updateArcEdgeReadout(totalLength);
+
+    // ---
+    // 2. ADVANCED (v6) "ROLLER" CALCULATION
+    // ---
+    addPrompt(`--- Measuring ${curveType} Curve (v6 Arc Edge) ---`);
+    
+    // 2a. Get the 1D data that built this curve
+    const sourceData = (selectedArc.userData.type === 'time') ? audioAnalysisData.time : audioAnalysisData.freq;
+    if (!sourceData) {
+        addPrompt("Error: Source audio data not found.");
+        return;
+    }
+    
+    // 2b. Get the sampled 1D data points (the peaks/valleys)
+    const params = selectedArc.userData.params;
+    const resolution = params.resolution;
+    const step = Math.floor(sourceData.length / resolution);
+    let sampledData = [];
+    for (let i = 0; i <= resolution; i++) {
+        let dataIndex = Math.min(Math.floor(i * step), sourceData.length - 1);
+        sampledData.push(sourceData[dataIndex]);
+    }
+
+    // 2c. Find all bend indices (peaks and valleys)
+    let bendIndices = [0]; // Start at the beginning
+    for (let i = 1; i < sampledData.length - 1; i++) {
+        let p = sampledData[i-1];
+        let c = sampledData[i];
+        let n = sampledData[i+1];
+        if ((c > p && c >= n) || (c < p && c <= n)) { // Find peaks/valleys
+            bendIndices.push(i);
+        }
+    }
+    bendIndices.push(sampledData.length - 1); // Add the end point
+    
+    // 2d. Iterate through bend segments and apply "roller" logic
+    let totalRollerLength = 0;
+    let bendReports = [];
+    for (let i = 0; i < bendIndices.length - 1; i++) {
+        let startIndex = bendIndices[i];
+        let endIndex = bendIndices[i+1];
+        
+        // Skip empty segments (e.g., two bends right next to each other)
+        if (startIndex === endIndex) continue; 
+        
+        // Get the 3D points for this segment
+        let segmentPoints = points.slice(startIndex, endIndex + 1);
+        
+        // Calculate the actual 3D length (L) of this sub-curve
+        let segmentLength = 0;
+        for (let k = 0; k < segmentPoints.length - 1; k++) {
+            segmentLength += segmentPoints[k].distanceTo(segmentPoints[k+1]);
+        }
+        
+        // Apply your formula: 1/8th circ = L, so Full Circ (C) = L * 8
+        let matchingCircumference = segmentLength * 8;
+        
+        // Add this "tagged" circumference to the total
+        totalRollerLength += matchingCircumference;
+        
+        bendReports.push({ start: startIndex, end: endIndex, len: segmentLength, circ: matchingCircumference });
+    }
+    
+    // 3. Add all values to the prompt output
+    addPrompt(`${bendReports.length} bend segments found.`);
+    addPrompt(`<code>${curveType}_UNIT_LENGTH = ${simpleTotalLength.toFixed(4)}</code>`);
+    addPrompt(`<code>${curveType}_UNIT_CIRC = ${simpleDocCirc.toFixed(4)}</code>`);
+    addPrompt(`<code>${curveType}_ARCEDGE_LENGTH_v6 = ${totalRollerLength.toFixed(4)}</code>`);
+    addPrompt(`---`); // Separator
+    
+    // 4. Update the readout panel
+    updateArcEdgeReadout({
+        length: simpleTotalLength,
+        doc_circ: simpleDocCirc,
+        roller_length: totalRollerLength
+    });
 }
 
-// --- Readout & Utility ---
+// --- Readout & Utility (UPDATED) ---
 
 function addPrompt(text) {
     ui.promptOutput.innerHTML += `<div>${text}</div>`;
     ui.promptOutput.scrollTop = ui.promptOutput.scrollHeight;
 }
 
-function updateArcEdgeReadout(measuredLength = null) {
+function updateArcEdgeReadout(measurements = null) {
      let peak = 0;
      let rms = 0;
      if (loadedBuffer) {
@@ -940,13 +1009,17 @@ function updateArcEdgeReadout(measuredLength = null) {
          rms = Math.sqrt(sumOfSquares / data.length);
      }
      
+     // UPDATED Readout HTML
      let readoutHTML = `<strong>File:</strong> ${loadedFileName}
 <strong>Duration:</strong> ${loadedBuffer ? loadedBuffer.duration.toFixed(2) + 's' : '---'}
 <strong>Peak Amp:</strong> ${peak.toFixed(3)}
 <strong>RMS:</strong> ${rms.toFixed(3)}
 ---
 <strong>Selected:</strong> ${selectedArc ? selectedArc.name : 'None'}
-<strong>Length:</strong> ${measuredLength !== null ? measuredLength.toFixed(4) : (selectedArc ? '(Click Measure)' : '---')}`;
+<strong>Raw Unit Arc Length:</strong> ${measurements ? measurements.length.toFixed(4) : '---'}
+<strong>Unit Circumference:</strong> ${measurements ? measurements.doc_circ.toFixed(4) : '---'}
+<strong>Arc Edge Length (v6):</strong> ${measurements ? measurements.roller_length.toFixed(4) : '---'}`;
+
     ui.arcEdgeReadout.innerHTML = readoutHTML;
 }
 
