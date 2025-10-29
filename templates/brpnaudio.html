@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arc Edge 3D Audio Visualizer (v4 - Scrubbing)</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <style>
+        :root { 
+            --accent-color: #00e5ff; 
+            --bg-color: rgba(35, 35, 35, 0.95);
+            --panel-color: #1e1e1e; 
+            --text-color: white; 
+            --input-bg: #2a2a2e;
+            --border-color: #444;
+            --calculator-btn-bg: #4a4d52;
+            --calculator-btn-hover: #5a5d62;
+            --user-msg-bg: #007bff;
+            --calculator-btn-clear: #c0392b;
+        }
+
+        html, body { 
+            background-color: #111; 
+            color: var(--text-color); 
+            font-family: 'Segoe UI', 'Roboto', sans-serif; 
+            height: 100vh; 
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* Base Overlay Styles */
+        .overlay-base {
+             width: 100%;
+             height: 100%;
+             background: rgba(0, 0, 0, 0.0);
+             display: flex;
+             align-items: center;
+             justify-content: center;
+             padding: 15px;
+             box-sizing: border-box;
+        }
+        .overlay-content-base {
+            background: var(--bg-color);
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .overlay-content-base label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 0.9em; color: var(--accent-color); }
+        .overlay-content-base input[type="text"],
+        .overlay-content-base input[type="number"],
+        .overlay-content-base input[type="file"],
+        .overlay-content-base textarea,
+        .overlay-content-base select,
+        .overlay-content-base button {
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--input-bg);
+            color: var(--text-color);
+            font-size: 0.95em;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .overlay-content-base button { cursor: pointer; transition: background-color 0.2s; }
+        .overlay-content-base button:hover { background-color: var(--calculator-btn-hover); }
+        .overlay-content-base button:disabled { background: #333; cursor: not-allowed; opacity: 0.5; }
+        .overlay-content-base .input-group { display: flex; flex-direction: column; gap: 5px; }
+        .overlay-content-base h4 { margin: 0 0 15px 0; color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
+        .overlay-content-base .action-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .overlay-content-base .action-buttons .close-btn { background: #555; color: white; }
+        .overlay-content-base .action-buttons .primary-btn { background: var(--user-msg-bg); color: white; }
+        .overlay-content-base .action-buttons .secondary-btn { background: var(--calculator-btn-bg); color: var(--text-color); }
+        .overlay-content-base .action-buttons .danger-btn { background: var(--calculator-btn-clear); color: white; }
+
+        /* Arc Edge 3D Graph Styles */
+        #arcedge-graph-overlay { 
+            cursor: move;
+        } 
+        #arcedge-graph-content {
+            width: 95vw; 
+            max-width: 1200px; 
+            height: 95vh; 
+            max-height: 850px; 
+            display: flex; 
+            flex-direction: row;
+            gap: 20px;
+            cursor: default;
+        }
+        #arcedge-controls {
+            width: 300px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+        #arcedge-controls .input-group-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        #arcedge-controls .input-group-row label {
+             grid-column: span 3;
+             margin-bottom: 0;
+        }
+        #arcedge-controls .input-group-row input {
+            text-align: right;
+        }
+        #arcedge-controls fieldset {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin: 0;
+        }
+         #arcedge-controls legend {
+            color: var(--accent-color);
+            font-weight: bold;
+            font-size: 0.9em;
+            padding: 0 5px;
+        }
+        
+        /* Viewport and 2D Canvases Container */
+        #arcedge-viewport-stack {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 0; /* Flex fix */
+        }
+        
+        #arcedge-graph-viewport-container {
+            flex-grow: 1; /* Viewport takes remaining space */
+            position: relative; /* For positioning the readout */
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden; /* Clip the canvas */
+            background: linear-gradient(to bottom, #111, #333); 
+            min-height: 200px; /* Min height for 3D view */
+        }
+
+        #arcedge-viewport {
+             width: 100%;
+             height: 100%;
+             position: relative;
+        }
+        #arcedge-viewport canvas {
+            display: block;
+        }
+        #arcedge-readout {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(10, 10, 10, 0.75);
+            color: var(--text-color);
+            padding: 10px;
+            border-radius: 6px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+            max-width: 280px;
+            border: 1px solid var(--border-color);
+            z-index: 10;
+            pointer-events: none;
+            white-space: pre-wrap;
+        }
+        #arcedge-readout strong { color: var(--accent-color); }
+        
+        /* 2D Canvas Styles */
+        #arcedge-2d-canvases {
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            background: rgba(10, 10, 10, 0.75);
+        }
+        .canvas-2d-wrapper {
+            display: flex;
+            flex-direction: column;
+            position: relative; /* For playhead */
+            overflow: hidden; /* Hide playhead overflow */
+        }
+        .canvas-2d-wrapper label {
+            font-size: 0.8em;
+            color: #aaa;
+            margin-bottom: 3px;
+        }
+        .canvas-2d-wrapper canvas {
+            width: 100%;
+            height: 60px; /* Fixed height for the narrow bands */
+            background-color: #2a2a2e;
+            border-radius: 4px;
+            cursor: crosshair;
+        }
+        
+        /* Playhead and Readout Styles */
+        .playhead-line {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background-color: red;
+            pointer-events: none;
+            display: none; /* Hidden by default */
+            z-index: 100;
+        }
+        .playhead-readout {
+            position: absolute;
+            top: 2px;
+            background-color: rgba(0,0,0,0.8);
+            color: white;
+            font-family: 'Consolas', monospace;
+            font-size: 0.8em;
+            padding: 3px 5px;
+            border-radius: 3px;
+            border: 1px solid #888;
+            pointer-events: none;
+            display: none; /* Hidden by default */
+            z-index: 101;
+            white-space: nowrap;
+        }
+
+        /* Prompt Output Area */
+        #prompt-output-container {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin: 0;
+            background: #1a1a1b;
+            flex-shrink: 0;
+            height: 150px;
+            overflow-y: auto;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9em;
+        }
+        #prompt-output-container code {
+            color: #00e5ff;
+        }
+        
+    </style>
+</head>
+<body>
+
+<div id="arcedge-graph-overlay" class="overlay-base">
+    <div id="arcedge-graph-content" class="overlay-content-base">
+        
+        <div id="arcedge-controls">
+            <h4>Arc Edge Audio Visualizer</h4>
+
+            <fieldset>
+                <legend>1. Load Audio</legend>
+                <div class="input-group">
+                    <label for="mp3-upload">Upload MP3 File</label>
+                    <input type="file" id="mp3-upload" accept="audio/mpeg">
+                </div>
+                <div class="input-group" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+                    <button id="audio-play-btn" disabled>Play</button>
+                    <button id="audio-pause-btn" disabled>Pause</button>
+                    <button id="audio-stop-btn" disabled>Stop</button>
+                </div>
+                <div class="input-group">
+                    <button id="audio-generate-btn" class="primary-btn" disabled>Generate 3D Curves</button>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>2. Visualization Controls</legend>
+                <div class="input-group-row">
+                    <label>Curve Scale (X, Y, Z)</label>
+                    <input type="number" id="arc-scale-x" value="5" step="0.1" title="Time/Freq X Scale">
+                    <input type="number" id="arc-scale-y" value="5" step="0.1" title="Time/Freq Y Scale">
+                    <input type="number" id="arc-scale-z" value="30" step="1" title="Length Scale">
+                </div>
+                 <div class="input-group">
+                     <label for="arc-spiral-factor">Spiral Windings</label>
+                    <input type="number" id="arc-spiral-factor" value="10" step="1" placeholder="Amount">
+                 </div>
+                 <div class="input-group">
+                    <label for="arc-resolution">Curve Resolution</label>
+                    <input type="number" id="arc-resolution" value="2048" min="64" max="8192" step="64">
+                </div>
+            </fieldset>
+            
+            <fieldset>
+                <legend>3. Measurement</legend>
+                <div class="action-buttons" style="justify-content: space-between;">
+                    <button id="arcedge-measure-btn" class="secondary-btn" style="flex-grow: 1;">Measure Selected</button>
+                </div>
+            </fieldset>
+            
+            <fieldset style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
+                <legend>Generated Prompts</legend>
+                <div id="prompt-output-container" style="flex-grow: 1;">
+                    </div>
+            </fieldset>
+
+            <div class="action-buttons" style="margin-top: auto;">
+                <button id="arcedge-clear-scene-btn" class="danger-btn">Clear Scene</button>
+            </div>
+        </div>
+
+        <div id="arcedge-viewport-stack">
+            <div id="arcedge-graph-viewport-container">
+                <div id="arcedge-viewport"></div>
+                <div id="arcedge-readout">
+                    <strong>File:</strong> None
+                    <strong>Duration:</strong> ---
+                    <strong>Peak Amp:</strong> ---
+                    <strong>RMS:</strong> ---
+                    ---
+                    <strong>Selected:</strong> None
+                    <strong>Length:</strong> ---
+                </div>
+            </div>
+            
+            <div id="arcedge-2d-canvases">
+                <div class="canvas-2d-wrapper" id="time-canvas-wrapper">
+                    <label>Time Domain (Waveform)</label>
+                    <canvas id="time-canvas"></canvas>
+                    <div class="playhead-line" id="time-playhead"></div>
+                    <div class="playhead-readout" id="time-readout"></div>
+                </div>
+                <div class="canvas-2d-wrapper" id="freq-canvas-wrapper">
+                    <label>Frequency Content (Delta)</label>
+                    <canvas id="freq-canvas"></canvas>
+                    <div class="playhead-line" id="freq-playhead"></div>
+                    <div class="playhead-readout" id="freq-readout"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<script>
+// --- Global State ---
+const ui = {
+    arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
+    arcEdgeContent: document.getElementById('arcedge-graph-content'),
+    arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
+    arcEdgeViewport: document.getElementById('arcedge-viewport'),
+    arcEdgeReadout: document.getElementById('arcedge-readout'),
+    mp3Upload: document.getElementById('mp3-upload'),
+    audioPlayBtn: document.getElementById('audio-play-btn'),
+    audioPauseBtn: document.getElementById('audio-pause-btn'),
+    audioStopBtn: document.getElementById('audio-stop-btn'),
+    audioGenerateBtn: document.getElementById('audio-generate-btn'),
+    arcEdgeInputs: {
+        scaleX: document.getElementById('arc-scale-x'),
+        scaleY: document.getElementById('arc-scale-y'),
+        scaleZ: document.getElementById('arc-scale-z'),
+        spiralFactor: document.getElementById('arc-spiral-factor'),
+        resolution: document.getElementById('arc-resolution')
+    },
+    arcEdgeMeasureBtn: document.getElementById('arcedge-measure-btn'),
+    arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
+    timeCanvas: document.getElementById('time-canvas'),
+    timeCanvasWrapper: document.getElementById('time-canvas-wrapper'),
+    timePlayhead: document.getElementById('time-playhead'),
+    timeReadout: document.getElementById('time-readout'),
+    freqCanvas: document.getElementById('freq-canvas'),
+    freqCanvasWrapper: document.getElementById('freq-canvas-wrapper'),
+    freqPlayhead: document.getElementById('freq-playhead'),
+    freqReadout: document.getElementById('freq-readout'),
+    promptOutput: document.getElementById('prompt-output-container')
+};
+
+// --- Audio API State ---
+let audioContext;
+let loadedBuffer = null;
+let loadedFileName = "None";
+let currentAudioSource = null;
+let audioAnalysisData = {
+    time: null, // Float32Array of waveform data
+    freq: null, // Float32Array of frequency delta data (0.0 - 1.0)
+    maxFrequency: 22050
+};
+
+// --- Three.js State ---
+let arcEdgeScene, arcEdgeCamera, arcEdgeRenderer, arcEdgeControls, arcEdgeRaycaster, arcEdgePointer;
+let arcMeshes = [];
+let selectedArc = null;
+let isArcEdgeInitialized = false;
+const timeMaterial = new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x005566, metalness: 0.5, roughness: 0.5 });
+const freqMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0x666600, metalness: 0.5, roughness: 0.5 });
+const selectedMaterial = new THREE.MeshStandardMaterial({ color: 0xff00ff, emissive: 0xaa00aa, metalness: 0.6, roughness: 0.4, wireframe: true });
+
+// --- Draggability for Overlay ---
+makeDraggable(ui.arcEdgeOverlay, ui.arcEdgeOverlay);
+ui.arcEdgeContent.addEventListener('mousedown', (e) => e.stopPropagation());
+ui.arcEdgeContent.addEventListener('touchstart', (e) => e.stopPropagation());
+
+// --- Initial Setup ---
+window.onload = () => {
+    try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioAnalysisData.maxFrequency = audioContext.sampleRate / 2;
+    } catch (e) {
+        alert('Web Audio API is not supported in this browser.');
+        return;
+    }
+    initArcEdgeGraph();
+    setupEventListeners();
+};
+
+function setupEventListeners() {
+    ui.mp3Upload.addEventListener('change', handleAudioUpload);
+    ui.audioPlayBtn.addEventListener('click', () => playAudio()); // Play from beginning
+    ui.audioPauseBtn.addEventListener('click', pauseAudio);
+    ui.audioStopBtn.addEventListener('click', stopAudio);
+    ui.audioGenerateBtn.addEventListener('click', generate3DAudioCurves);
+    ui.arcEdgeMeasureBtn.addEventListener('click', measureSelectedArc);
+    ui.arcEdgeClearSceneBtn.addEventListener('click', clearArcEdgeScene);
+    window.addEventListener('resize', onArcEdgeResize);
+    ui.arcEdgeViewport.addEventListener('pointerdown', onArcEdgePointerDown);
+    
+    Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
+    
+    // Setup 2D Canvas Listeners with Scrub-to-Play
+    setupCanvasMouseListeners(ui.timeCanvas, ui.timePlayhead, ui.timeReadout, updateTimeReadout);
+    setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout);
+}
+
+// --- Audio Handling ---
+
+function handleAudioUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    loadedFileName = file.name;
+    ui.audioPlayBtn.textContent = "Loading...";
+    
+    if (currentAudioSource) currentAudioSource.stop();
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        audioContext.decodeAudioData(e.target.result, (buffer) => {
+            loadedBuffer = buffer;
+            ui.audioPlayBtn.textContent = "Play";
+            updateAudioButtons();
+            updateArcEdgeReadout();
+            analyzeAndDrawAll(buffer);
+        }, (error) => {
+            console.error('Error decoding audio data:', error);
+            alert('Error decoding audio file.');
+            ui.audioPlayBtn.textContent = "Play";
+            loadedFileName = "None";
+            updateAudioButtons();
+        });
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+// --- Audio Control Functions (UPDATED for Scrub-to-Play) ---
+
+function playAudio(startTime = 0) { // Can now specify a start time
+    if (!loadedBuffer) return;
+
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+    
+    // Stop any existing source before creating a new one
+    if (currentAudioSource) {
+        currentAudioSource.onended = null; // Remove old handler to prevent conflicts
+        currentAudioSource.stop();
+    }
+    
+    currentAudioSource = audioContext.createBufferSource();
+    currentAudioSource.buffer = loadedBuffer;
+    currentAudioSource.connect(audioContext.destination);
+    
+    currentAudioSource.onended = () => {
+        currentAudioSource = null;
+        if (audioContext.state === 'suspended') audioContext.resume();
+        updateAudioButtons();
+    };
+    
+    currentAudioSource.start(0, startTime); // Start at the specified offset
+    updateAudioButtons();
+}
+
+function pauseAudio() {
+    if (currentAudioSource && audioContext.state === 'running') {
+        audioContext.suspend();
+    }
+    updateAudioButtons();
+}
+
+function stopAudio() {
+    if (currentAudioSource) {
+        currentAudioSource.stop();
+    }
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+}
+
+function updateAudioButtons() {
+    if (!loadedBuffer) {
+        ui.audioPlayBtn.disabled = true;
+        ui.audioPauseBtn.disabled = true;
+        ui.audioStopBtn.disabled = true;
+        ui.audioGenerateBtn.disabled = true;
+        return;
+    }
+    ui.audioGenerateBtn.disabled = false;
+    const isPlaying = currentAudioSource && audioContext.state === 'running';
+    const isPaused = currentAudioSource && audioContext.state === 'suspended';
+    const isStopped = !currentAudioSource;
+    
+    ui.audioPlayBtn.disabled = isPlaying;
+    ui.audioPauseBtn.disabled = !isPlaying;
+    ui.audioStopBtn.disabled = isStopped;
+}
+
+// --- 3D Generation ---
+
+function generate3DAudioCurves() {
+    if (!loadedBuffer) {
+        alert("Please load an MP3 file first.");
+        return;
+    }
+    clearArcEdgeScene();
+    const params = getUIParams();
+    
+    if (!audioAnalysisData.time || !audioAnalysisData.freq) {
+        alert("Audio data not analyzed. Please re-load file.");
+        return;
+    }
+    
+    // Generate TIME curve using time data
+    const timePoints = generatePoints(audioAnalysisData.time, params, 'time');
+    create3DTube(timePoints, 'time', timeMaterial);
+    
+    // Generate FREQUENCY curve using frequency (delta) data
+    const freqPoints = generatePoints(audioAnalysisData.freq, params, 'frequency');
+    create3DTube(freqPoints, 'frequency', freqMaterial);
+    
+    addPrompt("Generated 3D curves for: " + loadedFileName);
+}
+
+function getUIParams() {
+    return {
+        scaleX: parseFloat(ui.arcEdgeInputs.scaleX.value) || 5,
+        scaleY: parseFloat(ui.arcEdgeInputs.scaleY.value) || 5,
+        scaleZ: parseFloat(ui.arcEdgeInputs.scaleZ.value) || 30,
+        spiralFactor: parseFloat(ui.arcEdgeInputs.spiralFactor.value) || 10,
+        resolution: parseInt(ui.arcEdgeInputs.resolution.value) || 2048
+    };
+}
+
+function generatePoints(audioData, params, type) {
+    const points = [];
+    const baseRadius = 5;
+    const dataLength = audioData.length;
+    const step = dataLength / params.resolution;
+
+    for (let i = 0; i <= params.resolution; i++) {
+        const dataIndex = Math.min(Math.floor(i * step), dataLength - 1);
+        const sampleValue = audioData[dataIndex];
+        const t = (i / params.resolution) * Math.PI * 2 * params.spiralFactor;
+        const z = (i / params.resolution) * params.scaleZ;
+        let x, y;
+        
+        if (type === 'time') {
+            const radius = baseRadius + (sampleValue * params.scaleX);
+            x = Math.cos(t) * radius;
+            y = Math.sin(t) * radius;
+        } else {
+            // Use the 'frequency' data (0.0 to 1.0)
+            const radius = baseRadius + (sampleValue * params.scaleX);
+            x = Math.cos(t) * radius;
+            y = Math.sin(t) * baseRadius + (sampleValue * params.scaleY);
+        }
+        points.push(new THREE.Vector3(x, y, z));
+    }
+    
+    const boundingBox = new THREE.Box3().setFromPoints(points);
+    const center = new THREE.Vector3();
+    boundingBox.getCenter(center);
+    const size = new THREE.Vector3();
+    boundingBox.getSize(size);
+    
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const desiredSize = 40; 
+    const scale = maxDim > 0 ? desiredSize / maxDim : 1;
+    const zSize = boundingBox.max.z - boundingBox.min.z;
+    const zScale = zSize > 0 ? params.scaleZ / zSize : 1;
+
+    const scaledPoints = points.map(p => {
+        return new THREE.Vector3(
+            (p.x - center.x) * scale,
+            (p.y - center.y) * scale,
+            (p.z - boundingBox.min.z) * zScale - (params.scaleZ / 2)
+        );
+    });
+    return scaledPoints;
+}
+
+
+function create3DTube(points, name, material) {
+    try {
+        const curve = new THREE.CatmullRomCurve3(points);
+        const tubeGeometry = new THREE.TubeGeometry(curve, points.length, 0.1, 8, false);
+        const arcMesh = new THREE.Mesh(tubeGeometry, material.clone());
+        arcMesh.name = `${name}_curve`;
+        arcMesh.userData.points = points;
+        arcMesh.userData.type = name;
+        arcMesh.userData.id = arcMeshes.length + 1;
+        arcMeshes.push(arcMesh);
+        arcEdgeScene.add(arcMesh);
+    } catch (error) {
+        console.error("Error creating tube geometry:", error);
+    }
+}
+
+// --- 2D Canvas Drawing (UPDATED with new Frequency logic) ---
+
+function analyzeAndDrawAll(buffer) {
+    const timeData = buffer.getChannelData(0);
+    audioAnalysisData.time = timeData;
+    
+    // --- NEW: Generate Frequency (Delta) Signal ---
+    const freqData = new Float32Array(timeData.length);
+    let maxDelta = 0;
+    for (let i = 1; i < timeData.length; i++) {
+        const delta = Math.abs(timeData[i] - timeData[i - 1]);
+        freqData[i] = delta;
+        if (delta > maxDelta) maxDelta = delta;
+    }
+    // Normalize the delta signal to 0.0 - 1.0
+    if (maxDelta > 0) {
+        for (let i = 1; i < freqData.length; i++) {
+            freqData[i] /= maxDelta;
+        }
+    }
+    audioAnalysisData.freq = freqData;
+    // --- END NEW ---
+
+    // Draw both canvases with their respective data
+    draw2DTimeCanvas(buffer, audioAnalysisData.time);
+    draw2DFreqCanvas(buffer, audioAnalysisData.freq);
+}
+
+function draw2DTimeCanvas(buffer, data) {
+    const canvas = ui.timeCanvas;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    const halfHeight = height / 2;
+    
+    ctx.fillStyle = '#2a2a2e';
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    
+    const step = Math.floor(data.length / width);
+    for (let i = 0; i < width; i++) {
+        const dataIndex = Math.min(i * step, data.length - 1);
+        const y = (data[dataIndex] * halfHeight) + halfHeight;
+        if (i === 0) ctx.moveTo(i, y);
+        else ctx.lineTo(i, y);
+    }
+    ctx.stroke();
+    drawTimeScale(ctx, width, height, buffer.duration);
+}
+
+function drawTimeScale(ctx, width, height, duration) {
+    ctx.fillStyle = '#aaa';
+    ctx.font = '10px Consolas';
+    ctx.strokeStyle = '#aaa';
+    ctx.lineWidth = 0.5;
+    const numTicks = 5;
+    const tickIntervalSeconds = Math.max(1, Math.floor(duration / numTicks));
+
+    for (let i = 0; i * tickIntervalSeconds < duration; i++) {
+        const time = i * tickIntervalSeconds;
+        const x = (time / duration) * width;
+        const label = `${time.toFixed(0)}s`;
+        ctx.beginPath();
+        ctx.moveTo(x, height - 10);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+        ctx.fillText(label, x + 2, height - 2);
+    }
+}
+
+function draw2DFreqCanvas(buffer, freqData) {
+    // This now draws a line graph, not bars
+    const canvas = ui.freqCanvas;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    ctx.fillStyle = '#2a2a2e';
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#ffff00'; // Yellow color
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    
+    const step = Math.floor(freqData.length / width);
+    for (let i = 0; i < width; i++) {
+        const dataIndex = Math.min(i * step, freqData.length - 1);
+        const y = height - (freqData[dataIndex] * height); // Inverted (0.0 is top, 1.0 is bottom)
+        if (i === 0) ctx.moveTo(i, y);
+        else ctx.lineTo(i, y);
+    }
+    ctx.stroke();
+    
+    // Draw the *same* time scale on this graph
+    drawTimeScale(ctx, width, height, buffer.duration);
+}
+
+
+// --- 2D Canvas Interaction (UPDATED with Scrub-to-Play) ---
+
+function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
+    let isDragging = false;
+
+    const handlePointerMove = (e) => {
+        if (!loadedBuffer) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+        
+        playhead.style.display = 'block';
+        readout.style.display = 'block';
+        playhead.style.left = `${x}px`;
+        
+        updateFunction(x, canvas.width, readout);
+        
+        if (x < canvas.width / 2) {
+            readout.style.left = `${x + 5}px`;
+            readout.style.right = 'auto';
+        } else {
+            readout.style.left = 'auto';
+            readout.style.right = `${canvas.width - x + 5}px`;
+        }
+    };
+
+    const handlePointerDown = (e) => {
+        if (!loadedBuffer) return;
+        isDragging = true;
+        handlePointerMove(e);
+        canvas.setPointerCapture(e.pointerId);
+        
+        // --- NEW: Scrub-to-Play ---
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+        const percent = x / canvas.width;
+        const timeInSeconds = percent * loadedBuffer.duration;
+        playAudio(timeInSeconds);
+        // --- END NEW ---
+    };
+
+    const handlePointerDrag = (e) => {
+        if (isDragging) {
+            handlePointerMove(e);
+        }
+    };
+    
+    const stopDragging = (e) => {
+        if (isDragging) {
+            isDragging = false;
+            canvas.releasePointerCapture(e.pointerId);
+            
+            // --- NEW: Scrub-to-Play on drag release ---
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+            const percent = x / canvas.width;
+            const timeInSeconds = percent * loadedBuffer.duration;
+            playAudio(timeInSeconds);
+            // --- END NEW ---
+        }
+    };
+    
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerDrag);
+    canvas.addEventListener('pointerup', stopDragging);
+    canvas.addEventListener('pointerleave', (e) => {
+        if (isDragging) stopDragging(e);
+    });
+}
+
+function updateTimeReadout(x, canvasWidth, readoutElement) {
+    if (!audioAnalysisData.time) return;
+    const percent = x / canvasWidth;
+    const data = audioAnalysisData.time;
+    const sampleIndex = Math.min(Math.floor(percent * data.length), data.length - 1);
+    const timeInSeconds = (sampleIndex / loadedBuffer.sampleRate);
+    const amplitude = data[sampleIndex];
+    readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Amp: ${amplitude.toFixed(3)}`;
+}
+
+function updateFreqReadout(x, canvasWidth, readoutElement) {
+    // UPDATED to use new freq (delta) data
+    if (!audioAnalysisData.freq) return;
+    const percent = x / canvasWidth;
+    const data = audioAnalysisData.freq;
+    const sampleIndex = Math.min(Math.floor(percent * data.length), data.length - 1);
+    const timeInSeconds = (sampleIndex / loadedBuffer.sampleRate);
+    const freqContent = data[sampleIndex]; // 0.0 to 1.0
+    readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Content: ${freqContent.toFixed(3)}`;
+}
+
+
+// --- Three.js Scene Logic ---
+
+function initArcEdgeGraph() {
+    if (isArcEdgeInitialized) return;
+    try {
+        const container = ui.arcEdgeViewport;
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        arcEdgeScene = new THREE.Scene();
+        arcEdgeCamera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+        arcEdgeCamera.position.set(5, 5, 15);
+        arcEdgeCamera.lookAt(0, 0, 0);
+        arcEdgeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        arcEdgeRenderer.setClearColor(0x000000, 0);
+        arcEdgeRenderer.setSize(width, height);
+        container.appendChild(arcEdgeRenderer.domElement);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        arcEdgeScene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 7.5);
+        arcEdgeScene.add(directionalLight);
+        arcEdgeControls = new THREE.OrbitControls(arcEdgeCamera, arcEdgeRenderer.domElement);
+        arcEdgeControls.enableDamping = true;
+        arcEdgeControls.dampingFactor = 0.05;
+        arcEdgeRaycaster = new THREE.Raycaster();
+        arcEdgePointer = new THREE.Vector2();
+        const axesHelper = new THREE.AxesHelper(5);
+        arcEdgeScene.add(axesHelper);
+        const gridHelper = new THREE.GridHelper(30, 30, 0xcccccc, 0x888888);
+        arcEdgeScene.add(gridHelper);
+        isArcEdgeInitialized = true;
+        animateArcEdgeGraph();
+        updateArcEdgeReadout();
+    } catch (error) {
+        console.error("Error initializing Arc Edge Graph:", error);
+    }
+}
+
+function animateArcEdgeGraph() {
+    if (!isArcEdgeInitialized) return;
+    requestAnimationFrame(animateArcEdgeGraph);
+    arcEdgeControls.update();
+    arcEdgeRenderer.render(arcEdgeScene, arcEdgeCamera);
+}
+
+function onArcEdgeResize() {
+    if (!isArcEdgeInitialized) return;
+    const container = ui.arcEdgeViewport;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    arcEdgeCamera.aspect = width / height;
+    arcEdgeCamera.updateProjectionMatrix();
+    arcEdgeRenderer.setSize(width, height);
+}
+
+// --- Selection & Measurement ---
+
+function onArcEdgePointerDown(event) {
+    const bounds = ui.arcEdgeViewport.getBoundingClientRect();
+    arcEdgePointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+    arcEdgePointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+    arcEdgeRaycaster.setFromCamera(arcEdgePointer, arcEdgeCamera);
+    const intersects = arcEdgeRaycaster.intersectObjects(arcMeshes);
+
+    if (selectedArc) {
+        selectedArc.material = selectedArc.userData.type === 'time' ? timeMaterial.clone() : freqMaterial.clone();
+    }
+    selectedArc = null;
+
+    if (intersects.length > 0) {
+        selectedArc = intersects[0].object;
+        selectedArc.material = selectedMaterial.clone();
+    }
+    updateArcEdgeReadout();
+}
+
+function measureSelectedArc() {
+    if (!selectedArc) {
+        alert("Please select a 3D curve first by clicking on it.");
+        return;
+    }
+    if (!selectedArc.userData || !selectedArc.userData.points || selectedArc.userData.points.length < 2) {
+         alert("Selected object is missing data for measurement.");
+         return;
+    }
+    const points = selectedArc.userData.points;
+    let totalLength = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+        totalLength += points[i].distanceTo(points[i + 1]);
+    }
+    const curveType = selectedArc.userData.type;
+    addPrompt(`<code>${curveType}_curve_length = ${totalLength.toFixed(4)}</code>`);
+    updateArcEdgeReadout(totalLength);
+}
+
+// --- Readout & Utility ---
+
+function addPrompt(text) {
+    ui.promptOutput.innerHTML += `<div>${text}</div>`;
+    ui.promptOutput.scrollTop = ui.promptOutput.scrollHeight;
+}
+
+function updateArcEdgeReadout(measuredLength = null) {
+     let peak = 0;
+     let rms = 0;
+     if (loadedBuffer) {
+         const data = loadedBuffer.getChannelData(0);
+         let sumOfSquares = 0;
+         for (let i = 0; i < data.length; i++) {
+             const val = data[i];
+             peak = Math.max(peak, Math.abs(val));
+             sumOfSquares += val * val;
+         }
+         rms = Math.sqrt(sumOfSquares / data.length);
+     }
+     
+     let readoutHTML = `<strong>File:</strong> ${loadedFileName}
+<strong>Duration:</strong> ${loadedBuffer ? loadedBuffer.duration.toFixed(2) + 's' : '---'}
+<strong>Peak Amp:</strong> ${peak.toFixed(3)}
+<strong>RMS:</strong> ${rms.toFixed(3)}
+---
+<strong>Selected:</strong> ${selectedArc ? selectedArc.name : 'None'}
+<strong>Length:</strong> ${measuredLength !== null ? measuredLength.toFixed(4) : (selectedArc ? '(Click Measure)' : '---')}`;
+    ui.arcEdgeReadout.innerHTML = readoutHTML;
+}
+
+function clearArcEdgeScene() {
+    if (!isArcEdgeInitialized) return;
+    arcMeshes.forEach(mesh => {
+        arcEdgeScene.remove(mesh);
+        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.material) mesh.material.dispose();
+    });
+    arcMeshes = [];
+    selectedArc = null;
+    addPrompt("3D Scene Cleared.");
+    updateArcEdgeReadout();
+}
+
+function makeDraggable(element, handle) {
+    let isDragging = false;
+    let offsetX, offsetY;
+    const startDrag = (e) => {
+        isDragging = true;
+        const rect = element.getBoundingClientRect();
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.clientY ?? e.touches[0].clientY;
+        offsetX = clientX - rect.left;
+        offsetY = clientY - rect.top;
+        element.style.position = 'fixed';
+        element.style.transform = 'none'; 
+        element.style.margin = '0';
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        handle.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none'; 
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+    const doDrag = (e) => {
+        if (!isDragging) return;
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.clientY ?? e.touches[0].clientY;
+        let newLeft = clientX - offsetX;
+        let newTop = clientY - offsetY;
+        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
+        newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+        element.style.left = newLeft + 'px';
+        element.style.top = newTop + 'px';
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+    const stopDrag = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        handle.style.cursor = 'move';
+        document.body.style.userSelect = 'auto';
+    };
+    handle.addEventListener('mousedown', startDrag);
+    document.addEventListener('mousemove', doDrag);
+    document.addEventListener('mouseup', stopDrag);
+    handle.addEventListener('touchstart', startDrag, { passive: false });
+    document.addEventListener('touchmove', doDrag, { passive: false });
+    document.addEventListener('touchend', stopDrag);
+}
+
+</script>
+
+</body>
+</html>
