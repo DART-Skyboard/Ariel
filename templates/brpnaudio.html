@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arc Edge 3D Audio Visualizer (v6 - Roller Measure)</title>
+    <title>Arc Edge 3D Audio Visualizer (v8 - FFT & Sync)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -87,6 +87,24 @@
         .overlay-content-base .action-buttons .primary-btn { background: var(--user-msg-bg); color: white; }
         .overlay-content-base .action-buttons .secondary-btn { background: var(--calculator-btn-bg); color: var(--text-color); }
         .overlay-content-base .action-buttons .danger-btn { background: var(--calculator-btn-clear); color: white; }
+        
+        /* Freeze Selection Checkbox Style */
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .checkbox-group label {
+            margin-bottom: 0;
+            font-size: 0.9em;
+            color: var(--text-color);
+            font-weight: normal;
+        }
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            accent-color: var(--accent-color);
+        }
 
         /* Arc Edge 3D Graph Styles */
         #arcedge-graph-overlay { 
@@ -305,6 +323,11 @@
                 <div class="action-buttons" style="justify-content: space-between;">
                     <button id="arcedge-measure-btn" class="secondary-btn" style="flex-grow: 1;">Measure Selected</button>
                 </div>
+                <!-- NEW: Freeze Selection Checkbox -->
+                <div class="checkbox-group">
+                    <input type="checkbox" id="freeze-selection-chk">
+                    <label for="freeze-selection-chk">Freeze Selection</label>
+                </div>
             </fieldset>
             
             <fieldset style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
@@ -342,7 +365,8 @@
                     <div class="playhead-readout" id="time-readout"></div>
                 </div>
                 <div class="canvas-2d-wrapper" id="freq-canvas-wrapper">
-                    <label>Frequency Content (Delta)</label>
+                    <!-- UPDATED: Label -->
+                    <label>Frequency Domain (FFT)</label>
                     <canvas id="freq-canvas"></canvas>
                     <div class="playhead-line" id="freq-playhead"></div>
                     <div class="playhead-readout" id="freq-readout"></div>
@@ -354,6 +378,146 @@
 
 
 <script>
+// --- Embedded FFT Library ---
+/* * Free FFT and IFFT in JavaScript
+ * https://github.com/dntj/js-fft
+ * (c) 2011, 2014, 2017 Daniel Jones, MIT License
+ *
+ * Slightly modified for this project to be self-contained.
+ */
+const fft = (function() {
+
+    function FFT(size) {
+        this.size = size | 0;
+        if (this.size <= 1 || (this.size & (this.size - 1)) !== 0) {
+            // Find next power of 2
+            let pow = 1;
+            while (pow < size) {
+                pow <<= 1;
+            }
+            this.size = pow;
+            // console.warn(`FFT size rounded up to ${this.size}`);
+        }
+
+        this._c = new Array(this.size * 2); // Complex array
+        this._cr = new Array(this.size); // Real part
+        this._ci = new Array(this.size); // Imaginary part
+        
+        // Precompute twiddle factors
+        this._twiddle = new Array(this.size * 2);
+        for (let i = 0; i < this.size; i++) {
+            let angle = -Math.PI * 2 * i / this.size;
+            this._twiddle[i * 2] = Math.cos(angle);
+            this._twiddle[i * 2 + 1] = Math.sin(angle);
+        }
+        
+        this._bitrev = new Array(this.size);
+        for (let j = 0; j < this.size; j++) {
+            this._bitrev[j] = 0;
+            let rev = j;
+            let m = this.size >> 1;
+            while(m >= 1) {
+                if(rev % 2) {
+                    this._bitrev[j] += m;
+                }
+                rev >>= 1;
+                m >>= 1;
+            }
+        }
+    }
+
+    FFT.prototype.forward = function(input) {
+        // Copy input to complex array, pad with zeros
+        for (let i = 0; i < this.size; i++) {
+            this._c[i * 2] = input[i] || 0; // Real part
+            this._c[i * 2 + 1] = 0; // Imaginary part
+        }
+
+        // Bit-reversal permutation
+        for (let i = 0; i < this.size; i++) {
+            let j = this._bitrev[i];
+            if (i < j) {
+                let tempR = this._c[i * 2];
+                let tempI = this._c[i * 2 + 1];
+                this._c[i * 2] = this._c[j * 2];
+                this._c[i * 2 + 1] = this._c[j * 2 + 1];
+                this._c[j * 2] = tempR;
+                this._c[j * 2 + 1] = tempI;
+            }
+        }
+
+        // Cooley-Tukey FFT
+        for (let size = 2; size <= this.size; size *= 2) {
+            let halfsize = size / 2;
+            let tablestep = this.size / size;
+            for (let i = 0; i < this.size; i += size) {
+                for (let j = i, k = 0; j < i + halfsize; j++, k += tablestep) {
+                    let tpre = this._c[(j + halfsize) * 2];
+                    let tpi = this._c[(j + halfsize) * 2 + 1];
+                    let twr = this._twiddle[k * 2];
+                    let twi = this._twiddle[k * 2 + 1];
+                    
+                    let zre = twr * tpre - twi * tpi;
+                    let zim = twr * tpi + twi * tpre;
+                    
+                    this._c[(j + halfsize) * 2] = this._c[j * 2] - zre;
+                    this._c[(j + halfsize) * 2 + 1] = this._c[j * 2 + 1] - zim;
+                    this._c[j * 2] += zre;
+                    this._c[j * 2 + 1] += zim;
+                }
+            }
+        }
+        
+        // Split complex array into real/imaginary parts
+        for (let i = 0; i < this.size; i++) {
+            this._cr[i] = this._c[i * 2];
+            this._ci[i] = this._c[i * 2 + 1];
+        }
+        
+        // Return magnitudes (half the array, up to Nyquist)
+        let magnitudes = new Float32Array(this.size / 2);
+        let maxMag = 0;
+        for (let i = 0; i < this.size / 2; i++) {
+            let mag = Math.sqrt(this._cr[i] * this._cr[i] + this._ci[i] * this._ci[i]);
+            magnitudes[i] = mag;
+            if (mag > maxMag) maxMag = mag;
+        }
+
+        // Normalize magnitudes
+        if (maxMag > 0) {
+            for (let i = 0; i < this.size / 2; i++) {
+                magnitudes[i] /= maxMag;
+            }
+        }
+        
+        return magnitudes;
+    };
+    
+    // Helper to find next power of 2
+    function nextPow2(n) {
+        if (n <= 0) return 1;
+        let pow = 1;
+        while (pow < n) {
+            pow <<= 1;
+        }
+        return pow;
+    }
+
+    // Public function
+    return function(timeData) {
+        const size = nextPow2(timeData.length);
+        const fftInstance = new FFT(size);
+        const magnitudes = fftInstance.forward(timeData);
+        return {
+            magnitudes: magnitudes,
+            fftSize: size,
+            binCount: size / 2
+        };
+    };
+})();
+// --- End of FFT Library ---
+
+
 // --- Global State ---
 const ui = {
     arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
@@ -374,6 +538,7 @@ const ui = {
         resolution: document.getElementById('arc-resolution')
     },
     arcEdgeMeasureBtn: document.getElementById('arcedge-measure-btn'),
+    freezeSelection: document.getElementById('freeze-selection-chk'), // NEW
     arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
     timeCanvas: document.getElementById('time-canvas'),
     timeCanvasWrapper: document.getElementById('time-canvas-wrapper'),
@@ -393,15 +558,24 @@ let loadedFileName = "None";
 let currentAudioSource = null;
 let audioAnalysisData = {
     time: null,
-    freq: null,
-    maxFrequency: 22050
+    freq: null, // This will now hold FFT magnitude data
+    maxFrequency: 22050 // Will be updated to audioContext.sampleRate / 2
 };
+// Audio playback tracking
+let playbackStartTime = 0;
+let playbackOffset = 0;
+let isAudioPlaying = false;
 
 // --- Three.js State ---
 let arcEdgeScene, arcEdgeCamera, arcEdgeRenderer, arcEdgeControls, arcEdgeRaycaster, arcEdgePointer;
 let arcMeshes = [];
 let selectedArc = null;
+let isSelectionFrozen = false; // NEW
 let isArcEdgeInitialized = false;
+// 3D Playhead
+let playheadIndicator = null;
+let timeCurveObject = null; // Direct reference to the 'time' curve mesh
+
 const timeMaterial = new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x005566, metalness: 0.5, roughness: 0.5 });
 const freqMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0x666600, metalness: 0.5, roughness: 0.5 });
 const selectedMaterial = new THREE.MeshStandardMaterial({ color: 0xff00ff, emissive: 0xaa00aa, metalness: 0.6, roughness: 0.4, wireframe: true });
@@ -426,7 +600,7 @@ window.onload = () => {
 
 function setupEventListeners() {
     ui.mp3Upload.addEventListener('change', handleAudioUpload);
-    ui.audioPlayBtn.addEventListener('click', () => playAudio());
+    ui.audioPlayBtn.addEventListener('click', () => playAudio(playbackOffset));
     ui.audioPauseBtn.addEventListener('click', pauseAudio);
     ui.audioStopBtn.addEventListener('click', stopAudio);
     ui.audioGenerateBtn.addEventListener('click', generate3DAudioCurves);
@@ -435,10 +609,16 @@ function setupEventListeners() {
     window.addEventListener('resize', onArcEdgeResize);
     ui.arcEdgeViewport.addEventListener('pointerdown', onArcEdgePointerDown);
     
+    // NEW: Freeze Selection Listener
+    ui.freezeSelection.addEventListener('change', (e) => { 
+        isSelectionFrozen = e.target.checked; 
+    });
+    
     Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
     
-    setupCanvasMouseListeners(ui.timeCanvas, ui.timePlayhead, ui.timeReadout, updateTimeReadout);
-    setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout);
+    // Setup 2D canvas listeners
+    setupCanvasMouseListeners(ui.timeCanvas, ui.timePlayhead, ui.timeReadout, updateTimeReadout, true);
+    setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout, false); // false = not a time control
 }
 
 // --- Audio Handling ---
@@ -450,12 +630,13 @@ function handleAudioUpload(event) {
     loadedFileName = file.name;
     ui.audioPlayBtn.textContent = "Loading...";
     
-    if (currentAudioSource) currentAudioSource.stop();
+    stopAudio(); // Stop and reset
     
     const reader = new FileReader();
     reader.onload = (e) => {
         audioContext.decodeAudioData(e.target.result, (buffer) => {
             loadedBuffer = buffer;
+            audioAnalysisData.maxFrequency = buffer.sampleRate / 2; // Update max freq
             ui.audioPlayBtn.textContent = "Play";
             updateAudioButtons();
             updateArcEdgeReadout();
@@ -488,26 +669,48 @@ function playAudio(startTime = 0) {
     currentAudioSource.onended = () => {
         currentAudioSource = null;
         if (audioContext.state === 'suspended') audioContext.resume();
+        
+        isAudioPlaying = false;
+        playbackOffset = 0; 
+        updatePlayheadPosition(0);
+        
         updateAudioButtons();
     };
+    
+    startTime = Math.max(0, Math.min(startTime, loadedBuffer.duration));
     currentAudioSource.start(0, startTime);
+    
+    playbackStartTime = audioContext.currentTime;
+    playbackOffset = startTime;
+    isAudioPlaying = true;
+    
     updateAudioButtons();
 }
 
 function pauseAudio() {
     if (currentAudioSource && audioContext.state === 'running') {
         audioContext.suspend();
+        isAudioPlaying = false;
+        playbackOffset += audioContext.currentTime - playbackStartTime;
     }
     updateAudioButtons();
 }
 
 function stopAudio() {
     if (currentAudioSource) {
+        currentAudioSource.onended = null;
         currentAudioSource.stop();
+        currentAudioSource = null;
     }
     if (audioContext.state === 'suspended') {
         audioContext.resume();
     }
+    
+    isAudioPlaying = false;
+    playbackOffset = 0; 
+    updatePlayheadPosition(0);
+    
+    updateAudioButtons();
 }
 
 function updateAudioButtons() {
@@ -519,10 +722,10 @@ function updateAudioButtons() {
         return;
     }
     ui.audioGenerateBtn.disabled = false;
-    const isPlaying = currentAudioSource && audioContext.state === 'running';
-    const isPaused = currentAudioSource && audioContext.state === 'suspended';
-    const isStopped = !currentAudioSource;
     
+    const isPlaying = isAudioPlaying;
+    const isStopped = !isAudioPlaying && playbackOffset === 0;
+
     ui.audioPlayBtn.disabled = isPlaying;
     ui.audioPauseBtn.disabled = !isPlaying;
     ui.audioStopBtn.disabled = isStopped;
@@ -543,9 +746,17 @@ function generate3DAudioCurves() {
         return;
     }
     
+    // Generate Time Curve
     const timePoints = generatePoints(audioAnalysisData.time, params, 'time');
-    create3DTube(timePoints, 'time', timeMaterial, params);
+    const timeMesh = create3DTube(timePoints, 'time', timeMaterial, params);
+    if (timeMesh) {
+        timeCurveObject = timeMesh;
+        if(playheadIndicator) playheadIndicator.visible = true;
+        updatePlayheadPosition(0);
+    }
     
+    // Generate Frequency Curve
+    // We use the same 'time' points logic, but swap in the 'freq' data
     const freqPoints = generatePoints(audioAnalysisData.freq, params, 'frequency');
     create3DTube(freqPoints, 'frequency', freqMaterial, params);
     
@@ -566,22 +777,27 @@ function generatePoints(audioData, params, type) {
     const points = [];
     const baseRadius = 5;
     const dataLength = audioData.length;
-    const step = dataLength / params.resolution;
+    // Use dataLength-1 to ensure percent=1.0 maps to last sample
+    const step = (dataLength - 1) / params.resolution; 
 
     for (let i = 0; i <= params.resolution; i++) {
+        // Corrected dataIndex calculation
         const dataIndex = Math.min(Math.floor(i * step), dataLength - 1);
         const sampleValue = audioData[dataIndex];
-        const t = (i / params.resolution) * Math.PI * 2 * params.spiralFactor;
-        const z = (i / params.resolution) * params.scaleZ;
+        
+        const percent = i / params.resolution;
+        const t = percent * Math.PI * 2 * params.spiralFactor;
+        const z = percent * params.scaleZ;
         let x, y;
         
         if (type === 'time') {
             const radius = baseRadius + (sampleValue * params.scaleX);
             x = Math.cos(t) * radius;
             y = Math.sin(t) * radius;
-        } else {
+        } else { // frequency
             const radius = baseRadius + (sampleValue * params.scaleX);
             x = Math.cos(t) * radius;
+            // Map frequency magnitude (0-1) to Y scale
             y = Math.sin(t) * baseRadius + (sampleValue * params.scaleY);
         }
         points.push(new THREE.Vector3(x, y, z));
@@ -610,43 +826,40 @@ function generatePoints(audioData, params, type) {
 }
 
 
-function create3DTube(points, name, material, params) { // Added params
+function create3DTube(points, name, material, params) {
     try {
         const curve = new THREE.CatmullRomCurve3(points);
         const tubeGeometry = new THREE.TubeGeometry(curve, points.length, 0.1, 8, false);
+        
         const arcMesh = new THREE.Mesh(tubeGeometry, material.clone());
         arcMesh.name = `${name}_curve`;
         arcMesh.userData.points = points;
         arcMesh.userData.type = name;
         arcMesh.userData.id = arcMeshes.length + 1;
-        arcMesh.userData.params = params; // Store params used to create this
+        arcMesh.userData.params = params;
         arcMeshes.push(arcMesh);
         arcEdgeScene.add(arcMesh);
+        
+        return arcMesh;
     } catch (error) {
         console.error("Error creating tube geometry:", error);
+        return null;
     }
 }
 
-// --- 2D Canvas Drawing ---
+// --- 2D Canvas Drawing (UPDATED) ---
 
 function analyzeAndDrawAll(buffer) {
     const timeData = buffer.getChannelData(0);
     audioAnalysisData.time = timeData;
     
-    const freqData = new Float32Array(timeData.length);
-    let maxDelta = 0;
-    for (let i = 1; i < timeData.length; i++) {
-        const delta = Math.abs(timeData[i] - timeData[i - 1]);
-        freqData[i] = delta;
-        if (delta > maxDelta) maxDelta = delta;
-    }
-    if (maxDelta > 0) {
-        for (let i = 1; i < freqData.length; i++) {
-            freqData[i] /= maxDelta;
-        }
-    }
-    audioAnalysisData.freq = freqData;
+    // NEW: Perform FFT on the entire timeData
+    console.log("Running FFT on audio data...");
+    const fftResult = fft(timeData);
+    audioAnalysisData.freq = fftResult.magnitudes;
+    console.log(`FFT complete. ${fftResult.binCount} frequency bins created.`);
 
+    // Draw both canvases
     draw2DTimeCanvas(buffer, audioAnalysisData.time);
     draw2DFreqCanvas(buffer, audioAnalysisData.freq);
 }
@@ -657,6 +870,7 @@ function draw2DTimeCanvas(buffer, data) {
     const width = canvas.width;
     const height = canvas.height;
     const halfHeight = height / 2;
+    const dataLength = data.length;
     
     ctx.fillStyle = '#2a2a2e';
     ctx.fillRect(0, 0, width, height);
@@ -664,9 +878,10 @@ function draw2DTimeCanvas(buffer, data) {
     ctx.lineWidth = 1;
     ctx.beginPath();
     
-    const step = Math.floor(data.length / width);
+    // FIXED: Loop logic to perfectly map pixels to data
     for (let i = 0; i < width; i++) {
-        const dataIndex = Math.min(i * step, data.length - 1);
+        const percent = i / (width - 1); // percent goes 0.0 to 1.0
+        const dataIndex = Math.min(Math.floor(percent * (dataLength - 1)), dataLength - 1);
         const y = (data[dataIndex] * halfHeight) + halfHeight;
         if (i === 0) ctx.moveTo(i, y);
         else ctx.lineTo(i, y);
@@ -675,23 +890,35 @@ function draw2DTimeCanvas(buffer, data) {
     drawTimeScale(ctx, width, height, buffer.duration);
 }
 
+// NEW: Draw Frequency Scale (Hz)
 function drawTimeScale(ctx, width, height, duration) {
     ctx.fillStyle = '#aaa';
     ctx.font = '10px Consolas';
     ctx.strokeStyle = '#aaa';
     ctx.lineWidth = 0.5;
-    const numTicks = 5;
-    const tickIntervalSeconds = Math.max(1, Math.floor(duration / numTicks));
 
-    for (let i = 0; i * tickIntervalSeconds < duration; i++) {
-        const time = i * tickIntervalSeconds;
+    // Calculate reasonable tick intervals (e.g., 5, 10, 20s)
+    const maxTicks = 6;
+    let tickIntervalSec = 1;
+    const intervals = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300];
+    for (let interval of intervals) {
+        if (duration / interval <= maxTicks) {
+            tickIntervalSec = interval;
+            break;
+        }
+    }
+    if (duration / tickIntervalSec > maxTicks * 1.5) {
+         tickIntervalSec = intervals[intervals.indexOf(tickIntervalSec) + 1] || tickIntervalSec * 2;
+    }
+
+    for (let time = 0; time <= duration; time += tickIntervalSec) {
         const x = (time / duration) * width;
         const label = `${time.toFixed(0)}s`;
         ctx.beginPath();
         ctx.moveTo(x, height - 10);
         ctx.lineTo(x, height);
         ctx.stroke();
-        ctx.fillText(label, x + 2, height - 2);
+        ctx.fillText(label, x + 2, height - 12);
     }
 }
 
@@ -700,6 +927,7 @@ function draw2DFreqCanvas(buffer, freqData) {
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
+    const dataLength = freqData.length;
     
     ctx.fillStyle = '#2a2a2e';
     ctx.fillRect(0, 0, width, height);
@@ -707,31 +935,61 @@ function draw2DFreqCanvas(buffer, freqData) {
     ctx.lineWidth = 1;
     ctx.beginPath();
     
-    const step = Math.floor(freqData.length / width);
+    // FIXED: Loop logic, and flip Y-axis
     for (let i = 0; i < width; i++) {
-        const dataIndex = Math.min(i * step, freqData.length - 1);
-        const y = height - (freqData[dataIndex] * height);
+        const percent = i / (width - 1); // percent goes 0.0 to 1.0
+        const dataIndex = Math.min(Math.floor(percent * (dataLength - 1)), dataLength - 1);
+        const y = height - (freqData[dataIndex] * height); // Freq data is 0-1
         if (i === 0) ctx.moveTo(i, y);
         else ctx.lineTo(i, y);
     }
     ctx.stroke();
-    drawTimeScale(ctx, width, height, buffer.duration);
+    // NEW: Draw frequency scale
+    drawFreqScale(ctx, width, height, audioAnalysisData.maxFrequency);
+}
+
+// NEW: Draw Frequency Scale (Hz)
+function drawFreqScale(ctx, width, height, maxFrequency) {
+    ctx.fillStyle = '#aaa';
+    ctx.font = '10px Consolas';
+    ctx.strokeStyle = '#aaa';
+    ctx.lineWidth = 0.5;
+    
+    const ticks = [1000, 2000, 5000, 10000, 15000, 20000];
+    
+    for (const freq of ticks) {
+        if (freq > maxFrequency) break;
+        const x = (freq / maxFrequency) * width;
+        const label = `${Math.floor(freq / 1000)}k`;
+        ctx.beginPath();
+        ctx.moveTo(x, height - 10);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+        ctx.fillText(label, x + 2, height - 12);
+    }
 }
 
 
-// --- 2D Canvas Interaction ---
+// --- 2D Canvas Interaction (UPDATED) ---
 
-function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
+function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction, isTimeControl = false) {
     let isDragging = false;
 
-    const handlePointerMove = (e) => {
+    const handlePointerMove2D = (e) => {
         if (!loadedBuffer) return;
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
         
         playhead.style.display = 'block';
         readout.style.display = 'block';
-        playhead.style.left = `${x}px`;
+        
+        // Only update the 2D playhead line for the time canvas
+        if (isTimeControl) {
+            playhead.style.left = `${x}px`;
+        } else {
+            // For Freq graph, just show readout, no red line
+            playhead.style.display = 'none';
+        }
         
         updateFunction(x, canvas.width, readout);
         
@@ -743,23 +1001,41 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
             readout.style.right = `${canvas.width - x + 5}px`;
         }
     };
+    
+    const handlePointerLeave = () => {
+         readout.style.display = 'none';
+         if(isTimeControl) {
+             playhead.style.display = 'none';
+         }
+    };
 
     const handlePointerDown = (e) => {
         if (!loadedBuffer) return;
         isDragging = true;
-        handlePointerMove(e);
         canvas.setPointerCapture(e.pointerId);
         
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-        const percent = x / canvas.width;
-        const timeInSeconds = percent * loadedBuffer.duration;
-        playAudio(timeInSeconds);
+        const percent = x / (canvas.width - 1); // Use width-1 for 0-1 mapping
+        
+        if (isTimeControl) {
+            updatePlayheadPosition(percent);
+        }
+        
+        handlePointerMove2D(e);
     };
 
     const handlePointerDrag = (e) => {
         if (isDragging) {
-            handlePointerMove(e);
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+            const percent = x / (canvas.width - 1);
+
+            if (isTimeControl) {
+                updatePlayheadPosition(percent);
+            }
+            
+            handlePointerMove2D(e);
         }
     };
     
@@ -768,11 +1044,15 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
             isDragging = false;
             canvas.releasePointerCapture(e.pointerId);
             
-            const rect = canvas.getBoundingClientRect();
-            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-            const percent = x / canvas.width;
-            const timeInSeconds = percent * loadedBuffer.duration;
-            playAudio(timeInSeconds);
+            if (isTimeControl) {
+                const rect = canvas.getBoundingClientRect();
+                const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+                const percent = x / (canvas.width - 1);
+                const timeInSeconds = percent * loadedBuffer.duration;
+                
+                updatePlayheadPosition(percent);
+                playAudio(timeInSeconds);
+            }
         }
     };
     
@@ -780,32 +1060,39 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction) {
     canvas.addEventListener('pointermove', handlePointerDrag);
     canvas.addEventListener('pointerup', stopDragging);
     canvas.addEventListener('pointerleave', (e) => {
-        if (isDragging) stopDragging(e);
+        if (isDragging) {
+            isDragging = false;
+            canvas.releasePointerCapture(e.pointerId);
+        }
+        handlePointerLeave();
     });
+    // Also hide on mouseout when not dragging
+    canvas.addEventListener('pointerout', handlePointerLeave);
 }
 
 function updateTimeReadout(x, canvasWidth, readoutElement) {
     if (!audioAnalysisData.time) return;
-    const percent = x / canvasWidth;
+    const percent = x / (canvasWidth - 1);
     const data = audioAnalysisData.time;
-    const sampleIndex = Math.min(Math.floor(percent * data.length), data.length - 1);
-    const timeInSeconds = (sampleIndex / loadedBuffer.sampleRate);
+    const sampleIndex = Math.min(Math.floor(percent * (data.length - 1)), data.length - 1);
+    const timeInSeconds = (percent * loadedBuffer.duration);
     const amplitude = data[sampleIndex];
     readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Amp: ${amplitude.toFixed(3)}`;
 }
 
+// UPDATED: Frequency Readout
 function updateFreqReadout(x, canvasWidth, readoutElement) {
     if (!audioAnalysisData.freq) return;
-    const percent = x / canvasWidth;
+    const percent = x / (canvasWidth - 1);
     const data = audioAnalysisData.freq;
-    const sampleIndex = Math.min(Math.floor(percent * data.length), data.length - 1);
-    const timeInSeconds = (sampleIndex / loadedBuffer.sampleRate);
-    const freqContent = data[sampleIndex];
-    readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Content: ${freqContent.toFixed(3)}`;
+    const freqInHz = percent * audioAnalysisData.maxFrequency;
+    const dataIndex = Math.min(Math.floor(percent * (data.length - 1)), data.length - 1);
+    const magnitude = data[dataIndex];
+    readoutElement.textContent = `Freq: ${freqInHz.toFixed(0)} Hz | Mag: ${magnitude.toFixed(3)}`;
 }
 
 
-// --- Three.js Scene Logic ---
+// --- Three.js Scene Logic (UPDATED) ---
 
 function initArcEdgeGraph() {
     if (isArcEdgeInitialized) return;
@@ -835,6 +1122,22 @@ function initArcEdgeGraph() {
         arcEdgeScene.add(axesHelper);
         const gridHelper = new THREE.GridHelper(30, 30, 0xcccccc, 0x888888);
         arcEdgeScene.add(gridHelper);
+        
+        // --- MODIFIED PLAYHEAD (from previous step) ---
+        const geometry = new THREE.SphereGeometry(0.6, 16, 16); 
+        const material = new THREE.MeshStandardMaterial({
+            color: 0xff00ff,
+            emissive: 0xff00ff,
+            emissiveIntensity: 1.2,
+            metalness: 0.2,
+            roughness: 0.5,
+            transparent: true,
+            opacity: 0.8
+        });
+        playheadIndicator = new THREE.Mesh(geometry, material);
+        playheadIndicator.visible = false;
+        arcEdgeScene.add(playheadIndicator);
+        
         isArcEdgeInitialized = true;
         animateArcEdgeGraph();
         updateArcEdgeReadout();
@@ -847,8 +1150,68 @@ function animateArcEdgeGraph() {
     if (!isArcEdgeInitialized) return;
     requestAnimationFrame(animateArcEdgeGraph);
     arcEdgeControls.update();
+    
+    const pulseTime = Date.now() * 0.01;
+    if (playheadIndicator && playheadIndicator.visible) {
+        
+        // --- MODIFIED PULSING EFFECT (from previous step) ---
+        const pulseFactor = (Math.sin(pulseTime) + 1) / 2; 
+        const scale = 1.0 + 0.2 * pulseFactor;
+        playheadIndicator.scale.set(scale, scale, scale);
+        playheadIndicator.material.opacity = 0.7 + 0.3 * pulseFactor; 
+        playheadIndicator.material.emissiveIntensity = 1.2 + (pulseFactor * 0.5); 
+    }
+
+    if (isAudioPlaying && loadedBuffer && timeCurveObject) {
+        const elapsed = audioContext.currentTime - playbackStartTime;
+        const currentBufferTime = playbackOffset + elapsed;
+        const duration = loadedBuffer.duration;
+        
+        let progressPercent = (currentBufferTime / duration);
+
+        if (progressPercent >= 1.0) {
+            progressPercent = 1.0;
+        }
+        
+        updatePlayheadPosition(progressPercent);
+    }
+    
     arcEdgeRenderer.render(arcEdgeScene, arcEdgeCamera);
 }
+
+// Helper function to update all playheads
+function updatePlayheadPosition(percent) {
+    if (!loadedBuffer) return;
+    
+    const p = Math.max(0, Math.min(1, percent));
+    
+    // 1. Update 3D Playhead
+    if (playheadIndicator && timeCurveObject) {
+        try {
+            const curve = timeCurveObject.geometry.parameters.path;
+            if (curve && curve.getPointAt) {
+                const newPos = curve.getPointAt(p);
+                playheadIndicator.position.copy(newPos);
+                playheadIndicator.visible = true;
+            }
+        } catch (e) {
+            console.error("Error updating 3D playhead position:", e);
+        }
+    }
+    
+    // 2. Update 2D Playheads
+    // FIXED: Use (width - 1) to match 0-1 mapping
+    const canvasWidth = ui.timeCanvas.width;
+    const xPos = p * (canvasWidth - 1);
+    
+    ui.timePlayhead.style.left = `${xPos}px`;
+    ui.timePlayhead.style.display = 'block';
+    
+    // We don't show the red line on the freq graph
+    // ui.freqPlayhead.style.left = `${xPos}px`;
+    // ui.freqPlayhead.style.display = 'block';
+}
+
 
 function onArcEdgeResize() {
     if (!isArcEdgeInitialized) return;
@@ -860,9 +1223,16 @@ function onArcEdgeResize() {
     arcEdgeRenderer.setSize(width, height);
 }
 
-// --- Selection & Measurement (UPDATED with Roller v6 Logic) ---
+// --- Selection & Measurement ---
 
 function onArcEdgePointerDown(event) {
+    // NEW: Check if selection is frozen
+    if (isSelectionFrozen) return;
+
+    if (event.target !== ui.arcEdgeViewport && !event.target.closest('#arcedge-viewport')) {
+         return; 
+    }
+    
     const bounds = ui.arcEdgeViewport.getBoundingClientRect();
     arcEdgePointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
     arcEdgePointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
@@ -900,9 +1270,6 @@ function measureSelectedArc() {
          return;
     }
     
-    // ---
-    // 1. SIMPLE (v5) CALCULATION (like the Python script)
-    // ---
     const points = selectedArc.userData.points;
     let simpleTotalLength = 0;
     for (let i = 0; i < points.length - 1; i++) {
@@ -911,76 +1278,62 @@ function measureSelectedArc() {
     const simpleDocCirc = doc_circumference(simpleTotalLength);
     const curveType = selectedArc.userData.type;
 
-    // ---
-    // 2. ADVANCED (v6) "ROLLER" CALCULATION
-    // ---
     addPrompt(`--- Measuring ${curveType} Curve (v6 Arc Edge) ---`);
     
-    // 2a. Get the 1D data that built this curve
     const sourceData = (selectedArc.userData.type === 'time') ? audioAnalysisData.time : audioAnalysisData.freq;
     if (!sourceData) {
         addPrompt("Error: Source audio data not found.");
         return;
     }
     
-    // 2b. Get the sampled 1D data points (the peaks/valleys)
     const params = selectedArc.userData.params;
     const resolution = params.resolution;
-    const step = Math.floor(sourceData.length / resolution);
+    const dataLength = sourceData.length;
+    const step = (dataLength - 1) / resolution; // Use floating point step
     let sampledData = [];
     for (let i = 0; i <= resolution; i++) {
-        let dataIndex = Math.min(Math.floor(i * step), sourceData.length - 1);
+        let dataIndex = Math.min(Math.floor(i * step), dataLength - 1);
         sampledData.push(sourceData[dataIndex]);
     }
 
-    // 2c. Find all bend indices (peaks and valleys)
-    let bendIndices = [0]; // Start at the beginning
+    let bendIndices = [0];
     for (let i = 1; i < sampledData.length - 1; i++) {
         let p = sampledData[i-1];
         let c = sampledData[i];
         let n = sampledData[i+1];
-        if ((c > p && c >= n) || (c < p && c <= n)) { // Find peaks/valleys
+        if ((c > p && c >= n) || (c < p && c <= n)) {
             bendIndices.push(i);
         }
     }
-    bendIndices.push(sampledData.length - 1); // Add the end point
+    bendIndices.push(sampledData.length - 1);
     
-    // 2d. Iterate through bend segments and apply "roller" logic
     let totalRollerLength = 0;
     let bendReports = [];
     for (let i = 0; i < bendIndices.length - 1; i++) {
         let startIndex = bendIndices[i];
         let endIndex = bendIndices[i+1];
         
-        // Skip empty segments (e.g., two bends right next to each other)
         if (startIndex === endIndex) continue; 
         
-        // Get the 3D points for this segment
         let segmentPoints = points.slice(startIndex, endIndex + 1);
         
-        // Calculate the actual 3D length (L) of this sub-curve
         let segmentLength = 0;
         for (let k = 0; k < segmentPoints.length - 1; k++) {
             segmentLength += segmentPoints[k].distanceTo(segmentPoints[k+1]);
         }
         
-        // Apply your formula: 1/8th circ = L, so Full Circ (C) = L * 8
         let matchingCircumference = segmentLength * 8;
-        
-        // Add this "tagged" circumference to the total
         totalRollerLength += matchingCircumference;
         
         bendReports.push({ start: startIndex, end: endIndex, len: segmentLength, circ: matchingCircumference });
     }
     
-    // 3. Add all values to the prompt output
     addPrompt(`${bendReports.length} bend segments found.`);
     addPrompt(`<code>${curveType}_UNIT_LENGTH = ${simpleTotalLength.toFixed(4)}</code>`);
     addPrompt(`<code>${curveType}_UNIT_CIRC = ${simpleDocCirc.toFixed(4)}</code>`);
     addPrompt(`<code>${curveType}_ARCEDGE_LENGTH_v6 = ${totalRollerLength.toFixed(4)}</code>`);
-    addPrompt(`---`); // Separator
+    addPrompt(`---`);
     
-    // 4. Update the readout panel
     updateArcEdgeReadout({
         length: simpleTotalLength,
         doc_circ: simpleDocCirc,
@@ -988,7 +1341,7 @@ function measureSelectedArc() {
     });
 }
 
-// --- Readout & Utility (UPDATED) ---
+// --- Readout & Utility ---
 
 function addPrompt(text) {
     ui.promptOutput.innerHTML += `<div>${text}</div>`;
@@ -1009,7 +1362,6 @@ function updateArcEdgeReadout(measurements = null) {
          rms = Math.sqrt(sumOfSquares / data.length);
      }
      
-     // UPDATED Readout HTML
      let readoutHTML = `<strong>File:</strong> ${loadedFileName}
 <strong>Duration:</strong> ${loadedBuffer ? loadedBuffer.duration.toFixed(2) + 's' : '---'}
 <strong>Peak Amp:</strong> ${peak.toFixed(3)}
@@ -1032,6 +1384,15 @@ function clearArcEdgeScene() {
     });
     arcMeshes = [];
     selectedArc = null;
+    
+    // NEW: Reset freeze selection
+    ui.freezeSelection.checked = false;
+    isSelectionFrozen = false;
+    
+    timeCurveObject = null;
+    if (playheadIndicator) playheadIndicator.visible = false;
+    stopAudio();
+    
     addPrompt("3D Scene Cleared.");
     updateArcEdgeReadout();
 }
@@ -1040,6 +1401,12 @@ function makeDraggable(element, handle) {
     let isDragging = false;
     let offsetX, offsetY;
     const startDrag = (e) => {
+        if (e.target !== handle) {
+             if (!handle.contains(e.target) || ui.arcEdgeContent.contains(e.target)) {
+                 return;
+             }
+        }
+        
         isDragging = true;
         const rect = element.getBoundingClientRect();
         const clientX = e.clientX ?? e.touches[0].clientX;
@@ -1085,3 +1452,4 @@ function makeDraggable(element, handle) {
 
 </body>
 </html>
+
