@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arc Edge 3D Audio Visualizer (v8 - FFT & Sync)</title>
+    <title>Arc Edge 3D Audio Visualizer (v13 - Bug Fix)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -11,8 +11,9 @@
     <style>
         :root { 
             --accent-color: #00e5ff; 
-            --bg-color: rgba(35, 35, 35, 0.95);
-            --panel-color: #1e1e1e; 
+
+            --bg-color: rgba(35, 35, 35, 0.45); 
+            --panel-color: #1e1e1e;
             --text-color: white; 
             --input-bg: #2a2a2e;
             --border-color: #444;
@@ -23,22 +24,36 @@
         }
 
         html, body { 
-            background-color: #111; 
+            background-color: transparent; 
             color: var(--text-color); 
             font-family: 'Segoe UI', 'Roboto', sans-serif; 
-            height: 100vh; 
             margin: 0;
-            overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding-top: 20px;
+            padding-bottom: 20px;
+            min-height: 100vh;
+            box-sizing: border-box;
         }
         
-        /* Base Overlay Styles */
+        #bg-video {
+            position: fixed;
+            right: 0;
+            bottom: 0;
+            min-width: 100%; 
+            min-height: 100%;
+            width: auto;
+            height: auto;
+            z-index: -100;
+            background-size: cover;
+            object-fit: cover;
+            filter: brightness(1);
+        }
+        
         .overlay-base {
              width: 100%;
-             height: 100%;
-             background: rgba(0, 0, 0, 0.0);
+             
              display: flex;
              align-items: center;
              justify-content: center;
@@ -88,7 +103,6 @@
         .overlay-content-base .action-buttons .secondary-btn { background: var(--calculator-btn-bg); color: var(--text-color); }
         .overlay-content-base .action-buttons .danger-btn { background: var(--calculator-btn-clear); color: white; }
         
-        /* Freeze Selection Checkbox Style */
         .checkbox-group {
             display: flex;
             align-items: center;
@@ -106,7 +120,31 @@
             accent-color: var(--accent-color);
         }
 
-        /* Arc Edge 3D Graph Styles */
+        .viewport-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .viewport-controls .checkbox-group {
+            grid-column: 1 / -1;
+            margin-top: 0;
+        }
+        .viewport-controls label {
+            margin-bottom: 0;
+            font-size: 0.9em;
+            color: var(--text-color);
+            font-weight: normal;
+        }
+        .viewport-controls input[type="number"] {
+            padding: 4px 8px;
+            font-size: 0.9em;
+        }
+        #viewport-alpha-group {
+            display: none;
+        }
+
         #arcedge-graph-overlay { 
             cursor: move;
         } 
@@ -154,23 +192,22 @@
             padding: 0 5px;
         }
         
-        /* Viewport and 2D Canvases Container */
         #arcedge-viewport-stack {
             flex-grow: 1;
             display: flex;
             flex-direction: column;
             gap: 10px;
-            min-width: 0; /* Flex fix */
+            min-width: 0;
         }
         
         #arcedge-graph-viewport-container {
-            flex-grow: 1; /* Viewport takes remaining space */
-            position: relative; /* For positioning the readout */
+            flex-grow: 1;
+            position: relative;
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            overflow: hidden; /* Clip the canvas */
-            background: linear-gradient(to bottom, #111, #333); 
-            min-height: 200px; /* Min height for 3D view */
+            overflow: hidden;
+            background: transparent; 
+            min-height: 200px;
         }
 
         #arcedge-viewport {
@@ -185,7 +222,7 @@
             position: absolute;
             top: 10px;
             left: 10px;
-            background-color: rgba(10, 10, 10, 0.75);
+            background-color: rgba(10, 10, 10, 0.35);
             color: var(--text-color);
             padding: 10px;
             border-radius: 6px;
@@ -200,7 +237,6 @@
         }
         #arcedge-readout strong { color: var(--accent-color); }
         
-        /* 2D Canvas Styles */
         #arcedge-2d-canvases {
             flex-shrink: 0;
             display: flex;
@@ -214,8 +250,8 @@
         .canvas-2d-wrapper {
             display: flex;
             flex-direction: column;
-            position: relative; /* For playhead */
-            overflow: hidden; /* Hide playhead overflow */
+            position: relative;
+            overflow: hidden;
         }
         .canvas-2d-wrapper label {
             font-size: 0.8em;
@@ -224,13 +260,12 @@
         }
         .canvas-2d-wrapper canvas {
             width: 100%;
-            height: 60px; /* Fixed height for the narrow bands */
+            height: 60px;
             background-color: #2a2a2e;
             border-radius: 4px;
             cursor: crosshair;
         }
         
-        /* Playhead and Readout Styles */
         .playhead-line {
             position: absolute;
             top: 0;
@@ -238,7 +273,7 @@
             width: 1px;
             background-color: red;
             pointer-events: none;
-            display: none; /* Hidden by default */
+            display: none;
             z-index: 100;
         }
         .playhead-readout {
@@ -252,12 +287,11 @@
             border-radius: 3px;
             border: 1px solid #888;
             pointer-events: none;
-            display: none; /* Hidden by default */
+            display: none;
             z-index: 101;
             white-space: nowrap;
         }
 
-        /* Prompt Output Area */
         #prompt-output-container {
             border: 1px solid var(--border-color);
             border-radius: 8px;
@@ -273,10 +307,18 @@
         #prompt-output-container code {
             color: #00e5ff;
         }
+        #prompt-output-container div {
+            padding: 2px 0;
+        }
         
     </style>
 </head>
 <body>
+
+<video autoplay muted loop id="bg-video">
+    <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/aeaudio.mp4" type="video/mp4">
+    Your browser does not support the video tag.
+</video>
 
 <div id="arcedge-graph-overlay" class="overlay-base">
     <div id="arcedge-graph-content" class="overlay-content-base">
@@ -285,12 +327,16 @@
             <h4>Arc Edge Audio Visualizer</h4>
 
             <fieldset>
-                <legend>1. Load Audio</legend>
+                <legend>1. Load File</legend>
                 <div class="input-group">
-                    <label for="mp3-upload">Upload MP3 File</label>
-                    <input type="file" id="mp3-upload" accept="audio/mpeg">
+                    <label for="file-upload">Upload Audio/Video File</label>
+                    <input type="file" id="file-upload" accept="audio/mpeg, video/mp4, video/webm, video/ogg">
                 </div>
-                <div class="input-group" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+                
+                <video id="video-player" style="width: 100%; max-height: 250px; display: none; border-radius: 6px; background: #000; margin-top: 10px;"></video>
+                <audio id="audio-player" style="display: none;"></audio>
+
+                <div class="input-group" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 15px;">
                     <button id="audio-play-btn" disabled>Play</button>
                     <button id="audio-pause-btn" disabled>Pause</button>
                     <button id="audio-stop-btn" disabled>Stop</button>
@@ -304,9 +350,9 @@
                 <legend>2. Visualization Controls</legend>
                 <div class="input-group-row">
                     <label>Curve Scale (X, Y, Z)</label>
-                    <input type="number" id="arc-scale-x" value="5" step="0.1" title="Time/Freq X Scale">
-                    <input type="number" id="arc-scale-y" value="5" step="0.1" title="Time/Freq Y Scale">
-                    <input type="number" id="arc-scale-z" value="30" step="1" title="Length Scale">
+                    <input type="number" id="arc-scale-x" value="1" step="0.1" title="Time/Freq X Scale">
+                    <input type="number" id="arc-scale-y" value="1" step="0.1" title="Time/Freq Y Scale">
+                    <input type="number" id="arc-scale-z" value="10" step="1" title="Length Scale">
                 </div>
                  <div class="input-group">
                      <label for="arc-spiral-factor">Spiral Windings</label>
@@ -316,6 +362,17 @@
                     <label for="arc-resolution">Curve Resolution</label>
                     <input type="number" id="arc-resolution" value="2048" min="64" max="8192" step="64">
                 </div>
+                
+                <div class="viewport-controls">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="viewport-bg-toggle">
+                        <label for="viewport-bg-toggle">Toggle Viewport BG</label>
+                    </div>
+                    <div id="viewport-alpha-group">
+                        <label for="viewport-alpha">BG Alpha</label>
+                        <input type="number" id="viewport-alpha" value="0.35" step="0.05" min="0" max="1">
+                    </div>
+                </div>
             </fieldset>
             
             <fieldset>
@@ -323,7 +380,6 @@
                 <div class="action-buttons" style="justify-content: space-between;">
                     <button id="arcedge-measure-btn" class="secondary-btn" style="flex-grow: 1;">Measure Selected</button>
                 </div>
-                <!-- NEW: Freeze Selection Checkbox -->
                 <div class="checkbox-group">
                     <input type="checkbox" id="freeze-selection-chk">
                     <label for="freeze-selection-chk">Freeze Selection</label>
@@ -333,12 +389,16 @@
             <fieldset style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
                 <legend>Generated Prompts</legend>
                 <div id="prompt-output-container" style="flex-grow: 1;">
-                    </div>
-            </fieldset>
-
-            <div class="action-buttons" style="margin-top: auto;">
+                </div>
+                <br>
+                            <div class="action-buttons" style="margin-top: auto;">
                 <button id="arcedge-clear-scene-btn" class="danger-btn">Clear Scene</button>
             </div>
+            <br>
+            </fieldset>
+
+
+
         </div>
 
         <div id="arcedge-viewport-stack">
@@ -365,7 +425,6 @@
                     <div class="playhead-readout" id="time-readout"></div>
                 </div>
                 <div class="canvas-2d-wrapper" id="freq-canvas-wrapper">
-                    <!-- UPDATED: Label -->
                     <label>Frequency Domain (FFT)</label>
                     <canvas id="freq-canvas"></canvas>
                     <div class="playhead-line" id="freq-playhead"></div>
@@ -379,38 +438,25 @@
 
 <script>
 // --- Embedded FFT Library ---
-/* * Free FFT and IFFT in JavaScript
- * https://github.com/dntj/js-fft
- * (c) 2011, 2014, 2017 Daniel Jones, MIT License
- *
- * Slightly modified for this project to be self-contained.
- */
 const fft = (function() {
-
     function FFT(size) {
         this.size = size | 0;
         if (this.size <= 1 || (this.size & (this.size - 1)) !== 0) {
-            // Find next power of 2
             let pow = 1;
             while (pow < size) {
                 pow <<= 1;
             }
             this.size = pow;
-            // console.warn(`FFT size rounded up to ${this.size}`);
         }
-
-        this._c = new Array(this.size * 2); // Complex array
-        this._cr = new Array(this.size); // Real part
-        this._ci = new Array(this.size); // Imaginary part
-        
-        // Precompute twiddle factors
+        this._c = new Array(this.size * 2);
+        this._cr = new Array(this.size);
+        this._ci = new Array(this.size);
         this._twiddle = new Array(this.size * 2);
         for (let i = 0; i < this.size; i++) {
             let angle = -Math.PI * 2 * i / this.size;
             this._twiddle[i * 2] = Math.cos(angle);
             this._twiddle[i * 2 + 1] = Math.sin(angle);
         }
-        
         this._bitrev = new Array(this.size);
         for (let j = 0; j < this.size; j++) {
             this._bitrev[j] = 0;
@@ -425,15 +471,11 @@ const fft = (function() {
             }
         }
     }
-
     FFT.prototype.forward = function(input) {
-        // Copy input to complex array, pad with zeros
         for (let i = 0; i < this.size; i++) {
-            this._c[i * 2] = input[i] || 0; // Real part
-            this._c[i * 2 + 1] = 0; // Imaginary part
+            this._c[i * 2] = input[i] || 0;
+            this._c[i * 2 + 1] = 0;
         }
-
-        // Bit-reversal permutation
         for (let i = 0; i < this.size; i++) {
             let j = this._bitrev[i];
             if (i < j) {
@@ -445,8 +487,6 @@ const fft = (function() {
                 this._c[j * 2 + 1] = tempI;
             }
         }
-
-        // Cooley-Tukey FFT
         for (let size = 2; size <= this.size; size *= 2) {
             let halfsize = size / 2;
             let tablestep = this.size / size;
@@ -456,10 +496,8 @@ const fft = (function() {
                     let tpi = this._c[(j + halfsize) * 2 + 1];
                     let twr = this._twiddle[k * 2];
                     let twi = this._twiddle[k * 2 + 1];
-                    
                     let zre = twr * tpre - twi * tpi;
                     let zim = twr * tpi + twi * tpre;
-                    
                     this._c[(j + halfsize) * 2] = this._c[j * 2] - zre;
                     this._c[(j + halfsize) * 2 + 1] = this._c[j * 2 + 1] - zim;
                     this._c[j * 2] += zre;
@@ -467,14 +505,10 @@ const fft = (function() {
                 }
             }
         }
-        
-        // Split complex array into real/imaginary parts
         for (let i = 0; i < this.size; i++) {
             this._cr[i] = this._c[i * 2];
             this._ci[i] = this._c[i * 2 + 1];
         }
-        
-        // Return magnitudes (half the array, up to Nyquist)
         let magnitudes = new Float32Array(this.size / 2);
         let maxMag = 0;
         for (let i = 0; i < this.size / 2; i++) {
@@ -482,18 +516,13 @@ const fft = (function() {
             magnitudes[i] = mag;
             if (mag > maxMag) maxMag = mag;
         }
-
-        // Normalize magnitudes
         if (maxMag > 0) {
             for (let i = 0; i < this.size / 2; i++) {
                 magnitudes[i] /= maxMag;
             }
         }
-        
         return magnitudes;
     };
-    
-    // Helper to find next power of 2
     function nextPow2(n) {
         if (n <= 0) return 1;
         let pow = 1;
@@ -502,8 +531,6 @@ const fft = (function() {
         }
         return pow;
     }
-
-    // Public function
     return function(timeData) {
         const size = nextPow2(timeData.length);
         const fftInstance = new FFT(size);
@@ -525,7 +552,9 @@ const ui = {
     arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
     arcEdgeViewport: document.getElementById('arcedge-viewport'),
     arcEdgeReadout: document.getElementById('arcedge-readout'),
-    mp3Upload: document.getElementById('mp3-upload'),
+    fileUpload: document.getElementById('file-upload'),
+    videoPlayer: document.getElementById('video-player'),
+    audioPlayer: document.getElementById('audio-player'),
     audioPlayBtn: document.getElementById('audio-play-btn'),
     audioPauseBtn: document.getElementById('audio-pause-btn'),
     audioStopBtn: document.getElementById('audio-stop-btn'),
@@ -537,8 +566,12 @@ const ui = {
         spiralFactor: document.getElementById('arc-spiral-factor'),
         resolution: document.getElementById('arc-resolution')
     },
+    viewportBgToggle: document.getElementById('viewport-bg-toggle'),
+    viewportAlphaGroup: document.getElementById('viewport-alpha-group'),
+    viewportAlpha: document.getElementById('viewport-alpha'),
+    
     arcEdgeMeasureBtn: document.getElementById('arcedge-measure-btn'),
-    freezeSelection: document.getElementById('freeze-selection-chk'), // NEW
+    freezeSelection: document.getElementById('freeze-selection-chk'),
     arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
     timeCanvas: document.getElementById('time-canvas'),
     timeCanvasWrapper: document.getElementById('time-canvas-wrapper'),
@@ -555,26 +588,23 @@ const ui = {
 let audioContext;
 let loadedBuffer = null;
 let loadedFileName = "None";
-let currentAudioSource = null;
 let audioAnalysisData = {
     time: null,
-    freq: null, // This will now hold FFT magnitude data
-    maxFrequency: 22050 // Will be updated to audioContext.sampleRate / 2
+    freq: null,
+    maxFrequency: 22050
 };
-// Audio playback tracking
-let playbackStartTime = 0;
 let playbackOffset = 0;
 let isAudioPlaying = false;
+let currentActivePlayer = null;
 
 // --- Three.js State ---
 let arcEdgeScene, arcEdgeCamera, arcEdgeRenderer, arcEdgeControls, arcEdgeRaycaster, arcEdgePointer;
 let arcMeshes = [];
 let selectedArc = null;
-let isSelectionFrozen = false; // NEW
+let isSelectionFrozen = false;
 let isArcEdgeInitialized = false;
-// 3D Playhead
 let playheadIndicator = null;
-let timeCurveObject = null; // Direct reference to the 'time' curve mesh
+let timeCurveObject = null;
 
 const timeMaterial = new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x005566, metalness: 0.5, roughness: 0.5 });
 const freqMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0x666600, metalness: 0.5, roughness: 0.5 });
@@ -591,7 +621,8 @@ window.onload = () => {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         audioAnalysisData.maxFrequency = audioContext.sampleRate / 2;
     } catch (e) {
-        alert('Web Audio API is not supported in this browser.');
+        console.error('Web Audio API is not supported in this browser.', e);
+        addPrompt("<strong>Error:</strong> Web Audio API is not supported in this browser.");
         return;
     }
     initArcEdgeGraph();
@@ -599,52 +630,104 @@ window.onload = () => {
 };
 
 function setupEventListeners() {
-    ui.mp3Upload.addEventListener('change', handleAudioUpload);
+    ui.fileUpload.addEventListener('change', handleFileUpload);
+    
+    // BUG FIX: Reset input value on click to allow re-uploading the same file
+    ui.fileUpload.addEventListener('click', (e) => {
+        e.target.value = null;
+    });
+    
     ui.audioPlayBtn.addEventListener('click', () => playAudio(playbackOffset));
     ui.audioPauseBtn.addEventListener('click', pauseAudio);
     ui.audioStopBtn.addEventListener('click', stopAudio);
+    
+    ui.videoPlayer.addEventListener('ended', stopAudio);
+    ui.audioPlayer.addEventListener('ended', stopAudio);
+    
     ui.audioGenerateBtn.addEventListener('click', generate3DAudioCurves);
     ui.arcEdgeMeasureBtn.addEventListener('click', measureSelectedArc);
     ui.arcEdgeClearSceneBtn.addEventListener('click', clearArcEdgeScene);
     window.addEventListener('resize', onArcEdgeResize);
     ui.arcEdgeViewport.addEventListener('pointerdown', onArcEdgePointerDown);
     
-    // NEW: Freeze Selection Listener
     ui.freezeSelection.addEventListener('change', (e) => { 
         isSelectionFrozen = e.target.checked; 
     });
     
+    ui.viewportBgToggle.addEventListener('change', handleViewportBgToggle);
+    ui.viewportAlpha.addEventListener('input', handleViewportBgToggle);
+
+    
     Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
     
-    // Setup 2D canvas listeners
     setupCanvasMouseListeners(ui.timeCanvas, ui.timePlayhead, ui.timeReadout, updateTimeReadout, true);
-    setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout, false); // false = not a time control
+    setupCanvasMouseListeners(ui.freqCanvas, ui.freqPlayhead, ui.freqReadout, updateFreqReadout, false);
 }
 
 // --- Audio Handling ---
 
-function handleAudioUpload(event) {
+function handleFileUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
 
     loadedFileName = file.name;
+    
     ui.audioPlayBtn.textContent = "Loading...";
+    ui.audioGenerateBtn.textContent = "Analyzing...";
+    ui.audioGenerateBtn.disabled = true;
+    ui.audioPlayBtn.disabled = true;
+    ui.audioPauseBtn.disabled = true;
+    ui.audioStopBtn.disabled = true;
     
-    stopAudio(); // Stop and reset
+    stopAudio(); 
     
+    const fileURL = URL.createObjectURL(file);
+    if (file.type.startsWith('video/')) {
+        ui.videoPlayer.src = fileURL;
+        ui.videoPlayer.style.display = 'block';
+        ui.audioPlayer.src = '';
+        currentActivePlayer = ui.videoPlayer;
+    } else if (file.type.startsWith('audio/')) {
+        ui.audioPlayer.src = fileURL;
+        ui.videoPlayer.src = '';
+        ui.videoPlayer.style.display = 'none';
+        currentActivePlayer = ui.audioPlayer;
+    } else {
+        addPrompt("Error: Unsupported file type. Please use MP3, MP4, WebM, or Ogg.");
+        return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
         audioContext.decodeAudioData(e.target.result, (buffer) => {
             loadedBuffer = buffer;
-            audioAnalysisData.maxFrequency = buffer.sampleRate / 2; // Update max freq
-            ui.audioPlayBtn.textContent = "Play";
-            updateAudioButtons();
+            audioAnalysisData.maxFrequency = buffer.sampleRate / 2;
+            
             updateArcEdgeReadout();
-            analyzeAndDrawAll(buffer);
+            
+            try {
+                addPrompt("Analyzing audio, please wait...");
+                analyzeAndDrawAll(buffer);
+                addPrompt("Analysis complete.");
+            } catch (err) {
+                console.error("Analysis failed:", err);
+                addPrompt("Error: File analysis failed. The file may be too large or corrupted.");
+                ui.audioPlayBtn.textContent = "Play";
+                ui.audioGenerateBtn.textContent = "Generate 3D Curves";
+                loadedFileName = "None";
+                updateAudioButtons();
+                return;
+            }
+            
+            ui.audioPlayBtn.textContent = "Play";
+            ui.audioGenerateBtn.textContent = "Generate 3D Curves";
+            updateAudioButtons();
+            
         }, (error) => {
             console.error('Error decoding audio data:', error);
-            alert('Error decoding audio file.');
+            addPrompt('Error: Could not decode audio file.');
             ui.audioPlayBtn.textContent = "Play";
+            ui.audioGenerateBtn.textContent = "Generate 3D Curves";
             loadedFileName = "None";
             updateAudioButtons();
         });
@@ -655,62 +738,35 @@ function handleAudioUpload(event) {
 // --- Audio Control Functions ---
 
 function playAudio(startTime = 0) {
-    if (!loadedBuffer) return;
-    if (audioContext.state === 'suspended') {
-        audioContext.resume();
-    }
-    if (currentAudioSource) {
-        currentAudioSource.onended = null;
-        currentAudioSource.stop();
-    }
-    currentAudioSource = audioContext.createBufferSource();
-    currentAudioSource.buffer = loadedBuffer;
-    currentAudioSource.connect(audioContext.destination);
-    currentAudioSource.onended = () => {
-        currentAudioSource = null;
-        if (audioContext.state === 'suspended') audioContext.resume();
-        
-        isAudioPlaying = false;
-        playbackOffset = 0; 
-        updatePlayheadPosition(0);
-        
-        updateAudioButtons();
-    };
+    if (!currentActivePlayer || !loadedBuffer) return;
+
+    currentActivePlayer.currentTime = startTime;
+    currentActivePlayer.play();
     
-    startTime = Math.max(0, Math.min(startTime, loadedBuffer.duration));
-    currentAudioSource.start(0, startTime);
-    
-    playbackStartTime = audioContext.currentTime;
-    playbackOffset = startTime;
     isAudioPlaying = true;
-    
     updateAudioButtons();
 }
 
 function pauseAudio() {
-    if (currentAudioSource && audioContext.state === 'running') {
-        audioContext.suspend();
-        isAudioPlaying = false;
-        playbackOffset += audioContext.currentTime - playbackStartTime;
-    }
+    if (!currentActivePlayer) return;
+
+    currentActivePlayer.pause();
+    isAudioPlaying = false;
+    playbackOffset = currentActivePlayer.currentTime;
     updateAudioButtons();
 }
 
 function stopAudio() {
-    if (currentAudioSource) {
-        currentAudioSource.onended = null;
-        currentAudioSource.stop();
-        currentAudioSource = null;
-    }
-    if (audioContext.state === 'suspended') {
-        audioContext.resume();
+    if (currentActivePlayer) {
+        currentActivePlayer.pause();
+        currentActivePlayer.currentTime = 0;
     }
     
     isAudioPlaying = false;
-    playbackOffset = 0; 
-    updatePlayheadPosition(0);
+    playbackOffset = 0;
     
     updateAudioButtons();
+    updatePlayheadPosition(0);
 }
 
 function updateAudioButtons() {
@@ -721,7 +777,8 @@ function updateAudioButtons() {
         ui.audioGenerateBtn.disabled = true;
         return;
     }
-    ui.audioGenerateBtn.disabled = false;
+    
+    ui.audioGenerateBtn.disabled = !(audioAnalysisData.time && audioAnalysisData.freq);
     
     const isPlaying = isAudioPlaying;
     const isStopped = !isAudioPlaying && playbackOffset === 0;
@@ -733,20 +790,35 @@ function updateAudioButtons() {
 
 // --- 3D Generation ---
 
+function clear3DMeshes() {
+    arcMeshes.forEach(mesh => {
+        arcEdgeScene.remove(mesh);
+        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.material) mesh.material.dispose();
+    });
+    arcMeshes = [];
+    selectedArc = null;
+    timeCurveObject = null;
+    if (playheadIndicator) playheadIndicator.visible = false;
+    
+    ui.freezeSelection.checked = false;
+    isSelectionFrozen = false;
+}
+
 function generate3DAudioCurves() {
     if (!loadedBuffer) {
-        alert("Please load an MP3 file first.");
+        addPrompt("Error: Please load a file first.");
         return;
     }
-    clearArcEdgeScene();
+    if (!audioAnalysisData.time || !audioAnalysisData.freq) {
+        addPrompt("Error: Audio data not analyzed. Please re-load file.");
+        return;
+    }
+
+    clear3DMeshes(); 
+    
     const params = getUIParams();
     
-    if (!audioAnalysisData.time || !audioAnalysisData.freq) {
-        alert("Audio data not analyzed. Please re-load file.");
-        return;
-    }
-    
-    // Generate Time Curve
     const timePoints = generatePoints(audioAnalysisData.time, params, 'time');
     const timeMesh = create3DTube(timePoints, 'time', timeMaterial, params);
     if (timeMesh) {
@@ -755,8 +827,6 @@ function generate3DAudioCurves() {
         updatePlayheadPosition(0);
     }
     
-    // Generate Frequency Curve
-    // We use the same 'time' points logic, but swap in the 'freq' data
     const freqPoints = generatePoints(audioAnalysisData.freq, params, 'frequency');
     create3DTube(freqPoints, 'frequency', freqMaterial, params);
     
@@ -777,11 +847,9 @@ function generatePoints(audioData, params, type) {
     const points = [];
     const baseRadius = 5;
     const dataLength = audioData.length;
-    // Use dataLength-1 to ensure percent=1.0 maps to last sample
     const step = (dataLength - 1) / params.resolution; 
 
     for (let i = 0; i <= params.resolution; i++) {
-        // Corrected dataIndex calculation
         const dataIndex = Math.min(Math.floor(i * step), dataLength - 1);
         const sampleValue = audioData[dataIndex];
         
@@ -797,7 +865,6 @@ function generatePoints(audioData, params, type) {
         } else { // frequency
             const radius = baseRadius + (sampleValue * params.scaleX);
             x = Math.cos(t) * radius;
-            // Map frequency magnitude (0-1) to Y scale
             y = Math.sin(t) * baseRadius + (sampleValue * params.scaleY);
         }
         points.push(new THREE.Vector3(x, y, z));
@@ -847,19 +914,17 @@ function create3DTube(points, name, material, params) {
     }
 }
 
-// --- 2D Canvas Drawing (UPDATED) ---
+// --- 2D Canvas Drawing ---
 
 function analyzeAndDrawAll(buffer) {
     const timeData = buffer.getChannelData(0);
     audioAnalysisData.time = timeData;
     
-    // NEW: Perform FFT on the entire timeData
     console.log("Running FFT on audio data...");
     const fftResult = fft(timeData);
     audioAnalysisData.freq = fftResult.magnitudes;
     console.log(`FFT complete. ${fftResult.binCount} frequency bins created.`);
 
-    // Draw both canvases
     draw2DTimeCanvas(buffer, audioAnalysisData.time);
     draw2DFreqCanvas(buffer, audioAnalysisData.freq);
 }
@@ -878,9 +943,8 @@ function draw2DTimeCanvas(buffer, data) {
     ctx.lineWidth = 1;
     ctx.beginPath();
     
-    // FIXED: Loop logic to perfectly map pixels to data
     for (let i = 0; i < width; i++) {
-        const percent = i / (width - 1); // percent goes 0.0 to 1.0
+        const percent = i / (width - 1);
         const dataIndex = Math.min(Math.floor(percent * (dataLength - 1)), dataLength - 1);
         const y = (data[dataIndex] * halfHeight) + halfHeight;
         if (i === 0) ctx.moveTo(i, y);
@@ -890,14 +954,12 @@ function draw2DTimeCanvas(buffer, data) {
     drawTimeScale(ctx, width, height, buffer.duration);
 }
 
-// NEW: Draw Frequency Scale (Hz)
 function drawTimeScale(ctx, width, height, duration) {
     ctx.fillStyle = '#aaa';
     ctx.font = '10px Consolas';
     ctx.strokeStyle = '#aaa';
     ctx.lineWidth = 0.5;
 
-    // Calculate reasonable tick intervals (e.g., 5, 10, 20s)
     const maxTicks = 6;
     let tickIntervalSec = 1;
     const intervals = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300];
@@ -935,20 +997,17 @@ function draw2DFreqCanvas(buffer, freqData) {
     ctx.lineWidth = 1;
     ctx.beginPath();
     
-    // FIXED: Loop logic, and flip Y-axis
     for (let i = 0; i < width; i++) {
-        const percent = i / (width - 1); // percent goes 0.0 to 1.0
+        const percent = i / (width - 1);
         const dataIndex = Math.min(Math.floor(percent * (dataLength - 1)), dataLength - 1);
-        const y = height - (freqData[dataIndex] * height); // Freq data is 0-1
+        const y = height - (freqData[dataIndex] * height);
         if (i === 0) ctx.moveTo(i, y);
         else ctx.lineTo(i, y);
     }
     ctx.stroke();
-    // NEW: Draw frequency scale
     drawFreqScale(ctx, width, height, audioAnalysisData.maxFrequency);
 }
 
-// NEW: Draw Frequency Scale (Hz)
 function drawFreqScale(ctx, width, height, maxFrequency) {
     ctx.fillStyle = '#aaa';
     ctx.font = '10px Consolas';
@@ -970,7 +1029,7 @@ function drawFreqScale(ctx, width, height, maxFrequency) {
 }
 
 
-// --- 2D Canvas Interaction (UPDATED) ---
+// --- 2D Canvas Interaction ---
 
 function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction, isTimeControl = false) {
     let isDragging = false;
@@ -983,11 +1042,9 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction, is
         playhead.style.display = 'block';
         readout.style.display = 'block';
         
-        // Only update the 2D playhead line for the time canvas
         if (isTimeControl) {
             playhead.style.left = `${x}px`;
         } else {
-            // For Freq graph, just show readout, no red line
             playhead.style.display = 'none';
         }
         
@@ -1016,7 +1073,7 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction, is
         
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-        const percent = x / (canvas.width - 1); // Use width-1 for 0-1 mapping
+        const percent = x / (canvas.width - 1);
         
         if (isTimeControl) {
             updatePlayheadPosition(percent);
@@ -1066,12 +1123,11 @@ function setupCanvasMouseListeners(canvas, playhead, readout, updateFunction, is
         }
         handlePointerLeave();
     });
-    // Also hide on mouseout when not dragging
     canvas.addEventListener('pointerout', handlePointerLeave);
 }
 
 function updateTimeReadout(x, canvasWidth, readoutElement) {
-    if (!audioAnalysisData.time) return;
+    if (!audioAnalysisData.time || !loadedBuffer) return;
     const percent = x / (canvasWidth - 1);
     const data = audioAnalysisData.time;
     const sampleIndex = Math.min(Math.floor(percent * (data.length - 1)), data.length - 1);
@@ -1080,7 +1136,6 @@ function updateTimeReadout(x, canvasWidth, readoutElement) {
     readoutElement.textContent = `Time: ${timeInSeconds.toFixed(2)}s | Amp: ${amplitude.toFixed(3)}`;
 }
 
-// UPDATED: Frequency Readout
 function updateFreqReadout(x, canvasWidth, readoutElement) {
     if (!audioAnalysisData.freq) return;
     const percent = x / (canvasWidth - 1);
@@ -1092,7 +1147,20 @@ function updateFreqReadout(x, canvasWidth, readoutElement) {
 }
 
 
-// --- Three.js Scene Logic (UPDATED) ---
+// --- Three.js Scene Logic ---
+
+function handleViewportBgToggle() {
+    if (ui.viewportBgToggle.checked) {
+        ui.viewportAlphaGroup.style.display = 'grid';
+        let alpha = parseFloat(ui.viewportAlpha.value) || 0.35;
+        arcEdgeRenderer.setClearColor(0x000000, alpha);
+        ui.arcEdgeGraphViewportContainer.style.background = 'linear-gradient(to bottom, #111, #333)';
+    } else {
+        ui.viewportAlphaGroup.style.display = 'none';
+        arcEdgeRenderer.setClearColor(0x000000, 0);
+        ui.arcEdgeGraphViewportContainer.style.background = 'transparent';
+    }
+}
 
 function initArcEdgeGraph() {
     if (isArcEdgeInitialized) return;
@@ -1105,7 +1173,7 @@ function initArcEdgeGraph() {
         arcEdgeCamera.position.set(5, 5, 15);
         arcEdgeCamera.lookAt(0, 0, 0);
         arcEdgeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        arcEdgeRenderer.setClearColor(0x000000, 0);
+        arcEdgeRenderer.setClearColor(0x000000, 0); 
         arcEdgeRenderer.setSize(width, height);
         container.appendChild(arcEdgeRenderer.domElement);
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -1123,16 +1191,15 @@ function initArcEdgeGraph() {
         const gridHelper = new THREE.GridHelper(30, 30, 0xcccccc, 0x888888);
         arcEdgeScene.add(gridHelper);
         
-        // --- MODIFIED PLAYHEAD (from previous step) ---
-        const geometry = new THREE.SphereGeometry(0.6, 16, 16); 
+        const geometry = new THREE.SphereGeometry(1.5, 32, 16); 
         const material = new THREE.MeshStandardMaterial({
             color: 0xff00ff,
             emissive: 0xff00ff,
-            emissiveIntensity: 1.2,
-            metalness: 0.2,
+            emissiveIntensity: 1.0,
+            metalness: 0.1,
             roughness: 0.5,
             transparent: true,
-            opacity: 0.8
+            opacity: 0.3
         });
         playheadIndicator = new THREE.Mesh(geometry, material);
         playheadIndicator.visible = false;
@@ -1152,19 +1219,25 @@ function animateArcEdgeGraph() {
     arcEdgeControls.update();
     
     const pulseTime = Date.now() * 0.01;
+    const pulseFactor = (Math.sin(pulseTime) + 1) / 2; // 0 to 1
+    
     if (playheadIndicator && playheadIndicator.visible) {
-        
-        // --- MODIFIED PULSING EFFECT (from previous step) ---
-        const pulseFactor = (Math.sin(pulseTime) + 1) / 2; 
-        const scale = 1.0 + 0.2 * pulseFactor;
+        const scale = 1.0 + 0.5 * pulseFactor; // 1.0 to 1.5
         playheadIndicator.scale.set(scale, scale, scale);
-        playheadIndicator.material.opacity = 0.7 + 0.3 * pulseFactor; 
-        playheadIndicator.material.emissiveIntensity = 1.2 + (pulseFactor * 0.5); 
+        playheadIndicator.material.opacity = 0.2 + 0.3 * pulseFactor; // 0.2 to 0.5
+        playheadIndicator.material.emissiveIntensity = 1.0 + (pulseFactor * 0.5); // 1.0 to 1.5
     }
 
-    if (isAudioPlaying && loadedBuffer && timeCurveObject) {
-        const elapsed = audioContext.currentTime - playbackStartTime;
-        const currentBufferTime = playbackOffset + elapsed;
+    if (timeCurveObject) {
+        if (isAudioPlaying) {
+            timeCurveObject.material.emissiveIntensity = 0.5 + pulseFactor * 0.3; // 0.5 to 0.8
+        } else {
+            timeCurveObject.material.emissiveIntensity = 0.5;
+        }
+    }
+
+    if (isAudioPlaying && loadedBuffer && timeCurveObject && currentActivePlayer) {
+        const currentBufferTime = currentActivePlayer.currentTime;
         const duration = loadedBuffer.duration;
         
         let progressPercent = (currentBufferTime / duration);
@@ -1200,16 +1273,11 @@ function updatePlayheadPosition(percent) {
     }
     
     // 2. Update 2D Playheads
-    // FIXED: Use (width - 1) to match 0-1 mapping
     const canvasWidth = ui.timeCanvas.width;
     const xPos = p * (canvasWidth - 1);
     
     ui.timePlayhead.style.left = `${xPos}px`;
     ui.timePlayhead.style.display = 'block';
-    
-    // We don't show the red line on the freq graph
-    // ui.freqPlayhead.style.left = `${xPos}px`;
-    // ui.freqPlayhead.style.display = 'block';
 }
 
 
@@ -1226,7 +1294,6 @@ function onArcEdgeResize() {
 // --- Selection & Measurement ---
 
 function onArcEdgePointerDown(event) {
-    // NEW: Check if selection is frozen
     if (isSelectionFrozen) return;
 
     if (event.target !== ui.arcEdgeViewport && !event.target.closest('#arcedge-viewport')) {
@@ -1251,22 +1318,17 @@ function onArcEdgePointerDown(event) {
     updateArcEdgeReadout();
 }
 
-/**
- * Calculates circumference using the doc formula: diameter * 3
- * @param {number} diameter - The input diameter (or in our case, the raw arc length)
- * @returns {number} The calculated circumference.
- */
 function doc_circumference(diameter) {
     return diameter * 3;
 }
 
 function measureSelectedArc() {
     if (!selectedArc) {
-        alert("Please select a 3D curve first by clicking on it.");
+        addPrompt("Error: Please select a 3D curve first by clicking on it.");
         return;
     }
     if (!selectedArc.userData || !selectedArc.userData.points || !selectedArc.userData.params) {
-         alert("Selected object is missing data for measurement.");
+         addPrompt("Error: Selected object is missing data for measurement.");
          return;
     }
     
@@ -1289,7 +1351,7 @@ function measureSelectedArc() {
     const params = selectedArc.userData.params;
     const resolution = params.resolution;
     const dataLength = sourceData.length;
-    const step = (dataLength - 1) / resolution; // Use floating point step
+    const step = (dataLength - 1) / resolution;
     let sampledData = [];
     for (let i = 0; i <= resolution; i++) {
         let dataIndex = Math.min(Math.floor(i * step), dataLength - 1);
@@ -1377,24 +1439,35 @@ function updateArcEdgeReadout(measurements = null) {
 
 function clearArcEdgeScene() {
     if (!isArcEdgeInitialized) return;
-    arcMeshes.forEach(mesh => {
-        arcEdgeScene.remove(mesh);
-        if (mesh.geometry) mesh.geometry.dispose();
-        if (mesh.material) mesh.material.dispose();
-    });
-    arcMeshes = [];
-    selectedArc = null;
     
-    // NEW: Reset freeze selection
-    ui.freezeSelection.checked = false;
-    isSelectionFrozen = false;
-    
-    timeCurveObject = null;
-    if (playheadIndicator) playheadIndicator.visible = false;
     stopAudio();
+
+    if (ui.videoPlayer) {
+        ui.videoPlayer.src = '';
+        ui.videoPlayer.style.display = 'none';
+    }
+    if (ui.audioPlayer) {
+        ui.audioPlayer.src = '';
+    }
+    currentActivePlayer = null;
     
-    addPrompt("3D Scene Cleared.");
+    clear3DMeshes();
+
+    loadedBuffer = null;
+    loadedFileName = "None";
+    audioAnalysisData.time = null;
+    audioAnalysisData.freq = null;
+    
+    const canvases = [ui.timeCanvas, ui.freqCanvas];
+    canvases.forEach(canvas => {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#2a2a2e';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    });
+
+    addPrompt("Scene, players, and data cleared.");
     updateArcEdgeReadout();
+    updateAudioButtons();
 }
 
 function makeDraggable(element, handle) {
