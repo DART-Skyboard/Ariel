@@ -1,0 +1,1898 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArcLake Chemistry / Research Lab (Radical Deepscale)</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+    
+    <style>
+        :root { 
+            --accent-color: #00e5ff; 
+            --theme-primary: #47c4f1; 
+            --theme-panel-border: #47c4f1;
+            --theme-text: #FFFFFF; 
+            --bg-color: rgba(35, 35, 35, 0.45); 
+            --panel-color: #1e1e1e;
+            --input-bg: rgba(42, 42, 46, 0.7); 
+            --border-color: #444;
+            --calculator-btn-bg: #4a4d52;
+            --calculator-btn-hover: #5a5d62;
+            --user-msg-bg: #007bff;
+            --calculator-btn-clear: #c0392b;
+            --theme-input-border: #4d5e6a;
+            --molecule-accent: #c0392b; 
+        }
+
+        html, body { 
+            background-color: transparent; 
+            color: var(--theme-text); 
+            font-family: 'Segoe UI', 'Roboto', 'Dart', sans-serif; 
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding-top: 20px;
+            padding-bottom: 20px;
+            min-height: 100vh;
+            box-sizing: border-box;
+            overflow: hidden; /* Prevent body scroll */
+        }
+        
+        #bg-video {
+            position: fixed;
+            right: 0;
+            bottom: 0;
+            min-width: 100%; 
+            min-height: 100%;
+            width: auto;
+            height: auto;
+            z-index: -100;
+            background-size: cover;
+            object-fit: cover;
+            filter: brightness(1);
+        }
+        
+        .overlay-content-base {
+            background: var(--bg-color);
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: left;
+            display: flex; 
+            flex-direction: row;
+            gap: 20px;
+            cursor: default;
+            max-width: 95vw;
+            height: 95vh; 
+            max-height: 950px;
+        }
+        .overlay-content-base label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 0.9em; color: var(--accent-color); }
+        .overlay-content-base input[type="text"],
+        .overlay-content-base input[type="number"],
+        .overlay-content-base input[type="file"],
+        .overlay-content-base textarea,
+        .overlay-content-base select,
+        .overlay-content-base button {
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--input-bg); 
+            color: var(--theme-text);
+            font-size: 0.95em;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .overlay-content-base button { cursor: pointer; transition: background-color 0.2s; }
+        .overlay-content-base button:hover { background-color: var(--calculator-btn-hover); }
+        .overlay-content-base button:disabled { background: rgba(51, 51, 51, 0.7); cursor: not-allowed; opacity: 0.5; }
+        .overlay-content-base h4 { margin: 0 0 15px 0; color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
+        .overlay-content-base .action-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .overlay-content-base .action-buttons .primary-btn { background: var(--user-msg-bg); color: white; }
+        .overlay-content-base .action-buttons .secondary-btn { background: var(--calculator-btn-bg); color: var(--theme-text); }
+        .overlay-content-base .action-buttons .danger-btn { background: var(--calculator-btn-clear); color: white; }
+        
+        #arcedge-controls {
+            width: 350px; 
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto; 
+            padding-right: 10px;
+            max-height: 100%;
+        }
+        
+        #arcedge-viewport-stack {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 0;
+            position: relative; 
+            padding-top: 5px; 
+        }
+        
+        #arcedge-graph-viewport-container {
+            flex-grow: 1;
+            position: relative;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            background: transparent; 
+            min-height: 200px;
+        }
+        
+        #arcedge-readout {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(10, 10, 10, 0.35);
+            color: var(--theme-text);
+            padding: 10px;
+            border-radius: 6px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+            max-width: 280px;
+            border: 1px solid var(--border-color);
+            z-index: 10;
+            pointer-events: none;
+            white-space: pre-wrap;
+        }
+        
+        /* Physics Fieldset Styles */
+        .physics-fieldset {
+            border: 1px solid var(--theme-panel-border); 
+            padding: 10px; 
+            border-radius: 8px; 
+            margin-top: 0; 
+        }
+        
+        .physics-grid {
+            display: grid; 
+            grid-template-columns: repeat(2, 1fr); 
+            gap: 10px; 
+            margin-bottom: 5px;
+            padding: 5px 0; 
+        }
+        .physics-grid.scene-mode {
+             grid-template-columns: repeat(4, 1fr); 
+        }
+        .physics-grid input[type="number"] {
+            text-align: right;
+            padding: 5px;
+        }
+
+        /* Molecular Control Group in Main Panel */
+        #mol-inputs-group {
+             border: 1px solid var(--molecule-accent);
+             border-radius: 8px;
+             padding: 10px;
+             background: rgba(30, 45, 57, 0.9);
+             margin-bottom: 15px;
+        }
+        #mol-inputs-group legend {
+            color: var(--molecule-accent);
+            font-weight: bold;
+        }
+        #mol-inputs-group label, #mol-inputs-group h5 {
+             color: var(--molecule-accent);
+             font-weight: bold;
+             margin: 8px 0 5px 0; 
+             border-top: 1px solid #444;
+             padding-top: 5px;
+        }
+        #mol-inputs-group h5:first-of-type {
+             border-top: none;
+             margin-top: 0;
+             padding-top: 0;
+        }
+        .mol-control-grid {
+             display: grid;
+             grid-template-columns: repeat(5, 1fr);
+             gap: 5px;
+             margin-bottom: 10px;
+        }
+        .mol-control-btn {
+            background: #444;
+            color: var(--theme-text);
+            padding: 5px 0;
+            border: 1px solid #666;
+            border-radius: 4px;
+            font-size: 0.8em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        /* SVG Color Fix: Force SVGs to white */
+        .mol-control-btn img {
+            width: 24px;
+            height: 24px;
+            filter: invert(-1) !important; 
+        }
+        .mol-input-row {
+             display: flex;
+             gap: 5px;
+             margin-bottom: 5px;
+        }
+        .mol-input-row input {
+            padding: 5px;
+            flex-grow: 1;
+        }
+        
+        /* 2D Canvas Overlay on 3D Viewport */
+        #mol-canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20; 
+            display: none; 
+            pointer-events: none;
+        }
+        
+        #mol-canvas-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            height: 80%;
+            background: rgba(30, 45, 57, 0.7); 
+            border: 2px solid var(--molecule-accent);
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(192, 57, 43, 0.5);
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            pointer-events: auto;
+        }
+        
+        #molecule-canvas {
+            flex-grow: 1;
+            background: rgba(51, 51, 51, 0.7); 
+            border: 1px solid #555;
+            margin-bottom: 10px;
+            cursor: crosshair;
+        }
+        
+        .mol-canvas-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+            padding: 0 5px;
+        }
+        .mol-canvas-controls button {
+             padding: 5px 10px;
+             width: auto;
+             font-size: 0.85em;
+             white-space: nowrap;
+        }
+        .mol-canvas-controls textarea {
+             background: rgba(42, 42, 46, 0.7); 
+        }
+        
+        #canvas-icon-bar {
+             position: absolute;
+             top: 5px;
+             left: 5px;
+             display: flex;
+             flex-direction: column;
+             gap: 5px;
+             pointer-events: none;
+             z-index: 30;
+        }
+        #canvas-icon-bar button {
+             width: 30px;
+             height: 30px;
+             padding: 0;
+             font-size: 1.2em;
+             border-radius: 4px;
+             pointer-events: auto; 
+        }
+        /* Style for the new Keep Selected Checkbox */
+        .keep-selected-group {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 10px;
+            padding-top: 5px;
+            border-top: 1px solid var(--border-color);
+        }
+        .keep-selected-group label {
+            color: var(--theme-primary);
+            font-weight: normal;
+            margin: 0;
+            padding-left: 5px;
+            font-size: 0.9em;
+        }
+        /* Arc Edge Settings Dropdown Style */
+        #arc-edge-settings-select {
+            background: var(--input-bg);
+            color: var(--theme-text);
+            border: 1px solid var(--theme-panel-border);
+            border-radius: 4px;
+            padding: 6px;
+        }
+
+    </style>
+</head>
+<body>
+
+<video autoplay muted loop id="bg-video">
+    <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/al.mp4" type="video/mp4">
+    Your browser does not support the video tag.
+</video>
+
+<div id="arcedge-graph-overlay" class="overlay-base">
+    <div id="arcedge-graph-content" class="overlay-content-base">
+        
+        <div id="arcedge-controls">
+            <h4>Arc Lake Chemistry | Early Alpha</h4>
+            
+            <div class="action-buttons" style="justify-content: center; margin-top: 0;">
+                <button id="toggle-mol-canvas" class="secondary-btn">Toggle 2D Canvas</button>
+            </div>
+
+            <fieldset id="mol-inputs-group">
+                <legend style="color: var(--molecule-accent); font-weight: bold;">Molecule Structure</legend>
+                
+                <label for="mol-element-select" style="color: var(--molecule-accent);">Element Dropdown</label>
+                <select id="mol-element-select">
+                    <option>Select Element</option>
+                </select>
+                
+                <label for="mol-scene-select" style="color: var(--molecule-accent);">Scene Dropdown</label>
+                <select id="mol-scene-select">
+                    <option>Select Atom in Scene</option>
+                </select>
+                
+                <h5>Toolbar Drag and Drop</h5>
+                <div class="mol-control-grid">
+                    <button class="mol-control-btn" title="Atom Pair" data-tool="AtomPair" draggable="true"><img src="icons/AtomPair.svg" alt="AP"></button>
+                    <button class="mol-control-btn" title="Orbit Delta" data-tool="OrbitDelta" draggable="true"><img src="icons/OrbitDelta.svg" alt="OD"></button>
+                    <button class="mol-control-btn" title="Single Bond" data-tool="SingleBond" draggable="true"><img src="icons/SingleBond.svg" alt="S"></button>
+                    <button class="mol-control-btn" title="Double Bond" data-tool="DoubleBond" draggable="true"><img src="icons/DoubleBond.svg" alt="D"></button>
+                    <button class="mol-control-btn" title="Triple Bond" data-tool="TripleBond" draggable="true"><img src="icons/TripleBond.svg" alt="T"></button>
+                    
+                    <button class="mol-control-btn" title="Depth Away" data-tool="DepthAway" draggable="true"><img src="icons/DepthAway.svg" alt="DA"></button>
+                    <button class="mol-control-btn" title="Depth Toward" data-tool="DepthToward" draggable="true"><img src="icons/DepthToward.svg" alt="DT"></button>
+                    <button class="mol-control-btn" title="Label" data-tool="Label" draggable="true"><img src="icons/Label.svg" alt="L"></button>
+                    <button class="mol-control-btn" title="Atom Drag" data-tool="AtomDrag" draggable="true"><img src="icons/AtomDrag.svg" alt="A"></button>
+
+                    <button class="mol-control-btn" title="Copy" data-tool="Copy"><img src="icons/Copy.svg" alt="C"></button>
+                    <button class="mol-control-btn" title="Paste" data-tool="Paste"><img src="icons/Paste.svg" alt="P"></button>
+                    <button class="mol-control-btn" title="Open Work File" data-tool="OpenWorkFile"><img src="icons/Open.svg" alt="O"></button>
+                    <button class="mol-control-btn" title="Save ArcLake.json" data-tool="SaveArcLake"><img src="icons/Save.svg" alt="S"></button>
+                    <button class="mol-control-btn" title="Selection Lasso" data-tool="SelectionLasso"><img src="icons/LassoSelect.svg" alt="Sel"></button>
+                    <button class="mol-control-btn" title="Clear Selection" data-tool="ClearSelection"><img src="icons/ClearSelection.svg" alt="C Sel"></button>
+                </div>
+                
+                <h5>Rigid Body</h5>
+                <input type="text" placeholder="Rigid Body Name" style="margin-bottom: 5px;">
+                <select style="margin-bottom: 5px;">
+                    <option>Passive</option>
+                    <option>Active</option>
+                </select>
+                
+                <h5>Physics | Math</h5>
+                <div class="mol-input-row">
+                    <input type="text" placeholder="Phys">
+                    <input type="text" placeholder="Math">
+                </div>
+            </fieldset>
+            
+            <fieldset>
+                <legend>Simulation Target</legend>
+                <div class="input-group">
+                    <label for="physicsTargetSelect">Select Scene / Group / Floor</label>
+                    <select id="physicsTargetSelect">
+                      <option value="scene_global">Overall Scene</option>
+                    </select>
+                </div>
+            </fieldset>
+            
+            <fieldset class="physics-fieldset">
+                <legend>Dynamic Physics Controls (Arc Edge Factor)</legend>
+                <div class="physics-grid" id="physicsGrid">
+                    
+                    <label id="labelMass">Mass (M)
+                        <input type="number" id="physicsMass" value="1.0" step="0.1" min="0.1" title="Atomic Mass / Scaling Factor">
+                    </label>
+                    <label id="labelVolume">Volume (Vol)
+                        <input type="number" id="physicsVolume" value="1.0" step="0.1" min="0.1" title="Atomic Scale / Inches (Scaled)">
+                    </label>
+                    <label id="labelWeight">Weight (Wt)
+                        <input type="number" id="physicsWeight" value="1.0" step="0.1" min="0.1" title="Scaled Weight / Pounds">
+                    </label>
+                    
+                    <label id="labelDensity">Density (D)
+                        <input type="number" id="physicsDensity" value="1.0" step="0.1" min="0.1" title="Mass/Volume Ratio">
+                    </label>
+                    
+                    <label id="labelTemp" style="grid-column: span 2;">Temperature (°F)
+                        <input type="number" id="physicsTemp" value="70.0" step="1.0" title="Temperature in Fahrenheit">
+                    </label>
+                    <label id="labelVelocity" style="grid-column: span 2;">Velocity (MPH)
+                        <input type="number" id="physicsVelocity" value="0.0" step="1.0" title="Velocity in Miles Per Hour">
+                    </label>
+                    
+                    <label id="labelGravity" style="display: block; grid-column: span 4;">Gravity (G-Force Factor)
+                        <input type="number" id="physicsGravity" value="9.8" step="0.1" min="0.0" title="Gravity Factor (9.8 = Earth)">
+                    </label>
+                    
+                </div>
+            </fieldset>
+            
+            <fieldset>
+                <legend>Element Drop-down</legend>
+                <div id="periodicTableContainer">
+                     <label for="periodicTableSelect">Select Atom to Load</label>
+                     <select id="periodicTableSelect">
+                          <option value="">Loading Elements...</option>
+                     </select>
+                </div>
+            </fieldset>
+            
+            <fieldset>
+                <legend>Arc Edge Settings</legend>
+                <div class="input-group">
+                    <label for="arc-edge-settings-select">Component Arc Source</label>
+                    <select id="arc-edge-settings-select">
+                        <option value="group">Entire Atom Group</option>
+                        <option value="electron">Electrons</option>
+                        <option value="proton">Protons</option>
+                        <option value="neutron">Neutrons</option>
+                    </select>
+                </div>
+            </fieldset>
+
+            <fieldset style="flex-grow: 1; display: flex; flex-direction: column; min-height: 100px;">
+                <legend>Simulation Prompts</legend>
+                <div id="prompt-output-container" style="flex-grow: 1; overflow-y: auto;">
+                </div>
+                <div class="action-buttons" style="margin-top: 10px;">
+                    <button id="arcedge-clear-scene-btn" class="danger-btn">Clear Scene</button>
+                </div>
+            </fieldset>
+
+        </div>
+
+        <div id="arcedge-viewport-stack">
+            
+             <div class="action-buttons" style="justify-content: space-between; flex-shrink: 0;">
+                <button id="startSimulationButton" class="primary-btn">Arc Edge | Start</button>
+                <button id="stopSimulationButton" class="danger-btn">Arc Edge | Stop</button>
+            </div>
+            <div class="action-buttons" style="justify-content: space-between; flex-shrink: 0;">
+                <button id="exportButton" class="secondary-btn">Export as PNG</button>
+                <button id="exportGLTFButton" class="secondary-btn">Export as GLTF</button>
+            </div>
+             <div style="flex-shrink: 0; margin-top: 10px;">
+                <select id="overall-scene-select" style="width: 100%; padding: 8px; background: var(--input-bg); color: var(--theme-text); border: 1px solid var(--theme-panel-border); border-radius: 4px;">
+                    <option>Overall Scene</option>
+                </select>
+            </div>
+            
+            <div id="arcedge-graph-viewport-container">
+                <div id="arcedge-viewport"></div>
+                <div id="arcedge-readout">
+                    <strong>Selected:</strong> Overall Scene
+                    <strong>Type:</strong> Global Scene
+                    <strong>Mass:</strong> N/A
+                    <strong>Volume:</strong> N/A
+                    <strong>Density:</strong> N/A
+                    ---
+                    <strong>Temperature:</strong> 70.00 °F
+                    <strong>Velocity:</strong> 0.00 MPH
+                    <strong>Arc Edge Factor:</strong> 700.0000
+                    <strong>Scene Gravity:</strong> 9.80 g
+                    ---
+                    <strong>Arc Edge Length:</strong> ---
+                </div>
+            </div>
+            
+            <div class="menu-row" style="justify-content: space-evenly; flex-shrink: 0; width: 100%; margin-top: 5px; display: flex; gap: 10px;">
+                <div style="display: flex; align-items: center; justify-content: center;">
+                  <label for="multiSelectToggle" style="color: white; margin: 0;">Multiple Selection Mode</label>
+                  <input type="checkbox" id="multiSelectToggle" style="margin-left: 10px; width: auto;">
+                </div>
+                <div style="display: flex; align-items: center; justify-content: center;">
+                  <label for="linkedSimToggle" style="color: white; margin: 0;">Link Physics Simulation</label>
+                  <input type="checkbox" id="linkedSimToggle" style="margin-left: 10px; width: auto;">
+                </div>
+                <div style="display: flex; align-items: center; justify-content: center;">
+                  <label for="floorSimToggle" style="color: white; margin: 0;">Enable Floor Plane</label>
+                  <input type="checkbox" id="floorSimToggle" style="margin-left: 10px; width: auto;">
+                </div>
+             </div>
+             
+             <div class="keep-selected-group">
+                 <input type="checkbox" id="freeze-selection-chk" style="width: auto;">
+                 <label for="freeze-selection-chk">Keep Selected</label>
+             </div>
+             
+             <div id="mol-canvas-overlay" style="display: none;">
+                <div id="mol-canvas-container">
+                    <canvas id="molecule-canvas" width="600" height="400"></canvas>
+                    
+                    <div class="mol-canvas-controls">
+                        <div style="display: flex; gap: 5px; align-items: center;">
+                            <button id="zoom-in-btn" class="secondary-btn" title="Zoom In">+</button>
+                            <button id="zoom-out-btn" class="secondary-btn" title="Zoom Out">-</button>
+                        </div>
+                        
+                        <textarea id="mol-canvas-input" rows="1" placeholder="Vector/Compound (e.g., C(H,H,H), Fe-Fe, H2O)" style="flex-grow: 1; resize: none;"></textarea>
+
+                        <button id="mol-clear-canvas" class="danger-btn">Clear Canvas</button>
+                        <button id="mol-create-compound" class="primary-btn">Create</button>
+                        
+                    </div>
+                </div>
+                
+                 <div id="canvas-icon-bar" style="pointer-events: none;">
+                    <button id="canvas-trash-btn" class="danger-btn" title="Trash Bin" style="pointer-events: auto;">&#x1F5D1;</button>
+                 </div>
+             </div>
+            
+        </div>
+    </div>
+</div>
+
+<input type="file" id="load-scene-input" accept=".json" style="display: none;">
+
+
+<script>
+
+const ui = {
+    arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
+    arcEdgeContent: document.getElementById('arcedge-graph-content'),
+    arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
+    arcEdgeViewport: document.getElementById('arcedge-viewport'),
+    arcEdgeReadout: document.getElementById('arcedge-readout'),
+    arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
+    promptOutput: document.getElementById('prompt-output-container'),
+    
+    startSimulationButton: document.getElementById('startSimulationButton'),
+    stopSimulationButton: document.getElementById('stopSimulationButton'),
+    exportButton: document.getElementById('exportButton'),
+    exportGLTFButton: document.getElementById('exportGLTFButton'),
+    multiSelectToggle: document.getElementById('multiSelectToggle'),
+    linkedSimToggle: document.getElementById('linkedSimToggle'),
+    floorSimToggle: document.getElementById('floorSimToggle'),
+    physicsTargetSelect: document.getElementById('physicsTargetSelect'), 
+    physicsGrid: document.getElementById('physicsGrid'),
+    
+    inputMass: document.getElementById('physicsMass'),
+    inputVolume: document.getElementById('physicsVolume'),
+    inputWeight: document.getElementById('physicsWeight'),
+    inputDensity: document.getElementById('physicsDensity'),
+    inputTemp: document.getElementById('physicsTemp'),
+    inputVelocity: document.getElementById('physicsVelocity'),
+    inputGravity: document.getElementById('physicsGravity'),
+    
+    toggleMolCanvasBtn: document.getElementById('toggle-mol-canvas'),
+    molInputsGroup: document.getElementById('mol-inputs-group'),
+    molElementSelect: document.getElementById('mol-element-select'),
+    molSceneSelect: document.getElementById('mol-scene-select'),
+    
+    molCanvasOverlay: document.getElementById('mol-canvas-overlay'),
+    molCanvas: document.getElementById('molecule-canvas'),
+    molClearCanvas: document.getElementById('mol-clear-canvas'),
+    molCreateCompound: document.getElementById('mol-create-compound'),
+    canvasTrashBtn: document.getElementById('canvas-trash-btn'),
+    
+    periodicTableSelect: document.getElementById('periodicTableSelect'),
+    
+    freezeSelectionChk: document.getElementById('freeze-selection-chk'),
+    arcEdgeSettingsSelect: document.getElementById('arc-edge-settings-select'),
+    loadSceneInput: document.getElementById('load-scene-input')
+};
+
+
+// --- Three.js State ---
+let scene, camera, renderer, controls, raycaster, pointer;
+let atomGroups = []; 
+let groupCounter = 0;
+let isArcEdgeInitialized = false;
+let selectedGroups = []; 
+let arcEdgeMesh = null; 
+let isSelectionFrozen = false; 
+
+const DEFAULT_PHYSICS = {
+    mass: 1.0, volume: 1.0, weight: 9.8, density: 1.0, 
+    temp: 70.0, velocity: 0.0, gravity: 9.8 
+};
+
+let scenePhysicsSettings = {
+    id: 'scene_global',
+    name: 'Overall Scene',
+    physics: { 
+        mass: 0.0, volume: 0.0, weight: 0.0, density: 0.0, 
+        temp: 70.0, velocity: 0.0, gravity: 9.8 
+    }
+};
+let floorPhysicsSettings = null; 
+let selectedPhysicsTargetId = 'scene_global'; 
+
+let isSimulating = false;
+let multiSelectMode = false;
+let isLinkedSimulation = false;
+let isFloorActive = false; 
+let floorPlaneMesh = null; 
+const FLOOR_Y_POS = -10.0; 
+const FLOOR_THICKNESS = 1.0;
+let nucleusThresholdFactor = 100; 
+
+let allElementsData = [];
+
+// --- 2D Canvas State ---
+let molCanvasState = {
+    atoms: [], // { id: 'a1', tool: 'AtomDrag', symbol: 'H', x: 50, y: 70, size: 10 }
+    bonds: [], // { id: 'b1', tool: 'SingleBond', from: 'a1', to: 'a2' }
+    tools: []  // { id: 't1', tool: 'OrbitDelta', symbol: 'Δ', x: 80, y: 80, size: 8 }
+};
+let molCanvasCtx;
+let currentDragTool = null; // The 'data-tool' being dragged from the toolbar
+let draggedCanvasItem = null; // The item being dragged *on* the canvas
+let isDraggingOnCanvas = false;
+let canvasDragOffsetX = 0;
+let canvasDragOffsetY = 0;
+let canvasIdCounter = 0;
+
+
+// ====================================================================================
+// INITIALIZATION AND EVENT LISTENERS
+// ====================================================================================
+
+window.onload = () => {
+    initArcEdgeGraph();
+    setupEventListeners();
+    init2DCanvasAndListeners();
+    fetchData(); 
+    ui.molCanvasOverlay.style.display = 'none';
+    updateArcEdgeReadout(); 
+    makeDraggable(ui.arcEdgeContent, ui.arcEdgeContent);
+};
+
+function setupEventListeners() {
+    // 3D Scene Listeners
+    ui.arcEdgeClearSceneBtn.addEventListener('click', clearScene);
+    window.addEventListener('resize', onArcEdgeResize);
+    ui.arcEdgeViewportContainer.addEventListener('pointerdown', onArcEdgePointerDown);
+    
+    // Simulation Listeners
+    ui.startSimulationButton.addEventListener('click', startSimulation);
+    ui.stopSimulationButton.addEventListener('click', stopSimulation);
+    ui.exportButton.addEventListener('click', exportAsPNG);
+    ui.exportGLTFButton.addEventListener('click', exportAsGLTF);
+    
+    // Mode Toggles
+    ui.multiSelectToggle.addEventListener('change', (e) => {
+        multiSelectMode = e.target.checked;
+        selectedGroups = [];
+    });
+    
+    ui.freezeSelectionChk.addEventListener('change', (e) => { 
+         isSelectionFrozen = e.target.checked;
+         if (!isSelectionFrozen && selectedGroups.length === 0) {
+             loadTargetSettings('scene_global');
+         }
+    });
+    
+    ui.linkedSimToggle.addEventListener('change', (e) => { isLinkedSimulation = e.target.checked; });
+    
+    // Physics UI Listeners
+    ui.physicsTargetSelect.addEventListener('change', (e) => { saveCurrentSettings(); loadTargetSettings(e.target.value); });
+    [ui.inputMass, ui.inputVolume, ui.inputWeight, ui.inputDensity, ui.inputTemp, ui.inputVelocity, ui.inputGravity].forEach(input => {
+        input.addEventListener('input', saveCurrentSettings);
+    });
+    
+    ui.floorSimToggle.addEventListener('change', () => {
+        isFloorActive = ui.floorSimToggle.checked;
+        if (isFloorActive) { createFloorPlane(); } else { removeFloorPlane(); }
+    });
+
+    // 3D Atom Loading
+    ui.periodicTableSelect.addEventListener('change', (e) => {
+        const selectedSymbol = e.target.value;
+        if (!selectedSymbol) return;
+        const atom = allElementsData.find(el => el.elementSymbol === selectedSymbol);
+        if (atom) {
+            const atomData = {
+                ...atom,
+                protons: parseInt(atom.protons), neutrons: parseInt(atom.neutrons), electrons: parseInt(atom.electrons),
+                electronOrbits: Array.isArray(atom.electronOrbits) ? atom.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0) : [],
+            };
+            if (multiSelectMode) { loadAtom(atomData, atomGroups.length); } 
+            else { loadAtom(atomData, 0); }
+        }
+    });
+    
+    // 2D Canvas UI Listeners
+    ui.toggleMolCanvasBtn.addEventListener('click', toggleMolCanvasOverlay);
+    ui.molClearCanvas.addEventListener('click', clear2DCanvas);
+    ui.molCreateCompound.addEventListener('click', createCompoundFromCanvas);
+    ui.canvasTrashBtn.addEventListener('click', () => { addPrompt("Trash Bin logic triggered. (TODO: Delete selected 2D items)"); });
+    document.getElementById('zoom-in-btn').addEventListener('click', () => { addPrompt("2D Canvas Zoom In logic triggered."); });
+    document.getElementById('zoom-out-btn').addEventListener('click', () => { addPrompt("2D Canvas Zoom Out logic triggered."); });
+    ui.loadSceneInput.addEventListener('change', handleSceneFileLoad);
+
+    // Toolbar Button Listeners (Drag and Click)
+    document.querySelectorAll('.mol-control-btn').forEach(button => {
+        if (button.draggable) {
+            // This is a draggable tool
+            button.addEventListener('dragstart', handleToolbarDragStart);
+        } else {
+            // This is a clickable-only tool
+            button.addEventListener('click', () => {
+                const toolName = button.getAttribute('data-tool');
+                if (toolName) handleToolClick(toolName);
+            });
+        }
+    });
+}
+
+// ====================================================================================
+// 2D MOLECULE CANVAS LOGIC (NEW)
+// ====================================================================================
+
+/**
+ * Initializes the 2D canvas context and sets up all its event listeners
+ * for drag/drop from toolbar and dragging items *on* the canvas.
+ */
+function init2DCanvasAndListeners() {
+    molCanvasCtx = ui.molCanvas.getContext('2d');
+    
+    // Listeners for dropping tools *onto* the canvas
+    ui.molCanvas.addEventListener('dragover', handleCanvasDragOver);
+    ui.molCanvas.addEventListener('drop', handleCanvasDrop);
+
+    // Listeners for dragging items *around* the canvas
+    ui.molCanvas.addEventListener('mousedown', handleCanvasMouseDown);
+    ui.molCanvas.addEventListener('mousemove', handleCanvasMouseMove);
+    ui.molCanvas.addEventListener('mouseup', handleCanvasMouseUp);
+    ui.molCanvas.addEventListener('mouseleave', handleCanvasMouseUp); // Stop dragging if mouse leaves
+
+    drawMolCanvas(); // Initial draw
+}
+
+/**
+ * Gets the true x, y coordinates of a mouse event relative to the canvas.
+ */
+function getCanvasMousePos(e) {
+    const rect = ui.molCanvas.getBoundingClientRect();
+    return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+    };
+}
+
+/**
+ * Finds the topmost item in the 2D state at a given x, y coordinate.
+ */
+function getItemAtPos(x, y) {
+    // Search in reverse to find the top-most item first
+    for (let i = molCanvasState.tools.length - 1; i >= 0; i--) {
+        const item = molCanvasState.tools[i];
+        const dist = Math.hypot(x - item.x, y - item.y);
+        if (dist < item.size) return item;
+    }
+    for (let i = molCanvasState.atoms.length - 1; i >= 0; i--) {
+        const item = molCanvasState.atoms[i];
+        const dist = Math.hypot(x - item.x, y - item.y);
+        if (dist < item.size) return item;
+    }
+    // TODO: Add bond selection logic
+    return null;
+}
+
+/**
+ * Fired when dragging a toolbar icon *starts*.
+ */
+function handleToolbarDragStart(e) {
+    currentDragTool = e.currentTarget.getAttribute('data-tool');
+    e.dataTransfer.effectAllowed = 'copy';
+}
+
+/**
+ * Fired when dragging *over* the 2D canvas.
+ */
+function handleCanvasDragOver(e) {
+    e.preventDefault(); // Necessary to allow dropping
+    e.dataTransfer.dropEffect = 'copy';
+}
+
+/**
+ * Fired when a toolbar icon is *dropped* onto the 2D canvas.
+ */
+function handleCanvasDrop(e) {
+    e.preventDefault();
+    if (!currentDragTool) return;
+
+    const pos = getCanvasMousePos(e);
+    const newItemId = `item_${canvasIdCounter++}`;
+    
+    addPrompt(`Dropped tool '${currentDragTool}' at (${pos.x.toFixed(0)}, ${pos.y.toFixed(0)})`);
+
+    switch (currentDragTool) {
+        case 'AtomDrag':
+            const selectedElement = ui.molElementSelect.options[ui.molElementSelect.selectedIndex];
+            // Use the symbol (e.g., "H") from the dropdown, not the full text
+            const symbol = allElementsData.find(el => el.elementSymbol === selectedElement.value)?.elementSymbol || '??';
+            molCanvasState.atoms.push({
+                id: newItemId,
+                tool: 'AtomDrag',
+                symbol: symbol,
+                x: pos.x,
+                y: pos.y,
+                size: 10
+            });
+            break;
+        case 'SingleBond':
+            molCanvasState.tools.push({ id: newItemId, tool: 'SingleBond', symbol: 'S', x: pos.x, y: pos.y, size: 8 });
+            addPrompt("Placeholder 'S' added. TODO: Implement bond drawing logic.");
+            break;
+        case 'DoubleBond':
+            molCanvasState.tools.push({ id: newItemId, tool: 'DoubleBond', symbol: 'D', x: pos.x, y: pos.y, size: 8 });
+            addPrompt("Placeholder 'D' added. TODO: Implement bond drawing logic.");
+            break;
+        case 'TripleBond':
+            molCanvasState.tools.push({ id: newItemId, tool: 'TripleBond', symbol: 'T', x: pos.x, y: pos.y, size: 8 });
+            addPrompt("Placeholder 'T' added. TODO: Implement bond drawing logic.");
+            break;
+        case 'OrbitDelta':
+            molCanvasState.tools.push({ id: newItemId, tool: 'OrbitDelta', symbol: 'Δ', x: pos.x, y: pos.y, size: 8 });
+            addPrompt("Placeholder 'Δ' added. TODO: Implement delta connection logic.");
+            break;
+        case 'AtomPair':
+            molCanvasState.tools.push({ id: newItemId, tool: 'AtomPair', symbol: 'AP', x: pos.x, y: pos.y, size: 8 });
+            addPrompt("Placeholder 'AP' added. TODO: Implement atom pair logic.");
+            break;
+        case 'DepthAway':
+            molCanvasState.tools.push({ id: newItemId, tool: 'DepthAway', symbol: 'DA', x: pos.x, y: pos.y, size: 8 });
+            break;
+        case 'DepthToward':
+            molCanvasState.tools.push({ id: newItemId, tool: 'DepthToward', symbol: 'DT', x: pos.x, y: pos.y, size: 8 });
+            break;
+        case 'Label':
+            molCanvasState.tools.push({ id: newItemId, tool: 'Label', symbol: 'L', x: pos.x, y: pos.y, size: 8 });
+            break;
+    }
+
+    currentDragTool = null; // Clear the tool after dropping
+    drawMolCanvas(); // Redraw the canvas with the new item
+}
+
+/**
+ * Fired on mouse down *on the canvas* to initiate dragging *on* the canvas.
+ */
+function handleCanvasMouseDown(e) {
+    const pos = getCanvasMousePos(e);
+    draggedCanvasItem = getItemAtPos(pos.x, pos.y);
+
+    if (draggedCanvasItem) {
+        isDraggingOnCanvas = true;
+        canvasDragOffsetX = pos.x - draggedCanvasItem.x;
+        canvasDragOffsetY = pos.y - draggedCanvasItem.y;
+        ui.molCanvas.style.cursor = 'grabbing';
+    }
+}
+
+/**
+ * Fired on mouse move *on the canvas* to drag items.
+ */
+function handleCanvasMouseMove(e) {
+    if (!isDraggingOnCanvas || !draggedCanvasItem) return;
+
+    const pos = getCanvasMousePos(e);
+    draggedCanvasItem.x = pos.x - canvasDragOffsetX;
+    draggedCanvasItem.y = pos.y - canvasDragOffsetY;
+    
+    drawMolCanvas(); // Redraw constantly while dragging
+}
+
+/**
+ * Fired on mouse up *on the canvas* to stop dragging.
+ */
+function handleCanvasMouseUp(e) {
+    isDraggingOnCanvas = false;
+    draggedCanvasItem = null;
+    ui.molCanvas.style.cursor = 'crosshair';
+}
+
+/**
+ * Clears and redraws the entire 2D canvas based on the `molCanvasState`.
+ */
+function drawMolCanvas() {
+    if (!molCanvasCtx) return; // Guard against running before init
+    
+    // Clear canvas
+    molCanvasCtx.fillStyle = 'rgba(51, 51, 51, 0.7)';
+    molCanvasCtx.fillRect(0, 0, ui.molCanvas.width, ui.molCanvas.height);
+    
+    molCanvasCtx.textAlign = 'center';
+    molCanvasCtx.textBaseline = 'middle';
+
+    // Draw Bonds (TODO)
+    molCanvasState.bonds.forEach(bond => {
+        // TODO: Find 'from' and 'to' atoms in molCanvasState.atoms
+        // Draw line between them
+    });
+
+    // Draw Atoms
+    molCanvasCtx.font = 'bold 20px Segoe UI';
+    molCanvasCtx.fillStyle = '#FFFFFF';
+    molCanvasState.atoms.forEach(item => {
+        molCanvasCtx.fillText(item.symbol, item.x, item.y);
+    });
+    
+    // Draw Tools (Placeholders)
+    molCanvasCtx.font = '16px Segoe UI';
+    molCanvasCtx.fillStyle = '#FF8080'; // Reddish color for tool symbols
+    molCanvasState.tools.forEach(item => {
+        molCanvasCtx.fillText(item.symbol, item.x, item.y);
+    });
+}
+
+/**
+ * Clears the 2D canvas state and redraws it.
+ */
+function clear2DCanvas() {
+    molCanvasState = { atoms: [], bonds: [], tools: [] };
+    canvasIdCounter = 0;
+    drawMolCanvas();
+    addPrompt("2D Canvas Cleared.");
+}
+
+/**
+ * Handles clicks for non-draggable toolbar buttons.
+ */
+function handleToolClick(toolName) {
+    addPrompt(`Tool Click: ${toolName} activated.`);
+    
+    switch (toolName) {
+        case 'SaveArcLake':
+            saveSceneState();
+            break;
+        case 'OpenWorkFile':
+            // This triggers the hidden file input
+            ui.loadSceneInput.click();
+            break;
+        case 'SelectionLasso':
+            addPrompt("TODO: Implement Selection Lasso logic.");
+            break;
+        case 'ClearSelection':
+            addPrompt("TODO: Implement Clear Selection logic.");
+            break;
+        case 'Copy':
+            addPrompt("TODO: Implement Copy logic.");
+            break;
+        case 'Paste':
+            addPrompt("TODO: Implement Paste logic.");
+            break;
+    }
+}
+
+/**
+ * "Compiles" the 2D canvas state into 3D objects. (Placeholder)
+ */
+function createCompoundFromCanvas() {
+    addPrompt("Parsing 2D canvas state to 'Create' 3D scene...");
+    
+    if (molCanvasState.atoms.length === 0) {
+        addPrompt("Canvas is empty. Nothing to create.");
+        return;
+    }
+    
+    // This is a placeholder for your complex graph-traversal logic
+    // to find connected components (independent groups).
+    // For now, we'll just log all atoms and assume they are one group
+    // unless you implement the bond logic.
+    
+    // TODO: Implement graph traversal logic here based on `molCanvasState.bonds`
+    // to find all connected groups.
+    
+    const independentGroups = [];
+    // Placeholder: treat every atom as its own group
+    molCanvasState.atoms.forEach((atom, index) => {
+        independentGroups.push({
+            id: `group_${index}`,
+            atoms: [atom],
+            bonds: [] // TODO
+        });
+    });
+    
+    addPrompt(`Found ${independentGroups.length} independent group(s).`);
+    addPrompt("TODO: Implement 3D generation from these groups.");
+    
+    // Example of what you would do next:
+    // 1. Clear the 3D scene (optional, maybe)
+    // clearScene(); 
+    
+    // 2. Loop through each independent group and load its atoms
+    // independentGroups.forEach((group, index) => {
+    //     group.atoms.forEach(atom => {
+    //         const atomData = allElementsData.find(el => el.elementSymbol === atom.symbol);
+    //         if (atomData) {
+    //             // You need to pass the group index to `loadAtom` so they
+    //             // load side-by-side as you intended.
+    //             loadAtom(atomData, index); 
+    //         }
+    //     });
+    //     // TODO: Create 3D bonds for this group
+    // });
+
+    // Close the 2D canvas overlay after creation
+    toggleMolCanvasOverlay();
+}
+
+
+/**
+ * Saves the *entire* 3D and 2D scene state to a JSON file.
+ */
+function saveSceneState() {
+    const state = {
+        version: "ArcLake 1.0",
+        scenePhysics: scenePhysicsSettings,
+        floorPhysics: floorPhysicsSettings,
+        isFloorActive: isFloorActive,
+        isSimulating: isSimulating,
+        isLinkedSimulation: isLinkedSimulation,
+        atoms: atomGroups.map(g => ({
+            id: g.id,
+            name: g.name,
+            elementData: JSON.parse(g.elementData),
+            physics: g.physics,
+            initialPosition: g.center.toArray(),
+        })),
+        // CRITICAL: Save the 2D canvas state
+        molCanvasState: molCanvasState
+    };
+
+    const json = JSON.stringify(state, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'arclake_scene.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    addPrompt("Scene state exported to arclake_scene.json.");
+}
+
+/**
+ * Handles the file input event for loading a scene.
+ */
+function handleSceneFileLoad(event) {
+    const file = event.target.files[0];
+    if (!file) {
+        addPrompt("File loading cancelled.");
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const json = e.target.result;
+            const loadedState = JSON.parse(json);
+            restoreSceneState(loadedState);
+            addPrompt(`Successfully loaded scene: ${file.name}`);
+        } catch (error) {
+            console.error("Failed to load or parse scene file:", error);
+            addPrompt(`<strong>Error:</strong> Failed to parse scene file. ${error.message}`);
+        }
+    };
+    reader.onerror = () => {
+        addPrompt(`<strong>Error:</strong> Failed to read file. ${reader.error}`);
+    };
+    reader.readAsText(file);
+    
+    // Reset file input to allow loading the same file again
+    event.target.value = null;
+}
+
+/**
+ * Restores the entire 2D and 3D scene from a loaded state object.
+ */
+function restoreSceneState(state) {
+    if (!state || state.version !== "ArcLake 1.0") {
+        addPrompt("<strong>Error:</strong> Invalid or outdated scene file.");
+        return;
+    }
+
+    // 1. Clear existing scene
+    clearScene(); // This also clears 3D atomGroups
+    
+    // 2. Restore 2D Canvas
+    molCanvasState = state.molCanvasState || { atoms: [], bonds: [], tools: [] };
+    // Recalculate the ID counter to avoid collisions
+    let maxId = 0;
+    [...molCanvasState.atoms, ...molCanvasState.bonds, ...molCanvasState.tools].forEach(item => {
+        const idNum = parseInt(item.id.split('_')[1]);
+        if (idNum > maxId) maxId = idNum;
+    });
+    canvasIdCounter = maxId + 1;
+    drawMolCanvas(); // Redraw the restored 2D canvas
+    
+    // 3. Restore Scene Settings
+    scenePhysicsSettings = state.scenePhysics || scenePhysicsSettings;
+    floorPhysicsSettings = state.floorPhysics || null;
+    isLinkedSimulation = state.isLinkedSimulation || false;
+    ui.linkedSimToggle.checked = isLinkedSimulation;
+    
+    // 4. Restore Floor
+    ui.floorSimToggle.checked = state.isFloorActive || false;
+    if (ui.floorSimToggle.checked) {
+        createFloorPlane();
+        // Restore floor physics if they existed
+        if (floorPhysicsSettings) {
+            floorPhysicsSettings = state.floorPhysics;
+        }
+    }
+
+    // 5. Restore 3D Atoms
+    // We rebuild the 3D atoms from the loaded `atoms` array
+    if (state.atoms && Array.isArray(state.atoms)) {
+        state.atoms.forEach((atomState, index) => {
+            // `loadAtom` adds to `atomGroups`, so we can just call it
+            loadAtom(atomState.elementData, index);
+            
+            // After loading, find the group we just created and restore its state
+            const createdGroup = atomGroups.find(g => g.name === atomState.name);
+            if (createdGroup) {
+                createdGroup.physics = atomState.physics;
+                createdGroup.center.fromArray(atomState.initialPosition);
+                // Reset initial particle positions based on the new center
+                createdGroup.nucleusMeshes.forEach(m => m.position.copy(m.userData.initialOffset.clone().add(createdGroup.center)));
+                createdGroup.electronMeshes.forEach(m => m.position.copy(m.userData.initialOffset.clone().add(createdGroup.center)));
+            }
+        });
+    }
+
+    // 6. Restore UI
+    updatePhysicsDropdown();
+    loadTargetSettings('scene_global');
+    updateArcEdgeReadout();
+    
+    // 7. Restore simulation state
+    if (state.isSimulating) {
+        startSimulation();
+    }
+}
+
+function toggleMolCanvasOverlay() {
+    if (ui.molCanvasOverlay.style.display === 'none') {
+        ui.molCanvasOverlay.style.display = 'flex';
+        ui.molCanvasOverlay.style.pointerEvents = 'auto';
+        drawMolCanvas(); // Redraw in case state was loaded while hidden
+    } else {
+        ui.molCanvasOverlay.style.display = 'none';
+        ui.molCanvasOverlay.style.pointerEvents = 'none';
+    }
+}
+
+
+// ====================================================================================
+// DATA FETCHING (Using elements.json)
+// ====================================================================================
+
+function fetchData() {
+    fetch('elements.json') 
+    .then(response => {
+        if (!response.ok) { 
+            throw new Error(`Failed to load elements.json. Status: ${response.status}. Ensure the file exists in the correct directory.`); 
+        }
+        return response.json();
+    })
+    .then(data => {
+        const actualElements = data.slice(1);
+        
+        const elementsWithSymbols = actualElements.map(el => {
+            // This logic correctly parses the [2, 1] format from the JSON
+            const orbits = Array.isArray(el.electronOrbits) 
+                ? el.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n)) 
+                : [];
+
+            return {
+                elementName: el.elementName,
+                elementSymbol: el.elementName ? el.elementName.slice(0, 2).replace(/\s/g, '').toUpperCase() : `UN${el.protons || '?'}`.toUpperCase(),
+                protons: parseInt(el.protons) || 0,
+                neutrons: parseInt(el.neutrons) || 0,
+                electrons: parseInt(el.electrons) || 0,
+                electronOrbits: orbits 
+            };
+        });
+        
+        allElementsData = elementsWithSymbols.filter(el => el.elementName); 
+        populateElementDropdowns(allElementsData);
+        
+        if (allElementsData.length > 0) { 
+            loadAtom(allElementsData[0], 0); 
+        } else {
+             addPrompt("No valid elements found in elements.json.");
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching/parsing JSON data:', error);
+        ui.periodicTableSelect.innerHTML = '<option value="">Error Loading Elements</option>';
+        addPrompt(`<strong>FATAL ERROR:</strong> ${error.message}. Element data could not be loaded.`);
+    });
+}
+
+function populateElementDropdowns(elements) {
+    ui.periodicTableSelect.innerHTML = '<option value="">-- Select Atom --</option>';
+    ui.molElementSelect.innerHTML = '<option value="">Select Element</option>';
+
+    elements.forEach(element => {
+        const option = document.createElement('option');
+        option.value = element.elementSymbol;
+        option.textContent = `${element.elementSymbol} - ${element.elementName}`;
+        ui.periodicTableSelect.appendChild(option);
+        
+        const molOption = option.cloneNode(true);
+        molOption.textContent = `${element.elementSymbol} - ${element.elementName}`; // Show full name here too
+        ui.molElementSelect.appendChild(molOption);
+    });
+}
+
+
+// ====================================================================================
+// CORE 3D LOGIC (Unchanged from previous file)
+// ====================================================================================
+
+function getArcEdgeDeviation(t, params) { 
+    const { temp, velocity, density } = params;
+    const normalizedDensity = Math.max(0.1, density);
+    const normalizedVelocity = Math.max(0.1, velocity) / 100; 
+    const normalizedTemp = Math.max(0.1, temp) / 100; 
+    const mainDeviationMagnitude = ((normalizedTemp + normalizedVelocity) / normalizedDensity) * 0.5; 
+    const x = 1.0; const y = 0.5; const z = 0; 
+    const curveInd = normalizedVelocity * 3; 
+    const devInd = normalizedTemp * 3; 
+    const shellInfluence = params.shellInfluence; 
+    const adjustedMainDev = mainDeviationMagnitude * shellInfluence;
+    const adjustedCurveInd = curveInd * shellInfluence;
+    const adjustedDevInd = devInd * shellInfluence;
+    let px = 0; let py = 0; let pz = 0;
+    const dir = new THREE.Vector3(x, y, z).normalize();
+    let up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(dir.y) > 0.95) up.set(1, 0, 0); 
+    const perp1 = new THREE.Vector3().crossVectors(dir, up).normalize();
+    const deviationVector = perp1.clone().multiplyScalar(Math.sin(t * 3) * adjustedMainDev); 
+    px += deviationVector.x; py += deviationVector.y; pz += deviationVector.z;
+    px += Math.sin(t * 3 * 3) * adjustedCurveInd * x; 
+    py += Math.sin(t * 5 * 3) * adjustedCurveInd * y;
+    pz += Math.sin(t * 7 * 3) * adjustedCurveInd * z;
+    const devIndVector = perp1.clone().multiplyScalar(Math.sin(t * 4 * 3 + 1) * adjustedDevInd); 
+    px += devIndVector.x; py += devIndVector.y; pz += devIndVector.z;
+    return new THREE.Vector3(px, py, pz);
+}
+
+function updateArcEdgeDynamicMesh() {
+    if (selectedGroups.length < 2) {
+        if (arcEdgeMesh) scene.remove(arcEdgeMesh);
+        arcEdgeMesh = null;
+        return 0;
+    }
+
+    const componentType = ui.arcEdgeSettingsSelect.value;
+    const componentSelector = (group) => {
+        if (componentType === 'group') return group.nucleusCenter;
+        // For subcomponents, return the centroid of the relevant meshes
+        const meshes = group.nucleusMeshes.filter(m => m.userData.type === componentType)
+            .concat(group.electronMeshes.filter(m => m.userData.type === componentType));
+            
+        let centroid = new THREE.Vector3();
+        if (meshes.length === 0) return group.nucleusCenter; // Fallback to group center
+        
+        meshes.forEach(m => centroid.add(m.position));
+        centroid.divideScalar(meshes.length);
+        return centroid;
+    };
+    
+    const intermediatePoints = selectedGroups.map(componentSelector);
+
+    const groupA = selectedGroups[0];
+    const groupB = selectedGroups[selectedGroups.length - 1];
+    const pA = groupA.physics;
+    const pB = groupB.physics;
+    const globalG = scenePhysicsSettings.physics.gravity;
+    const pulseTime = performance.now() * 0.001;
+    const currentTimeFactor = Math.sin(pulseTime) * 0.5 + 0.5; 
+
+    const totalEnergyFactor = ((pA.temp * pA.velocity) + (pB.temp * pB.velocity)) / (pA.density + pB.density);
+    const dynamicArcRadius = 0.5 + (totalEnergyFactor / 500) * globalG * currentTimeFactor; 
+    
+    const curvePoints = [];
+    for(let i=0; i < intermediatePoints.length; i++) {
+        curvePoints.push(intermediatePoints[i]);
+        if (i < intermediatePoints.length - 1) {
+            const nextPoint = intermediatePoints[i+1];
+            const midPoint = new THREE.Vector3().lerpVectors(intermediatePoints[i], nextPoint, 0.5);
+            midPoint.add(new THREE.Vector3(Math.cos(pulseTime * (i+1)), 0, Math.sin(pulseTime * (i+1))).multiplyScalar(dynamicArcRadius * 2));
+            curvePoints.push(midPoint);
+        }
+    }
+    
+    const curve = new THREE.CatmullRomCurve3(curvePoints);
+    const distance = intermediatePoints[0].distanceTo(intermediatePoints[intermediatePoints.length - 1]);
+    const tubeSegments = Math.max(16, Math.floor(distance * 5 + totalEnergyFactor / 100));
+    const tubeRadius = 0.2 + dynamicArcRadius/10;
+    
+    if (arcEdgeMesh) {
+         const newGeometry = new THREE.TubeGeometry(curve, tubeSegments, tubeRadius, 8, false);
+         arcEdgeMesh.geometry.dispose();
+         arcEdgeMesh.geometry = newGeometry;
+         arcEdgeMesh.material.emissiveIntensity = 0.5 + currentTimeFactor * 0.8;
+         arcEdgeMesh.material.color.setHex(0xff00ff + Math.floor(currentTimeFactor * 0x550000));
+    } else {
+         const material = new THREE.MeshPhongMaterial({ color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 1.0, transparent: true, opacity: 0.8 });
+         const geometry = new THREE.TubeGeometry(curve, tubeSegments, tubeRadius, 8, false);
+         arcEdgeMesh = new THREE.Mesh(geometry, material);
+         arcEdgeMesh.name = "ArcEdge_Measurement";
+         scene.add(arcEdgeMesh);
+    }
+    
+    return curve.getLength();
+}
+
+function applyNewPhysics() {
+    if (!isSimulating) return;
+    const globalGravity = scenePhysicsSettings.physics.gravity;
+    const globalGravityVector = new THREE.Vector3(0, -0.00005 * globalGravity, 0); 
+    
+    atomGroups.forEach(group => {
+        if (group.isNucleusActive) { group.nucleusVelocity.add(globalGravityVector); }
+        const p = group.physics; 
+        const arcEdgeInfluenceBase = p.temp * p.velocity; 
+        
+        let nucleusCenter = new THREE.Vector3(); let nucleusCount = 0;
+        group.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
+        if (nucleusCount > 0) nucleusCenter.divideScalar(nucleusCount); group.nucleusCenter = nucleusCenter; 
+
+        const isThresholdExceeded = (p.temp * p.velocity * globalGravity) > (group.stableForce * nucleusThresholdFactor);
+        if (isThresholdExceeded) {
+            group.isNucleusActive = true;
+            if (group.nucleusVelocity.length() === 0) { group.nucleusVelocity.set(Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005); }
+        }
+        
+        if (isFloorActive && floorPlaneMesh) {
+            const meshRadius = 0.3; const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2); 
+            const gravityFactor = globalGravity / 9.8; const restitution = Math.max(0.1, 0.9 - gravityFactor * 0.2); 
+            group.nucleusMeshes.forEach(mesh => {
+                if (mesh.position.y - meshRadius <= floorY) {
+                    if (group.nucleusVelocity.y < 0) { group.nucleusVelocity.y *= -restitution; group.nucleusVelocity.x *= 0.95; group.nucleusVelocity.z *= 0.95; group.isNucleusActive = true; }
+                    mesh.position.y = floorY + meshRadius;
+                }
+            });
+        }
+
+        if (group.isNucleusActive) {
+            const blastForce = isThresholdExceeded ? (0.001 * arcEdgeInfluenceBase * globalGravity / (group.stableForce * nucleusThresholdFactor)) : 0;
+            group.nucleusMeshes.forEach(n => {
+                if (blastForce > 0) { const blastDir = new THREE.Vector3().subVectors(n.position, nucleusCenter).normalize(); n.position.add(blastDir.multiplyScalar(blastForce)); }
+                n.position.add(group.nucleusVelocity); 
+            });
+            group.nucleusVelocity.multiplyScalar(group.nucleusFriction); 
+        }
+        
+        let totalShells = group.electronMeshes.reduce((max, e) => Math.max(max, e.userData.orbitIndex), -1) + 1;
+        const t = performance.now() * 0.0001; 
+
+        group.electronMeshes.forEach(e => {
+            const shellIndex = e.userData.orbitIndex;
+            const distanceFactor = totalShells > 0 ? (totalShells - shellIndex) / totalShells : 1.0; 
+            p.shellInfluence = distanceFactor; 
+            const deviationVector = getArcEdgeDeviation(t, p); 
+            const stableOrbit = e.userData.initialOffset.clone(); 
+            const targetPosition = nucleusCenter.clone().add(stableOrbit).add(deviationVector.multiplyScalar(1)); 
+            e.position.lerp(targetPosition, 0.1); 
+            
+             if (isFloorActive && floorPlaneMesh) {
+                 const electronRadius = 0.1; const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2);
+                 if (e.position.y - electronRadius < floorY) { e.position.y = floorY + electronRadius; }
+             }
+        });
+    });
+
+    if (isLinkedSimulation) {
+        for (let i = 0; i < atomGroups.length; i++) {
+            for (let j = i + 1; j < atomGroups.length; j++) {
+                const groupA = atomGroups[i]; const groupB = atomGroups[j];
+                const pA = groupA.physics; const pB = groupB.physics;
+                const influenceBase = (pA.temp + pB.temp) * (pA.velocity + pB.velocity);
+                const dist = groupA.nucleusCenter.distanceTo(groupB.nucleusCenter);
+                const proximityThreshold = groupA.maxRadius + groupB.maxRadius + 3; 
+                if (dist < proximityThreshold) {
+                    const repulsionDir = new THREE.Vector3().subVectors(groupA.nucleusCenter, groupB.nucleusCenter).normalize();
+                    const forceMagnitude = influenceBase * globalGravity / dist * 0.001; 
+                    const reactionForce = repulsionDir.clone().multiplyScalar(0.01);
+                    groupA.nucleusVelocity.add(reactionForce);
+                    groupB.nucleusVelocity.sub(reactionForce);
+                    groupA.isNucleusActive = true; groupB.isNucleusActive = true;
+                }
+            }
+        }
+    }
+}
+
+function updateArcEdgeReadout() {
+     const target = getCurrentTarget();
+     const arcLength = selectedGroups.length >= 2 ? updateArcEdgeDynamicMesh() : 0;
+     const arcLengthLine = `<strong>Arc Edge Length:</strong> ${selectedGroups.length >= 2 ? arcLength.toFixed(4) : 'Select 2+ Groups'}`;
+     
+     let readoutHTML = `<strong>Selected:</strong> ${target ? target.name : 'None'}
+<strong>Type:</strong> ${target ? (target.id.startsWith('group') ? 'Atom Group' : (target.id.startsWith('floor') ? 'Floor Plane' : 'Global Scene')) : '---'}
+<strong>Mass:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.mass.toFixed(2) : 'N/A'}
+<strong>Volume:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.volume.toFixed(2) : 'N/A'}
+<strong>Density:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.density.toFixed(2) : 'N/A'}
+---
+<strong>Temperature:</strong> ${target && target.physics ? target.physics.temp.toFixed(2) + ' °F' : '---'}
+<strong>Velocity:</strong> ${target && target.physics ? target.physics.velocity.toFixed(2) + ' MPH' : '---'}
+<strong>Arc Edge Factor:</strong> ${target && target.physics && target.id !== 'scene_global' ? ((target.physics.temp * target.physics.velocity) / Math.max(0.1, target.physics.density)).toFixed(4) : '---'}
+<strong>Scene Gravity:</strong> ${scenePhysicsSettings.physics.gravity.toFixed(2)} g`;
+
+    if (target && target.id.startsWith('group')) {
+        readoutHTML += `\n<strong>Stable Force:</strong> ${target.stableForce.toFixed(2)}`;
+        const p = target.physics;
+        const thresholdVal = (p.temp * p.velocity * scenePhysicsSettings.physics.gravity);
+        const factorVal = (target.stableForce * nucleusThresholdFactor);
+        readoutHTML += `\n<strong>Threshold:</strong> ${thresholdVal.toFixed(2)} / ${factorVal.toFixed(2)}`;
+    }
+    
+    readoutHTML += `\n--- \n${arcLengthLine}`;
+
+    ui.arcEdgeReadout.innerHTML = readoutHTML;
+}
+
+function animate() {
+    if (!isArcEdgeInitialized) return;
+    requestAnimationFrame(animate);
+    applyNewPhysics();
+    
+    updateArcEdgeDynamicMesh();
+    updateArcEdgeReadout(); 
+    
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+
+function onArcEdgePointerDown(event) {
+    if (isSelectionFrozen && event.target !== ui.arcEdgeViewport.querySelector('canvas')) {
+        return; 
+    }
+    if (event.target !== ui.arcEdgeViewport.querySelector('canvas') && !event.target.closest('#arcedge-viewport')) { return; }
+    
+    const bounds = ui.arcEdgeViewportContainer.getBoundingClientRect();
+    pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+    pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    
+    let interactableMeshes = [];
+    atomGroups.forEach(g => { interactableMeshes.push(...g.nucleusMeshes, ...g.electronMeshes); });
+    
+    const intersects = raycaster.intersectObjects(interactableMeshes);
+
+    let selectedGroup = null;
+
+    if (intersects.length > 0) {
+        const selectedObject = intersects[0].object;
+        selectedGroup = atomGroups.find(g => g.nucleusMeshes.includes(selectedObject) || g.electronMeshes.includes(selectedObject));
+    }
+    
+    if (selectedGroup) {
+        loadTargetSettings(selectedGroup.id);
+
+        if (multiSelectMode) {
+            const index = selectedGroups.findIndex(g => g.id === selectedGroup.id);
+            if (index === -1) {
+                selectedGroups.push(selectedGroup);
+            } else {
+                selectedGroups.splice(index, 1);
+            }
+        } else {
+            selectedGroups = [selectedGroup];
+        }
+    } else if (!isSelectionFrozen) {
+        selectedGroups = [];
+        loadTargetSettings('scene_global');
+    }
+    
+    updateArcEdgeDynamicMesh();
+    updateArcEdgeReadout();
+}
+
+function initArcEdgeGraph() {
+    // 1. Scene setup
+    scene = new THREE.Scene();
+    
+    // 2. Camera setup - Aspect ratio of 1 for square viewport
+    const container = ui.arcEdgeViewportContainer;
+    camera = new THREE.PerspectiveCamera(75, 1, 0.01, 10000); 
+    camera.position.z = 30;
+
+    // 3. Renderer setup
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(0x000000, 0); 
+    ui.arcEdgeViewport.appendChild(renderer.domElement);
+    
+    // 4. Controls
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; 
+    controls.dampingFactor = 0.05;
+    
+    // 5. Lighting
+    const light1 = new THREE.PointLight(0xffffff, 1.3, 100); light1.position.set(10, 10, 10); scene.add(light1);
+    const light2 = new THREE.PointLight(0xffffff, 0.75, 100); light2.position.set(-10, 10, 10); scene.add(light2);
+    const light3 = new THREE.PointLight(0xffffff, 1.75, 100); light3.position.set(0, -10, -10); scene.add(light3);
+
+    // 6. Raycaster for selection
+    raycaster = new THREE.Raycaster();
+    pointer = new THREE.Vector2();
+
+    isArcEdgeInitialized = true;
+    onArcEdgeResize(); 
+    animate();
+}
+
+function onArcEdgeResize() {
+    if (!isArcEdgeInitialized) return;
+    const container = ui.arcEdgeViewportContainer;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    
+    camera.aspect = w / h; 
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+}
+function makeDraggable(element, handle) {
+    let isDragging = false;
+    let offsetX, offsetY;
+    const startDrag = (e) => {
+        if (e.target.closest('button, input, select, textarea, fieldset, canvas')) { return; }
+
+        isDragging = true;
+        const rect = element.getBoundingClientRect();
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.clientY ?? e.touches[0].clientY;
+        offsetX = clientX - rect.left;
+        offsetY = clientY - rect.top;
+        element.style.position = 'fixed';
+        element.style.transform = 'none'; 
+        element.style.margin = '0';
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        handle.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none'; 
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+    const doDrag = (e) => {
+        if (!isDragging) return;
+        const clientX = e.clientX ?? e.touches[0].clientX;
+        const clientY = e.touches[0].clientY ?? e.clientY;
+        let newLeft = clientX - offsetX;
+        let newTop = clientY - offsetY;
+        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
+        newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+        element.style.left = newLeft + 'px';
+        element.style.top = newTop + 'px';
+        if(e.preventDefault && e.cancelable) e.preventDefault(); 
+    };
+    const stopDrag = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        handle.style.cursor = 'default'; 
+        document.body.style.userSelect = 'auto';
+    };
+    handle.addEventListener('mousedown', startDrag);
+    document.addEventListener('mousemove', doDrag);
+    document.addEventListener('mouseup', stopDrag);
+    handle.addEventListener('touchstart', startDrag, { passive: false });
+    document.addEventListener('touchmove', doDrag, { passive: false });
+    document.addEventListener('touchend', stopDrag);
+}
+
+
+function loadAtom(atom, index) {
+    if (!multiSelectMode) { clearScene(); index = 0; }
+    const spacing = 15; 
+    const protons = parseInt(atom.protons);
+    const neutrons = parseInt(atom.neutrons);
+    
+    const orbits = atom.electronOrbits || [];
+    
+    const elementSymbol = atom.elementSymbol || atom.elementName.slice(0, 2).replace(/\s/g, '').toUpperCase();
+    
+    const atomId = `group_${groupCounter++}`;
+    const atomName = `${elementSymbol} (${atomId.split('_')[1]})`;
+
+    const offsetVector = new THREE.Vector3(index * spacing, 0, 0);
+    let initialNucleusCenter = new THREE.Vector3();
+
+    if (neutrons > 0) {
+        for (let i = 0; i < neutrons; i++) {
+             initialNucleusCenter.add(new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(2));
+        }
+        initialNucleusCenter.divideScalar(neutrons);
+    } 
+    initialNucleusCenter.add(offsetVector);
+
+
+    const atomGroup = { 
+        id: atomId, name: atomName, center: offsetVector, nucleusMeshes: [], electronMeshes: [],
+        stableForce: (protons + neutrons) / (parseInt(atom.electrons) || 1), maxRadius: 0, index: index, elementData: JSON.stringify(atom),
+        nucleusCenter: initialNucleusCenter.clone(), isNucleusActive: false, nucleusVelocity: new THREE.Vector3(0,0,0), nucleusFriction: 0.99,
+        physics: { 
+            ...DEFAULT_PHYSICS, 
+            mass: protons + neutrons, 
+            weight: (protons + neutrons) * scenePhysicsSettings.physics.gravity, 
+            density: (protons + neutrons) / 1.0 
+        }
+    };
+    atomGroups.push(atomGroup);
+    
+    const protonMaterial = new THREE.MeshPhongMaterial({ color: 0x0000ff, emissive: 0xffffff, emissiveIntensity: 0.8 });
+    const neutronMaterial = new THREE.MeshPhongMaterial({ color: 0x000044, emissive: 0x000000, emissiveIntensity: 0.9 });
+    const electronMaterial = new THREE.MeshPhongMaterial({ color: 0x47c4f1, emissive: 0xff0000, emissiveIntensity: 2.0 });
+
+    for (let i = 0; i < protons; i++) {
+        const proton = new THREE.Mesh(new THREE.SphereGeometry(0.3, 32, 32), protonMaterial);
+        proton.position.set((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(2).add(initialNucleusCenter);
+        addPhysicsAttributes(proton, 'proton'); atomGroup.nucleusMeshes.push(proton); scene.add(proton);
+    }
+
+    for (let i = 0; i < neutrons; i++) {
+        const neutron = new THREE.Mesh(new THREE.SphereGeometry(0.3, 32, 32), neutronMaterial);
+        neutron.position.set((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(2).add(initialNucleusCenter);
+        addPhysicsAttributes(neutron, 'neutron'); atomGroup.nucleusMeshes.push(neutron); scene.add(neutron);
+    }
+    
+    let nucleusCenter = new THREE.Vector3();
+    let nucleusCount = 0; atomGroup.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
+    if (nucleusCount > 0) nucleusCenter.divideScalar(nucleusCount); atomGroup.nucleusCenter = nucleusCenter; 
+
+    orbits.forEach((electronsInOrbit, orbitIndex) => {
+        const radius = 4 + orbitIndex * 2; atomGroup.maxRadius = Math.max(atomGroup.maxRadius, radius);
+        for (let i = 0; i < electronsInOrbit; i++) {
+            const angle = (i / electronsInOrbit) * Math.PI * 2;
+            let x, y, z;
+            if (orbitIndex % 3 === 0) { x = Math.cos(angle) * radius; y = Math.sin(angle) * radius; z = 0; } 
+            else if (orbitIndex % 3 === 1) { x = Math.cos(angle) * radius; y = 0; z = Math.sin(angle) * radius; } 
+            else { x = 0; y = Math.cos(angle) * radius; z = Math.sin(angle) * radius; }
+
+            const electron = new THREE.Mesh(new THREE.SphereGeometry(0.1, 32, 32), electronMaterial);
+            electron.position.set(x, y, z).add(initialNucleusCenter);
+            addPhysicsAttributes(electron, 'electron', orbitIndex, radius, initialNucleusCenter); 
+            atomGroup.electronMeshes.push(electron); scene.add(electron);
+        }
+    });
+    
+    const totalNucleons = protons + neutrons;
+    atomGroup.physics.volume = (atomGroup.maxRadius / 5) || 1.0; 
+    atomGroup.physics.density = totalNucleons / atomGroup.physics.volume;
+    
+    renderer.render(scene, camera); 
+    scene.children.forEach((obj) => {
+        if (obj instanceof THREE.Mesh) { obj.userData.initialOffset = obj.position.clone().sub(initialNucleusCenter); obj.userData.initialPosition = obj.position.clone(); }
+    });
+    
+    updatePhysicsDropdown(); updateArcEdgeReadout();
+    addPrompt(`Loaded Atom: ${atomName} (Orbits: ${orbits.length}, Total Electrons: ${atom.electrons})`);
+}
+
+function addPhysicsAttributes(obj, type, orbitIndex = -1, initialRadius = 0, nucleusCenter = new THREE.Vector3()) {
+    obj.userData = { type: type, initialPosition: obj.position.clone(), initialOffset: new THREE.Vector3(), orbitIndex: orbitIndex, initialRadius: initialRadius, };
+}
+
+function clearScene() {
+    if (!scene) return;
+    const initialChildren = [...scene.children]; 
+    const toRemove = initialChildren.filter(obj => 
+        (obj instanceof THREE.Mesh && !obj.userData.isStaticBody) || 
+        (obj instanceof THREE.Mesh && obj.userData.isStaticBody && !ui.floorSimToggle.checked) || 
+        !(obj instanceof THREE.Light || obj instanceof THREE.Camera || obj instanceof THREE.Group || obj instanceof THREE.AxesHelper || obj instanceof THREE.GridHelper)
+    );
+    
+    toRemove.forEach(obj => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) { Array.isArray(obj.material) ? obj.material.forEach(m => m.dispose()) : obj.material.dispose(); }
+        scene.remove(obj);
+    });
+    
+    if (arcEdgeMesh) scene.remove(arcEdgeMesh);
+    arcEdgeMesh = null;
+    selectedGroups = [];
+
+    if (ui.floorSimToggle.checked && !floorPlaneMesh) { createFloorPlane(); }
+    
+    atomGroups = []; groupCounter = 0;
+    updatePhysicsDropdown(); loadTargetSettings('scene_global'); 
+    updateArcEdgeReadout(); addPrompt("Scene cleared.");
+}
+
+function startSimulation() {
+    saveCurrentSettings(); isSimulating = true;
+    atomGroups.forEach(group => { group.isNucleusActive = false; group.nucleusVelocity.set(0, 0, 0); });
+    addPrompt("Simulation Started (Articren Wave)");
+}
+
+function stopSimulation() {
+    isSimulating = false;
+    atomGroups.forEach(group => {
+        group.isNucleusActive = false; group.nucleusVelocity.set(0, 0, 0);
+        group.nucleusMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
+        group.electronMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
+    });
+    addPrompt("Simulation Stopped"); renderer.render(scene, camera); 
+}
+
+function exportAsPNG() {
+    renderer.render(scene, camera);
+    const dataURL = renderer.domElement.toDataURL('image/png');
+    const link = document.createElement('a'); link.href = dataURL; link.download = 'arclake_atom.png'; link.click();
+}
+
+function exportAsGLTF() {
+    const exporter = new THREE.GLTFExporter();
+    exporter.parse(scene, function(result) {
+        const output = JSON.stringify(result, null, 2);
+        const blob = new Blob([output], { type: 'application/gltf' });
+        const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'arclake_element.gltf'; link.click();
+        addPrompt("Exported GLTF file.");
+    });
+}
+
+
+function addPrompt(text) {
+    ui.promptOutput.innerHTML += `<div>${text}</div>`;
+    ui.promptOutput.scrollTop = ui.promptOutput.scrollHeight;
+}
+
+function getCurrentTarget() {
+    if (selectedPhysicsTargetId === 'scene_global') return scenePhysicsSettings;
+    if (selectedPhysicsTargetId === 'floor_plane' && floorPhysicsSettings) return floorPhysicsSettings;
+    return atomGroups.find(g => g.id === selectedPhysicsTargetId) || null;
+}
+function updateInputDisplay(targetId) {
+    const isScene = targetId === 'scene_global';
+    const isFloor = targetId === 'floor_plane';
+
+    ui.physicsGrid.classList.toggle('scene-mode', isScene);
+
+    document.getElementById('labelGravity').style.display = isScene ? 'block' : 'none';
+    document.getElementById('labelMass').style.display = isScene ? 'none' : 'block';
+    document.getElementById('labelVolume').style.display = isScene ? 'none' : 'block';
+    document.getElementById('labelWeight').style.display = isScene ? 'none' : 'block';
+    document.getElementById('labelDensity').style.display = isScene ? 'none' : 'block';
+    
+    document.getElementById('labelTemp').style.gridColumn = isScene ? 'span 2' : 'span 1';
+    document.getElementById('labelVelocity').style.gridColumn = isScene ? 'span 2' : 'span 1';
+    document.getElementById('labelGravity').style.gridColumn = isScene ? 'span 4' : 'span 1';
+    
+    ui.inputMass.title = isFloor ? "Floor's Mass (for its own gravity field)" : "Atomic Mass / Scaling Factor";
+    ui.inputMass.disabled = isScene;
+    ui.inputVolume.disabled = isScene;
+    ui.inputWeight.disabled = isScene;
+    ui.inputDensity.disabled = isScene;
+}
+function loadTargetSettings(targetId) {
+    const target = targetId === 'scene_global' ? scenePhysicsSettings : 
+                   targetId === 'floor_plane' ? floorPhysicsSettings : 
+                   atomGroups.find(g => g.id === targetId);
+                   
+    updateInputDisplay(targetId);
+
+    if (!target || !target.physics) { selectedPhysicsTargetId = ''; return; }
+    
+    selectedPhysicsTargetId = targetId;
+    const p = target.physics;
+    
+    if (targetId !== 'scene_global') {
+        ui.inputMass.value = p.mass.toFixed(2);
+        ui.inputVolume.value = p.volume.toFixed(2);
+        ui.inputWeight.value = p.weight.toFixed(2);
+        ui.inputDensity.value = p.density.toFixed(2);
+    }
+    
+    ui.inputTemp.value = p.temp.toFixed(2);
+    ui.inputVelocity.value = p.velocity.toFixed(2);
+
+    if (targetId === 'scene_global') {
+        ui.inputGravity.value = p.gravity.toFixed(2);
+    }
+    
+    [ui.inputMass, ui.inputVolume, ui.inputWeight, ui.inputDensity, ui.inputTemp, ui.inputVelocity, ui.inputGravity].forEach(input => {
+         input.disabled = input.parentElement.style.display === 'none';
+    });
+}
+function saveCurrentSettings() {
+    const target = getCurrentTarget();
+    if (!target) return;
+
+    target.physics.temp = parseFloat(ui.inputTemp.value) || 0;
+    target.physics.velocity = parseFloat(ui.inputVelocity.value) || 0;
+    
+    if (target.id === 'scene_global') {
+        target.physics.gravity = parseFloat(ui.inputGravity.value) || 0;
+        atomGroups.forEach(group => {
+            group.physics.weight = group.physics.mass * target.physics.gravity;
+        });
+    } else {
+        target.physics.mass = parseFloat(ui.inputMass.value) || 0;
+        target.physics.volume = parseFloat(ui.inputVolume.value) || 0;
+        target.physics.weight = parseFloat(ui.inputWeight.value) || 0;
+        target.physics.density = parseFloat(ui.inputDensity.value) || 0;
+    }
+    updateArcEdgeReadout();
+}
+function updatePhysicsDropdown() {
+    const currentId = selectedPhysicsTargetId;
+    ui.physicsTargetSelect.innerHTML = ''; 
+    ui.molSceneSelect.innerHTML = '<option value="">Select Atom in Scene</option>';
+    
+    let option = document.createElement('option');
+    option.value = scenePhysicsSettings.id;
+    option.textContent = scenePhysicsSettings.name;
+    ui.physicsTargetSelect.appendChild(option);
+    
+    atomGroups.forEach(group => {
+        const option = document.createElement('option');
+        option.value = group.id;
+        option.textContent = group.name;
+        ui.physicsTargetSelect.appendChild(option);
+        
+        const molOption = option.cloneNode(true);
+        ui.molSceneSelect.appendChild(molOption);
+    });
+    
+    if (floorPhysicsSettings) {
+        option = document.createElement('option');
+        option.value = floorPhysicsSettings.id;
+        option.textContent = floorPhysicsSettings.name;
+        ui.physicsTargetSelect.appendChild(option);
+    }
+    
+    ui.physicsTargetSelect.value = currentId;
+    if (!ui.physicsTargetSelect.value) { ui.physicsTargetSelect.value = scenePhysicsSettings.id; }
+    
+    loadTargetSettings(ui.physicsTargetSelect.value);
+}
+function createFloorPlane() {
+    if (floorPlaneMesh) return; 
+    const floorGeometry = new THREE.BoxGeometry(100, FLOOR_THICKNESS, 100); 
+    const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x555555, transparent: true, opacity: 0.5 });
+    floorPlaneMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+    floorPlaneMesh.position.y = FLOOR_Y_POS; floorPlaneMesh.name = 'FloorPlane'; floorPlaneMesh.userData.isStaticBody = true; 
+    floorPhysicsSettings = { id: 'floor_plane', name: 'Floor Plane', physics: { mass: 1000.0, volume: 100.0, weight: 9800.0, density: 10.0, temp: 70.0, velocity: 0.0, gravity: 0.0 } };
+    scene.add(floorPlaneMesh);
+    updatePhysicsDropdown();
+}
+function removeFloorPlane() {
+    if (floorPlaneMesh) { scene.remove(floorPlaneMesh); floorPlaneMesh.geometry.dispose(); floorPlaneMesh.material.dispose(); floorPlaneMesh = null; }
+    floorPhysicsSettings = null;
+    updatePhysicsDropdown();
+}
+
+</script>
+
+</body>
+</html>
+
