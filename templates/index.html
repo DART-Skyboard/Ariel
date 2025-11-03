@@ -489,8 +489,8 @@
     
     .element, .placeholder {
         position: relative;
-        width: 100px;
-        height: 100px;
+        width: 120px;
+        height: 120px;
         padding: 10px;
         border-radius: 10px;
         text-align: center;
@@ -748,6 +748,13 @@
   Credentials
 </button>
 
+     <button
+  id="btnarclake"
+  onclick="location.href='/arclake.html'"
+>
+  Arc Lake
+      </button>
+
 <button
   id="btnltrproto"
   onclick="location.href='/brpn.html'"
@@ -972,8 +979,8 @@ DART Meadow
   
   <div class="menu">
       <div class="menu-row">
-          <button id="startSimulationButton">Articren Wave | Start</button>
-          <button id="stopSimulationButton">Articren Wave | Stop</button>
+          <button id="startSimulationButton">Arc Edge edge | Start</button>
+          <button id="stopSimulationButton">Arc Edge | Stop</button>
       </div>
       <div class="menu-row">
           <button id="exportButton">Export as PNG</button>
@@ -1173,7 +1180,7 @@ function onUserReady(u) {
 
 
 // Environment Auto-Detect and GS_URL Setup
-
+// NOTE: GS_URL is still here for login/account management but is not used for periodic table data fetching anymore.
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
   console.log('%cRunning in LOCALHOST mode', 'color: orange; font-weight: bold;');
   GS_URL = 'https://script.google.com/macros/s/AKfycbyky9F5m5qky4a8dLb1lZw3af3R7Z73Sig8-42DHiVKiirF5tcLImRAGdoAJugVsqsfcw/exec';
@@ -1785,10 +1792,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     // --- End Arc Edge Adaptation ---
     
-    // ... (fetchData, createPeriodicTable, handleElementClick, clearSelectedElements, updateSelectedElements remain the same) ...
+    // --- UPDATED: fetchData function to skip the header element ---
     function fetchData() {
-        const scriptURL = 'https://script.google.com/macros/s/AKfycbyDI4FsSWKaG9nklipdE_vxTcWJQAZLMkiBV2DgAhU9-gh3iQyxpCbbvQtKUkxzk5wqYg/exec?range=A2:A128,D2:D128';
-        fetch(scriptURL)
+        // Assume elements.json is hosted relative to the HTML file
+        fetch('elements.json') 
         .then(response => {
             if (!response.ok) {
             throw new Error('Network response was not ok ' + response.statusText);
@@ -1796,26 +1803,82 @@ document.addEventListener('DOMContentLoaded', function() {
             return response.json();
         })
         .then(data => {
-            console.log('Fetched data:', data); 
-            createPeriodicTable(data.slice(1)); 
-            const defaultAtom = data[data.length - 1];
-            if (defaultAtom) {
-            loadAtom(defaultAtom, 0); 
+            console.log('Fetched raw data:', data); 
+            
+            // Slice the data to start from the second element (index 1), skipping the header/placeholder at index 0
+            if (data && data.length > 1) { 
+                const actualElements = data.slice(1);
+                
+                createPeriodicTable(actualElements); 
+                // Load the first *actual* element (Hydrogen, which is now at index 0 of actualElements)
+                loadAtom(actualElements[actualElements.length - 1], 0); 
+
+            } else {
+                 console.warn('Elements JSON is empty or contains only the header element.');
             }
         })
         .catch(error => {
             console.error('Error fetching data:', error);
         });
     }
+    // --- END UPDATED fetchData ---
 
+    // --- UPDATED: createPeriodicTable to display K-R orbits (Index logic relies on filtered array) ---
     function createPeriodicTable(elements) {
         const periodicTable = document.getElementById('periodicTable');
+        periodicTable.innerHTML = ''; // Clear existing content
+        
+        const orbitLabels = ['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R'];
+        const maxOrbitsToShow = orbitLabels.length;
+        const labelRow = orbitLabels.join(''); // K L M N O P Q R
+
         elements.forEach((element, index) => {
             const elementDiv = document.createElement('div');
             elementDiv.classList.add('element');
             elementDiv.classList.add(getStateClass(element.electrons));
-            elementDiv.innerHTML = `<strong>${element.elementName}</strong><p>Electrons: ${element.electrons}</p>`;
             elementDiv.dataset.elementData = JSON.stringify(element);
+
+            // ...
+            const orbits = element.electronOrbits || [];
+
+            // Build the HTML for the letter and number table rows
+            let letterRowHtml = '';
+            let numberRowHtml = '';
+
+            for (let i = 0; i < maxOrbitsToShow; i++) {
+                const letter = orbitLabels[i];
+                const count = (i < orbits.length) ? orbits[i] : 0;
+
+                // Add a <th> cell for the letter row
+                letterRowHtml += `<th style="padding: 1px 0 0 0; font-weight: bold;">${letter}</th>`;
+
+                // Add a <td> cell for the number row
+                numberRowHtml += `<td style="padding: 0;">${count}</td>`;
+            }
+
+
+
+            // ...
+            elementDiv.innerHTML = `
+                <strong>${element.elementName}</strong>
+                <p>Electrons: ${element.electrons}</p>
+                
+                <div style="font-size: 0.7em; line-height: 1.1; margin-top: 5px; width: 100%;">
+                    <table style="width: 100%; text-align: center; border-collapse: collapse;">
+                        <tbody>
+                            <tr>
+                                ${letterRowHtml}
+                            </tr>
+                            
+                            <tr>
+                                ${numberRowHtml}
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            // ...
+
 
             elementDiv.addEventListener('click', () => {
                 handleElementClick(elementDiv, element);
@@ -1823,22 +1886,25 @@ document.addEventListener('DOMContentLoaded', function() {
 
             periodicTable.appendChild(elementDiv);
 
-            if (index === 0) {
+            // Placeholder logic (from original file structure, now with Hydrogen at index 0)
+            if (index === 0) { // Hydrogen is at index 0 now. Needs 16 placeholders after it for the gap before Helium.
                 for (let i = 0; i < 16; i++) {
                     const placeholderDiv = document.createElement('div');
                     placeholderDiv.classList.add('placeholder');
                     periodicTable.appendChild(placeholderDiv);
                 }
             }
-            if (index === 3 || index === 11) {
-                for (let i = 0; i < 10; i++) {
-                    const placeholderDiv = document.createElement('div');
-                    placeholderDiv.classList.add('placeholder');
-                    periodicTable.appendChild(placeholderDiv);
-                }
-            }
+             if (index === 3 || index === 11) { // Beryllium (index 3) and Magnesium (index 11) start the 3rd and 4th rows' d-block gap.
+                 for (let i = 0; i < 10; i++) {
+                     const placeholderDiv = document.createElement('div');
+                     placeholderDiv.classList.add('placeholder');
+                     periodicTable.appendChild(placeholderDiv);
+                 }
+             }
+
         });
     }
+    // --- END UPDATED createPeriodicTable ---
 
     function handleElementClick(elementDiv, element) {
         if (multiSelectMode) {
@@ -1874,11 +1940,14 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
+    // --- loadAtom function (No change from previous step, expects Array input) ---
     function loadAtom(atom, index) {
         const spacing = 5; 
         const protons = parseInt(atom.protons);
         const neutrons = parseInt(atom.neutrons);
-        const orbits = atom.electronOrbits;
+        
+        // electronOrbits is an array from JSON
+        const orbits = atom.electronOrbits || []; // Expects an array like [2, 8, 1]
         
         const atomId = `group_${groupCounter++}`;
         const atomName = `${atom.elementName} (${atomId.split('_')[1]})`;
@@ -1940,6 +2009,7 @@ document.addEventListener('DOMContentLoaded', function() {
         atomGroup.nucleusCenter = nucleusCenter; 
 
         orbits.forEach((electronsInOrbit, orbitIndex) => {
+            if (electronsInOrbit <= 0) return; // Skip orbits with 0 electrons
             const radius = 4 + orbitIndex * 2;
             atomGroup.maxRadius = Math.max(atomGroup.maxRadius, radius);
             for (let i = 0; i < electronsInOrbit; i++) {
@@ -2019,7 +2089,7 @@ document.addEventListener('DOMContentLoaded', function() {
         loadTargetSettings('scene_global'); 
     }
     
-    // --- NEW: Physics Application Loop ---
+    // --- NEW: Physics Application Loop (Unchanged from previous step) ---
     function applyNewPhysics() {
         if (!isSimulating) return;
 
@@ -2159,7 +2229,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         const repulsionDir = new THREE.Vector3().subVectors(groupA.nucleusCenter, groupB.nucleusCenter).normalize();
                         const forceMagnitude = influenceBase * globalGravity / dist * 0.001; 
 
-                        const reactionForce = repulsionDir.clone().multiplyScalar(forceMagnitude);
+                        const reactionForce = repulsionDir.clone().multiplyScalar(0.01);
                         
                         groupA.nucleusVelocity.add(reactionForce.clone().multiplyScalar(0.01));
                         groupB.nucleusVelocity.sub(reactionForce.clone().multiplyScalar(0.01));
@@ -2251,4 +2321,3 @@ function getStateClass(electrons) {
 </script>
 </body>
 </html>
-
