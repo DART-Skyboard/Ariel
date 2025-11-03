@@ -527,6 +527,30 @@
             50% { opacity: 1; }
         }
 
+        /* --- NEW: Element Checkbox List Style --- */
+        #periodicTableCheckboxList {
+            max-height: 200px; 
+            overflow-y: auto; 
+            background: var(--input-bg); 
+            border: 1px solid var(--border-color); 
+            border-radius: 6px; 
+            padding: 10px;
+        }
+        .element-checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .element-checkbox-wrapper input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+        }
+        .element-checkbox-wrapper label {
+            color: var(--theme-text);
+            font-weight: normal;
+            margin: 0;
+            cursor: pointer;
+        }
 
     </style>
 </head>
@@ -730,7 +754,7 @@
                 <legend>Element Drop-down</legend>
                 <div id="periodicTableContainer">
                      <label>Select Atoms to Load</label>
-                     <div id="periodicTableCheckboxList" style="max-height: 200px; overflow-y: auto; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;">
+                     <div id="periodicTableCheckboxList">
                           <p>Loading Elements...</p>
                      </div>
                 </div>
@@ -935,6 +959,9 @@ const DEFAULT_PHYSICS = {
     temp: 70.0, velocity: 0.0, gravity: 9.8 
 };
 
+// Electron mass in AMU (approx)
+const ELECTRON_MASS_AMU = 0.00054858;
+
 let scenePhysicsSettings = {
     id: 'scene_global',
     name: 'Overall Scene',
@@ -1135,25 +1162,16 @@ function populateElementDropdowns(elements) {
     elements.forEach(element => {
         const wrapper = document.createElement('div');
         wrapper.className = 'element-checkbox-wrapper';
-        wrapper.style.display = 'flex';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.marginBottom = '5px';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.id = `el_check_${element.elementSymbol}`;
         checkbox.value = element.elementSymbol;
-        checkbox.style.width = 'auto'; // Override default
-        checkbox.style.marginRight = '10px';
         checkbox.addEventListener('change', handleElementCheckboxChange); // Add new listener
 
         const label = document.createElement('label');
         label.htmlFor = checkbox.id;
         label.textContent = `${element.elementSymbol} - ${element.elementName}`;
-        label.style.color = 'var(--theme-text)'; // Override accent color
-        label.style.fontWeight = 'normal';
-        label.style.margin = '0';
-        label.style.cursor = 'pointer'; // Make label clickable
 
         wrapper.appendChild(checkbox);
         wrapper.appendChild(label);
@@ -1176,7 +1194,7 @@ function restoreSceneState(state) {
     molCanvasState = state.molCanvasState || { atoms: [], bonds: [], tools: [] };
     let maxId = 0;
     [...molCanvasState.atoms, ...molCanvasState.bonds, ...molCanvasState.tools].forEach(item => {
-        const idNum = parseInt(item.id.split('_')[1]);
+        const idNum = parseInt(String(item.id).split('_')[1]);
         if (idNum > maxId) maxId = idNum;
     });
     canvasIdCounter = maxId + 1;
@@ -1197,7 +1215,12 @@ function restoreSceneState(state) {
 
     if (state.atoms && Array.isArray(state.atoms)) {
         state.atoms.forEach((atomState, index) => {
-            loadAtom(JSON.parse(atomState.elementData), index); // Parse the data
+            // Check if elementData is a string (from new saves) or object (from old saves)
+            const elementData = typeof atomState.elementData === 'string' 
+                ? JSON.parse(atomState.elementData) 
+                : atomState.elementData;
+
+            loadAtom(elementData, index); 
             
             const createdGroup = atomGroups.find(g => g.name === atomState.name);
             if (createdGroup) {
@@ -1511,8 +1534,11 @@ function handleCanvasMouseDown(e) {
         
         // Bring to top by removing and re-adding
         let list = draggedCanvasItem.tool === 'AtomDrag' ? molCanvasState.atoms : molCanvasState.tools;
-        list.splice(list.findIndex(item => item.id === draggedCanvasItem.id), 1);
-        list.push(draggedCanvasItem);
+        const itemIndex = list.findIndex(item => item.id === draggedCanvasItem.id);
+        if (itemIndex > -1) {
+            list.splice(itemIndex, 1);
+            list.push(draggedCanvasItem);
+        }
     }
 }
 
@@ -1720,6 +1746,9 @@ function createCompoundFromCanvas() {
                     addPrompt(`Applying Delta value ${group.deltaValue} to ${newAtomGroup.name}`);
                     // Example: newAtomGroup.physics.mass += group.deltaValue;
                     // This needs a real implementation based on what "Delta" means
+                    // For now, let's just add it to the mass for demonstration
+                    newAtomGroup.physics.mass += group.deltaValue;
+                    loadTargetSettings(newAtomGroup.id); // Update sliders
                 }
             }
         });
@@ -1729,6 +1758,16 @@ function createCompoundFromCanvas() {
     toggleMolCanvasOverlay();
 }
 
+function toggleMolCanvasOverlay() {
+    if (ui.molCanvasOverlay.style.display === 'none') {
+        ui.molCanvasOverlay.style.display = 'flex';
+        ui.molCanvasOverlay.style.pointerEvents = 'auto';
+        drawMolCanvas();
+    } else {
+        ui.molCanvasOverlay.style.display = 'none';
+        ui.molCanvasOverlay.style.pointerEvents = 'none';
+    }
+}
 
 function saveSceneState() {
     const state = {
@@ -1786,82 +1825,6 @@ function handleSceneFileLoad(event) {
     event.target.value = null;
 }
 
-function restoreSceneState(state) {
-    if (!state || state.version !== "ArcLake 1.0") {
-        addPrompt("<strong>Error:</strong> Invalid or outdated scene file.");
-        return;
-    }
-
-    clearScene(); 
-    
-    molCanvasState = state.molCanvasState || { atoms: [], bonds: [], tools: [] };
-    let maxId = 0;
-    [...molCanvasState.atoms, ...molCanvasState.bonds, ...molCanvasState.tools].forEach(item => {
-        const idNum = parseInt(item.id.split('_')[1]);
-        if (idNum > maxId) maxId = idNum;
-    });
-    canvasIdCounter = maxId + 1;
-    drawMolCanvas();
-    
-    scenePhysicsSettings = state.scenePhysics || scenePhysicsSettings;
-    floorPhysicsSettings = state.floorPhysics || null;
-    isLinkedSimulation = state.isLinkedSimulation || false;
-    ui.linkedSimToggle.checked = isLinkedSimulation;
-    
-    ui.floorSimToggle.checked = state.isFloorActive || false;
-    if (ui.floorSimToggle.checked) {
-        createFloorPlane();
-        if (floorPhysicsSettings) {
-            floorPhysicsSettings = state.floorPhysics;
-        }
-    }
-
-    if (state.atoms && Array.isArray(state.atoms)) {
-        state.atoms.forEach((atomState, index) => {
-            // Check if elementData is a string (from new saves) or object (from old saves)
-            const elementData = typeof atomState.elementData === 'string' 
-                ? JSON.parse(atomState.elementData) 
-                : atomState.elementData;
-
-            loadAtom(elementData, index); 
-            
-            const createdGroup = atomGroups.find(g => g.name === atomState.name);
-            if (createdGroup) {
-                createdGroup.physics = atomState.physics;
-                createdGroup.center.fromArray(atomState.initialPosition);
-                createdGroup.nucleusMeshes.forEach(m => m.position.copy(m.userData.initialOffset.clone().add(createdGroup.center)));
-                createdGroup.electronMeshes.forEach(m => m.position.copy(m.userData.initialOffset.clone().add(createdGroup.center)));
-            }
-        });
-    }
-
-    updatePhysicsDropdown();
-    loadTargetSettings('scene_global');
-    updateArcEdgeReadout();
-    
-    if (state.isSimulating) {
-        startSimulation();
-    }
-
-    // --- NEW ---
-    updateElementCheckboxes(); // Sync checkboxes with loaded scene
-}
-
-function toggleMolCanvasOverlay() {
-    if (ui.molCanvasOverlay.style.display === 'none') {
-        ui.molCanvasOverlay.style.display = 'flex';
-        ui.molCanvasOverlay.style.pointerEvents = 'auto';
-        drawMolCanvas();
-    } else {
-        ui.molCanvasOverlay.style.display = 'none';
-        ui.molCanvasOverlay.style.pointerEvents = 'none';
-    }
-}
-
-
-// ====================================================================================
-// DATA FETCHING
-// ====================================================================================
 
 function fetchData() {
     fetch('elements.json') 
@@ -2219,7 +2182,7 @@ function initArcEdgeGraph() {
     camera.position.z = 30;
 
     // 3. Renderer setup
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer = new THREE.WebGLRenderer({ antialalias: true, alpha: true });
     renderer.setClearColor(0x000000, 0); 
     ui.arcEdgeViewport.appendChild(renderer.domElement);
     
@@ -2342,7 +2305,7 @@ function loadAtom(atom, index) {
         nucleusCenter: initialNucleusCenter.clone(), isNucleusActive: false, nucleusVelocity: new THREE.Vector3(0,0,0), nucleusFriction: 0.99,
         physics: { 
             ...DEFAULT_PHYSICS, 
-            mass: protons + neutrons, 
+            mass: protons + neutrons, // This is the total AMU
             weight: (protons + neutrons) * scenePhysicsSettings.physics.gravity, 
             density: (protons + neutrons) / 1.0 
         },
@@ -2404,8 +2367,26 @@ function loadAtom(atom, index) {
     return atomGroup; // Return the created group
 }
 
+/**
+ * REPLACES original addPhysicsAttributes
+ * Adds mass in AMU to particles.
+ */
 function addPhysicsAttributes(obj, type, orbitIndex = -1, initialRadius = 0, nucleusCenter = new THREE.Vector3()) {
-    obj.userData = { type: type, initialPosition: obj.position.clone(), initialOffset: new THREE.Vector3(), orbitIndex: orbitIndex, initialRadius: initialRadius, };
+    let mass = 0;
+    if (type === 'proton' || type === 'neutron') {
+        mass = 1.0; // Approx 1 AMU
+    } else if (type === 'electron') {
+        mass = ELECTRON_MASS_AMU; // Approx 0.000549 AMU
+    }
+    
+    obj.userData = { 
+        type: type, 
+        mass: mass,
+        initialPosition: obj.position.clone(), 
+        initialOffset: new THREE.Vector3(), 
+        orbitIndex: orbitIndex, 
+        initialRadius: initialRadius, 
+    };
 }
 
 function startSimulation() {
@@ -2425,6 +2406,10 @@ function startSimulation() {
     addPrompt("Simulation Started (Articren Wave)");
 }
 
+/**
+ * REPLACES original stopSimulation
+ * Adds logic to reset the Arc Edge mesh.
+ */
 function stopSimulation() {
     isSimulating = false;
     
@@ -2440,8 +2425,23 @@ function stopSimulation() {
         group.isNucleusActive = false; group.nucleusVelocity.set(0, 0, 0);
         group.nucleusMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
         group.electronMeshes.forEach(m => m.position.copy(m.userData.initialPosition));
+        // Recalculate nucleus center based on reset positions
+        let nucleusCenter = new THREE.Vector3();
+        let nucleusCount = 0; 
+        group.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
+        if (nucleusCount > 0) nucleusCenter.divideScalar(nucleusCount); 
+        group.nucleusCenter = nucleusCenter;
     });
-    addPrompt("Simulation Stopped"); renderer.render(scene, camera); 
+    
+    // --- NEW: Reset Arc Edge Mesh ---
+    // After atoms are reset, redraw the arc to its default state
+    if (arcEdgeMesh && selectedGroups.length >= 2) {
+        updateArcEdgeDynamicMesh();
+    }
+    // --- END NEW ---
+
+    addPrompt("Simulation Stopped"); 
+    renderer.render(scene, camera); 
 }
 
 function exportAsPNG() {
@@ -2463,7 +2463,7 @@ function exportAsGLTF() {
         const blob = new Blob([output], { type: 'application/gltf+json' }); 
         const link = document.createElement('a'); 
         link.href = URL.createObjectURL(blob); 
-        link.download = 'arclake_element.gltf'; 
+        link.download = 'arclake_element.gltf';
         link.click();
         addPrompt(`Exported GLTF file with ${recordedAnimationClips.length} animation clip(s).`);
     }, function(error) {
@@ -2497,8 +2497,7 @@ function updateInputDisplay(targetId) {
 }
 function loadTargetSettings(targetId) {
     const target = targetId === 'scene_global' ? scenePhysicsSettings : 
-                   targetId === 'floor_plane'
-? floorPhysicsSettings : 
+                   targetId === 'floor_plane' ? floorPhysicsSettings : 
                    atomGroups.find(g => g.id === targetId);
                    
     updateInputDisplay(targetId);
@@ -2535,7 +2534,6 @@ function loadTargetSettings(targetId) {
     ui.inputVelocity_slider.value = ui.inputVelocity.value;
     ui.inputGravity_slider.value = ui.inputGravity.value;
 }
-
 function saveCurrentSettings() {
     // This is called by the slider/input listeners
     const target = getCurrentTarget();
@@ -2732,7 +2730,7 @@ function populateShellDropdown() {
 }
 
 /**
- * STUB: Executes the advanced math operations.
+ * --- NEW: Advanced Math Calculation Logic ---
  */
 function executeAdvancedMath() {
     addPrompt("Executing Advanced Math...");
@@ -2740,6 +2738,13 @@ function executeAdvancedMath() {
 
     const opSets = document.querySelectorAll('.math-op-set');
     
+    // A full parser is complex. We'll use a simplified RPN (Reverse Polish Notation)
+    // approach for now, handling one operation at a time.
+    // This STUB simulates the *result* of the operations.
+    
+    let finalResult = 0; // Placeholder
+    let lastAtom = null; // Placeholder
+
     opSets.forEach((set, index) => {
         const specialOp = set.querySelector('.adv-math-special-op').value;
         const physicsField = set.querySelector('.adv-math-physics-order').value;
@@ -2747,63 +2752,107 @@ function executeAdvancedMath() {
         const atomRightId = set.querySelector('.adv-math-atom-right').value;
         const operator = set.querySelector('.adv-math-operator').value;
         
-        // Get shell selections
         const shellsLeft = Array.from(set.querySelector('.adv-math-shell-select-left').selectedOptions).map(o => o.value);
         const shellsRight = Array.from(set.querySelector('.adv-math-shell-select-right').selectedOptions).map(o => o.value);
         
-        // Find atom groups
         const atomLeft = atomGroups.find(g => g.id === atomLeftId);
         const atomRight = atomGroups.find(g => g.id === atomRightId);
-
-        // --- This is a STUB. Replace with real math logic ---
-        // This logic will need to be expanded to handle shell selections (shellsLeft/shellsRight)
-        // and more complex equation parsing (parentheses).
         
-        if (atomLeft && physicsField) {
-            
-            // Logic for single atom operation (if atomRight is not selected)
-            if (!atomRight) {
-                 let valLeft = atomLeft.physics[physicsField] || 0;
-                 // TODO: Implement single-value logic (e.g., applying a delta or constant)
-                 addPrompt(`Set ${index+1}: Single op on ${atomLeft.name} [${physicsField}]. (Logic TBD)`);
-                 
-                 if (specialOp === 'delta_function') {
-                    const deltaResult = valLeft * 0.1; // Placeholder delta calc
-                    pendingDeltaCalculations.push({ value: deltaResult, sourceAtom: atomLeft.name });
-                    addPrompt(`-> Pushing Delta Result: ${deltaResult}`);
-                }
-                 return; // Skip to next set
-            }
-
-            // Logic for two-atom operation
-            let valLeft = atomLeft.physics[physicsField] || 0;
-            let valRight = atomRight.physics[physicsField] || 0;
-            let result = 0;
-            
-            if (operator === 'add') result = valLeft + valRight;
-            else if (operator === 'subtract') result = valLeft - valRight;
-            else if (operator === 'multiply') result = valLeft * valRight;
-            else if (operator === 'divide') result = valRight !== 0 ? valLeft / valRight : 0;
-            else if (operator === 'power') result = Math.pow(valLeft, valRight);
-            // Parentheses operators are for grouping - need a full expression parser for that.
-            // For now, we'll just log them.
-            else if (operator === 'open_paren' || operator === 'close_paren') {
-                 addPrompt(`Set ${index+1}: Grouping operator ${operator} noted. (Full parser TBD)`);
-                 return;
-            }
-            
-            addPrompt(`Set ${index+1}: ${valLeft} ${operator} ${valRight} = ${result}`);
-
-            // --- STUB: Delta Piping ---
-            if (specialOp === 'delta_function') {
-                const deltaResult = result * (Math.random() + 0.5); // Placeholder delta calc
-                pendingDeltaCalculations.push({ value: deltaResult, sourceAtom: atomLeft.name });
-                addPrompt(`-> Pushing Delta Result: ${deltaResult}`);
-            }
+        if (operator === 'open_paren' || operator === 'close_paren') {
+            addPrompt(`Set ${index+1}: Grouping operator ${operator} noted. (Full parser TBD)`);
+            return;
+        }
+        
+        // Get the value from the left atom
+        let valLeft = 0;
+        if (atomLeft) {
+            valLeft = getPhysicsValue(atomLeft, physicsField, shellsLeft);
+            lastAtom = atomLeft; // Store for potential delta
+        } else if (index === 0) {
+            addPrompt(`Set ${index+1}: Atom 1 is required for the first operation.`);
+            return; // Stop processing this set
         } else {
-            addPrompt(`Set ${index+1}: Incomplete data. Skipping calculation.`);
+            // Use result from previous operation
+            valLeft = finalResult;
+            addPrompt(`Set ${index+1}: Using previous result (${valLeft.toFixed(4)}) as Atom 1.`);
+        }
+
+        // Get the value from the right atom
+        let valRight = 0;
+        if (atomRight) {
+            valRight = getPhysicsValue(atomRight, physicsField, shellsRight);
+            lastAtom = atomRight; // Store for potential delta
+        } else {
+            addPrompt(`Set ${index+1}: Atom 2 is required. Skipping operation.`);
+            return; // Stop processing this set
+        }
+
+        // Perform calculation
+        let result = 0;
+        if (operator === 'add') result = valLeft + valRight;
+        else if (operator === 'subtract') result = valLeft - valRight;
+        else if (operator === 'multiply') result = valLeft * valRight;
+        else if (operator === 'divide') result = valRight !== 0 ? valLeft / valRight : 0;
+        else if (operator === 'power') result = Math.pow(valLeft, valRight);
+        
+        addPrompt(`Set ${index+1}: ${valLeft.toFixed(4)} ${operator} ${valRight.toFixed(4)} = ${result.toFixed(4)}`);
+        finalResult = result; // Store for next iteration
+
+        // --- STUB: Delta Piping ---
+        if (specialOp === 'delta_function' && lastAtom) {
+            const deltaResult = finalResult * 0.1; // Placeholder delta calc
+            pendingDeltaCalculations.push({ value: deltaResult, sourceAtom: lastAtom.name });
+            addPrompt(`-> Pushing Delta Result: ${deltaResult.toFixed(4)}`);
         }
     });
+    
+    addPrompt(`Final Math Result: ${finalResult.toFixed(4)}`);
+}
+
+/**
+ * --- ADD THIS NEW FUNCTION ---
+ * Helper to get a physics value, potentially filtered by shells.
+ * @param {Object} atomGroup - The atom group object.
+ * @param {string} physicsField - "mass", "volume", etc.
+ * @param {Array<string>} shells - Array of selected shell indices, or ["all"].
+ * @returns {number} The calculated value.
+ */
+function getPhysicsValue(atomGroup, physicsField, shells) {
+    // If no field is selected, or if 'all' shells are selected for a non-shell property,
+    // return the value from the main physics object.
+    if (!physicsField || (shells.includes('all') && physicsField !== 'mass')) {
+        return atomGroup.physics[physicsField] || 0;
+    }
+
+    // --- Shell-specific logic ---
+    // This is a complex calculation.
+    // For now, we'll focus on shell-specific mass.
+    if (physicsField === 'mass') {
+        let shellMass = 0;
+        const selectedShellIndices = shells.map(s => parseInt(s)).filter(s => !isNaN(s));
+        
+        if (shells.includes('all')) {
+            // "Atom Orbit Group" - just electrons
+            atomGroup.electronMeshes.forEach(e => shellMass += e.userData.mass);
+        } else if (selectedShellIndices.length > 0) {
+            // Specific shells
+            atomGroup.electronMeshes.forEach(e => {
+                if (selectedShellIndices.includes(e.userData.orbitIndex)) {
+                    shellMass += e.userData.mass;
+                }
+            });
+        } else {
+            // No shells selected, default to group mass
+            return atomGroup.physics.mass;
+        }
+        
+        addPrompt(`Calc Shell Mass for ${atomGroup.name}: ${shellMass.toFixed(6)} AMU`);
+        return shellMass;
+    }
+    
+    // Fallback for other physics fields (e.g., volume, density)
+    // TODO: Implement shell-specific logic for these if needed
+    return atomGroup.physics[physicsField] || 0;
 }
 
 // ====================================================================================
