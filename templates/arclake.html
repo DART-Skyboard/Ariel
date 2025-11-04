@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ArcLake Chemistry / Research Lab (Radical Deepscale)</title>
@@ -758,8 +759,19 @@
                 <select id="mol-scene-select">
                     <option>Select Atom in Scene</option>
                 </select>
-                
+              <br>                     <fieldset>
+    <legend>Cloud Services</legend>
+    <div id="google-sign-in-container" style="margin-bottom: 10px;">
+        <!-- Google Sign-In button will be rendered here -->
+    </div>
+    <div class="action-buttons" style="flex-direction: column; gap: 5px;">
+        <button id="save-to-drive-btn" class="primary-btn" disabled>Save to Google Drive</button>
+        <button id="load-from-drive-btn" class="secondary-btn" disabled>Load from Google Drive</button>
+    </div>
+</fieldset>
+<br>
                 <h5>Toolbar Drag and Drop</h5>
+                
                 <div class="mol-control-grid">
                     <button class="mol-control-btn" title="Atom Pair" data-tool="AtomPair" draggable="true"><img src="icons/AtomPair.svg" alt="AP"></button>
                     <button class="mol-control-btn" title="Orbit Delta" data-tool="OrbitDelta"><img src="icons/OrbitDelta.svg" alt="OD"></button>
@@ -773,6 +785,7 @@
                     <button class="mol-control-btn" title="Atom Drag" data-tool="AtomDrag" draggable="true"><img src="icons/AtomDrag.svg" alt="A"></button>
 
                     <button class="mol-control-btn" title="Copy" data-tool="Copy"><img src="icons/Copy.svg" alt="C"></button>
+
                     <button class="mol-control-btn" title="Paste" data-tool="Paste"><img src="icons/Paste.svg" alt="P"></button>
                     <button class="mol-control-btn" title="Open Work File" data-tool="OpenWorkFile"><img src="icons/Open.svg" alt="O"></button>
                     <button class="mol-control-btn" title="Save ArcLake.json" data-tool="SaveArcLake"><img src="icons/Save.svg" alt="S"></button>
@@ -1060,6 +1073,170 @@
 
 
 <script>
+
+
+const GOOGLE_CLIENT_ID = '417023343630-uor82401j1d6q3cjroaibp90m61d9e28.apps.googleusercontent.com'; // <-- REPLACE THIS
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+let googleAccessToken = null;
+let googleTokenClient = null;
+let arclakeFileId = null; // To track the ID of the saved file for updates
+
+// ... rest of your initial variables
+window.onload = () => {
+    // ... existing setup calls
+    initGoogleAuth();
+};
+
+function initGoogleAuth() {
+    // 1. Initialize the Sign-In Client
+    google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleSignInCallback, // This function processes the ID token
+        auto_select: false,
+        cancel_on_tap_outside: true
+    });
+
+    // 2. Initialize the Token Client (for Drive API)
+    googleTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GOOGLE_DRIVE_SCOPE,
+        callback: (tokenResponse) => {
+            if (tokenResponse.error !== undefined) {
+                console.error("Token acquisition failed:", tokenResponse);
+            } else {
+                googleAccessToken = tokenResponse.access_token;
+                updateDriveUI(true);
+                addPrompt("Signed in with Google. Drive access granted.");
+            }
+        },
+    });
+
+    // 3. Render the Sign-In button
+    google.accounts.id.renderButton(
+        document.getElementById("google-sign-in-container"),
+        { theme: "outline", size: "large", width: "350" }
+    );
+}
+
+function handleSignInCallback(response) {
+    if (response.credential) {
+        // ID token received. Now, request the access token for Drive.
+        googleTokenClient.requestAccessToken();
+    }
+}
+
+function updateDriveUI(isLoggedIn) {
+    document.getElementById('save-to-drive-btn').disabled = !isLoggedIn;
+    document.getElementById('load-from-drive-btn').disabled = !isLoggedIn;
+    document.getElementById('google-sign-in-container').style.display = isLoggedIn ? 'none' : 'block';
+}
+
+document.getElementById('save-to-drive-btn').addEventListener('click', saveSceneStateToDrive);
+
+function saveSceneStateToDrive() {
+    if (!googleAccessToken) {
+        addPrompt("Please sign in with Google first.");
+        googleTokenClient.requestAccessToken(); // Prompt user for token
+        return;
+    }
+
+    const state = { 
+        version: "ArcLake 1.0",
+        // ... (rest of your state object from the original saveSceneState)
+        scenePhysics: scenePhysicsSettings,
+        // ...
+        atoms: atomGroups.map(g => ({ /* ... */ })),
+        molCanvasState: molCanvasState
+    };
+
+    const boundary = 'foo_bar_baz';
+    const metadata = {
+        'name': 'arclake_scene.json',
+        'mimeType': 'application/json'
+    };
+
+    // The entire body as a multipart/related POST request
+    const body = `
+--${boundary}
+Content-Type: application/json; charset=UTF-8
+
+${JSON.stringify(metadata, null, 2)}
+
+--${boundary}
+Content-Type: application/json
+
+${JSON.stringify(state, null, 2)}
+
+--${boundary}--
+`;
+
+    // 1. Choose the correct endpoint: Update if arclakeFileId exists, otherwise Create
+    const isUpdate = arclakeFileId !== null;
+    const url = isUpdate
+        ? `https://www.googleapis.com/upload/drive/v3/files/${arclakeFileId}?uploadType=multipart`
+        : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+
+    fetch(url, {
+        method: isUpdate ? 'PATCH' : 'POST',
+        headers: {
+            'Authorization': `Bearer ${googleAccessToken}`,
+            'Content-Type': `multipart/related; boundary="${boundary}"`
+        },
+        body: body,
+    })
+    .then(response => response.json())
+    .then(file => {
+        arclakeFileId = file.id; // Store the ID for future updates
+        addPrompt(`Scene saved to Google Drive! File ID: ${file.id}`);
+    })
+    .catch(error => {
+        console.error("Drive Save Error:", error);
+        addPrompt(`<strong>Error:</strong> Failed to save to Drive. ${error.message}`);
+    });
+}
+
+document.getElementById('load-from-drive-btn').addEventListener('click', loadSceneStateFromDrive);
+
+// NOTE: This is a simplified function that assumes you already know the file ID (e.g., from a files.list or Picker)
+// In a real app, you would use files.list to let the user select a file first.
+
+function loadSceneStateFromDrive() {
+    if (!googleAccessToken) {
+        addPrompt("Please sign in with Google first.");
+        googleTokenClient.requestAccessToken();
+        return;
+    }
+
+    // --- STEP 1: Find File (Simplified Stub) ---
+    // You would use the Picker API or files.list here to get the file ID
+    const fileIdToLoad = arclakeFileId; // For simplicity, we load the last saved file
+    if (!fileIdToLoad) {
+        addPrompt("No ArcLake file ID is currently tracked. Please implement files.list or Picker.");
+        return;
+    }
+
+    // --- STEP 2: Download File Content ---
+    const url = `https://www.googleapis.com/drive/v3/files/${fileIdToLoad}?alt=media`;
+    
+    fetch(url, {
+        headers: {
+            'Authorization': `Bearer ${googleAccessToken}`
+        }
+    })
+    .then(response => {
+        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+        return response.json();
+    })
+    .then(loadedState => {
+        restoreSceneState(loadedState); // Use your existing restore function
+        addPrompt(`Successfully loaded file ID: ${fileIdToLoad} from Google Drive.`);
+    })
+    .catch(error => {
+        console.error("Drive Load Error:", error);
+        addPrompt(`<strong>Error:</strong> Failed to load from Drive. ${error.message}`);
+    });
+}
+
 
 const ui = {
     arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
