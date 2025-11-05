@@ -1,14 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://accounts.google.com/gsi/client?onload=onGsiLoaded"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ArcLake Chemistry / Research Lab (Radical Deepscale)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/exporters/GLTFExporter.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/TTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/geometries/TextGeometry.js"></script>
     
     <style>
         :root { 
@@ -725,6 +729,15 @@
             margin: 0;
             cursor: pointer;
         }
+/* START: New Mic Visualizer CSS */
+#mic-time-canvas,
+#mic-freq-canvas {
+    width: 100%;
+    height: 60px;
+    background-color: #2a2a2e;
+    border-radius: 4px;
+}
+/* END: New Mic Visualizer CSS */
 
     </style>
 </head>
@@ -745,6 +758,7 @@
             
             <div class="action-buttons" style="justify-content: center; margin-top: 0;">
                 <button id="toggle-mol-canvas" class="secondary-btn">Toggle 2D Canvas</button>
+                <button id="toggle-mic-window-btn" class="secondary-btn">Toggle Mic Input</button>
             </div>
 
             <fieldset id="mol-inputs-group">
@@ -1071,6 +1085,30 @@
     </div>
 </div>
 
+<div id="mic-visualizer-overlay" class="overlay-base" style="position: fixed; top: 20px; right: 20px; width: 400px; height: auto; z-index: 1000; display: none; padding: 0;">
+    <div id="mic-visualizer-content" class="overlay-content-base" style="width: 100%; height: auto; max-height: none; padding: 15px; flex-direction: column; gap: 10px;">
+        
+        <h4 style="margin: 0 0 10px 0; padding-bottom: 5px;">🎤 Live Mic Input</h4>
+        
+        <div id="arcedge-2d-canvases" style="display: flex; flex-direction: column; gap: 5px; border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; background: rgba(10, 10, 10, 0.75);">
+            <div class="canvas-2d-wrapper" id="mic-time-canvas-wrapper">
+                <label>Time Domain (Waveform)</label>
+                <canvas id="mic-time-canvas" height="60"></canvas>
+            </div>
+            <div class="canvas-2d-wrapper" id="mic-freq-canvas-wrapper">
+                <label>Frequency Domain (FFT)</label>
+                <canvas id="mic-freq-canvas" height="60"></canvas>
+            </div>
+        </div>
+
+        <div class="action-buttons" style="justify-content: space-between; margin-top: 5px;">
+            <button id="toggle-mic-btn" class="primary-btn" style="flex-grow: 1;">Start Mic</button>
+            <button id="close-mic-window-btn" class="danger-btn" style="width: 80px;">Close</button>
+        </div>
+    </div>
+</div>
+
+
 <input type="file" id="load-scene-input" accept=".json" style="display: none;">
 
 
@@ -1084,10 +1122,6 @@ let googleTokenClient = null;
 let arclakeFileId = null; // To track the ID of the saved file for updates
 
 // ... rest of your initial variables
-window.onload = () => {
-    // ... existing setup calls
-    initGoogleAuth();
-};
 
 function initGoogleAuth() {
     // 1. Initialize the Sign-In Client
@@ -1242,7 +1276,7 @@ function loadSceneStateFromDrive() {
 }
 
 
-const ui = {
+let ui = {
     arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
     arcEdgeContent: document.getElementById('arcedge-graph-content'),
     arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
@@ -1371,6 +1405,29 @@ let isScrubbing = false;
 let current2DToolMode = null; // e.g., 'delta_select'
 let deltaSelection = []; // Atom IDs for delta tool
 
+// --- NEW: Mic Audio State ---
+let audioCtx;
+let micStream;
+let micSource;
+let micAnalyser;
+let micTimeDataArray;
+let micFreqDataArray;
+let isMicListening = false;
+let globalAudioTimeIntensity = 0.0;
+let globalAudioFreqIntensity = 0.0;
+
+// --- NEW: Mic UI Elements ---
+let ui_mic = {
+    overlay: document.getElementById('mic-visualizer-overlay'),
+    content: document.getElementById('mic-visualizer-content'),
+    toggleMicBtn: document.getElementById('toggle-mic-btn'),
+    toggleWindowBtn: document.getElementById('toggle-mic-window-btn'),
+    closeWindowBtn: document.getElementById('close-mic-window-btn'),
+    timeCanvas: document.getElementById('mic-time-canvas'),
+    freqCanvas: document.getElementById('mic-freq-canvas')
+};
+let micTimeCtx;
+let micFreqCtx;
 
 // ====================================================================================
 // INITIALIZATION AND EVENT LISTENERS
@@ -1421,7 +1478,88 @@ function makeDraggable(element, handle) {
     document.addEventListener('touchmove', doDrag, { passive: false });
     document.addEventListener('touchend', stopDrag);
 }
+// REPLACE the old window.onload (at line 602) WITH THIS:
 window.onload = () => {
+    
+    // --- NEW: Initialize all UI elements here ---
+    ui = {
+        arcEdgeOverlay: document.getElementById('arcedge-graph-overlay'),
+        arcEdgeContent: document.getElementById('arcedge-graph-content'),
+        arcEdgeViewportContainer: document.getElementById('arcedge-graph-viewport-container'),
+        arcEdgeViewport: document.getElementById('arcedge-viewport'),
+        arcEdgeReadout: document.getElementById('arcedge-readout'),
+        arcEdgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
+        promptOutput: document.getElementById('prompt-output-container'),
+        
+        startSimulationButton: document.getElementById('startSimulationButton'),
+        stopSimulationButton: document.getElementById('stopSimulationButton'),
+        exportButton: document.getElementById('exportButton'),
+        exportGLTFButton: document.getElementById('exportGLTFButton'),
+        multiSelectToggle: document.getElementById('multiSelectToggle'),
+        linkedSimToggle: document.getElementById('linkedSimToggle'),
+        floorSimToggle: document.getElementById('floorSimToggle'),
+        physicsTargetSelect: document.getElementById('physicsTargetSelect'), 
+        physicsGrid: document.getElementById('physicsGrid'),
+        
+        // Physics Inputs
+        inputMass: document.getElementById('physicsMass'),
+        inputMass_slider: document.getElementById('physicsMass_slider'),
+        inputVolume: document.getElementById('physicsVolume'),
+        inputVolume_slider: document.getElementById('physicsVolume_slider'),
+        inputWeight: document.getElementById('physicsWeight'),
+        inputWeight_slider: document.getElementById('physicsWeight_slider'),
+        inputDensity: document.getElementById('physicsDensity'),
+        inputDensity_slider: document.getElementById('physicsDensity_slider'),
+        inputTemp: document.getElementById('physicsTemp'),
+        inputTemp_slider: document.getElementById('physicsTemp_slider'),
+        inputVelocity: document.getElementById('physicsVelocity'),
+        inputVelocity_slider: document.getElementById('physicsVelocity_slider'),
+        inputGravity: document.getElementById('physicsGravity'),
+        inputGravity_slider: document.getElementById('physicsGravity_slider'),
+        
+        // 2D Canvas
+        toggleMolCanvasBtn: document.getElementById('toggle-mol-canvas'),
+        molInputsGroup: document.getElementById('mol-inputs-group'),
+        molElementSelect: document.getElementById('mol-element-select'),
+        molSceneSelect: document.getElementById('mol-scene-select'),
+        
+        molCanvasOverlay: document.getElementById('mol-canvas-overlay'),
+        molCanvas: document.getElementById('molecule-canvas'),
+        molClearCanvas: document.getElementById('mol-clear-canvas'),
+        molCreateCompound: document.getElementById('mol-create-compound'),
+        canvasTrashBtn: document.getElementById('canvas-trash-btn'),
+        
+        periodicTableCheckboxList: document.getElementById('periodicTableCheckboxList'),
+        
+        freezeSelectionChk: document.getElementById('freeze-selection-chk'),
+        arcEdgeSettingsSelect: document.getElementById('arc-edge-settings-select'),
+        loadSceneInput: document.getElementById('load-scene-input'),
+        
+        // Advanced Math
+        mathOpSetsContainer: document.getElementById('math-op-sets-container'),
+        addMathOpSetBtn: document.getElementById('add-math-op-set-btn'),
+        executeAdvMathBtn: document.getElementById('execute-adv-math-btn'),
+        
+        // Recorder
+        recordSimBtn: document.getElementById('record-sim-btn'),
+        stopRecordSimBtn: document.getElementById('stop-record-sim-btn'),
+        simulationScrubber: document.getElementById('simulation-scrubber'),
+        scrubberCaret: document.getElementById('scrubber-caret')
+    };
+
+    ui_mic = {
+        overlay: document.getElementById('mic-visualizer-overlay'),
+        content: document.getElementById('mic-visualizer-content'),
+        toggleMicBtn: document.getElementById('toggle-mic-btn'),
+        toggleWindowBtn: document.getElementById('toggle-mic-window-btn'),
+        closeWindowBtn: document.getElementById('close-mic-window-btn'),
+        timeCanvas: document.getElementById('mic-time-canvas'),
+        freqCanvas: document.getElementById('mic-freq-canvas')
+    };
+    // --- END of UI Initialization ---
+
+    // Now run all setup functions
+    
     initArcEdgeGraph();
     setupEventListeners();
     init2DCanvasAndListeners();
@@ -1429,10 +1567,19 @@ window.onload = () => {
     ui.molCanvasOverlay.style.display = 'none';
     updateArcEdgeReadout(); 
     
-makeDraggable(ui.arcEdgeContent, ui.arcEdgeContent);
-        
-
+    makeDraggable(ui.arcEdgeContent, ui.arcEdgeContent);
 };
+
+
+// PASTE THIS NEW FUNCTION HERE
+function onGsiLoaded() {
+    console.log("Google GSI script loaded.");
+    // Now we know 'google' is defined, so we can safely call this.
+    initGoogleAuth();
+}
+
+// ... rest of your script (function setupEventListeners(), etc.)
+
 
 /**
  * Links a number input to a range slider
@@ -1544,6 +1691,23 @@ function setupEventListeners() {
     // --- Event propagation fix for draggable overlay ---
     ui.arcEdgeContent.addEventListener('mousedown', (e) => e.stopPropagation());
     ui.arcEdgeContent.addEventListener('touchstart', (e) => e.stopPropagation());
+    
+        // --- NEW: Mic Visualizer Listeners ---
+    ui_mic.toggleWindowBtn.addEventListener('click', toggleMicWindow);
+    ui_mic.closeWindowBtn.addEventListener('click', toggleMicWindow);
+    ui_mic.toggleMicBtn.addEventListener('click', toggleMicListening);
+    makeDraggable(ui_mic.overlay, ui_mic.content); // Make the new window draggable
+    
+    // Initialize new canvas contexts
+    micTimeCtx = ui_mic.timeCanvas.getContext('2d');
+    micFreqCtx = ui_mic.freqCanvas.getContext('2d');
+    // Set fixed canvas resolutions
+    ui_mic.timeCanvas.width = 350;
+    ui_mic.timeCanvas.height = 60;
+    ui_mic.freqCanvas.width = 350;
+    ui_mic.freqCanvas.height = 60;
+    // --- END: Mic Listeners ---
+
 }
 
 /**
@@ -2416,7 +2580,10 @@ function applyNewPhysics() {
     atomGroups.forEach(group => {
         if (group.isNucleusActive) { group.nucleusVelocity.add(globalGravityVector); }
         const p = group.physics; 
-        const arcEdgeInfluenceBase = p.temp * p.velocity; 
+        // NEW (incorporates live audio):
+const audioModifier = (globalAudioTimeIntensity * globalAudioFreqIntensity) * 5000.0; // 5000 is a scaling factor, tune as needed
+const arcEdgeInfluenceBase = (p.temp * p.velocity) + audioModifier;
+// --- END MODIFICATION ---
         
         let nucleusCenter = new THREE.Vector3(); let nucleusCount = 0;
         group.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
@@ -2534,6 +2701,11 @@ function animate() {
     
     controls.update();
     renderer.render(scene, camera);
+        // --- NEW: Process Mic Audio ---
+    processMicAudio();
+    
+    applyNewPhysics();
+
 }
 
 
@@ -3418,6 +3590,201 @@ function createAnimationClips(frames) {
     
     return clips;
 }
+
+// ====================================================================================
+// --- NEW: LIVE MICROPHONE FUNCTIONS ---
+// ====================================================================================
+
+/**
+ * Toggles the visibility of the draggable mic visualizer window.
+ */
+function toggleMicWindow() {
+    const isVisible = ui_mic.overlay.style.display === 'block';
+    ui_mic.overlay.style.display = isVisible ? 'none' : 'block';
+    if (!isVisible && !isMicListening) {
+        // Clear canvases when opening
+        clearMicCanvases();
+    }
+}
+
+/**
+ * Toggles the microphone listening state.
+ */
+function toggleMicListening() {
+    if (isMicListening) {
+        stopMicListener();
+    } else {
+        startMicListener();
+    }
+}
+
+/**
+ * Requests mic permissions and starts the audio processing.
+ */
+async function startMicListener() {
+    try {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        micSource = audioCtx.createMediaStreamSource(micStream);
+        
+        micAnalyser = audioCtx.createAnalyser();
+        micAnalyser.fftSize = 2048; // Standard FFT size
+        
+        const bufferLength = micAnalyser.frequencyBinCount;
+        micTimeDataArray = new Uint8Array(bufferLength);
+        micFreqDataArray = new Uint8Array(bufferLength);
+        
+        micSource.connect(micAnalyser);
+        
+        isMicListening = true;
+        ui_mic.toggleMicBtn.textContent = "Stop Mic";
+        ui_mic.toggleMicBtn.classList.replace('primary-btn', 'danger-btn');
+        addPrompt("🎤 Mic listener started.");
+
+    } catch (err) {
+        console.error("Error starting mic listener:", err);
+        addPrompt("<strong>Error:</strong> Could not get mic permission. " + err.message);
+    }
+}
+
+/**
+ * Stops the microphone listener and cleans up.
+ */
+function stopMicListener() {
+    if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+    }
+    if (micSource) {
+        micSource.disconnect();
+    }
+    
+    micStream = null;
+    micSource = null;
+    isMicListening = false;
+    globalAudioTimeIntensity = 0.0;
+    globalAudioFreqIntensity = 0.0;
+    
+    ui_mic.toggleMicBtn.textContent = "Start Mic";
+    ui_mic.toggleMicBtn.classList.replace('danger-btn', 'primary-btn');
+    addPrompt("🎤 Mic listener stopped.");
+    
+    // Clear canvases
+    clearMicCanvases();
+}
+
+/**
+ * Clears the mic visualizer canvases to a black background.
+ */
+function clearMicCanvases() {
+    if(micTimeCtx) {
+        micTimeCtx.fillStyle = '#2a2a2e';
+        micTimeCtx.fillRect(0, 0, ui_mic.timeCanvas.width, ui_mic.timeCanvas.height);
+    }
+    if(micFreqCtx) {
+        micFreqCtx.fillStyle = '#2a2a2e';
+        micFreqCtx.fillRect(0, 0, ui_mic.freqCanvas.width, ui_mic.freqCanvas.height);
+    }
+}
+
+/**
+ * Called from animate() loop. Processes and draws mic data.
+ */
+function processMicAudio() {
+    if (!isMicListening || !micAnalyser) {
+        return;
+    }
+
+    // Get data
+    micAnalyser.getByteTimeDomainData(micTimeDataArray);
+    micAnalyser.getByteFrequencyData(micFreqDataArray);
+    
+    // Draw data
+    drawMicTimeCanvas(micTimeDataArray);
+    drawMicFreqCanvas(micFreqDataArray);
+    
+    // Calculate global intensities for physics
+    // 1. Time Intensity (RMS)
+    let sumSquares = 0.0;
+    for (const amplitude of micTimeDataArray) {
+        const normalized = (amplitude / 128.0) - 1.0; // to -1.0 -> 1.0
+        sumSquares += normalized * normalized;
+    }
+    globalAudioTimeIntensity = Math.sqrt(sumSquares / micTimeDataArray.length);
+    
+    // 2. Freq Intensity (Average)
+    let sumFreq = 0.0;
+    for (const value of micFreqDataArray) {
+        sumFreq += value;
+    }
+    globalAudioFreqIntensity = (sumFreq / micFreqDataArray.length) / 255.0; // to 0.0 -> 1.0
+}
+
+/**
+ * Draws the live waveform to its canvas.
+ */
+function drawMicTimeCanvas(data) {
+    const canvas = ui_mic.timeCanvas;
+    const ctx = micTimeCtx;
+    const width = canvas.width;
+    const height = canvas.height;
+    const bufferLength = data.length;
+
+    ctx.fillStyle = '#2a2a2e'; // Clear canvas
+    ctx.fillRect(0, 0, width, height);
+    
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00e5ff'; // Time color
+    ctx.beginPath();
+    
+    const sliceWidth = width * 1.0 / bufferLength;
+    let x = 0;
+    
+    for(let i = 0; i < bufferLength; i++) {
+        const v = data[i] / 128.0; // 0.0 to 2.0
+        const y = v * height / 2;
+
+        if(i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+        x += sliceWidth;
+    }
+    
+    ctx.lineTo(width, height / 2);
+    ctx.stroke();
+}
+
+/**
+ * Draws the live FFT (frequency) to its canvas.
+ */
+function drawMicFreqCanvas(data) {
+    const canvas = ui_mic.freqCanvas;
+    const ctx = micFreqCtx;
+    const width = canvas.width;
+    const height = canvas.height;
+    const bufferLength = data.length;
+    
+    ctx.fillStyle = '#2a2a2e'; // Clear canvas
+    ctx.fillRect(0, 0, width, height);
+
+    const barWidth = (width / bufferLength) * 2.5;
+    let x = 0;
+    
+    ctx.fillStyle = '#ffff00'; // Freq color
+    
+    for(let i = 0; i < bufferLength; i++) {
+        const barHeight = (data[i] / 255.0) * height;
+        
+        ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+        
+        x += barWidth + 1;
+    }
+}
+
 
 </script>
 
