@@ -2580,16 +2580,29 @@ function applyNewPhysics() {
     atomGroups.forEach(group => {
         if (group.isNucleusActive) { group.nucleusVelocity.add(globalGravityVector); }
         const p = group.physics; 
-        // NEW (incorporates live audio):
-const audioModifier = (globalAudioTimeIntensity * globalAudioFreqIntensity) * 5000.0; // 5000 is a scaling factor, tune as needed
-const arcEdgeInfluenceBase = (p.temp * p.velocity) + audioModifier;
-// --- END MODIFICATION ---
+
+        // --- START: CORRECTED LOGIC ---
+
+        // 1. Calculate audio modifier first
+        // I've increased the multiplier from 5000.0 to 25000.0 to make the effect stronger
+        const audioModifier = (globalAudioTimeIntensity * globalAudioFreqIntensity) * 25000.0; 
+        
+        // 2. Create a new "total energy" variable from sliders AND audio
+        const totalEnergyInput = (p.temp * p.velocity) + audioModifier;
+        
+        // 3. This is the variable that will be used for calculations
+        const arcEdgeInfluenceBase = totalEnergyInput; 
+
+        // --- END: CORRECTED LOGIC ---
         
         let nucleusCenter = new THREE.Vector3(); let nucleusCount = 0;
         group.nucleusMeshes.forEach(m => { nucleusCenter.add(m.position); nucleusCount++; });
         if (nucleusCount > 0) nucleusCenter.divideScalar(nucleusCount); group.nucleusCenter = nucleusCenter; 
 
-        const isThresholdExceeded = (p.temp * p.velocity * globalGravity) > (group.stableForce * nucleusThresholdFactor);
+        // --- MODIFIED THIS THRESHOLD CHECK ---
+        // It now correctly uses 'totalEnergyInput' which includes your audio
+        const isThresholdExceeded = (totalEnergyInput * globalGravity) > (group.stableForce * nucleusThresholdFactor);
+        
         if (isThresholdExceeded) {
             group.isNucleusActive = true;
             if (group.nucleusVelocity.length() === 0) { group.nucleusVelocity.set(Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005, Math.random() * 0.01 - 0.005); }
@@ -2607,6 +2620,7 @@ const arcEdgeInfluenceBase = (p.temp * p.velocity) + audioModifier;
         }
 
         if (group.isNucleusActive) {
+            // This 'blastForce' now correctly uses the 'arcEdgeInfluenceBase' which contains your audio
             const blastForce = isThresholdExceeded ? (0.001 * arcEdgeInfluenceBase * globalGravity / (group.stableForce * nucleusThresholdFactor)) : 0;
             group.nucleusMeshes.forEach(n => {
                 if (blastForce > 0) { const blastDir = new THREE.Vector3().subVectors(n.position, nucleusCenter).normalize(); n.position.add(blastDir.multiplyScalar(blastForce)); }
@@ -2624,7 +2638,7 @@ const arcEdgeInfluenceBase = (p.temp * p.velocity) + audioModifier;
             p.shellInfluence = distanceFactor; 
             const deviationVector = getArcEdgeDeviation(t, p); 
             const stableOrbit = e.userData.initialOffset.clone(); 
-            const targetPosition = nucleusCenter.clone().add(stableOrbit).add(deviationVector.multiplyScalar(1)); 
+            const targetPosition = nucleusCenter.clone().add(stableOrbit).add( deviationVector.multiplyScalar(1) ); // Removed audio from here, as it's now in the 'blastForce'
             e.position.lerp(targetPosition, 0.1); 
             
              if (isFloorActive && floorPlaneMesh) {
@@ -2639,7 +2653,11 @@ const arcEdgeInfluenceBase = (p.temp * p.velocity) + audioModifier;
             for (let j = i + 1; j < atomGroups.length; j++) {
                 const groupA = atomGroups[i]; const groupB = atomGroups[j];
                 const pA = groupA.physics; const pB = groupB.physics;
-                const influenceBase = (pA.temp + pB.temp) * (pA.velocity + pB.velocity);
+                
+                // Also add audio to the linked simulation check
+                const audioModifier = (globalAudioTimeIntensity * globalAudioFreqIntensity) * 25000.0;
+                const influenceBase = (pA.temp + pB.temp) * (pA.velocity + pB.velocity) + audioModifier;
+
                 const dist = groupA.nucleusCenter.distanceTo(groupB.nucleusCenter);
                 const proximityThreshold = groupA.maxRadius + groupB.maxRadius + 3; 
                 if (dist < proximityThreshold) {
