@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -272,41 +273,59 @@
             flex-grow: 1;
         }
         
-        /* 2D Canvas Overlay on 3D Viewport */
+        /* 2D Canvas Overlay on 3D Viewport - UPDATED FOR REDESIGN */
         #mol-canvas-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 20; 
-            display: none; 
-            pointer-events: none;
-        }
-        
-        #mol-canvas-container {
-            position: absolute;
+            position: fixed; /* Changed from absolute to fixed for dragging */
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 80%;
-            height: 80%;
-            background: rgba(30, 45, 57, 0.7); 
-            border: 2px solid var(--molecule-accent);
-            border-radius: 10px;
-            box-shadow: 0 0 15px rgba(192, 57, 43, 0.5);
-            display: flex;
-            flex-direction: column;
-            padding: 10px;
-            pointer-events: auto;
+            width: 90vw; /* Make it a fixed size box */
+            max-width: 600px;
+            height: 85vh;
+            max-height: 800px;
+            z-index: 1001; /* Higher z-index for the floating window */
+            display: none; 
+            pointer-events: none;
+            cursor: move; /* Let the entire overlay be the handle */
         }
         
+#mol-canvas-container {
+    width: 100%;
+    height: 100%;
+    /* Same style as other panels for consistency */
+    background: var(--bg-color); /* Use the base background color for the content */
+    border: 1px solid var(--theme-panel-border); 
+    border-radius: 10px;
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+    display: flex;
+    flex-direction: column;
+    padding: 0; /* Remove padding from container */
+    pointer-events: auto;
+    cursor: default; /* Change cursor back to default inside content area */
+}
+
+.mol-canvas-header {
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--theme-panel-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--accent-color);
+    font-weight: bold;
+    font-size: 1.2em;
+    flex-shrink: 0;
+    cursor: move; /* Header itself is a good drag handle */
+}
+
 #molecule-canvas {
     flex-grow: 1;
-    background: rgba(51, 51, 51, 0.7); 
-    border: 1px solid #555;
-    margin-bottom: 10px;
+    /* The blue grid background will be drawn by JS for better control */
+    background: transparent; 
+    border: none;
+    margin: 0;
     cursor: crosshair;
+    /* Ensure the canvas itself has pointer events */
+    pointer-events: auto; 
 }
 
         .mol-canvas-controls {
@@ -315,36 +334,47 @@
             align-items: center;
             gap: 10px;
             flex-shrink: 0;
-            padding: 0 5px;
+            padding: 10px 15px; /* Padding for the footer */
+            border-top: 1px solid var(--theme-panel-border);
         }
         .mol-canvas-controls button {
-             padding: 5px 10px;
+             padding: 8px 15px; /* Larger buttons */
              width: auto;
-             font-size: 0.85em;
+             font-size: 0.9em;
              white-space: nowrap;
+             border-radius: 6px;
         }
         .mol-canvas-controls textarea {
              background: rgba(42, 42, 46, 0.7); 
         }
+
+        /* Removed redundant canvas-bottom-right-icon-bar as per user request */
+        #canvas-bottom-right-icon-bar {
+             display: none !important;
+        }
         
+        /* Hide the old vertical icon bar */
         #canvas-icon-bar {
-             position: absolute;
-             top: 5px;
-             left: 5px;
-             display: flex;
-             flex-direction: column;
-             gap: 5px;
-             pointer-events: none;
-             z-index: 30;
+             display: none !important; 
         }
-        #canvas-icon-bar button {
-             width: 30px;
-             height: 30px;
-             padding: 0;
-             font-size: 1.2em;
-             border-radius: 4px;
-             pointer-events: auto; 
+        
+        /* New style for the "Orbit Delta" header */
+        .orbit-delta-display {
+            padding: 5px 15px;
+            /* background: rgba(0, 0, 0, 0.3); */
+            border-bottom: 1px solid var(--theme-panel-border);
+            color: var(--theme-text);
+            font-size: 0.9em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
         }
+        .orbit-delta-display .delta-value {
+            color: var(--accent-color);
+            font-weight: bold;
+        }
+        
         /* Style for the new Keep Selected Checkbox */
         .keep-selected-group {
             display: flex;
@@ -800,7 +830,7 @@
             50% { opacity: 1; }
         }
 
-        /* --- Element Checkbox List Style --- */
+        /* --- NEW: Element Checkbox List Style --- */
         #periodicTableCheckboxList {
             max-height: 200px; 
             overflow-y: auto; 
@@ -906,7 +936,7 @@
             <h4>Arc Lake Chemistry | Early Alpha</h4>
             
             <div class="action-buttons" style="justify-content: center; margin-top: 0;">
-                <button id="toggle-mol-canvas" class="secondary-btn">Compound Canvas <br> ( Experimental )</button>
+                <button id="toggle-mol-canvas" class="secondary-btn">Molecule Canvas <br> ( Experimental )</button>
                 <button id="toggle-mic-window-btn" class="secondary-btn">Microphone Input</button>
             </div>
 
@@ -1277,32 +1307,51 @@
                  <label for="freeze-selection-chk-old">Keep Selected</label>
              </div>
              
-             <div id="mol-canvas-overlay" style="display: none;">
-                <div id="mol-canvas-container">
-                    <canvas id="molecule-canvas" width="600" height="400"></canvas>
-                    
-                    <div class="mol-canvas-controls">
-                        <div style="display: flex; gap: 5px; align-items: center;">
-                            <button id="zoom-in-btn" class="secondary-btn" title="Zoom In">+</button>
-                            <button id="zoom-out-btn" class="secondary-btn" title="Zoom Out">-</button>
-                        </div>
-                        
-                        <textarea id="mol-canvas-input" rows="1" placeholder="Vector/Compound (e.g., C(H,H,H), Fe-Fe, H2O)" style="flex-grow: 1; resize: none;"></textarea>
-
-                        <button id="mol-clear-canvas" class="danger-btn">Clear Canvas</button>
-                        <button id="mol-create-compound" class="primary-btn">Create</button>
-                        
-                    </div>
-                </div>
-                
-                 <div id="canvas-icon-bar" style="pointer-events: none;">
-                    <button id="canvas-trash-btn" class="danger-btn" title="Trash Bin" style="pointer-events: auto;">&#x1F5D1;</button>
-                 </div>
+             <!-- Hiding the old canvas-icon-bar, which is now integrated -->
+             <div id="canvas-icon-bar" style="pointer-events: none; display: none;">
+                <button id="canvas-trash-btn-old" class="danger-btn" title="Trash Bin" style="pointer-events: auto;">&#x1F5D1;</button>
              </div>
             
         </div>
     </div>
 </div>
+
+<!-- START: MOLECULE CANVAS - MOVED OUTSIDE PARENT OVERLAY -->
+<div id="mol-canvas-overlay" class="overlay-base" style="display: none;">
+    <div id="mol-canvas-container">
+        
+        <div class="mol-canvas-header">
+            <span>MOLECULE CANVAS</span>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span id="canvas-close-btn" style="cursor: pointer; font-size: 1.5em; line-height: 1;" title="Close Canvas">&times;</span>
+            </div>
+        </div>
+        
+        <!-- The Orbit Delta Display on top, matching image style -->
+        <div class="orbit-delta-display">
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <span style="color: var(--theme-primary);">&#9711;</span> <!-- Radio button symbol -->
+                <label for="orbit-delta-mode-toggle" style="color: var(--theme-text); font-weight: normal; margin: 0;">Orbit Delta</label>
+                <span id="canvas-delta-select-status" style="color: var(--calculator-btn-clear); font-size: 0.8em; margin-left: 10px;">OFF</span>
+            </div>
+            <!-- New input for Delta Shells/Math config -->
+            <input type="text" id="mol-canvas-delta-input" placeholder="Shells (e.g., K,L) + Math ID" style="width: 200px; padding: 4px; font-size: 0.85em; background: rgba(0,0,0,0.3);" disabled>
+            <div style="font-size: 1.5em; color: var(--accent-color); font-family: 'Consolas', monospace;" id="orbit-delta-readout">
+                 <span style="font-size: 14px;">5.83</span> 
+            </div>
+        </div>
+        
+        <canvas id="molecule-canvas" width="600" height="400"></canvas>
+        
+        <!-- Icon Bar at the bottom right of the canvas area - Removed by user request -->
+        
+        <div class="mol-canvas-controls">
+            <button id="mol-clear-canvas" class="danger-btn">Clear Canvas</button>
+            <button id="mol-create-compound" class="primary-btn">Create Compound</button>
+        </div>
+    </div>
+</div>
+<!-- END: MOLECULE CANVAS -->
 
 <div id="mic-visualizer-overlay" class="overlay-base" style="position: fixed; top: 20px; right: 20px; width: 400px; height: auto; z-index: 1000; display: none; padding: 0;">
     <div id="mic-visualizer-content" class="overlay-content-base" style="width: 100%; height: auto; max-height: none; padding: 15px; flex-direction: column; gap: 10px;">
@@ -1577,11 +1626,16 @@ let ui = {
     molSceneSelect: document.getElementById('mol-scene-select'),
     
     molCanvasOverlay: document.getElementById('mol-canvas-overlay'),
+    molCanvasContainer: document.getElementById('mol-canvas-container'), // Added to use as draggable handle
     molCanvas: document.getElementById('molecule-canvas'),
     molClearCanvas: document.getElementById('mol-clear-canvas'),
     molCreateCompound: document.getElementById('mol-create-compound'),
-    canvasTrashBtn: document.getElementById('canvas-trash-btn'),
-    
+    // NEW: Canvas Redesign Elements
+    canvasCloseBtn: document.getElementById('canvas-close-btn'),
+    molCanvasDeltaInput: document.getElementById('mol-canvas-delta-input'), // The new input
+    orbitDeltaReadout: document.getElementById('orbit-delta-readout'),
+    canvasDeltaSelectStatus: document.getElementById('canvas-delta-select-status'),
+
     // --- UPDATED: periodicTableSelect is now periodicTableCheckboxList ---
     periodicTableCheckboxList: document.getElementById('periodicTableCheckboxList'),
     
@@ -1661,9 +1715,9 @@ let allElementsData = [];
 
 // --- 2D Canvas State ---
 let molCanvasState = {
-    atoms: [], // { id: 'a1', tool: 'AtomDrag', symbol: 'H', x: 50, y: 70, size: 10, ... }
+    atoms: [], // { id: 'a1', tool: 'AtomDrag', symbol: 'H', x: 50, y: 70, size: 10, hasAtomPairBond: false, ... }
     bonds: [], // { id: 'b1', tool: 'SingleBond', from: 'a1', to: 'a2' }
-    tools: []  // { id: 't1', tool: 'OrbitDelta', symbol: 'Δ', x: 80, y: 80, size: 8, deltaValue: 123.45 }
+    tools: []  // { id: 't1', tool: 'OrbitDelta', symbol: 'Δ', x: 80, y: 80, size: 8, deltaValue: 123.45, attachedTo: 'a1', configString: 'K,L' }
 };
 let molCanvasCtx;
 let currentDragTool = null; // The 'data-tool' being dragged from the toolbar
@@ -1672,6 +1726,9 @@ let isDraggingOnCanvas = false;
 let canvasDragOffsetX = 0;
 let canvasDragOffsetY = 0;
 let canvasIdCounter = 0;
+let selectedCanvasItems = []; // For selection lasso, bonding, etc.
+let lassoPoints = []; // For selection lasso tool
+
 
 // --- NEW: Advanced Math, Recorder, & 2D Tool State ---
 let pendingDeltaCalculations = []; // Used to pipe Delta func results to 2D canvas
@@ -1679,7 +1736,7 @@ let isRecording = false;
 let simulationFrames = [];
 let recordedAnimationClips = []; // For GLB export
 let isScrubbing = false;
-let current2DToolMode = null; // e.g., 'delta_select'
+let current2DToolMode = null; // e.g., 'delta_select', 'lasso_select'
 let deltaSelection = []; // Atom IDs for delta tool
 // NEW: State object for mic-physics connections
 let micPhysicsConnections = {
@@ -1747,7 +1804,15 @@ function makeDraggable(element, handle) {
     let isDragging = false;
     let offsetX, offsetY;
     const startDrag = (e) => {
-        if (e.target.closest('button, input, select, textarea, fieldset, canvas')) { return; }
+        // Prevent drag if click target is an interactive element inside the container
+        if (e.target.closest('button, input, select, textarea, fieldset') || (e.target.tagName === 'CANVAS' && handle.id !== 'mol-canvas-container')) { 
+             // Special case: check if the click is on the canvas area and not just the canvas element itself (for draggable handle)
+             if (e.target.id === 'molecule-canvas' || e.target.closest('#molecule-canvas')) {
+                 // Do nothing, let the canvas handle the drag (for atoms/lasso)
+             } else {
+                 return;
+             }
+        }
 
         isDragging = true;
         const rect = element.getBoundingClientRect();
@@ -1767,7 +1832,7 @@ function makeDraggable(element, handle) {
     const doDrag = (e) => {
         if (!isDragging) return;
         const clientX = e.clientX ?? e.touches[0].clientX;
-        const clientY = e.touches[0].clientY ?? e.clientY;
+        const clientY = e.clientY ?? e.touches[0].clientY;
         let newLeft = clientX - offsetX;
         let newTop = clientY - offsetY;
         newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
@@ -1787,7 +1852,7 @@ function makeDraggable(element, handle) {
     document.addEventListener('mouseup', stopDrag);
     handle.addEventListener('touchstart', startDrag, { passive: false });
     document.addEventListener('touchmove', doDrag, { passive: false });
-    document.addEventListener('touchend', stopDrag);
+    handle.addEventListener('touchend', stopDrag);
 }
 // REPLACE the old window.onload (at line 602) WITH THIS:
 window.onload = () => {
@@ -1835,11 +1900,16 @@ window.onload = () => {
         molSceneSelect: document.getElementById('mol-scene-select'),
         
         molCanvasOverlay: document.getElementById('mol-canvas-overlay'),
+        molCanvasContainer: document.getElementById('mol-canvas-container'), // Added to use as draggable handle
         molCanvas: document.getElementById('molecule-canvas'),
         molClearCanvas: document.getElementById('mol-clear-canvas'),
         molCreateCompound: document.getElementById('mol-create-compound'),
-        canvasTrashBtn: document.getElementById('canvas-trash-btn'),
-        
+        // NEW: Canvas Redesign Elements
+        canvasCloseBtn: document.getElementById('canvas-close-btn'),
+        molCanvasDeltaInput: document.getElementById('mol-canvas-delta-input'), // The new input
+        orbitDeltaReadout: document.getElementById('orbit-delta-readout'),
+        canvasDeltaSelectStatus: document.getElementById('canvas-delta-select-status'),
+
         periodicTableCheckboxList: document.getElementById('periodicTableCheckboxList'),
         
         freezeSelectionChk: document.getElementById('freeze-selection-chk'),
@@ -1895,6 +1965,8 @@ window.onload = () => {
     updateArcEdgeReadout(); 
     
     makeDraggable(ui.arcEdgeContent, ui.arcEdgeContent);
+    // NEW: Make the Compound Canvas draggable using its header
+    makeDraggable(ui.molCanvasOverlay, document.querySelector('.mol-canvas-header'));
 };
 
 
@@ -1904,9 +1976,6 @@ function onGsiLoaded() {
     // Now we know 'google' is defined, so we can safely call this.
     initGoogleAuth();
 }
-
-// ... rest of your script (function setupEventListeners(), etc.)
-
 
 /**
  * Links a number input to a range slider
@@ -1988,10 +2057,13 @@ function setupEventListeners() {
     ui.toggleMolCanvasBtn.addEventListener('click', toggleMolCanvasOverlay);
     ui.molClearCanvas.addEventListener('click', clear2DCanvas);
     ui.molCreateCompound.addEventListener('click', createCompoundFromCanvas);
-    ui.canvasTrashBtn.addEventListener('click', () => { addPrompt("Trash Bin logic triggered. (TODO: Delete selected 2D items)"); });
-    document.getElementById('zoom-in-btn').addEventListener('click', () => { addPrompt("2D Canvas Zoom In logic triggered."); });
-    document.getElementById('zoom-out-btn').addEventListener('click', () => { addPrompt("2D Canvas Zoom Out logic triggered."); });
     ui.loadSceneInput.addEventListener('change', handleSceneFileLoad);
+    
+    // --- NEW: Redesigned Canvas Button Listeners ---
+    ui.canvasCloseBtn.addEventListener('click', toggleMolCanvasOverlay);
+    // Add input listener for Delta Config (when a Delta symbol is selected)
+    ui.molCanvasDeltaInput.addEventListener('input', handleDeltaConfigInput);
+    // --- END NEW ---
 
     // Toolbar Button Listeners (Drag and Click)
     document.querySelectorAll('.mol-control-btn').forEach(button => {
@@ -2104,6 +2176,22 @@ function setupEventListeners() {
     ui_mic.freqCanvas.height = 60;
     // --- END: Mic Listeners ---
 
+}
+
+/**
+ * Links a number input to a range slider
+ * @param {HTMLInputElement} numberInput - The <input type="number">
+ * @param {HTMLInputElement} rangeInput - The <input type="range">
+ */
+function linkSlider(numberInput, rangeInput) {
+    numberInput.addEventListener('input', (e) => {
+        rangeInput.value = e.target.value;
+        saveCurrentSettings(); // Save on change
+    });
+    rangeInput.addEventListener('input', (e) => {
+        numberInput.value = e.target.value;
+        saveCurrentSettings(); // Save on change
+    });
 }
 
 /**
@@ -2243,13 +2331,17 @@ function clearScene() {
     addPrompt("Scene cleared.");
 
     // --- NEW ---
+    molCanvasState = { atoms: [], bonds: [], tools: [] }; // Clear 2D state too
+    canvasIdCounter = 0;
+    drawMolCanvas();
     updateElementCheckboxes(); // Uncheck all boxes
     updateTranslationSelectDropdown(); // Clear translation selections
 }
 
 /**
- * --- ADD THIS NEW FUNCTION ---
- * Handles the logic for checking/unchecking an element.
+ * --- UPDATED FUNCTION ---
+ * Handles the logic for checking/unchecking an element, including the logic
+ * for preventing overlap when adding new atoms to an existing scene.
  */
 function handleElementCheckboxChange(e) {
     const checkbox = e.target;
@@ -2267,8 +2359,46 @@ function handleElementCheckboxChange(e) {
                 electronOrbits: Array.isArray(atom.electronOrbits) ? atom.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0) : [],
             };
             
-            // loadAtom handles the positioning logic now
-            loadAtom(atomData, multiSelectMode ? atomGroups.length : 0);
+            let initialPositionArray = null;
+            
+            // --- NEW: Single Atom Positioning Logic for Dynamic Scene Update ---
+            if (atomGroups.length > 0) {
+                 // 1. Calculate the current center of volume of all existing atoms. 
+                let currentSceneCenter = new THREE.Vector3();
+                atomGroups.forEach(g => currentSceneCenter.add(g.center));
+                currentSceneCenter.divideScalar(atomGroups.length);
+                
+                // 2. Calculate a position relative to the current scene center using a spiral
+                const angle = atomGroups.length * Math.PI * 0.618; 
+                const largestExistingRadius = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0);
+                const newAtomMaxRadius = 4 + ((atomData.electronOrbits.length - 1) * 2 || 0);
+                const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; 
+                
+                let offsetX = Math.cos(angle) * separationDistance;
+                let offsetZ = Math.sin(angle) * separationDistance;
+                
+                initialPositionArray = [offsetX, 0, offsetZ]; 
+                
+                // 3. Reposition all existing atoms so the new origin (scene center) is correct relative to them.
+                const repositionDelta = currentSceneCenter.clone().negate();
+                atomGroups.forEach(group => {
+                    group.center.add(repositionDelta);
+                    group.nucleusMeshes.forEach(m => {
+                        m.position.add(repositionDelta);
+                        m.userData.initialPosition.add(repositionDelta);
+                    });
+                    group.electronMeshes.forEach(m => {
+                        m.position.add(repositionDelta);
+                        m.userData.initialPosition.add(repositionDelta);
+                    });
+                    group.neutronCenterOfVolume.add(repositionDelta);
+                    group.nucleusCenter.add(repositionDelta);
+                });
+            }
+            // --- END NEW ---
+
+            // loadAtom loads the new atom at the correct initial position
+            loadAtom(atomData, multiSelectMode ? atomGroups.length : 0, initialPositionArray);
         }
     } else {
         // --- Remove atom ---
@@ -2292,7 +2422,7 @@ function handleElementCheckboxChange(e) {
 }
 
 /**
- * --- ADD THIS NEW FUNCTION ---
+ * --- ADDED FUNCTION ---
  * Removes a single atom group from the scene and internal arrays.
  * @param {string} groupId - The ID of the atom group to remove (e.g., "group_1")
  */
@@ -2334,7 +2464,7 @@ function removeAtomGroup(groupId) {
 }
 
 /**
- * --- ADD THIS NEW FUNCTION ---
+ * --- ADDED FUNCTION ---
  * Syncs the element checkboxes with the atoms currently in the scene.
  */
 function updateElementCheckboxes() {
@@ -2360,6 +2490,10 @@ function updateElementCheckboxes() {
 
 function init2DCanvasAndListeners() {
     molCanvasCtx = ui.molCanvas.getContext('2d');
+    // Set fixed canvas resolutions (for consistency)
+    ui.molCanvas.width = 600;
+    ui.molCanvas.height = 400;
+    
     ui.molCanvas.addEventListener('dragover', handleCanvasDragOver);
     ui.molCanvas.addEventListener('drop', handleCanvasDrop);
     ui.molCanvas.addEventListener('mousedown', handleCanvasMouseDown);
@@ -2371,9 +2505,11 @@ function init2DCanvasAndListeners() {
 
 function getCanvasMousePos(e) {
     const rect = ui.molCanvas.getBoundingClientRect();
+    const clientX = e.clientX ?? (e.touches ? e.touches[0].clientX : e.clientX);
+    const clientY = e.clientY ?? (e.touches ? e.touches[0].clientY : e.clientY);
     return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
+        x: clientX - rect.left,
+        y: clientY - rect.top
     };
 }
 
@@ -2382,12 +2518,14 @@ function getItemAtPos(x, y) {
     for (let i = molCanvasState.tools.length - 1; i >= 0; i--) {
         const item = molCanvasState.tools[i];
         const dist = Math.hypot(x - item.x, y - item.y);
-        if (dist < item.size) return item;
+        // Use a fixed click area for tools
+        if (dist < 20) return item;
     }
     // Then check atoms
     for (let i = molCanvasState.atoms.length - 1; i >= 0; i--) {
         const item = molCanvasState.atoms[i];
         const dist = Math.hypot(x - item.x, y - item.y);
+        // Atoms now have a larger click/drag radius (size: 30)
         if (dist < item.size) return item;
     }
     return null;
@@ -2408,7 +2546,7 @@ function handleCanvasDrop(e) {
     if (!currentDragTool) return;
     
     // Do not allow dropping if in delta selection mode
-    if (current2DToolMode === 'delta_select') return;
+    if (current2DToolMode === 'delta_select' || current2DToolMode === 'lasso_select') return;
 
     const pos = getCanvasMousePos(e);
     const newItemId = `item_${canvasIdCounter++}`;
@@ -2420,7 +2558,7 @@ function handleCanvasDrop(e) {
         tool: currentDragTool,
         x: pos.x,
         y: pos.y,
-        size: 8 // Default size
+        size: 30 // Default size for better hit detection
     };
 
     switch (currentDragTool) {
@@ -2428,150 +2566,452 @@ function handleCanvasDrop(e) {
             const selectedElement = ui.molElementSelect.options[ui.molElementSelect.selectedIndex];
             const symbol = allElementsData.find(el => el.elementSymbol === selectedElement.value)?.elementSymbol || '??';
             newItem.symbol = symbol;
-            newItem.size = 10;
+            newItem.hasAtomPairBond = false; // New property for AtomPair visual
             molCanvasState.atoms.push(newItem);
             break;
         case 'SingleBond':
-            newItem.symbol = 'S';
-            molCanvasState.tools.push(newItem);
-            addPrompt("Placeholder 'S' added. TODO: Implement bond drawing logic.");
-            break;
         case 'DoubleBond':
-            newItem.symbol = 'D';
-            molCanvasState.tools.push(newItem);
-            addPrompt("Placeholder 'D' added. TODO: Implement bond drawing logic.");
-            break;
         case 'TripleBond':
-            newItem.symbol = 'T';
-            molCanvasState.tools.push(newItem);
-            addPrompt("Placeholder 'T' added. TODO: Implement bond drawing logic.");
-            break;
-        // OrbitDelta is no longer draggable, so this case is removed
         case 'AtomPair':
-            newItem.symbol = 'AP';
-            molCanvasState.tools.push(newItem);
-            addPrompt("Placeholder 'AP' added. TODO: Implement atom pair logic.");
-            break;
         case 'DepthAway':
-            newItem.symbol = 'DA';
-            molCanvasState.tools.push(newItem);
-            break;
         case 'DepthToward':
-            newItem.symbol = 'DT';
-            molCanvasState.tools.push(newItem);
-            break;
         case 'Label':
-            newItem.symbol = 'L';
-            molCanvasState.tools.push(newItem);
-            break;
+            addPrompt(`Tool ${currentDragTool} cannot be directly dropped. Please select atoms and click the tool button.`);
+            currentDragTool = null;
+            return;
     }
 
     currentDragTool = null; 
     drawMolCanvas();
 }
 
-function handleCanvasMouseDown(e) {
-    const pos = getCanvasMousePos(e);
-
-    // --- NEW: Delta Selection Mode Logic ---
-    if (current2DToolMode === 'delta_select') {
-        const item = getItemAtPos(pos.x, pos.y);
-        if (item && item.tool === 'AtomDrag') {
-            // Atom clicked
-            if (deltaSelection.includes(item.id)) {
-                deltaSelection.splice(deltaSelection.indexOf(item.id), 1); // Deselect
-            } else {
-                deltaSelection.push(item.id); // Select
-            }
-            drawMolCanvas(); // Redraw highlights
-        } else if (!item) {
-            // Blank canvas clicked
-            applyDeltaToSelection();
-        }
-        return; // Prevent dragging
-    }
-    // --- END: Delta Selection Mode Logic ---
-
-    // Original drag logic
-    draggedCanvasItem = getItemAtPos(pos.x, pos.y); // This implements re-selectability
-
-    if (draggedCanvasItem) {
-        isDraggingOnCanvas = true;
-        canvasDragOffsetX = pos.x - draggedCanvasItem.x;
-        canvasDragOffsetY = pos.y - draggedCanvasItem.y;
-        ui.molCanvas.style.cursor = 'grabbing';
+/**
+ * Helper to check if a point (x, y) is near any bond line. (Simplified implementation)
+ */
+function getBondAtPos(x, y, tolerance = 10) {
+    for (const bond of molCanvasState.bonds) {
+        const atomA = molCanvasState.atoms.find(a => a.id === bond.from);
+        const atomB = molCanvasState.atoms.find(a => a.id === bond.to);
         
-        // Bring to top by removing and re-adding
-        let list = draggedCanvasItem.tool === 'AtomDrag' ? molCanvasState.atoms : molCanvasState.tools;
-        const itemIndex = list.findIndex(item => item.id === draggedCanvasItem.id);
-        if (itemIndex > -1) {
-            list.splice(itemIndex, 1);
-            list.push(draggedCanvasItem);
+        if (!atomA || !atomB) continue;
+        
+        const A = { x: atomA.x, y: atomA.y };
+        const B = { x: atomB.x, y: atomB.y };
+        const P = { x: x, y: y };
+
+        // Check if P is within the bounding box of the line segment AB
+        const inBox = P.x >= Math.min(A.x, B.x) - tolerance && P.x <= Math.max(A.x, B.x) + tolerance &&
+                      P.y >= Math.min(A.y, B.y) - tolerance && P.y <= Math.max(A.y, B.y) + tolerance;
+        if (!inBox) continue;
+
+        // Calculate distance from point P to line segment AB
+        const l2 = (B.x - A.x) ** 2 + (B.y - A.y) ** 2;
+        if (l2 === 0) { 
+            if (Math.hypot(P.x - A.x, P.y - A.y) < tolerance) return bond;
+            continue;
+        }
+
+        const t = ((P.x - A.x) * (B.x - A.x) + (P.y - A.y) * (B.y - A.y)) / l2;
+        
+        // If t is between 0 and 1, the closest point lies on the segment
+        let closestX, closestY;
+        if (t < 0) {
+            closestX = A.x; closestY = A.y;
+        } else if (t > 1) {
+            closestX = B.x; closestY = B.y;
+        } else {
+            closestX = A.x + t * (B.x - A.x);
+            closestY = A.y + t * (B.y - A.y);
+        }
+
+        const distance = Math.hypot(P.x - closestX, P.y - closestY);
+
+        if (distance < tolerance) {
+            return bond;
         }
     }
+    return null;
 }
 
-function handleCanvasMouseMove(e) {
-    if (!isDraggingOnCanvas || !draggedCanvasItem) return;
-
+function handleCanvasMouseDown(e) {
     const pos = getCanvasMousePos(e);
-    draggedCanvasItem.x = pos.x - canvasDragOffsetX;
-    draggedCanvasItem.y = pos.y - canvasDragOffsetY;
+    const item = getItemAtPos(pos.x, pos.y);
+    
+    // Check if a bond was clicked (simplified line check)
+    let selectedBond = null;
+    if (!item) {
+        selectedBond = getBondAtPos(pos.x, pos.y);
+    }
+    
+    // --- Delta Selection Mode Logic (OrbitDelta tool click) ---
+    if (current2DToolMode === 'delta_select') {
+        if (item && item.tool === 'AtomDrag') {
+            // Atom clicked: toggle selection
+            const index = deltaSelection.indexOf(item.id);
+            if (index === -1) {
+                deltaSelection.push(item.id); // Select
+            } else {
+                deltaSelection.splice(index, 1); // Deselect
+            }
+            drawMolCanvas(); // Redraw highlights
+        } else if (!item && deltaSelection.length > 0) {
+            // Blank canvas clicked with atoms selected: apply Delta and exit mode
+            applyDeltaToSelection();
+        } else {
+             // Blank canvas clicked with NO atoms selected: just exit mode
+             toggleDeltaSelectMode();
+        }
+        return; 
+    }
+    // --- END: Delta Selection Mode Logic ---
+    
+    // --- Lasso Selection Mode Logic (SelectionLasso tool click) ---
+    if (current2DToolMode === 'lasso_select') {
+        isDraggingOnCanvas = true;
+        lassoPoints = [pos];
+        return; // Prevent normal dragging
+    }
+    // --- END: Lasso Selection Mode Logic ---
+
+    // --- Normal Drag/Selection Logic ---
+    if (item || selectedBond) {
+        // Handle selection for AtomPair/Bonds/Copy/Paste
+        const selectedItem = item || selectedBond;
+        
+        if (!e.ctrlKey && !e.shiftKey) { 
+            // Standard single select
+            selectedCanvasItems = [selectedItem]; 
+            // If it's a Delta tool, enable config input
+            if (selectedItem.tool === 'OrbitDelta') {
+                 handleDeltaSelection(selectedItem);
+            } else {
+                 handleDeltaSelection(null); // Clear delta input
+            }
+        } else {
+            // Ctrl/Shift multi-select logic (TODO: implement toggle logic)
+            const index = selectedCanvasItems.findIndex(i => i.id === selectedItem.id);
+             if (index === -1) {
+                selectedCanvasItems.push(selectedItem);
+            } else {
+                selectedCanvasItems.splice(index, 1);
+            }
+        }
+
+        // Start Drag only for atoms/tools (not bonds)
+        if (item) {
+            draggedCanvasItem = item;
+            isDraggingOnCanvas = true;
+            canvasDragOffsetX = pos.x - draggedCanvasItem.x;
+            canvasDragOffsetY = pos.y - draggedCanvasItem.y;
+            ui.molCanvas.style.cursor = 'grabbing';
+            
+            // Bring to top by removing and re-adding
+            let list = draggedCanvasItem.tool === 'AtomDrag' ? molCanvasState.atoms : molCanvasState.tools;
+            const itemIndex = list.findIndex(i => i.id === draggedCanvasItem.id);
+            if (itemIndex > -1) {
+                list.splice(itemIndex, 1);
+                list.push(draggedCanvasItem);
+            }
+        }
+    } else {
+        // Blank canvas click: clear all selections and delta config
+        selectedCanvasItems = [];
+        handleDeltaSelection(null);
+    }
     
     drawMolCanvas();
 }
 
+function handleCanvasMouseMove(e) {
+    if (!isDraggingOnCanvas) return;
+    const pos = getCanvasMousePos(e);
+
+    if (current2DToolMode === 'lasso_select') {
+        lassoPoints.push(pos);
+        drawMolCanvas();
+    } else if (draggedCanvasItem) {
+        // Calculate the actual change in position
+        const deltaX = pos.x - (draggedCanvasItem.x + canvasDragOffsetX);
+        const deltaY = pos.y - (draggedCanvasItem.y + canvasDragOffsetY);
+        
+        // Update item's position
+        draggedCanvasItem.x = pos.x - canvasDragOffsetX;
+        draggedCanvasItem.y = pos.y - canvasDragOffsetY;
+        
+        // If atom is dragged, all attached items should also move
+        if (draggedCanvasItem.tool === 'AtomDrag') {
+             // Find all tools attached to this atom and update their position by the change in the atom's center
+             molCanvasState.tools.filter(t => t.attachedTo === draggedCanvasItem.id).forEach(t => {
+                 t.x += deltaX;
+                 t.y += deltaY;
+             });
+        }
+        drawMolCanvas();
+    }
+}
+
 function handleCanvasMouseUp(e) {
+    if (current2DToolMode === 'lasso_select' && isDraggingOnCanvas) {
+        // Finalize lasso selection
+        applyLassoSelection(lassoPoints);
+        lassoPoints = [];
+        current2DToolMode = null;
+        // Remove highlight from lasso button
+        document.querySelector('.mol-control-btn[data-tool="SelectionLasso"]').style.backgroundColor = '';
+        drawMolCanvas();
+    }
+    
     isDraggingOnCanvas = false;
     draggedCanvasItem = null;
     ui.molCanvas.style.cursor = 'crosshair';
 }
 
+/**
+ * Uses bounding box check to select all items inside the lasso path.
+ */
+function applyLassoSelection(points) {
+    if (points.length < 3) return;
+    
+    selectedCanvasItems = [];
+    let bounds = { 
+        minX: Math.min(...points.map(p => p.x)), maxX: Math.max(...points.map(p => p.x)),
+        minY: Math.min(...points.map(p => p.y)), maxY: Math.max(...points.map(p => p.y))
+    };
+    
+    const allItems = [...molCanvasState.atoms, ...molCanvasState.tools, ...molCanvasState.bonds];
+    
+    // Simplified: Use bounding box check
+    allItems.forEach(item => {
+        let x, y;
+        if (item.tool) { x = item.x; y = item.y; }
+        else if (item.from && item.to) { 
+            // For bonds, use a midpoint check
+            const atomA = molCanvasState.atoms.find(a => a.id === item.from);
+            const atomB = molCanvasState.atoms.find(a => a.id === item.to);
+            if (atomA && atomB) {
+                x = (atomA.x + atomB.x) / 2;
+                y = (atomA.y + atomB.y) / 2;
+            } else { return; }
+        } else { return; }
+
+        if (x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY) {
+            selectedCanvasItems.push(item);
+        }
+    });
+
+    addPrompt(`Lasso selected ${selectedCanvasItems.length} items (using simplified boundary check).`);
+}
+
+/**
+ * Toggles/activates the Delta configuration input.
+ */
+function handleDeltaSelection(deltaItem) {
+    if (deltaItem && deltaItem.tool === 'OrbitDelta') {
+        ui.molCanvasDeltaInput.disabled = false;
+        ui.molCanvasDeltaInput.placeholder = 'Shells (e.g., K,L) + Math ID (Optional)';
+        // Set the current config string
+        ui.molCanvasDeltaInput.value = deltaItem.configString || '';
+        ui.orbitDeltaReadout.innerHTML = `<span style="font-size: 14px;">${deltaItem.deltaValue !== undefined ? deltaItem.deltaValue.toFixed(2) : '5.83'}</span>`;
+    } else {
+        ui.molCanvasDeltaInput.disabled = true;
+        ui.molCanvasDeltaInput.placeholder = 'Shells (e.g., K, L, M) + Math ID';
+        ui.molCanvasDeltaInput.value = '';
+        ui.orbitDeltaReadout.innerHTML = `<span style="font-size: 14px;">5.83</span>`;
+    }
+}
+
+/**
+ * Handles input change in the Delta configuration input.
+ */
+function handleDeltaConfigInput(e) {
+    // Only apply if exactly one Delta symbol is selected
+    const selectedDelta = selectedCanvasItems.filter(i => i.tool === 'OrbitDelta');
+    if (selectedDelta.length === 1) {
+        const deltaItem = selectedDelta[0];
+        // Ensure input is uppercase and spaces removed, and commas are the only separator
+        deltaItem.configString = e.target.value.toUpperCase().replace(/\s/g, ''); 
+        addPrompt(`Delta ${deltaItem.id} configured for shells/math: ${deltaItem.configString}`);
+    }
+}
+
+/**
+ * UPDATED: Implements the visual style matching the user's image, including bonds.
+ */
 function drawMolCanvas() {
     if (!molCanvasCtx) return; 
     
-    molCanvasCtx.fillStyle = 'rgba(51, 51, 51, 0.7)';
-    molCanvasCtx.fillRect(0, 0, ui.molCanvas.width, ui.molCanvas.height);
+    const canvas = ui.molCanvas;
+    const ctx = molCanvasCtx;
+    const W = canvas.width;
+    const H = canvas.height;
     
-    molCanvasCtx.textAlign = 'center';
-    molCanvasCtx.textBaseline = 'middle';
+    // 1. Draw Background and Grid
+    ctx.fillStyle = 'rgba(30, 45, 57, 0.9)'; // Dark blue background
+    ctx.fillRect(0, 0, W, H);
+    
+    // Draw Grid Lines
+    const gridSize = 20;
+    ctx.strokeStyle = '#47c4f144'; // Light blue grid lines, transparent
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x <= W; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+    }
+    for (let y = 0; y <= H; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+    }
+    
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
 
-    // Draw Bonds (TODO)
+    // 2. Draw Bonds/Lines
     molCanvasState.bonds.forEach(bond => {
-        // TODO
+        const atomA = molCanvasState.atoms.find(a => a.id === bond.from);
+        const atomB = molCanvasState.atoms.find(a => a.id === bond.to);
+        
+        if (atomA && atomB) {
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 2;
+            
+            const startX = atomA.x;
+            const startY = atomA.y;
+            const endX = atomB.x;
+            const endY = atomB.y;
+            
+            // Calculate vector perpendicular to the bond line
+            const dx = endX - startX;
+            const dy = endY - startY;
+            const dist = Math.hypot(dx, dy);
+            const perpOffset = 5; 
+            const perpX = -dy / dist * perpOffset; 
+            const perpY = dx / dist * perpOffset;
+
+            const drawLine = (pX, pY, width) => {
+                ctx.lineWidth = width;
+                ctx.beginPath();
+                ctx.moveTo(startX + pX, startY + pY);
+                ctx.lineTo(endX + pX, endY + pY);
+                ctx.stroke();
+            };
+            
+            if (bond.tool === 'SingleBond' || bond.tool === 'AtomPair') { // AtomPair uses single bond logic + dash visual
+                drawLine(0, 0, 2);
+            } else if (bond.tool === 'DoubleBond') {
+                drawLine(perpX, perpY, 2);
+                drawLine(-perpX, -perpY, 2);
+            } else if (bond.tool === 'TripleBond') {
+                 drawLine(perpX * 1.5, perpY * 1.5, 2);
+                 drawLine(-perpX * 1.5, -perpY * 1.5, 2);
+                 drawLine(0, 0, 1);
+            }
+            
+            // Highlight selected bond
+            if (selectedCanvasItems.find(i => i.id === bond.id)) {
+                 ctx.strokeStyle = '#FFD700'; // Gold highlight
+                 ctx.lineWidth = 3;
+                 drawLine(0, 0, 3);
+            }
+        }
     });
 
-    // Draw Atoms
+    // 3. Draw Atoms (Large white symbols)
     molCanvasState.atoms.forEach(item => {
-        molCanvasCtx.font = 'bold 20px Segoe UI';
-        molCanvasCtx.fillStyle = '#FFFFFF';
-        molCanvasCtx.fillText(item.symbol, item.x, item.y);
+        const symbolSize = 40; 
+        
+        // --- AtomPair Dash ---
+        if (item.hasAtomPairBond) {
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(item.x - 25, item.y - 5);
+            ctx.lineTo(item.x + 25, item.y - 5);
+            ctx.stroke();
+        }
+        
+        // Draw Atom text
+        ctx.font = `bold ${symbolSize}px Segoe UI`;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(item.symbol, item.x, item.y);
+        
+        // Draw atom border if selected for Delta config (Delta selection mode uses this)
+        if (deltaSelection.includes(item.id)) {
+            ctx.strokeStyle = 'var(--accent-color)'; 
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(item.x, item.y, symbolSize * 0.7, 0, 2 * Math.PI); 
+            ctx.stroke();
+        }
+        
+        // Draw normal selection highlight
+        if (selectedCanvasItems.find(i => i.id === item.id)) {
+             ctx.strokeStyle = '#FFD700'; // Gold highlight
+             ctx.lineWidth = 3;
+             ctx.beginPath();
+             ctx.arc(item.x, item.y, symbolSize * 0.8, 0, 2 * Math.PI);
+             ctx.stroke();
+        }
     });
     
-    // Draw Tools (Placeholders)
+    // 4. Draw Tools (Placeholders & Delta)
     molCanvasState.tools.forEach(item => {
-        molCanvasCtx.font = '16px Segoe UI';
-        molCanvasCtx.fillStyle = '#FF8080';
-        molCanvasCtx.fillText(item.symbol, item.x, item.y);
-        
-        if (item.tool === 'OrbitDelta' && item.deltaValue !== undefined) {
-            molCanvasCtx.font = '12px Segoe UI';
-            molCanvasCtx.fillStyle = 'var(--accent-color)';
-            molCanvasCtx.fillText(item.deltaValue.toFixed(2), item.x, item.y + 15);
+        // Draw the OrbitDelta tool
+        if (item.tool === 'OrbitDelta') {
+            const deltaValue = item.deltaValue !== undefined ? item.deltaValue : 5.83; 
+            
+            // Draw Delta symbol
+            ctx.font = 'bold 30px Segoe UI'; 
+            ctx.fillStyle = 'var(--accent-color)'; 
+            ctx.fillText('Δ', item.x, item.y);
+            
+            // Draw Delta value
+            ctx.font = '20px Consolas, monospace'; // Monospace font for number
+            ctx.fillStyle = 'var(--accent-color)';
+            ctx.fillText(deltaValue.toFixed(2), item.x, item.y + 20);
+            
+            // Draw connection line
+            const connectedAtom = molCanvasState.atoms.find(a => a.id === item.attachedTo);
+            if (connectedAtom) {
+                ctx.strokeStyle = 'var(--accent-color)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(connectedAtom.x, connectedAtom.y);
+                ctx.lineTo(item.x, item.y);
+                ctx.stroke();
+            }
+            
+            // Draw an outline if it's the currently selected delta symbol
+            if (selectedCanvasItems.find(i => i.id === item.id)) {
+                 ctx.strokeStyle = '#FFD700'; // Gold highlight
+                 ctx.lineWidth = 2;
+                 ctx.beginPath();
+                 ctx.arc(item.x, item.y, item.size + 5, 0, 2 * Math.PI);
+                 ctx.stroke();
+            }
+            
+        } else if (item.tool !== 'AtomDrag') {
+            // Draw other placeholders/tools
+            ctx.font = '16px Segoe UI';
+            ctx.fillStyle = '#FF8080';
+            ctx.fillText(item.symbol, item.x, item.y);
         }
     });
 
-    // --- NEW: Draw Delta Selection Highlights ---
-    molCanvasCtx.strokeStyle = 'var(--accent-color)';
-    molCanvasCtx.lineWidth = 2;
-    molCanvasState.atoms.forEach(item => {
-        if (deltaSelection.includes(item.id)) {
-            molCanvasCtx.beginPath();
-            molCanvasCtx.arc(item.x, item.y, item.size + 3, 0, 2 * Math.PI);
-            molCanvasCtx.stroke();
+    // 5. Draw Lasso Selection
+    if (current2DToolMode === 'lasso_select' && lassoPoints.length > 0) {
+        ctx.strokeStyle = '#e67e22'; 
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+        for (let i = 1; i < lassoPoints.length; i++) {
+            ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
         }
-    });
-    // --- END: Delta Selection ---
+        ctx.stroke();
+    }
 }
 
 function clear2DCanvas() {
@@ -2581,27 +3021,50 @@ function clear2DCanvas() {
     addPrompt("2D Canvas Cleared.");
 }
 
+/**
+ * Handles the logic for a toolbar button click that is not draggable.
+ */
 function handleToolClick(toolName) {
     addPrompt(`Tool Click: ${toolName} activated.`);
     
+    const atomSelections = selectedCanvasItems.filter(i => i.tool === 'AtomDrag');
+
     switch (toolName) {
         case 'OrbitDelta':
             toggleDeltaSelectMode();
             break;
+        case 'SelectionLasso':
+            current2DToolMode = 'lasso_select';
+            // Highlight lasso button
+            document.querySelector('.mol-control-btn[data-tool="SelectionLasso"]').style.backgroundColor = 'var(--user-msg-bg)';
+            selectedCanvasItems = [];
+            addPrompt("Lasso Selection Mode: Click and drag to draw a selection path.");
+            break;
+        case 'ClearSelection':
+            selectedCanvasItems = [];
+            handleDeltaSelection(null); // Clear delta input
+            drawMolCanvas();
+            addPrompt("Canvas selection cleared.");
+            break;
+            
+        case 'SingleBond':
+        case 'DoubleBond':
+        case 'TripleBond':
+            handleBondAction(toolName, atomSelections);
+            break;
+            
+        case 'AtomPair':
+            handleAtomPairAction(atomSelections);
+            break;
+            
         case 'SaveArcLake':
             saveSceneState();
             break;
         case 'OpenWorkFile':
             ui.loadSceneInput.click();
             break;
-        case 'SelectionLasso':
-            addPrompt("TODO: Implement Selection Lasso logic.");
-            break;
-        case 'ClearSelection':
-            addPrompt("TODO: Implement Clear Selection logic.");
-            break;
         case 'Copy':
-            addPrompt("TODO: Implement Copy logic.");
+            addPrompt("TODO: Implement Copy logic on selected items.");
             break;
         case 'Paste':
             addPrompt("TODO: Implement Paste logic.");
@@ -2609,36 +3072,127 @@ function handleToolClick(toolName) {
     }
 }
 
-// --- NEW: Delta Tool Workflow Functions ---
+/**
+ * Creates/Updates bonds between all selected atoms.
+ * Also supports selecting bonds and swapping their type.
+ */
+function handleBondAction(bondType, atomSelections) {
+    if (atomSelections.length < 2) {
+        // Check for selected bonds to swap their type
+        const selectedBonds = selectedCanvasItems.filter(i => i.from && i.to);
+        if (selectedBonds.length > 0) {
+            selectedBonds.forEach(bond => bond.tool = bondType);
+            addPrompt(`Swapped ${selectedBonds.length} bonds to ${bondType}.`);
+            drawMolCanvas();
+            return;
+        }
+        addPrompt("Select at least two atoms or existing bonds to use a Bond tool.");
+        return;
+    }
+    
+    // Create bonds between all unique pairs of selected atoms
+    for (let i = 0; i < atomSelections.length; i++) {
+        for (let j = i + 1; j < atomSelections.length; j++) {
+            const idA = atomSelections[i].id;
+            const idB = atomSelections[j].id;
+            
+            // Check if a bond already exists (regardless of type)
+            const existingBondIndex = molCanvasState.bonds.findIndex(
+                b => (b.from === idA && b.to === idB) || (b.from === idB && b.to === idA)
+            );
+            
+            if (existingBondIndex !== -1) {
+                // Update existing bond type
+                molCanvasState.bonds[existingBondIndex].tool = bondType;
+            } else {
+                // Create new bond
+                const newBondId = `bond_${canvasIdCounter++}`;
+                molCanvasState.bonds.push({
+                    id: newBondId,
+                    tool: bondType,
+                    from: idA,
+                    to: idB
+                });
+            }
+            
+            // Clear AtomPair flags
+            atomSelections[i].hasAtomPairBond = false;
+            atomSelections[j].hasAtomPairBond = false;
+        }
+    }
+    
+    addPrompt(`Created/Updated ${bondType} between selected atoms.`);
+    drawMolCanvas();
+}
 
 /**
- * Toggles the 'delta_select' mode for the 2D canvas.
+ * Handles the AtomPair action: creates a single bond and positions the second atom perpendicular.
+ */
+function handleAtomPairAction(atomSelections) {
+    if (atomSelections.length !== 2) {
+        addPrompt("AtomPair requires exactly two selected atoms.");
+        return;
+    }
+
+    const atomA = atomSelections[0];
+    const atomB = atomSelections[1];
+    const idA = atomA.id;
+    const idB = atomB.id;
+    
+    // 1. Create a single bond (as per user request: AtomPair acts like single bond for logic)
+    handleBondAction('SingleBond', atomSelections);
+
+    // 2. Position Atom B perpendicular to Atom A (simple vertical offset)
+    const separation = 120; // Visual separation distance
+    atomB.x = atomA.x;
+    atomB.y = atomA.y + separation;
+    
+    // 3. Set a flag on the atoms to draw the AtomPair line (the horizontal dash)
+    atomA.hasAtomPairBond = true;
+    atomB.hasAtomPairBond = true;
+    
+    // 4. Update the Delta attached to AtomB to match the drag if any exists
+    molCanvasState.tools.filter(t => t.attachedTo === idB).forEach(t => {
+         // Simply offset the delta from the atom's new position
+         t.x = atomB.x + 40;
+         t.y = atomB.y + 40;
+    });
+
+
+    addPrompt(`AtomPair created and positioned ${atomA.symbol} and ${atomB.symbol} for perpendicular orientation.`);
+    drawMolCanvas();
+}
+
+/**
+ * Toggles the Delta selection mode (Atom selection only).
  */
 function toggleDeltaSelectMode() {
     const deltaBtn = document.querySelector('.mol-control-btn[data-tool="OrbitDelta"]');
     if (current2DToolMode === 'delta_select') {
-        // Turn off mode
         current2DToolMode = null;
         deltaSelection = [];
-        deltaBtn.style.backgroundColor = ''; // Clear highlight
+        deltaBtn.style.backgroundColor = ''; 
+        ui.canvasDeltaSelectStatus.textContent = "OFF";
+        ui.canvasDeltaSelectStatus.style.color = 'var(--calculator-btn-clear)';
         addPrompt("Orbit Delta selection mode OFF.");
-        drawMolCanvas(); // Redraw to remove highlights
+        drawMolCanvas(); 
     } else {
-        // Turn on mode
         current2DToolMode = 'delta_select';
         deltaSelection = [];
-        deltaBtn.style.backgroundColor = 'var(--user-msg-bg)'; // Highlight button
+        deltaBtn.style.backgroundColor = 'var(--user-msg-bg)'; 
+        ui.canvasDeltaSelectStatus.textContent = "ON";
+        ui.canvasDeltaSelectStatus.style.color = 'var(--accent-color)';
         addPrompt("Orbit Delta selection mode ON: Click atoms, then click blank canvas to apply.");
     }
 }
 
 /**
- * Applies Delta symbols to all selected atoms on the 2D canvas.
+ * Applies Delta symbols to all selected atoms on the 2D canvas, using math results if available.
  */
 function applyDeltaToSelection() {
     if (deltaSelection.length === 0) {
         addPrompt("No atoms selected for Delta.");
-        toggleDeltaSelectMode(); // Turn off mode
+        toggleDeltaSelectMode(); 
         return;
     }
     
@@ -2654,25 +3208,27 @@ function applyDeltaToSelection() {
         const atom = molCanvasState.atoms.find(a => a.id === atomId);
         if (!atom) return;
         
+        // Remove existing OrbitDelta attached to this atom before adding a new one
+        molCanvasState.tools = molCanvasState.tools.filter(t => t.attachedTo !== atomId);
+
         const newItemId = `item_${canvasIdCounter++}`;
         const newItem = {
             id: newItemId,
             tool: 'OrbitDelta',
             symbol: 'Δ',
-            x: atom.x + 15, // Offset from atom
-            y: atom.y + 15,
+            x: atom.x + 40, 
+            y: atom.y + 40,
             size: 8,
             deltaValue: deltaValue,
-            attachedTo: atomId // Store link
+            attachedTo: atomId, 
+            configString: '' // NEW: Stores the K,L,M config string
         };
         molCanvasState.tools.push(newItem);
     });
     
     drawMolCanvas();
-    toggleDeltaSelectMode(); // Reset mode
+    toggleDeltaSelectMode(); 
 }
-
-// --- END: Delta Tool Functions ---
 
 
 function createCompoundFromCanvas() {
@@ -2683,45 +3239,102 @@ function createCompoundFromCanvas() {
         return;
     }
     
-    // TODO: Implement graph traversal logic here based on `molCanvasState.bonds`
-    // to find all connected groups.
+    // 1. Map 2D IDs to 3D groups to build the structure
+    const atomMap = new Map();
+    const compoundAtoms = [];
     
-    const independentGroups = [];
-    molCanvasState.atoms.forEach((atom, index) => {
-        // Find attached delta tools and pass their values
-        const attachedDelta = molCanvasState.tools.find(t => t.tool === 'OrbitDelta' && t.attachedTo === atom.id);
-        
-        independentGroups.push({
-            id: `group_${index}`,
-            atoms: [atom],
-            bonds: [],
-            deltaValue: attachedDelta ? attachedDelta.deltaValue : undefined
-        });
-    });
-    
-    addPrompt(`Found ${independentGroups.length} independent group(s).`);
-    
-    // Example of what you would do next:
-    independentGroups.forEach((group, index) => {
-        group.atoms.forEach(atom => {
-            const atomData = allElementsData.find(el => el.elementSymbol === atom.symbol);
-            if (atomData) {
-                // loadAtom handles the initial positioning logic
-                const newAtomGroup = loadAtom(atomData, atomGroups.length); // Use current length for index
-                
-                // TODO: Apply `group.deltaValue` to the newly created atom's physics
-                if (newAtomGroup && group.deltaValue !== undefined) {
-                    addPrompt(`Applying Delta value ${group.deltaValue} to ${newAtomGroup.name}`);
-                    // For now, let's just add it to the mass for demonstration
-                    newAtomGroup.physics.mass += group.deltaValue;
-                    loadTargetSettings(newAtomGroup.id); // Update sliders
-                }
-            }
-        });
-        // TODO: Create 3D bonds for this group
+    molCanvasState.atoms.forEach(atom2D => {
+        const atomData = allElementsData.find(el => el.elementSymbol === atom2D.symbol);
+        if (atomData) {
+            const attachedDelta = molCanvasState.tools.find(t => t.tool === 'OrbitDelta' && t.attachedTo === atom2D.id);
+            
+            const atom3D = {
+                atom2D: atom2D,
+                atomData: atomData,
+                deltaValue: attachedDelta ? attachedDelta.deltaValue : undefined,
+                deltaConfig: attachedDelta ? attachedDelta.configString : '', // NEW
+                group: null, // The 3D group object once created
+                bonds: [],
+                positionOffset: new THREE.Vector3(atom2D.x, atom2D.y, 0) // Use 2D coords as initial relative offsets
+            };
+            compoundAtoms.push(atom3D);
+            atomMap.set(atom2D.id, atom3D);
+        }
     });
 
+    // 2. Calculate the 3D position for the entire compound based on the current scene center of mass.
+    let compoundOrigin = new THREE.Vector3(0, 0, 0);
+    
+    // --- Dynamic Placement Logic: Find the non-overlapping position and reposition existing atoms ---
+    if (atomGroups.length > 0) {
+        let currentSceneCenter = new THREE.Vector3();
+        atomGroups.forEach(g => currentSceneCenter.add(g.center));
+        currentSceneCenter.divideScalar(atomGroups.length);
+        
+        // Calculate a spiral offset from the current scene center of mass
+        const angle = atomGroups.length * Math.PI * 0.618; 
+        const separationDistance = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0) + 10; 
+        
+        let offsetX = Math.cos(angle) * separationDistance;
+        let offsetZ = Math.sin(angle) * separationDistance;
+        
+        compoundOrigin.set(offsetX, 0, offsetZ); 
+        
+        // Reposition all existing atoms so the new origin (scene center) is correct relative to them.
+        const repositionDelta = currentSceneCenter.clone().negate();
+        atomGroups.forEach(group => {
+            group.center.add(repositionDelta);
+            group.nucleusMeshes.forEach(m => {
+                m.position.add(repositionDelta);
+                m.userData.initialPosition.add(repositionDelta);
+            });
+            group.electronMeshes.forEach(m => {
+                m.position.add(repositionDelta);
+                m.userData.initialPosition.add(repositionDelta);
+            });
+            group.neutronCenterOfVolume.add(repositionDelta);
+            group.nucleusCenter.add(repositionDelta);
+        });
+    }
+
+    addPrompt(`Molecule(s) will be placed at world origin: (${compoundOrigin.x.toFixed(2)}, ${compoundOrigin.y.toFixed(2)}, ${compoundOrigin.z.toFixed(2)})`);
+
+
+    // 3. Create 3D groups for each atom in the compound
+    const canvasCenter = new THREE.Vector3(ui.molCanvas.width / 2, ui.molCanvas.height / 2, 0);
+    const scaleFactor = 0.05; // Scaling 2D canvas units to 3D world units
+
+    compoundAtoms.forEach(atom3D => {
+        // Calculate the atom's initial 3D world position
+        const relativeOffset = atom3D.positionOffset.clone().sub(canvasCenter);
+        relativeOffset.x *= scaleFactor;
+        relativeOffset.y *= -scaleFactor; // Invert Y
+        relativeOffset.z = 0; // Start flat on the XZ plane
+
+        const initialPosition = compoundOrigin.clone().add(relativeOffset);
+        
+        // Load the atom using the calculated 3D initial position
+        const newGroup = loadAtom(atom3D.atomData, atomGroups.length, initialPosition.toArray()); 
+        
+        if (newGroup) {
+            atom3D.group = newGroup;
+            
+            // Apply Delta config to the new group's physics object
+            if (atom3D.deltaValue !== undefined) {
+                 newGroup.physics.deltaValue = atom3D.deltaValue;
+            }
+            if (atom3D.deltaConfig) {
+                 newGroup.physics.deltaConfig = atom3D.deltaConfig;
+                 addPrompt(`Atom ${newGroup.name} configured for shells: ${atom3D.deltaConfig}`);
+            }
+        }
+    });
+
+    // 4. Finalize Bonds in 3D (STUB)
+    // For simplicity, 3D bonds are implicit via the physics engine for now.
+
     toggleMolCanvasOverlay();
+    updatePhysicsDropdown();
 }
 
 function toggleMolCanvasOverlay() {
@@ -3408,16 +4021,17 @@ function onArcEdgeResize() {
 
 
 /**
- * REPLACES original loadAtom
- * Loads an atom into the scene, calculating position based on current physics and existing atoms.
+ * UPDATED FUNCTION (Simplified Positioning)
+ * Loads an atom into the scene, calculating position only if no initialPositionArray is provided.
+ * The complex logic for repositioning existing atoms is handled by the calling functions.
  * @param {Object} atom - The element data.
  * @param {number} index - The index of the atom being added (used to calculate initial spacing).
- * @param {number[] | null} initialPositionArray - Optional: [x, y, z] to restore from save.
+ * @param {number[] | null} initialPositionArray - Optional: [x, y, z] to restore from save or calculated by 2D canvas logic.
  * @returns {Object | null} The newly created atomGroup object, or null.
  */
 function loadAtom(atom, index, initialPositionArray = null) {
     // If not in multiselect mode, clear the scene unless it's the very first load and we're restoring state
-    if (!multiSelectMode && index > 0) { clearScene(); index = 0; atomGroups = []; groupCounter = 0; }
+    if (!multiSelectMode && index > 0 && !initialPositionArray) { clearScene(); index = 0; atomGroups = []; groupCounter = 0; }
     
     const protons = parseInt(atom.protons);
     const neutrons = parseInt(atom.neutrons);
@@ -3431,56 +4045,29 @@ function loadAtom(atom, index, initialPositionArray = null) {
 
     let initialCenter = new THREE.Vector3(0, 0, 0);
 
-    // --- NEW: Dynamic Positioning Logic ---
+    // --- NEW: Positioning Logic (Simplified) ---
     if (initialPositionArray) {
-        // Restore from saved state
+        // Restore from saved state or position from 2D canvas logic
         initialCenter.fromArray(initialPositionArray);
     } else if (atomGroups.length > 0) {
-        // Dynamic positioning for new atoms (index > 0)
+        // Dynamic positioning for new, independent atoms (only if calling function didn't pass an array)
         
-        // 1. Calculate the current center of volume of all existing atoms. This point should be the new (0,0,0) of the system.
+        // 1. Calculate the current center of volume of all existing atoms. 
         let currentSceneCenter = new THREE.Vector3();
         atomGroups.forEach(g => currentSceneCenter.add(g.center));
         currentSceneCenter.divideScalar(atomGroups.length);
         
-        // 2. Calculate influence factor for spacing based on the NEW atom
-        const spacingFactor = (totalNucleons * 0.1) + (orbits.length * 0.5); 
-        
-        // 3. Calculate a position relative to the current scene center using a dynamic spiral
-        const angle = atomGroups.length * Math.PI * 0.618; // Golden angle for even spacing
-        const radius = (atomGroups.length + 1) * 5; // Spiral radius
-        
-        // The base spacing is dynamic based on physics/volume to prevent immediate overlap
+        // 2. Calculate a position relative to the current scene center using a spiral
+        const angle = atomGroups.length * Math.PI * 0.618; 
         const largestExistingRadius = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0);
-        const newAtomMaxRadius = 4 + (orbits.length - 1) * 2; // Estimate max radius of new atom
-        const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; // Min distance
+        const newAtomMaxRadius = 4 + (orbits.length * 2);
+        const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; 
         
         let offsetX = Math.cos(angle) * separationDistance;
         let offsetZ = Math.sin(angle) * separationDistance;
         
         // The new position is relative to the current scene center.
         initialCenter.set(offsetX, 0, offsetZ); 
-        
-        // All existing atoms must now be repositioned so their collective center is again at (0, 0, 0)
-        // Since initialCenter is calculated relative to the *old* scene center, we subtract the old center from ALL atoms.
-        const repositionDelta = currentSceneCenter.clone().negate();
-        
-        // Reposition all existing atoms and their subcomponents
-        atomGroups.forEach(group => {
-            group.center.add(repositionDelta);
-            group.nucleusMeshes.forEach(m => {
-                m.position.add(repositionDelta);
-                m.userData.initialPosition.add(repositionDelta);
-            });
-            group.electronMeshes.forEach(m => {
-                m.position.add(repositionDelta);
-                m.userData.initialPosition.add(repositionDelta);
-            });
-            group.neutronCenterOfVolume.add(repositionDelta);
-            group.nucleusCenter.add(repositionDelta);
-        });
-        
-        // Final position correction: the initialCenter calculated above IS the final position for the new atom.
         
         addPrompt(`Positioning Atom ${atomName} at (${initialCenter.x.toFixed(2)}, 0.00, ${initialCenter.z.toFixed(2)}) based on physics spacing.`);
         
@@ -3500,7 +4087,9 @@ function loadAtom(atom, index, initialPositionArray = null) {
             ...DEFAULT_PHYSICS, 
             mass: totalNucleons, 
             weight: totalNucleons * scenePhysicsSettings.physics.gravity, 
-            density: totalNucleons / 1.0 
+            density: totalNucleons / 1.0,
+            deltaValue: undefined, // UPDATED: New field
+            deltaConfig: ''        // UPDATED: New field
         },
         electronOrbits: orbits 
     };
@@ -3508,7 +4097,8 @@ function loadAtom(atom, index, initialPositionArray = null) {
     
     const protonMaterial = new THREE.MeshPhongMaterial({ color: 0x0000ff, emissive: 0xffffff, emissiveIntensity: 0.8 });
     const neutronMaterial = new THREE.MeshPhongMaterial({ color: 0x000044, emissive: 0x000000, emissiveIntensity: 0.9 });
-    const electronMaterial = new THREE.MeshPhongMaterial({ color: 0x47c4f1, emissive: 0xff0000, emissiveIntensity: 2.0 });
+    // Label change request: changing electron color to be brighter. White is used by Three.js Text, so a bright cyan/blue is appropriate.
+    const electronMaterial = new THREE.MeshPhongMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 2.0 }); 
 
     let nucleonCenterAccumulator = new THREE.Vector3();
     let neutronCenterAccumulator = new THREE.Vector3();
@@ -3948,7 +4538,8 @@ function updateElementTranslationInputs(group) {
  */
 function updateMultiTranslationInputs() {
     const selectedGroupElements = Array.from(ui.multipleTranslationSelect.selectedOptions)
-        .map(opt => atomGroups.find(g => g.id === opt.value));
+        .map(opt => atomGroups.find(g => g.id === opt.value))
+        .filter(g => g);
         
     if (selectedGroupElements.length === 0) {
         ui.multiTranslationX.value = 0.0;
@@ -4106,7 +4697,7 @@ function handleGimbalAction(isMultiple) {
 
 // ====================================================================================
 // --- NEW: Advanced Math Functions ---
-// ====================================================================================
+//====================================================================================
 
 /**
  * Adds a new set of math operation rows by cloning the first one.
