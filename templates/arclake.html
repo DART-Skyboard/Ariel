@@ -14,6 +14,8 @@
     
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/TTFLoader.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/geometries/TextGeometry.js"></script>
+    <!-- NEW: GLTFLoader for GLB/GLTF import functionality -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/GLTFLoader.js"></script>
     
     <style>
         :root { 
@@ -950,6 +952,12 @@
                 <select id="mol-scene-select">
                     <option>Select Atom in Scene</option>
                 </select>
+                <!-- NEW GLB IMPORT INPUT/BUTTON -->
+                <div class="mol-input-row" style="margin-top: 10px;">
+                    <button id="load-glb-btn" class="secondary-btn" style="flex-grow: 1;">Import GLB/GLTF</button>
+                    <input type="file" id="load-glb-input" accept=".gltf,.glb" style="display: none;">
+                </div>
+                <!-- END NEW GLB IMPORT INPUT/BUTTON -->
               <br>  
               <br>
               <div id="google-sign-in-container" style="margin-bottom: 10px;"><fieldset>
@@ -997,7 +1005,7 @@
                 
                 <h5>Rigid Body</h5>
                 <input type="text" placeholder="Rigid Body Name" style="margin-bottom: 5px;">
-                <select style="margin-bottom: 5px;">
+                <select id="rigid-body-state-select" style="margin-bottom: 5px;">
                     <option>Passive</option>
                     <option>Active</option>
                 </select>
@@ -1301,6 +1309,7 @@
             <div class="action-buttons" style="justify-content: space-between; flex-shrink: 0;">
                 <button id="exportButton" class="secondary-btn">Export as PNG</button>
                 <button id="exportGLTFButton" class="secondary-btn">Export as GLTF</button>
+                <button id="exportGLBButton" class="secondary-btn">Export as GLB</button>
             </div>
             
             <div id="simulation-recorder-controls" style="margin-top: 10px;">
@@ -1641,6 +1650,7 @@ let ui = {
     stopSimulationButton: document.getElementById('stopSimulationButton'),
     exportButton: document.getElementById('exportButton'),
     exportGLTFButton: document.getElementById('exportGLTFButton'),
+    exportGLBButton: document.getElementById('exportGLBButton'), // NEW
     multiSelectToggle: document.getElementById('multiSelectToggle'),
     linkedSimToggle: document.getElementById('linkedSimToggle'),
     floorSimToggle: document.getElementById('floorSimToggle'),
@@ -1718,13 +1728,19 @@ let ui = {
     arcMeasureSetsContainer: document.getElementById('arc-measure-sets-container'),
     addArcMeasureBtn: document.getElementById('add-arc-measure-btn'),
     measureAllBtn: document.getElementById('measure-all-btn'),
+    
+    // --- NEW: GLB Import Elements ---
+    loadGlbBtn: document.getElementById('load-glb-btn'),
+    loadGlbInput: document.getElementById('load-glb-input'),
 };
 
 
 // --- Three.js State ---
 let scene, camera, renderer, controls, raycaster, pointer;
 let atomGroups = []; 
+let complexBodies = []; // NEW: Array to store imported GLB/GLTF models
 let groupCounter = 0;
+let complexBodyCounter = 0; // NEW
 let isArcEdgeInitialized = false;
 let selectedGroups = []; 
 let arcEdgeMesh = null; 
@@ -1732,7 +1748,8 @@ let isSelectionFrozen = false;
 
 const DEFAULT_PHYSICS = {
     mass: 1.0, volume: 1.0, weight: 9.8, density: 1.0, 
-    temp: 70.0, velocity: 0.0, gravity: 9.8 
+    temp: 70.0, velocity: 0.0, gravity: 9.8,
+    rigidBodyState: 'Passive' // NEW
 };
 
 // Electron mass in AMU (approx)
@@ -1926,6 +1943,7 @@ window.onload = () => {
         stopSimulationButton: document.getElementById('stopSimulationButton'),
         exportButton: document.getElementById('exportButton'),
         exportGLTFButton: document.getElementById('exportGLTFButton'),
+        exportGLBButton: document.getElementById('exportGLBButton'), // NEW
         multiSelectToggle: document.getElementById('multiSelectToggle'),
         linkedSimToggle: document.getElementById('linkedSimToggle'),
         floorSimToggle: document.getElementById('floorSimToggle'),
@@ -2002,6 +2020,10 @@ window.onload = () => {
         arcMeasureSetsContainer: document.getElementById('arc-measure-sets-container'),
         addArcMeasureBtn: document.getElementById('add-arc-measure-btn'),
         measureAllBtn: document.getElementById('measure-all-btn'),
+        
+        // --- NEW: GLB Import Elements ---
+        loadGlbBtn: document.getElementById('load-glb-btn'),
+        loadGlbInput: document.getElementById('load-glb-input'),
     };
 
     ui_mic = {
@@ -2076,7 +2098,8 @@ function setupEventListeners() {
     ui.startSimulationButton.addEventListener('click', startSimulation);
     ui.stopSimulationButton.addEventListener('click', stopSimulation);
     ui.exportButton.addEventListener('click', exportAsPNG);
-    ui.exportGLTFButton.addEventListener('click', exportAsGLTF);
+    ui.exportGLTFButton.addEventListener('click', () => exportAsGLTF(false)); // Export GLTF
+    ui.exportGLBButton.addEventListener('click', () => exportAsGLTF(true));  // Export GLB
     
     // Mode Toggles
     ui.multiSelectToggle.addEventListener('change', (e) => {
@@ -2096,6 +2119,9 @@ function setupEventListeners() {
     
     // Physics UI Listeners
     ui.physicsTargetSelect.addEventListener('change', (e) => { saveCurrentSettings(); loadTargetSettings(e.target.value); });
+    
+    // NEW: Rigid Body Select Listener
+    document.getElementById('rigid-body-state-select').addEventListener('change', saveCurrentSettings);
     
     // Link Physics Sliders
     linkSlider(ui.inputMass, ui.inputMass_slider);
@@ -2152,6 +2178,11 @@ function setupEventListeners() {
     ui.simulationScrubber.addEventListener('input', onScrubberInput);
     ui.simulationScrubber.addEventListener('mousedown', () => { isScrubbing = true; stopSimulation(); });
     ui.simulationScrubber.addEventListener('mouseup', () => { isScrubbing = false; });
+    
+    // --- NEW: GLB Import Listeners ---
+    ui.loadGlbBtn.addEventListener('click', () => ui.loadGlbInput.click());
+    ui.loadGlbInput.addEventListener('change', handleGLBFileLoad);
+    // --- END NEW ---
     
     // --- NEW: Translation Listeners ---
     ui.gimbalElementBtn.addEventListener('click', () => handleGimbalAction(false));
@@ -2363,6 +2394,30 @@ function restoreSceneState(state) {
         });
     }
 
+    // --- NEW: Load Complex Bodies (Requires re-importing the GLB file to restore geometry) ---
+    if (state.complexBodies && Array.isArray(state.complexBodies)) {
+        addPrompt("Warning: Complex Body state loaded, but GLB geometry must be re-imported manually for now.");
+        state.complexBodies.forEach(bodyState => {
+            // Create a dummy body structure to restore state/physics/ID for UI dropdowns
+            const body = {
+                 id: bodyState.id, name: bodyState.name, center: new THREE.Vector3().fromArray(bodyState.center), 
+                 physics: bodyState.physics, isRigidBody: bodyState.isRigidBody, components: [],
+                 root: new THREE.Object3D(), // Placeholder
+                 velocity: new THREE.Vector3(0, 0, 0), angularVelocity: new THREE.Vector3(0, 0, 0),
+                 initialPositions: new Map(), initialQuaternions: new Map(),
+                 maxRadius: 10 // Placeholder
+            };
+            bodyState.components.forEach(compState => {
+                 body.components.push({
+                     id: compState.id, name: compState.name, rootId: body.id,
+                     physics: compState.physics, mesh: new THREE.Mesh() // Placeholder
+                 });
+            });
+            complexBodies.push(body);
+        });
+    }
+    // --- END NEW ---
+
     updatePhysicsDropdown();
     loadTargetSettings('scene_global');
     updateArcEdgeReadout();
@@ -2393,6 +2448,19 @@ function clearScene() {
         if (obj.material) { Array.isArray(obj.material) ? obj.material.forEach(m => m.dispose()) : obj.material.dispose(); }
         scene.remove(obj);
     });
+    
+    // --- NEW: Remove Complex Bodies ---
+    complexBodies.forEach(body => {
+         scene.remove(body.root);
+         // Dispose of all geometry/materials in the subtree (simple version)
+         body.root.traverse(child => {
+             if (child.geometry) child.geometry.dispose();
+             if (child.material) { Array.isArray(child.material) ? child.material.forEach(m => m.dispose()) : child.material.dispose(); }
+         });
+    });
+    complexBodies = [];
+    complexBodyCounter = 0;
+    // --- END NEW ---
     
     if (arcEdgeMesh) scene.remove(arcEdgeMesh);
     arcEdgeMesh = null;
@@ -2534,13 +2602,98 @@ function removeAtomGroup(groupId) {
         loadTargetSettings('scene_global');
     }
 
-    // Update dropdowns
+// Update dropdowns
     updatePhysicsDropdown();
     updateArcEdgeReadout();
     // --- NEW ---
     updateElementCheckboxes(); // Sync checkboxes
     updateTranslationSelectDropdown(); // Update translation dropdowns
 }
+
+/**
+ * --- ADDED FUNCTION ---
+ * Removes a complex body group from the scene and internal arrays.
+ * @param {string} bodyId - The ID of the complex body to remove (e.g., "body_1")
+ */
+function removeComplexBody(bodyId) {
+    const bodyIndex = complexBodies.findIndex(b => b.id === bodyId);
+    if (bodyIndex === -1) return;
+
+    const body = complexBodies[bodyIndex];
+
+    // Remove root from scene
+    scene.remove(body.root);
+
+    // Dispose of all geometry/materials in the subtree
+    body.root.traverse(child => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) { Array.isArray(child.material) ? child.material.forEach(m => m.dispose()) : child.material.dispose(); }
+    });
+
+    // Remove from main array
+    complexBodies.splice(bodyIndex, 1);
+
+    // Remove from selection (complex body components are in selectedGroups)
+    selectedGroups = selectedGroups.filter(g => g.rootId !== bodyId);
+
+    // If the removed group was the selected target, reset to scene
+    if (selectedPhysicsTargetId === bodyId) {
+        loadTargetSettings('scene_global');
+    }
+
+    // Update dropdowns
+    updatePhysicsDropdown();
+    updateArcEdgeReadout();
+    updateTranslationSelectDropdown();
+}
+
+/**
+ * --- ADDED FUNCTION ---
+ * Removes a specific component (mesh) from a complex body.
+ * @param {string} componentId - The ID of the component (e.g., "body_1_comp_0")
+ */
+function removeComplexBodyComponent(componentId) {
+    const parts = componentId.split('_');
+    const bodyId = `${parts[0]}_${parts[1]}`;
+    const componentIndex = parseInt(parts[3]);
+
+    const body = complexBodies.find(b => b.id === bodyId);
+    if (!body || isNaN(componentIndex)) return;
+
+    const component = body.components[componentIndex];
+    if (!component) return;
+
+    // Remove mesh from its parent in the scene
+    if (component.mesh && component.mesh.parent) {
+        component.mesh.parent.remove(component.mesh);
+        if (component.mesh.geometry) component.mesh.geometry.dispose();
+        if (component.mesh.material) { Array.isArray(component.mesh.material) ? component.mesh.material.forEach(m => m.dispose()) : component.mesh.material.dispose(); }
+    }
+
+    // Remove from components array
+    body.components.splice(componentIndex, 1);
+
+    // Remove from selection
+    selectedGroups = selectedGroups.filter(g => g.id !== componentId);
+
+    // If the removed component was the selected target, reset to scene
+    if (selectedPhysicsTargetId === componentId) {
+        loadTargetSettings('scene_global');
+    }
+
+    // Re-index remaining components for consistency (optional but safer)
+    body.components.forEach((comp, index) => {
+        comp.id = `${bodyId}_comp_${index}`;
+        comp.name = `${body.name} - Component ${index}`;
+        if (comp.mesh) comp.mesh.name = comp.name;
+    });
+
+    // Update dropdowns
+    updatePhysicsDropdown();
+    updateArcEdgeReadout();
+    updateTranslationSelectDropdown();
+}
+
 
 /**
  * --- ADDED FUNCTION ---
@@ -3756,6 +3909,22 @@ function saveSceneState() {
             physics: g.physics,
             initialPosition: g.center.toArray(), // Use the current center as the initial position
         })),
+        // --- NEW: Save Complex Bodies (without geometry) ---
+        complexBodies: complexBodies.map(b => ({
+            id: b.id,
+            name: b.name,
+            center: b.center.toArray(),
+            isRigidBody: b.isRigidBody,
+            physics: b.physics,
+            components: b.components.map(c => ({
+                id: c.id,
+                name: c.name,
+                rootId: c.rootId,
+                physics: c.physics,
+                // Do NOT save mesh or geometry
+            }))
+        })),
+        // --- END NEW ---
         molCanvasState: molCanvasState
     };
 
@@ -3797,6 +3966,133 @@ function handleSceneFileLoad(event) {
     event.target.value = null;
 }
 
+/**
+ * --- NEW: GLB/GLTF Load Function ---
+ */
+function handleGLBFileLoad(event) {
+    const file = event.target.files[0];
+    if (!file) {
+        addPrompt("GLB/GLTF import cancelled.");
+        return;
+    }
+
+    const isGLB = file.name.toLowerCase().endsWith('.glb');
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+        const loader = new THREE.GLTFLoader();
+        
+        // Determine the file type for loading
+        const data = isGLB ? e.target.result : JSON.parse(e.target.result);
+        const loadPromise = isGLB 
+            ? new Promise(resolve => loader.parse(data, '', resolve))
+            : new Promise(resolve => loader.parse(data, '', resolve));
+
+        loadPromise
+        .then(gltf => {
+            addPrompt(`Successfully loaded ${file.name}. Initializing complex body.`);
+            processGLTF(gltf, file.name);
+        })
+        .catch(error => {
+            console.error("GLTF/GLB Load Error:", error);
+            addPrompt(`<strong>Error:</strong> Failed to load GLTF/GLB file. ${error.message}`);
+        });
+    };
+
+    reader.onerror = () => {
+        addPrompt(`<strong>Error:</strong> Failed to read GLB/GLTF file. ${reader.error}`);
+    };
+    
+    // Read as ArrayBuffer for GLB, or Text for GLTF
+    if (isGLB) {
+        reader.readAsArrayBuffer(file);
+    } else {
+        reader.readAsText(file);
+    }
+    
+    event.target.value = null;
+}
+
+/**
+ * --- NEW: Process Loaded GLTF/GLB Scene ---
+ */
+function processGLTF(gltf, fileName) {
+    const root = gltf.scene;
+    root.name = fileName.replace(/\.[^/.]+$/, "") + `_body_${complexBodyCounter}`;
+
+    const bodyId = `body_${complexBodyCounter++}`;
+    const bodyName = root.name;
+
+    // 1. Initialize Complex Body Structure
+    const complexBody = {
+        id: bodyId,
+        name: bodyName,
+        root: root,
+        center: new THREE.Vector3(),
+        isRigidBody: false, // Default to kinematic/passive
+        physics: { 
+            ...DEFAULT_PHYSICS, 
+            mass: 10.0, volume: 10.0, weight: 98.0, density: 1.0, 
+            rigidBodyState: 'Passive' 
+        },
+        components: [],
+        velocity: new THREE.Vector3(0, 0, 0), 
+        angularVelocity: new THREE.Vector3(0, 0, 0),
+        initialPositions: new Map(),
+        initialQuaternions: new Map(),
+        maxRadius: 0
+    };
+    complexBodies.push(complexBody);
+    
+    // 2. Traverse scene and find components (meshes)
+    let componentIndex = 0;
+    root.traverse(child => {
+        if (child.isMesh) {
+            child.name = `${bodyName}_comp_${componentIndex}`;
+            
+            // Initial position and quaternion for resetting
+            complexBody.initialPositions.set(child.name, child.position.clone());
+            complexBody.initialQuaternions.set(child.name, child.quaternion.clone());
+            
+            // Calculate initial bounding box and center for the mesh
+            let meshBox = new THREE.Box3().setFromObject(child);
+            let meshCenter = meshBox.getCenter(new THREE.Vector3());
+            let meshSize = meshBox.getSize(new THREE.Vector3());
+            
+            // Add component to body structure
+            complexBody.components.push({
+                id: `${bodyId}_comp_${componentIndex}`,
+                name: child.name,
+                rootId: bodyId,
+                physics: { 
+                    ...DEFAULT_PHYSICS, 
+                    mass: meshSize.x * meshSize.y * meshSize.z * 0.1, // Estimate mass
+                    volume: meshSize.x * meshSize.y * meshSize.z,
+                    weight: meshSize.x * meshSize.y * meshSize.z * 0.1 * scenePhysicsSettings.physics.gravity,
+                    density: 0.1,
+                },
+                mesh: child,
+                center: meshCenter // Use world position center for consistency
+            });
+            
+            // Update the body's center and maxRadius based on this component
+            complexBody.center.add(meshCenter);
+            complexBody.maxRadius = Math.max(complexBody.maxRadius, meshCenter.length() + meshSize.length() / 2);
+            
+            componentIndex++;
+        }
+    });
+    
+    // 3. Finalize center of the complex body (average of all components)
+    if (complexBody.components.length > 0) {
+        complexBody.center.divideScalar(complexBody.components.length);
+    }
+
+    // 4. Add to scene and update UI
+    scene.add(root);
+    updatePhysicsDropdown();
+    addPrompt(`Complex Body Loaded: ${bodyName} with ${complexBody.components.length} components.`);
+}
 
 function fetchData() {
     fetch('elements.json') 
@@ -3896,30 +4192,48 @@ function updateArcEdgeDynamicMesh() {
         return 0; // Nothing to measure
     }
 
-    const componentSelector = (group) => {
+    const componentSelector = (target) => {
         let allPoints = [];
         
-        if (selectedOptions.includes('group')) {
-            // Use the atom group's calculated center position
-            allPoints.push(group.center.clone()); 
-        }
-        
-        const subComponentTypes = selectedOptions.filter(opt => opt !== 'group'); // e.g., ['electron', 'proton']
-        if (subComponentTypes.length > 0) {
-            // Meshes that are part of the selection criteria
-            const selectedNucleons = group.nucleusMeshes.filter(m => subComponentTypes.includes(m.userData.type));
-            const selectedElectrons = group.electronMeshes.filter(m => subComponentTypes.includes(m.userData.type));
-            const meshes = selectedNucleons.concat(selectedElectrons);
-            
-            if (meshes.length > 0) {
-                let centroid = new THREE.Vector3();
-                meshes.forEach(m => centroid.add(m.position));
-                centroid.divideScalar(meshes.length);
-                allPoints.push(centroid);
+        // 1. Atom Group Logic
+        if (target.id.startsWith('group_')) {
+            if (selectedOptions.includes('group')) {
+                allPoints.push(target.center.clone()); 
             }
+            
+            const subComponentTypes = selectedOptions.filter(opt => opt !== 'group'); 
+            if (subComponentTypes.length > 0) {
+                const selectedNucleons = target.nucleusMeshes.filter(m => subComponentTypes.includes(m.userData.type));
+                const selectedElectrons = target.electronMeshes.filter(m => subComponentTypes.includes(m.userData.type));
+                const meshes = selectedNucleons.concat(selectedElectrons);
+                
+                if (meshes.length > 0) {
+                    let centroid = new THREE.Vector3();
+                    meshes.forEach(m => centroid.add(m.position));
+                    centroid.divideScalar(meshes.length);
+                    allPoints.push(centroid);
+                }
+            }
+            
+            if (allPoints.length === 0) return target.center.clone(); // Fallback to atom center
+        } 
+        // 2. Complex Body Component Logic (New)
+        else if (target.id.startsWith('body_') && target.mesh) {
+            // Complex bodies don't have proton/neutron/electron, so we only use 'group' (i.e., component mesh center)
+            if (selectedOptions.includes('group')) {
+                // Return the world position of the mesh
+                target.mesh.updateWorldMatrix(true, true);
+                let worldPos = new THREE.Vector3();
+                target.mesh.getWorldPosition(worldPos);
+                allPoints.push(worldPos);
+            } else {
+                 // Fallback to the component's center position if no relevant parts selected
+                 return target.center.clone();
+            }
+        } else {
+             // Fallback for an unhandled target type
+             return new THREE.Vector3();
         }
-        
-        if (allPoints.length === 0) return group.center.clone(); // Fallback to atom center
         
         // Return the centroid of all selected component points
         let finalCentroid = new THREE.Vector3();
@@ -3930,6 +4244,15 @@ function updateArcEdgeDynamicMesh() {
     // --- END UPDATE ---
     
     const intermediatePoints = selectedGroups.map(componentSelector);
+
+    // Filter out zero vectors if any componentSelector failed to return a valid point
+    const validPoints = intermediatePoints.filter(p => p.lengthSq() > 0.0001);
+
+    if (validPoints.length < 2) {
+        if (arcEdgeMesh) scene.remove(arcEdgeMesh);
+        arcEdgeMesh = null;
+        return 0;
+    }
 
     const groupA = selectedGroups[0];
     const groupB = selectedGroups[selectedGroups.length - 1];
@@ -3943,18 +4266,18 @@ function updateArcEdgeDynamicMesh() {
     const dynamicArcRadius = 0.5 + (totalEnergyFactor / 500) * globalG * currentTimeFactor; 
     
     const curvePoints = [];
-    for(let i=0; i < intermediatePoints.length; i++) {
-        curvePoints.push(intermediatePoints[i]);
-        if (i < intermediatePoints.length - 1) {
-            const nextPoint = intermediatePoints[i+1];
-            const midPoint = new THREE.Vector3().lerpVectors(intermediatePoints[i], nextPoint, 0.5);
+    for(let i=0; i < validPoints.length; i++) {
+        curvePoints.push(validPoints[i]);
+        if (i < validPoints.length - 1) {
+            const nextPoint = validPoints[i+1];
+            const midPoint = new THREE.Vector3().lerpVectors(validPoints[i], nextPoint, 0.5);
             midPoint.add(new THREE.Vector3(Math.cos(pulseTime * (i+1)), 0, Math.sin(pulseTime * (i+1))).multiplyScalar(dynamicArcRadius * 2));
             curvePoints.push(midPoint);
         }
     }
     
     const curve = new THREE.CatmullRomCurve3(curvePoints);
-    const distance = intermediatePoints[0].distanceTo(intermediatePoints[intermediatePoints.length - 1]);
+    const distance = validPoints[0].distanceTo(validPoints[validPoints.length - 1]);
     const tubeSegments = Math.max(16, Math.floor(distance * 5 + totalEnergyFactor / 100));
     const tubeRadius = 0.2 + dynamicArcRadius/10;
     
@@ -3977,6 +4300,7 @@ function updateArcEdgeDynamicMesh() {
 
 /**
  * REBUILT: Applies physics based on user-defined mic connections and new physics origin (neutron center of volume).
+ * UPDATED: Includes logic for Complex Bodies.
  */
 function applyNewPhysics() {
     if (!isSimulating) return;
@@ -3996,8 +4320,9 @@ function applyNewPhysics() {
     }
     modifiedGravity = Math.max(0.0, Math.min(modifiedGravity, 100.0)); 
     const globalGravityVector = new THREE.Vector3(0, -0.00005 * modifiedGravity, 0);
+    const globalAngularDamping = 0.995;
 
-    // --- 3. Apply Physics to each Atom Group ---
+    // --- 3. Apply Physics to Atom Groups ---
     atomGroups.forEach(group => {
         if (group.isNucleusActive) { 
             group.nucleusVelocity.add(globalGravityVector); 
@@ -4006,7 +4331,7 @@ function applyNewPhysics() {
         const p_base = group.physics;
         const p_mod = { ...p_base }; 
 
-        // --- 4. Apply Mic Connections to Temporary Physics ---
+        // --- 4. Apply Mic Connections to Temporary Physics (Atom) ---
         const timeMod = (1.0 + timeIntensity);
         const hertzMod = (1.0 + hertzIntensity);
 
@@ -4025,7 +4350,7 @@ function applyNewPhysics() {
 
         p_mod.density = Math.max(0.01, p_mod.density);
 
-        // --- 5. Use Modified Physics for Simulation ---
+        // --- 5. Use Modified Physics for Simulation (Atom) ---
         
         const arcEdgeInfluenceBase = (p_mod.temp * p_mod.velocity);
         let physicsOrigin = group.neutronCenterOfVolume.clone();
@@ -4135,16 +4460,93 @@ function applyNewPhysics() {
         });
     });
 
-    // Linked Simulation (Atom-Atom interaction)
+    // --- 6. Apply Physics to Complex Bodies ---
+    complexBodies.forEach(body => {
+        const p_base = body.physics;
+        const p_mod = { ...p_base };
+        
+        // --- Apply Mic Connections to Temporary Physics (Body) ---
+        const timeMod = (1.0 + timeIntensity);
+        const hertzMod = (1.0 + hertzIntensity);
+        // Note: For complex bodies, we use the atom physics field connections for simplicity.
+        if (micPhysicsConnections.atomMass.time)     p_mod.mass     *= timeMod;
+        if (micPhysicsConnections.atomMass.hertz)    p_mod.mass     *= hertzMod;
+        if (micPhysicsConnections.atomVolume.time)   p_mod.volume   *= timeMod;
+        if (micPhysicsConnections.atomVolume.hertz)  p_mod.volume   *= hertzMod;
+        if (micPhysicsConnections.atomWeight.time)   p_mod.weight   *= timeMod;
+        if (micPhysicsConnections.atomWeight.hertz)  p_mod.weight   *= hertzMod;
+        if (micPhysicsConnections.atomDensity.time)  p_mod.density  /= timeMod; 
+        if (micPhysicsConnections.atomDensity.hertz) p_mod.density  /= hertzMod; 
+        if (micPhysicsConnections.atomTemp.time)     p_mod.temp     *= timeMod;
+        if (micPhysicsConnections.atomTemp.hertz)    p_mod.temp     *= hertzMod;
+        if (micPhysicsConnections.atomVelocity.time) p_mod.velocity *= timeMod;
+        if (micPhysicsConnections.atomVelocity.hertz)p_mod.velocity *= hertzMod;
+        
+        // --- Apply Rigid Body Physics ---
+        if (p_mod.rigidBodyState === 'Active') {
+            body.isRigidBody = true;
+            
+            // Apply gravity/velocity to the root
+            body.velocity.add(globalGravityVector.clone().multiplyScalar(p_mod.mass));
+            
+            // Damping (friction)
+            body.velocity.multiplyScalar(0.99);
+            body.angularVelocity.multiplyScalar(globalAngularDamping);
+            
+            // Apply translation
+            body.root.position.add(body.velocity);
+            
+            // Apply rotation (Simplified: rotating around a fixed axis for effect)
+            const rotationAxis = new THREE.Vector3(0, 1, 0).normalize();
+            const rotationQuaternion = new THREE.Quaternion().setFromAxisAngle(rotationAxis, body.angularVelocity.length());
+            body.root.quaternion.multiplyQuaternions(body.root.quaternion, rotationQuaternion);
+
+            // Floor Plane Interaction (Simple bounding sphere check on the root)
+            if (isFloorActive && floorPlaneMesh) {
+                const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2);
+                if (body.root.position.y - body.maxRadius <= floorY) {
+                    if (body.velocity.y < 0) {
+                        let restitution = Math.max(0.1, 0.9 - (modifiedGravity / 9.8) * 0.2);
+                        if (micPhysicsConnections.floorPlane.time)  restitution += 0.5 * timeIntensity;
+                        if (micPhysicsConnections.floorPlane.hertz) restitution += 0.5 * hertzIntensity;
+                        restitution = Math.min(1.0, Math.max(0.1, restitution));
+                        
+                        body.velocity.y *= -restitution;
+                        body.velocity.x *= 0.95; 
+                        body.velocity.z *= 0.95; 
+                    }
+                    body.root.position.y = floorY + body.maxRadius;
+                }
+            }
+            
+            // Recalculate component centers (since the root moved)
+            body.components.forEach(comp => {
+                comp.mesh.updateWorldMatrix(true, true);
+                comp.mesh.getWorldPosition(comp.center);
+            });
+            body.root.getWorldPosition(body.center);
+            
+        } else {
+            // Passive/Kinematic mode: Do nothing unless directly manipulated
+        }
+        
+    });
+    // --- END Complex Body Physics ---
+
+
+    // Linked Simulation (Atom-Atom & Atom-Body interaction)
     if (isLinkedSimulation) {
         // --- NEW: Calculate the center of volume of all atoms ---
         let sceneCenterOfMass = new THREE.Vector3();
-        if (atomGroups.length > 0) {
+        let totalSimulatedObjects = atomGroups.length + complexBodies.filter(b => b.isRigidBody).length;
+        if (totalSimulatedObjects > 0) {
             atomGroups.forEach(g => sceneCenterOfMass.add(g.center));
-            sceneCenterOfMass.divideScalar(atomGroups.length);
+            complexBodies.filter(b => b.isRigidBody).forEach(b => sceneCenterOfMass.add(b.center));
+            sceneCenterOfMass.divideScalar(totalSimulatedObjects);
         }
         // --- END NEW ---
 
+        // 1. Atom-Atom Interactions (Existing Logic)
         for (let i = 0; i < atomGroups.length; i++) {
             for (let j = i + 1; j < atomGroups.length; j++) {
                 const groupA = atomGroups[i]; 
@@ -4178,6 +4580,41 @@ function applyNewPhysics() {
                 }
             }
         }
+        
+        // 2. Atom-Body Interactions (New Logic)
+        atomGroups.forEach(atom => {
+            complexBodies.filter(b => b.isRigidBody).forEach(body => {
+                const pA = { ...atom.physics };
+                if (micPhysicsConnections.atomTemp.time) pA.temp *= (1.0 + timeIntensity);
+                if (micPhysicsConnections.atomVelocity.time) pA.velocity *= (1.0 + timeIntensity);
+                
+                const pB = { ...body.physics };
+                if (micPhysicsConnections.atomTemp.time) pB.temp *= (1.0 + timeIntensity);
+                if (micPhysicsConnections.atomVelocity.time) pB.velocity *= (1.0 + timeIntensity);
+                
+                const influenceBase = (pA.temp + pB.temp) * (pA.velocity + pB.velocity);
+                const dist = atom.center.distanceTo(body.center);
+                const proximityThreshold = atom.maxRadius + body.maxRadius + 5; 
+                
+                if (dist < proximityThreshold) {
+                    const repulsionDir = new THREE.Vector3().subVectors(atom.center, body.center).normalize();
+                    const forceMagnitude = influenceBase * modifiedGravity / dist * 0.0005; 
+                    
+                    // Apply to atom
+                    const reactionForceAtom = repulsionDir.clone().multiplyScalar(forceMagnitude / atom.physics.mass);
+                    atom.nucleusVelocity.add(reactionForceAtom);
+                    atom.isNucleusActive = true; 
+                    
+                    // Apply to body (inverse of mass)
+                    const reactionForceBody = repulsionDir.clone().multiplyScalar(-forceMagnitude / body.physics.mass);
+                    body.velocity.add(reactionForceBody);
+                    
+                    // Add angular velocity based on hit point relative to center (simplified stub)
+                    const torqueVector = new THREE.Vector3().crossVectors(repulsionDir, body.velocity).multiplyScalar(0.0001);
+                    body.angularVelocity.add(torqueVector);
+                }
+            });
+        });
     }
 }
 
@@ -4186,28 +4623,37 @@ function updateArcEdgeReadout() {
      const arcLength = selectedGroups.length >= 2 ? updateArcEdgeDynamicMesh() : 0;
      const arcLengthLine = `<strong>Arc Edge Length:</strong> ${selectedGroups.length >= 2 ? arcLength.toFixed(4) : 'Select 2+ Groups'}`;
      
-     // --- NEW: Dynamic Translation Vector Label ---
+     // --- UPDATED: Dynamic Translation Vector Label ---
      let translationVectorLine = "---";
-     if (selectedGroups.length === 1) {
-         const group = selectedGroups[0];
-         translationVectorLine = `(${group.center.x.toFixed(2)}, ${group.center.y.toFixed(2)}, ${group.center.z.toFixed(2)})`;
+     let targetCenter = target ? target.center : null;
+     
+     if (target && target.id.startsWith('group_')) { // Atom Group
+         targetCenter = target.center;
+     } else if (target && target.id.startsWith('body_') && target.root) { // Complex Body Root
+         targetCenter = target.center;
+     } else if (target && target.rootId && target.mesh) { // Complex Body Component
+         targetCenter = target.center;
+     }
+
+     if (targetCenter) {
+         translationVectorLine = `(${targetCenter.x.toFixed(2)}, ${targetCenter.y.toFixed(2)}, ${targetCenter.z.toFixed(2)})`;
          // Also update the single atom translation inputs if Element Translation Mode is active
-         if (ui.elementTranslationToggle.checked) {
-            ui.translationX.value = group.center.x.toFixed(2);
-            ui.translationY.value = group.center.y.toFixed(2);
-            ui.translationZ.value = group.center.z.toFixed(2);
+         if (ui.elementTranslationToggle.checked && selectedGroups.length === 1) {
+            ui.translationX.value = targetCenter.x.toFixed(2);
+            ui.translationY.value = targetCenter.y.toFixed(2);
+            ui.translationZ.value = targetCenter.z.toFixed(2);
          }
      } else {
-         // Clear single atom inputs if more than one or zero are selected (and mode is active)
+         // Clear single atom inputs if mode is active
          if (ui.elementTranslationToggle.checked) {
             ui.translationX.value = 0.0; ui.translationY.value = 0.0; ui.translationZ.value = 0.0;
          }
      }
      
-     // --- END NEW ---
+     // --- END UPDATED ---
 
      let readoutHTML = `<strong>Selected:</strong> ${target ? target.name : 'None'}
-<strong>Type:</strong> ${target ? (target.id.startsWith('group') ? 'Atom Group' : (target.id.startsWith('floor') ? 'Floor Plane' : 'Global Scene')) : '---'}
+<strong>Type:</strong> ${target ? (target.id.startsWith('group_') ? 'Atom Group' : (target.id.startsWith('body_') ? (target.rootId ? 'Complex Component' : 'Complex Body') : (target.id.startsWith('floor') ? 'Floor Plane' : 'Global Scene'))) : '---'}
 <strong>Mass:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.mass.toFixed(2) : 'N/A'}
 <strong>Volume:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.volume.toFixed(2) : 'N/A'}
 <strong>Density:</strong> ${target && target.physics && target.id !== 'scene_global' ? target.physics.density.toFixed(2) : 'N/A'}
@@ -4226,6 +4672,11 @@ function updateArcEdgeReadout() {
         readoutHTML += `\n<strong>Threshold:</strong> ${thresholdVal.toFixed(2)} / ${factorVal.toFixed(2)}`;
     }
     
+    // NEW: Rigid Body State
+    if (target && target.physics && target.physics.rigidBodyState) {
+         readoutHTML += `\n<strong>Body State:</strong> ${target.physics.rigidBodyState}`;
+    }
+    
     readoutHTML += `\n--- \n${arcLengthLine}`;
 
     ui.arcEdgeReadout.innerHTML = readoutHTML;
@@ -4234,7 +4685,7 @@ function updateArcEdgeReadout() {
 // --- NEW: Gimbal/Manipulator State ---
 let isPointerDown = false;
 let startPointerPosition = { x: 0, y: 0 };
-let currentAtomToDrag = null;
+let currentTargetToDrag = null; // Can be atomGroup or complexBodyComponent
 
 function onArcEdgePointerDown(event) {
     if (isSelectionFrozen && event.target !== ui.arcEdgeViewport.querySelector('canvas')) {
@@ -4249,28 +4700,47 @@ function onArcEdgePointerDown(event) {
     
     let interactableMeshes = [];
     atomGroups.forEach(g => { interactableMeshes.push(...g.nucleusMeshes, ...g.electronMeshes); });
+    complexBodies.forEach(b => { 
+        b.components.forEach(c => {
+            if (c.mesh) interactableMeshes.push(c.mesh);
+        });
+    });
     
-    const intersects = raycaster.intersectObjects(interactableMeshes);
+    const intersects = raycaster.intersectObjects(interactableMeshes, true);
 
-    let selectedGroup = null;
+    let selectedTarget = null;
+    let selectedGroup = null; // The internal data structure: atomGroup or complexBodyComponent
 
     if (intersects.length > 0) {
         const selectedObject = intersects[0].object;
+        
+        // 1. Check Atom Groups
         selectedGroup = atomGroups.find(g => g.nucleusMeshes.includes(selectedObject) || g.electronMeshes.includes(selectedObject));
+        
+        // 2. Check Complex Body Components
+        if (!selectedGroup) {
+             complexBodies.forEach(body => {
+                 const component = body.components.find(c => c.mesh === selectedObject);
+                 if (component) {
+                     selectedGroup = component;
+                 }
+             });
+        }
     }
     
     if (selectedGroup) {
         loadTargetSettings(selectedGroup.id);
+        selectedTarget = selectedGroup;
 
         if (multiSelectMode) {
-            const index = selectedGroups.findIndex(g => g.id === selectedGroup.id);
+            const index = selectedGroups.findIndex(g => g.id === selectedTarget.id);
             if (index === -1) {
-                selectedGroups.push(selectedGroup);
+                selectedGroups.push(selectedTarget);
             } else {
                 selectedGroups.splice(index, 1);
             }
         } else {
-            selectedGroups = [selectedGroup];
+            selectedGroups = [selectedTarget];
         }
     } else if (!isSelectionFrozen) {
         selectedGroups = [];
@@ -4282,7 +4752,8 @@ function onArcEdgePointerDown(event) {
         isPointerDown = true;
         startPointerPosition.x = event.clientX;
         startPointerPosition.y = event.clientY;
-        currentAtomToDrag = selectedGroups[0]; // Only drag the first selected atom for simplicity
+        // The target to drag is the internal object representing the selected item
+        currentTargetToDrag = selectedGroups[0]; 
         
         // Prevent orbit controls from immediately trying to drag
         controls.enabled = false;
@@ -4299,7 +4770,7 @@ function onArcEdgePointerDown(event) {
 }
 
 function onArcEdgePointerMove(event) {
-    if (!ui.gimbal3DToggle.checked || !isPointerDown || !currentAtomToDrag) return;
+    if (!ui.gimbal3DToggle.checked || !isPointerDown || !currentTargetToDrag) return;
 
     const deltaX = event.clientX - startPointerPosition.x;
     const deltaY = event.clientY - startPointerPosition.y;
@@ -4308,27 +4779,40 @@ function onArcEdgePointerMove(event) {
     const translationFactor = 0.05; 
     const translateVector = new THREE.Vector3(deltaX * translationFactor, -deltaY * translationFactor, 0);
 
-    // Get the vector of the atom center
-    const oldCenter = currentAtomToDrag.center.clone();
-    
-    // Apply translation directly to the center
-    currentAtomToDrag.center.add(translateVector);
+    // --- Apply Translation to the object ---
+    if (currentTargetToDrag.id.startsWith('group_')) { // Atom Group
+        const group = currentTargetToDrag;
+        const oldCenter = group.center.clone();
+        
+        group.center.add(translateVector);
 
-    // Calculate the total change in center position
-    const totalDelta = currentAtomToDrag.center.clone().sub(oldCenter);
-    
-    // Apply the translation to all sub-components and update initial positions
-    currentAtomToDrag.nucleusMeshes.forEach(m => {
-        m.position.add(totalDelta);
-        m.userData.initialPosition.add(totalDelta);
-    });
-    currentAtomToDrag.electronMeshes.forEach(m => {
-        m.position.add(totalDelta);
-        m.userData.initialPosition.add(totalDelta);
-    });
-    
-    // Update Neutron Center of Volume
-    currentAtomToDrag.neutronCenterOfVolume.add(totalDelta);
+        const totalDelta = group.center.clone().sub(oldCenter);
+        
+        group.nucleusMeshes.forEach(m => {
+            m.position.add(totalDelta);
+            m.userData.initialPosition.add(totalDelta);
+        });
+        group.electronMeshes.forEach(m => {
+            m.position.add(totalDelta);
+            m.userData.initialPosition.add(totalDelta);
+        });
+        
+        group.neutronCenterOfVolume.add(totalDelta);
+        group.nucleusCenter.add(totalDelta);
+        
+    } else if (currentTargetToDrag.rootId) { // Complex Body Component
+        const component = currentTargetToDrag;
+        const body = complexBodies.find(b => b.id === component.rootId);
+        if (body && component.mesh) {
+            // Translate the root object to move the entire body
+            body.root.position.add(translateVector);
+            body.root.getWorldPosition(body.center);
+            
+            // Recalculate component centers
+            component.mesh.updateWorldMatrix(true, true);
+            component.mesh.getWorldPosition(component.center);
+        }
+    }
 
     startPointerPosition.x = event.clientX;
     startPointerPosition.y = event.clientY;
@@ -4340,10 +4824,8 @@ function onArcEdgePointerMove(event) {
 function onArcEdgePointerUp(event) {
     if (ui.gimbal3DToggle.checked) {
         isPointerDown = false;
-        currentAtomToDrag = null;
+        currentTargetToDrag = null;
         controls.enabled = false; // Keep orbit controls disabled while manipulator is checked, but stop dragging
-        
-        // Note: The gimbal button click (handleGimbalAction) is what applies the final "snap" translate/rotate.
         
         // After drag, re-enable controls IF Gimbal is unchecked
         if (!ui.gimbal3DToggle.checked) {
@@ -4449,13 +4931,18 @@ function loadAtom(atom, index, initialPositionArray = null) {
         // 1. Calculate the current center of volume of all existing atoms. 
         let currentSceneCenter = new THREE.Vector3();
         atomGroups.forEach(g => currentSceneCenter.add(g.center));
-        currentSceneCenter.divideScalar(atomGroups.length);
+        complexBodies.forEach(b => currentSceneCenter.add(b.center)); // Include complex bodies
+        currentSceneCenter.divideScalar(atomGroups.length + complexBodies.length);
         
         // 2. Calculate a position relative to the current scene center using a spiral
-        const angle = atomGroups.length * Math.PI * 0.618; 
+        const currentTotalObjects = atomGroups.length + complexBodies.length;
+        const angle = currentTotalObjects * Math.PI * 0.618; 
         const largestExistingRadius = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0);
+        const largestBodyRadius = complexBodies.reduce((max, b) => Math.max(max, b.maxRadius), 0);
+        const maxRadius = Math.max(largestExistingRadius, largestBodyRadius);
+        
         const newAtomMaxRadius = 4 + ((atom.electronOrbits.length - 1) * 2 || 0);
-        const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; 
+        const separationDistance = maxRadius + newAtomMaxRadius + 3; 
         
         let offsetX = Math.cos(angle) * separationDistance;
         let offsetZ = Math.sin(angle) * separationDistance;
@@ -4483,7 +4970,8 @@ function loadAtom(atom, index, initialPositionArray = null) {
             weight: totalNucleons * scenePhysicsSettings.physics.gravity, 
             density: totalNucleons / 1.0,
             deltaValue: undefined, // UPDATED: New field
-            deltaConfig: ''        // UPDATED: New field
+            deltaConfig: '',        // UPDATED: New field
+            rigidBodyState: 'Passive' // Atoms are not true rigid bodies
         },
         electronOrbits: orbits 
     };
@@ -4616,12 +5104,21 @@ function startSimulation() {
 
     saveCurrentSettings(); isSimulating = true;
     atomGroups.forEach(group => { group.isNucleusActive = false; group.nucleusVelocity.set(0, 0, 0); });
-    addPrompt("Simulation Started (Articren Wave)");
+    
+    // NEW: Initialize complex body velocities/state
+    complexBodies.forEach(body => {
+        body.velocity.set(0, 0, 0); 
+        body.angularVelocity.set(0, 0, 0);
+        body.isRigidBody = body.physics.rigidBodyState === 'Active';
+    });
+    
+    addPrompt("Simulation Started (Arc Edge)");
 }
 
 /**
  * REPLACES original stopSimulation
  * Adds logic to reset the Arc Edge mesh and correctly reset new center properties.
+ * UPDATED: Includes logic for Complex Bodies.
  */
 function stopSimulation() {
     isSimulating = false;
@@ -4634,6 +5131,7 @@ function stopSimulation() {
         ui.scrubberCaret.style.display = 'block';
     }
 
+    // 1. Reset Atom Groups
     atomGroups.forEach(group => {
         group.isNucleusActive = false; group.nucleusVelocity.set(0, 0, 0);
         
@@ -4667,6 +5165,50 @@ function stopSimulation() {
         group.nucleusCenter.copy(group.center); // Reset nucleusCenter to the new atom center
     });
     
+    // 2. Reset Complex Bodies
+    complexBodies.forEach(body => {
+        body.velocity.set(0, 0, 0);
+        body.angularVelocity.set(0, 0, 0);
+        body.isRigidBody = false; // Reset to default passive/kinematic
+        
+        // Reset component positions/rotations to initial state
+        body.components.forEach(comp => {
+            const mesh = comp.mesh;
+            if (mesh) {
+                // Restore local position/quaternion
+                if (body.initialPositions.has(mesh.name)) {
+                     mesh.position.copy(body.initialPositions.get(mesh.name));
+                }
+                if (body.initialQuaternions.has(mesh.name)) {
+                     mesh.quaternion.copy(body.initialQuaternions.get(mesh.name));
+                }
+            }
+        });
+        
+        // Recalculate component centers (after reset)
+        body.components.forEach(comp => {
+            comp.mesh.updateWorldMatrix(true, true);
+            comp.mesh.getWorldPosition(comp.center);
+        });
+        
+        // Reset root position to the average of components' reset world positions (simpler)
+        let totalCenter = new THREE.Vector3();
+        body.components.forEach(comp => totalCenter.add(comp.center));
+        if (body.components.length > 0) {
+            totalCenter.divideScalar(body.components.length);
+        }
+        body.root.position.copy(totalCenter);
+        body.center.copy(totalCenter);
+
+        // Update initial positions based on final reset position
+        body.root.updateWorldMatrix(true, true);
+        body.components.forEach(comp => {
+             comp.mesh.updateWorldMatrix(true, true);
+             body.initialPositions.set(comp.mesh.name, comp.mesh.position.clone());
+             body.initialQuaternions.set(comp.mesh.name, comp.mesh.quaternion.clone());
+        });
+    });
+    
     // --- NEW: Reset Arc Edge Mesh ---
     // After atoms are reset, redraw the arc to its default state
     if (arcEdgeMesh && selectedGroups.length >= 2) {
@@ -4684,26 +5226,40 @@ function exportAsPNG() {
     const link = document.createElement('a'); link.href = dataURL; link.download = 'arclake_atom.png'; link.click();
 }
 
-// UPDATED: To include animation data in the export
-function exportAsGLTF() {
+/**
+ * UPDATED: Exports the scene as GLTF or GLB, including animations.
+ * @param {boolean} asGLB - True to export as GLB (binary), false for GLTF (JSON).
+ */
+function exportAsGLTF(asGLB) {
     const exporter = new THREE.GLTFExporter();
     const options = {
-        animations: recordedAnimationClips // Pass the recorded clips
+        animations: recordedAnimationClips, 
+        binary: asGLB // Set binary option based on user choice
     };
     
     exporter.parse(scene, function(result) {
-        const output = JSON.stringify(result, null, 2);
-        // Use application/gltf+json for .gltf, or application/octet-stream for .glb
-        const blob = new Blob([output], { type: 'application/gltf+json' }); 
+        let output, mimeType, filename;
+        
+        if (asGLB) {
+            output = result; // ArrayBuffer for GLB
+            mimeType = 'model/gltf-binary';
+            filename = 'arclake_element.glb';
+        } else {
+            output = JSON.stringify(result, null, 2); // JSON string for GLTF
+            mimeType = 'application/gltf+json';
+            filename = 'arclake_element.gltf';
+        }
+
+        const blob = new Blob([output], { type: mimeType }); 
         const link = document.createElement('a'); 
         link.href = URL.createObjectURL(blob); 
-        link.download = 'arclake_element.gltf';
+        link.download = filename;
         link.click();
-        addPrompt(`Exported GLTF file with ${recordedAnimationClips.length} animation clip(s).`);
+        addPrompt(`Exported ${asGLB ? 'GLB' : 'GLTF'} file with ${recordedAnimationClips.length} animation clip(s).`);
     }, function(error) {
-        console.error("Error exporting GLTF:", error);
-        addPrompt("<strong>Error exporting GLTF. See console.</strong>");
-    }, options); // Pass options here
+        console.error("Error exporting GLTF/GLB:", error);
+        addPrompt("<strong>Error exporting GLTF/GLB. See console.</strong>");
+    }, options); 
 }
 
 
@@ -4715,24 +5271,62 @@ function addPrompt(text) {
 function getCurrentTarget() {
     if (selectedPhysicsTargetId === 'scene_global') return scenePhysicsSettings;
     if (selectedPhysicsTargetId === 'floor_plane' && floorPhysicsSettings) return floorPhysicsSettings;
-    return atomGroups.find(g => g.id === selectedPhysicsTargetId) || null;
+    
+    // Check Atom Groups
+    const atomGroup = atomGroups.find(g => g.id === selectedPhysicsTargetId);
+    if (atomGroup) return atomGroup;
+    
+    // Check Complex Body Components
+    for (const body of complexBodies) {
+        const component = body.components.find(c => c.id === selectedPhysicsTargetId);
+        if (component) {
+            // Also update the Rigid Body state select to match the root body's state
+            document.getElementById('rigid-body-state-select').value = body.physics.rigidBodyState;
+            return component;
+        }
+    }
+    
+    // Check Complex Body Root (if selectedPhysicsTargetId is a body_x ID that is NOT a component ID)
+    const complexBody = complexBodies.find(b => b.id === selectedPhysicsTargetId);
+    if (complexBody) {
+        document.getElementById('rigid-body-state-select').value = complexBody.physics.rigidBodyState;
+        return complexBody;
+    }
+    
+    return null;
 }
+
 function updateInputDisplay(targetId) {
     const isScene = targetId === 'scene_global';
+    const isFloor = targetId === 'floor_plane';
+    const isAtomOrBody = targetId.startsWith('group_') || targetId.startsWith('body_');
+
     ui.physicsGrid.classList.toggle('scene-mode', isScene);
 
-    // Disable/Enable inputs based on scene/atom
-    [ui.inputMass, ui.inputMass_slider, 
-     ui.inputVolume, ui.inputVolume_slider,
-     ui.inputWeight, ui.inputWeight_slider,
-     ui.inputDensity, ui.inputDensity_slider].forEach(el => el.disabled = isScene);
+    // Enable/Disable non-scene/floor inputs
+    const nonSceneNonFloorInputs = [
+        ui.inputMass, ui.inputMass_slider, 
+        ui.inputVolume, ui.inputVolume_slider,
+        ui.inputWeight, ui.inputWeight_slider,
+        ui.inputDensity, ui.inputDensity_slider
+    ];
+    nonSceneNonFloorInputs.forEach(el => el.disabled = !isAtomOrBody);
      
     [ui.inputGravity, ui.inputGravity_slider].forEach(el => el.disabled = !isScene);
+    
+    // Show/Hide Rigid Body Select
+    const rigidBodySelect = document.getElementById('rigid-body-state-select');
+    rigidBodySelect.style.display = isAtomOrBody ? 'block' : 'none';
+    rigidBodySelect.previousElementSibling.style.display = isAtomOrBody ? 'block' : 'none'; // Rigid Body Name input
+    
+    // Show Rigid Body Name input only for Body Root
+    const nameInput = rigidBodySelect.previousElementSibling;
+    const isBodyRoot = isAtomOrBody && !targetId.includes('_comp_');
+    nameInput.style.display = isBodyRoot ? 'block' : 'none';
+    
 }
 function loadTargetSettings(targetId) {
-    const target = targetId === 'scene_global' ? scenePhysicsSettings : 
-                   targetId === 'floor_plane' ? floorPhysicsSettings : 
-                   atomGroups.find(g => g.id === targetId);
+    const target = getCurrentTarget();
                    
     updateInputDisplay(targetId);
 
@@ -4745,7 +5339,19 @@ function loadTargetSettings(targetId) {
     selectedPhysicsTargetId = targetId;
     const p = target.physics;
     
-    if (targetId !== 'scene_global') {
+    // Update Rigid Body Select
+    document.getElementById('rigid-body-state-select').value = p.rigidBodyState || 'Passive';
+    
+    // Update Rigid Body Name Input
+    const nameInput = document.getElementById('rigid-body-state-select').previousElementSibling;
+    if (targetId.startsWith('body_') && !targetId.includes('_comp_')) {
+        nameInput.value = target.name.split('_body_')[0];
+    } else {
+        nameInput.value = target.name;
+    }
+
+    
+    if (targetId !== 'scene_global' && targetId !== 'floor_plane') {
         ui.inputMass.value = p.mass.toFixed(2);
         ui.inputVolume.value = p.volume.toFixed(2);
         ui.inputWeight.value = p.weight.toFixed(2);
@@ -4776,23 +5382,42 @@ function saveCurrentSettings() {
     target.physics.temp = parseFloat(ui.inputTemp.value) || 0;
     target.physics.velocity = parseFloat(ui.inputVelocity.value) || 0;
     
+    // NEW: Save Rigid Body State
+    target.physics.rigidBodyState = document.getElementById('rigid-body-state-select').value;
+    if (target.id.startsWith('body_') && !target.id.includes('_comp_')) {
+        target.isRigidBody = target.physics.rigidBodyState === 'Active';
+    }
+
     if (target.id === 'scene_global') {
         target.physics.gravity = parseFloat(ui.inputGravity.value) || 0;
-        atomGroups.forEach(group => {
+        
+        // Propagate gravity to all objects' weight
+        [...atomGroups, ...complexBodies].forEach(group => {
             group.physics.weight = group.physics.mass * target.physics.gravity;
+            group.components?.forEach(comp => {
+                 comp.physics.weight = comp.physics.mass * target.physics.gravity;
+            });
         });
-    } else {
+        
+    } else if (target.id !== 'floor_plane') {
         target.physics.mass = parseFloat(ui.inputMass.value) || 0;
         target.physics.volume = parseFloat(ui.inputVolume.value) || 0;
-        target.physics.weight = parseFloat(ui.inputWeight.value) || 0;
-        target.physics.density = parseFloat(ui.inputDensity.value) || 0;
+        // Recalculate weight and density from current inputs
+        target.physics.weight = target.physics.mass * scenePhysicsSettings.physics.gravity; 
+        target.physics.density = target.physics.mass / Math.max(0.1, target.physics.volume);
+        
+        // Update input fields with calculated values
+        ui.inputWeight.value = target.physics.weight.toFixed(2);
+        ui.inputDensity.value = target.physics.density.toFixed(2);
     }
+    
     updateArcEdgeReadout();
 }
 
 /**
  * REPLACES original updatePhysicsDropdown
  * Updates all dropdowns that list atoms, including the new math dropdowns.
+ * UPDATED: Includes Complex Bodies and their components.
  */
 function updatePhysicsDropdown() {
     const currentId = selectedPhysicsTargetId;
@@ -4829,7 +5454,7 @@ function updatePhysicsDropdown() {
         }
     });
 
-    // Populate all dropdowns with atom groups
+    // Populate all dropdowns with ATOM GROUPS
     const elementSymbols = new Set();
     atomGroups.forEach(group => {
         try {
@@ -4846,8 +5471,32 @@ function updatePhysicsDropdown() {
              if (!dd.id.startsWith('arc-measure-select-')) {
                  dd.appendChild(option.cloneNode(true));
              }
+             // Add atom group to main physics dropdown
+             if (dd.id === 'physicsTargetSelect') {
+                 dd.appendChild(option.cloneNode(true));
+             }
         });
     });
+    
+    // --- NEW: Populate with Complex Bodies and Components ---
+    complexBodies.forEach(body => {
+        // Add the Complex Body Root to the Physics Target Select
+        let rootOption = document.createElement('option');
+        rootOption.value = body.id;
+        rootOption.textContent = body.name;
+        ui.physicsTargetSelect.appendChild(rootOption);
+        
+        // Add each component as a selectable target in the Physics Target Select
+        body.components.forEach(component => {
+             let compOption = document.createElement('option');
+             compOption.value = component.id;
+             compOption.textContent = component.name;
+             ui.physicsTargetSelect.appendChild(compOption);
+             
+             // Complex body components are NOT used for Molecule Canvas or Math for now
+        });
+    });
+    // --- END NEW ---
     
     // Populate Arc Measure dropdowns with element types
     document.querySelectorAll('.arc-measure-set select').forEach(select => {
@@ -4898,7 +5547,7 @@ function createFloorPlane() {
     const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x555555, transparent: true, opacity: 0.5 });
     floorPlaneMesh = new THREE.Mesh(floorGeometry, floorMaterial);
     floorPlaneMesh.position.y = FLOOR_Y_POS; floorPlaneMesh.name = 'FloorPlane'; floorPlaneMesh.userData.isStaticBody = true; 
-    floorPhysicsSettings = { id: 'floor_plane', name: 'Floor Plane', physics: { mass: 1000.0, volume: 100.0, weight: 9800.0, density: 10.0, temp: 70.0, velocity: 0.0, gravity: 0.0 } };
+    floorPhysicsSettings = { id: 'floor_plane', name: 'Floor Plane', physics: { mass: 1000.0, volume: 100.0, weight: 9800.0, density: 10.0, temp: 70.0, velocity: 0.0, gravity: 0.0, rigidBodyState: 'Passive' } };
     scene.add(floorPlaneMesh);
     updatePhysicsDropdown();
 }
@@ -5025,29 +5674,27 @@ function updateTranslationSelectDropdown() {
 
 /**
  * Updates the single element translation inputs.
- * @param {Object|null} group - The single selected atom group.
+ * @param {Object|null} target - The single selected atom group or complex body component.
  */
-function updateElementTranslationInputs(group) {
-    if (group) {
-        ui.translationX.value = group.center.x.toFixed(2);
-        ui.translationY.value = group.center.y.toFixed(2);
-        ui.translationZ.value = group.center.z.toFixed(2);
-    } else {
-        ui.translationX.value = 0.0;
-        ui.translationY.value = 0.0;
-        ui.translationZ.value = 0.0;
+function updateElementTranslationInputs(target) {
+    let center = new THREE.Vector3(0, 0, 0);
+    if (target) {
+        center.copy(target.center);
     }
+    ui.translationX.value = center.x.toFixed(2);
+    ui.translationY.value = center.y.toFixed(2);
+    ui.translationZ.value = center.z.toFixed(2);
 }
 
 /**
  * Updates the multiple translation inputs based on the selected groups' centroid.
  */
 function updateMultiTranslationInputs() {
-    const selectedGroupElements = Array.from(ui.multipleTranslationSelect.selectedOptions)
-        .map(opt => atomGroups.find(g => g.id === opt.value))
-        .filter(g => g);
+    const selectedTargets = Array.from(ui.multipleTranslationSelect.selectedOptions)
+        .map(opt => atomGroups.find(g => g.id === opt.value) || complexBodies.flatMap(b => b.components).find(c => c.id === opt.value) || complexBodies.find(b => b.id === opt.value))
+        .filter(g => g && g.center);
         
-    if (selectedGroupElements.length === 0) {
+    if (selectedTargets.length === 0) {
         ui.multiTranslationX.value = 0.0;
         ui.multiTranslationY.value = 0.0;
         ui.multiTranslationZ.value = 0.0;
@@ -5055,8 +5702,8 @@ function updateMultiTranslationInputs() {
     }
 
     let centroid = new THREE.Vector3();
-    selectedGroupElements.forEach(group => centroid.add(group.center));
-    centroid.divideScalar(selectedGroupElements.length);
+    selectedTargets.forEach(target => centroid.add(target.center));
+    centroid.divideScalar(selectedTargets.length);
 
     ui.multiTranslationX.value = centroid.x.toFixed(2);
     ui.multiTranslationY.value = centroid.y.toFixed(2);
@@ -5080,8 +5727,8 @@ function handleGimbalAction(isMultiple) {
             return;
         }
         targetGroups = Array.from(ui.multipleTranslationSelect.selectedOptions)
-            .map(opt => atomGroups.find(g => g.id === opt.value))
-            .filter(g => g);
+            .map(opt => atomGroups.find(g => g.id === opt.value) || complexBodies.flatMap(b => b.components).find(c => c.id === opt.value) || complexBodies.find(b => b.id === opt.value))
+            .filter(g => g && g.center);
             
         currentX = parseFloat(ui.multiTranslationX.value);
         currentY = parseFloat(ui.multiTranslationY.value);
@@ -5089,7 +5736,7 @@ function handleGimbalAction(isMultiple) {
             
     } else {
         if (!ui.elementTranslationToggle.checked || selectedGroups.length !== 1) {
-             addPrompt("Please enable Element Translation Mode and select exactly one atom.");
+             addPrompt("Please enable Element Translation Mode and select exactly one atom or component.");
              return;
         }
         targetGroups = [selectedGroups[0]];
@@ -5099,7 +5746,7 @@ function handleGimbalAction(isMultiple) {
     }
     
     if (targetGroups.length === 0) {
-        addPrompt("No atoms selected for gimbal action.");
+        addPrompt("No atoms/components selected for gimbal action.");
         return;
     }
     
@@ -5115,77 +5762,89 @@ function handleGimbalAction(isMultiple) {
     // Rotation vector (Axis-Angle representation)
     const rotationMatrix = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(rotationDegrees));
     
-    addPrompt(`Applying gimbal: Translate (${deltaX.toFixed(2)}, ${deltaY.toFixed(2)}, ${deltaZ.toFixed(2)}), Rotate ${rotationDegrees.toFixed(1)}° to ${targetGroups.length} atom(s).`);
+    addPrompt(`Applying gimbal: Translate (${deltaX.toFixed(2)}, ${deltaY.toFixed(2)}, ${deltaZ.toFixed(2)}), Rotate ${rotationDegrees.toFixed(1)}° to ${targetGroups.length} object(s).`);
 
     // Group center of rotation for multiple atoms
     let centerOfRotation = new THREE.Vector3(currentX, currentY, currentZ);
     
     // Apply changes to all target groups
-    targetGroups.forEach(group => {
+    targetGroups.forEach(target => {
         
-        // 1. Get the current center and prepare the translation vector
-        const oldCenter = group.center.clone(); 
-        const totalTranslation = new THREE.Vector3(deltaX, deltaY, deltaZ);
+        const isAtom = target.id.startsWith('group_');
+        const isBodyRoot = target.id.startsWith('body_') && !target.rootId;
+        const isComponent = target.rootId; // Complex body component
         
-        // 2. Apply Translation to the atom's center (group.center)
-        group.center.add(totalTranslation);
+        const translationVector = new THREE.Vector3(deltaX, deltaY, deltaZ);
         
-        // 3. Apply Rotation (Rotate the atom's center around the group's rotation center)
-        if (rotationDegrees !== 0) {
-            // Translate to rotation center, rotate, translate back
-            group.center.sub(centerOfRotation).applyMatrix4(rotationMatrix).add(centerOfRotation);
-        }
-
-        // The final position change vector
-        const finalCenterUpdate = group.center.clone().sub(oldCenter); 
-        
-        // 4. Update all subcomponents (Nucleons & Electrons)
-        // Note: The structure of the atom (offset from center) should remain constant relative to its center.
-        // We only need to translate all particles by the final difference in the center's position.
-        
-        group.nucleusMeshes.forEach(m => {
-            // Apply total translation (includes rotation impact on center)
-            m.position.add(finalCenterUpdate);
+        if (isAtom) {
+            const group = target;
+            const oldCenter = group.center.clone(); 
             
-            // Re-calculate rotation relative to the new center:
-            let offset = m.position.clone().sub(group.center);
+            // 1. Apply Translation to the atom's center (group.center)
+            group.center.add(translationVector);
+            
+            // 2. Apply Rotation (Rotate the atom's center around the group's rotation center)
             if (rotationDegrees !== 0) {
-                // If it's a multiple selection, we rotate around the overall selection center, which is complex.
-                // For simplicity here, we only rotate the offset vector for single atom action.
-                if (!isMultiple) {
-                    offset.applyMatrix4(rotationMatrix);
-                }
+                group.center.sub(centerOfRotation).applyMatrix4(rotationMatrix).add(centerOfRotation);
             }
-            m.position.copy(group.center).add(offset);
+
+            // The final position change vector
+            const finalCenterUpdate = group.center.clone().sub(oldCenter); 
             
-            m.userData.initialPosition.copy(m.position); 
-        });
-        
-        group.electronMeshes.forEach(m => {
-            m.position.add(finalCenterUpdate);
+            // 3. Update all subcomponents (Nucleons & Electrons)
+            group.nucleusMeshes.forEach(m => {
+                m.position.add(finalCenterUpdate);
+                m.userData.initialPosition.copy(m.position); 
+            });
+            group.electronMeshes.forEach(m => {
+                m.position.add(finalCenterUpdate);
+                m.userData.initialPosition.copy(m.position); 
+            });
             
-            let offset = m.position.clone().sub(group.center);
-            if (rotationDegrees !== 0 && !isMultiple) {
-                offset.applyMatrix4(rotationMatrix);
+            // 4. Update Neutron Center
+            group.neutronCenterOfVolume.add(finalCenterUpdate);
+            group.nucleusCenter.copy(group.center);
+            
+            // Apply rotation to internal meshes (local offset is not enough)
+            if (rotationDegrees !== 0) {
+                const quaternion = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+                group.nucleusMeshes.forEach(m => {
+                     m.position.sub(group.center).applyQuaternion(quaternion).add(group.center);
+                     m.userData.initialPosition.copy(m.position); 
+                });
+                group.electronMeshes.forEach(m => {
+                     m.position.sub(group.center).applyQuaternion(quaternion).add(group.center);
+                     m.userData.initialPosition.copy(m.position);
+                });
             }
-            m.position.copy(group.center).add(offset);
+
+        } else if (isBodyRoot || isComponent) {
+            const body = isBodyRoot ? target : complexBodies.find(b => b.id === target.rootId);
+            if (!body) return;
             
-            m.userData.initialPosition.copy(m.position); 
-        });
-        
-        // 5. Update Neutron Center of Volume
-        let newNeutronCenterAccumulator = new THREE.Vector3();
-        let neutronCount = 0;
-        group.nucleusMeshes.filter(m => m.userData.type === 'neutron').forEach(m => {
-             newNeutronCenterAccumulator.add(m.position);
-             neutronCount++;
-        });
-        if (neutronCount > 0) {
-             group.neutronCenterOfVolume.copy(newNeutronCenterAccumulator.divideScalar(neutronCount));
-        } else {
-             group.neutronCenterOfVolume.copy(group.center);
+            // Apply translation directly to the root
+            body.root.position.add(translationVector);
+            
+            // Apply rotation directly to the root (simplified rotation around local origin)
+            if (rotationDegrees !== 0) {
+                 const quaternion = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+                 body.root.quaternion.multiplyQuaternions(quaternion, body.root.quaternion);
+            }
+            
+            // Recalculate component centers
+            body.root.updateWorldMatrix(true, true);
+            body.components.forEach(comp => {
+                 comp.mesh.updateWorldMatrix(true, true);
+                 comp.mesh.getWorldPosition(comp.center);
+            });
+            body.root.getWorldPosition(body.center); // Update body center
+
+            // Update initial positions based on final position
+            body.components.forEach(comp => {
+                 body.initialPositions.set(comp.mesh.name, comp.mesh.position.clone());
+                 body.initialQuaternions.set(comp.mesh.name, comp.mesh.quaternion.clone());
+            });
         }
-        group.nucleusCenter.copy(group.center); // Reset nucleusCenter to the new atom center
     });
 
     // Update UI after changes
@@ -5229,10 +5888,9 @@ function addMathOperationSet() {
     newSet.querySelector('.adv-math-atom-left').addEventListener('change', populateShellDropdown);
     newSet.querySelector('.adv-math-atom-right').addEventListener('change', populateShellDropdown);
     
-    // Repopulate atom dropdowns
-    const atomOptions = Array.from(ui.physicsTargetSelect.options)
-        .filter(opt => opt.value.startsWith('group_'))
-        .map(opt => `<option value="${opt.value}">${opt.textContent}</option>`)
+    // Repopulate atom dropdowns (only with Atom Groups, not complex bodies)
+    const atomOptions = atomGroups
+        .map(group => `<option value="${group.id}">${group.name}</option>`)
         .join('');
         
     newSet.querySelector('.adv-math-atom-left').innerHTML = `<option value="">-- Select Atom 1 --</option>${atomOptions}`;
@@ -5465,9 +6123,11 @@ function captureFrameState() {
     // This is a heavy operation.
     const frameState = {
         time: (simulationFrames.length * (1/60)), // Assuming 60fps
-        atomGroups: []
+        atomGroups: [],
+        complexBodies: [] // NEW
     };
     
+    // 1. Capture Atom Groups
     atomGroups.forEach(group => {
         const groupState = {
             id: group.id,
@@ -5477,9 +6137,22 @@ function captureFrameState() {
             electronMeshes: group.electronMeshes.map(mesh => ({
                 position: mesh.position.clone(),
             })),
-            nucleusCenter: group.center.clone() // Capture atom center (group.center)
+            nucleusCenter: group.center.clone() 
         };
         frameState.atomGroups.push(groupState);
+    });
+    
+    // 2. Capture Complex Bodies (Root position/rotation)
+    complexBodies.forEach(body => {
+        const bodyState = {
+            id: body.id,
+            position: body.root.position.clone(),
+            quaternion: body.root.quaternion.clone(),
+            center: body.center.clone(),
+            // Capture component local state only if body is passive and components move independently (not implemented yet)
+            // For now, only track root motion for rigid bodies
+        };
+        frameState.complexBodies.push(bodyState);
     });
     
     simulationFrames.push(frameState);
@@ -5505,6 +6178,7 @@ function captureFrameState() {
 function applyFrameState(frameState) {
     if (!frameState) return;
     
+    // 1. Restore Atom Groups
     frameState.atomGroups.forEach(groupState => {
         const group = atomGroups.find(g => g.id === groupState.id);
         if (group) {
@@ -5518,7 +6192,7 @@ function applyFrameState(frameState) {
                     group.electronMeshes[index].position.copy(meshState.position);
                 }
             });
-            group.center.copy(groupState.nucleusCenter); // Restore atom center
+            group.center.copy(groupState.nucleusCenter); 
             
             // Re-calculate the neutron center of volume based on current mesh positions
             let newNeutronCenter = new THREE.Vector3();
@@ -5532,6 +6206,23 @@ function applyFrameState(frameState) {
             } else {
                  group.neutronCenterOfVolume.copy(group.center);
             }
+        }
+    });
+    
+    // 2. Restore Complex Bodies (Root position/rotation)
+    frameState.complexBodies.forEach(bodyState => {
+        const body = complexBodies.find(b => b.id === bodyState.id);
+        if (body) {
+            body.root.position.copy(bodyState.position);
+            body.root.quaternion.copy(bodyState.quaternion);
+            body.center.copy(bodyState.center);
+            
+            // Recalculate component world centers
+            body.root.updateWorldMatrix(true, true);
+            body.components.forEach(comp => {
+                 comp.mesh.updateWorldMatrix(true, true);
+                 comp.mesh.getWorldPosition(comp.center);
+            });
         }
     });
     
@@ -5565,6 +6256,7 @@ function onScrubberInput(e) {
 /**
  * Creates THREE.AnimationClip objects from the captured frames
  * for GLTF export.
+ * UPDATED: Includes tracks for Complex Body roots.
  */
 function createAnimationClips(frames) {
     if (frames.length < 2) return [];
@@ -5572,14 +6264,14 @@ function createAnimationClips(frames) {
     const clips = [];
     const frameTimes = frames.map(f => f.time);
 
-    // Create one animation clip per *atom group*
+    // 1. Create one clip for all Atom Groups (for complexity/simplicity)
     atomGroups.forEach((group, groupIndex) => {
         const meshTracks = [];
         
-        // Add tracks for nucleus meshes
+        // Nucleon tracks
         group.nucleusMeshes.forEach((mesh, meshIndex) => {
             const meshName = mesh.name || `group_${groupIndex}_nucleus_${meshIndex}`;
-            mesh.name = meshName; // Ensure it has a name
+            mesh.name = meshName; 
             
             const positions = [];
             frames.forEach(frame => {
@@ -5596,10 +6288,10 @@ function createAnimationClips(frames) {
             }
         });
 
-        // Add tracks for electron meshes
+        // Electron tracks
         group.electronMeshes.forEach((mesh, meshIndex) => {
             const meshName = mesh.name || `group_${groupIndex}_electron_${meshIndex}`;
-            mesh.name = meshName; // Ensure it has a name
+            mesh.name = meshName; 
             
             const positions = [];
             frames.forEach(frame => {
@@ -5620,6 +6312,36 @@ function createAnimationClips(frames) {
             const clip = new THREE.AnimationClip(`AtomGroup_${groupIndex}_Animation`, -1, meshTracks);
             clips.push(clip);
         }
+    });
+    
+    // 2. Create clips for Complex Body Roots
+    complexBodies.forEach((body, bodyIndex) => {
+         const bodyTracks = [];
+         
+         const positionValues = [];
+         const quaternionValues = [];
+         
+         frames.forEach(frame => {
+             const bodyState = frame.complexBodies.find(b => b.id === body.id);
+             if (bodyState) {
+                 positionValues.push(bodyState.position.x, bodyState.position.y, bodyState.position.z);
+                 quaternionValues.push(bodyState.quaternion.x, bodyState.quaternion.y, bodyState.quaternion.z, bodyState.quaternion.w);
+             }
+         });
+         
+         if (positionValues.length > 0) {
+             body.root.name = body.root.name || `BodyRoot_${bodyIndex}`;
+             
+             bodyTracks.push(new THREE.VectorKeyframeTrack(
+                 `${body.root.name}.position`, frameTimes, positionValues
+             ));
+             bodyTracks.push(new THREE.QuaternionKeyframeTrack(
+                 `${body.root.name}.quaternion`, frameTimes, quaternionValues
+             ));
+             
+             const clip = new THREE.AnimationClip(`ComplexBody_${bodyIndex}_Animation`, -1, bodyTracks);
+             clips.push(clip);
+         }
     });
     
     return clips;
