@@ -41,17 +41,7 @@
         }
 
         html, body { 
-        background-color: transparent;    
-                 /* Fallback color: The darker gray for wide compatibility */
-/*    background-color: #1c1c1c; */
-
-    /* FIX: The gradient is correctly applied using background-image */
-/*    background-image: radial-gradient(
-        circle at center, 
-        #282828 0%,  */  /* Lighter gray at the center (subtle focus) */
- /*       #1c1c1c 80%  */   /* Darker gray for the edges (less light) */
-/*    ); */
- 
+            background-color: transparent; 
             color: var(--theme-text); 
             font-family: 'Segoe UI', 'Roboto', 'Dart', sans-serif; 
             margin: 0;
@@ -913,6 +903,14 @@
             accent-color: var(--accent-color);
         }
         /* END: Mic Physics Connections CSS */
+        /* --- NEW: Hide Element Checkboxes --- */
+        .element-checkbox-wrapper input[type="checkbox"] {
+            display: none;
+        }
+        .element-checkbox-wrapper label {
+            /* Add some padding for a better click target */
+            padding: 2px 0;
+        }
 
 
     </style>
@@ -925,7 +923,7 @@
     <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/al.mp4" type="video/mp4">
     Your browser does not support the video tag.
 </video>
-    
+
 <div id="arcedge-graph-overlay" class="overlay-base">
     <div id="arcedge-graph-content" class="overlay-content-base">
         
@@ -1276,7 +1274,8 @@
             </fieldset>
 
             <fieldset>
-                <legend>Element Drop-down</legend>
+            <fieldset>
+                <legend>Element Drop-down <span id="add-all-elements-btn" style="cursor: pointer; color: var(--accent-color); font-weight: normal; font-size: 0.8em; float: right;">(Add All)</span></legend>
                 <div id="periodicTableContainer">
                      <label>Select Atoms to Load</label>
                      <div id="periodicTableCheckboxList">
@@ -1297,12 +1296,11 @@
                 </div>
             </fieldset>
 
-            <fieldset style="flex-grow: 1; display: flex; flex-direction: column; min-height: 300px;">
-                <legend>Simulation Prompts</legend>
-                <div id="prompt-output-container" style="flex-grow: 1; overflow-y: auto;">
-                </div>
-
-            </fieldset>
+<fieldset style="height: 300px; display: flex; flex-direction: column;">
+    <legend>Simulation Prompts</legend>
+    <div id="prompt-output-container" style="flex-grow: 1; overflow-y: auto;">
+    </div>
+</fieldset>
 
                 <div class="action-buttons" style="margin-top: 10px;">
                     <button id="arcedge-clear-scene-btn" class="danger-btn">Clear Scene</button>
@@ -2281,6 +2279,9 @@ function setupEventListeners() {
             updateArcMeasureSelection(e.target.dataset.measureId, Array.from(e.target.selectedOptions).map(opt => opt.value));
         }
     });
+
+    // --- NEW: Add All Elements Listener ---
+    document.getElementById('add-all-elements-btn').addEventListener('click', addAllElementsToScene);
     // --- END: Mic Listeners ---
 
     // Initialize new canvas contexts
@@ -2320,7 +2321,7 @@ function populateElementDropdowns(elements) {
     ui.molElementSelect.innerHTML = '<option value="">Select Element</option>';
     elements.forEach(element => {
         const molOption = document.createElement('option');
-        molOption.value = element.elementSymbol;
+        molOption.value = element.protons;
         molOption.textContent = `${element.elementSymbol} - ${element.elementName}`; 
         ui.molElementSelect.appendChild(molOption);
     });
@@ -2340,8 +2341,8 @@ function populateElementDropdowns(elements) {
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.id = `el_check_${element.elementSymbol}`;
-        checkbox.value = element.elementSymbol;
+        checkbox.id = `el_check_${element.protons}`;
+        checkbox.value = element.protons;
         checkbox.addEventListener('change', handleElementCheckboxChange); // Add new listener
 
         const label = document.createElement('label');
@@ -2502,81 +2503,101 @@ function clearScene() {
  */
 function handleElementCheckboxChange(e) {
     const checkbox = e.target;
-    const symbol = checkbox.value;
-    const isChecked = checkbox.checked;
+    const protonId = parseInt(checkbox.value, 10);
+    // const isChecked = checkbox.checked; // <-- We no longer care if it's checking or unchecking
 
-    if (isChecked) {
-        // --- Add atom ---
-        const atom = allElementsData.find(el => el.elementSymbol === symbol);
-        if (atom) {
-            addPrompt(`Checkbox ADD: ${symbol}`);
-            const atomData = {
-                ...atom,
-                protons: parseInt(atom.protons), neutrons: parseInt(atom.neutrons), electrons: parseInt(atom.electrons),
-                electronOrbits: Array.isArray(atom.electronOrbits) ? atom.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0) : [],
-            };
-            
-            let initialPositionArray = null;
-            
-            // --- NEW: Single Atom Positioning Logic for Dynamic Scene Update ---
-            if (atomGroups.length > 0) {
-                 // 1. Calculate the current center of volume of all existing atoms. 
-                let currentSceneCenter = new THREE.Vector3();
-                atomGroups.forEach(g => currentSceneCenter.add(g.center));
-                currentSceneCenter.divideScalar(atomGroups.length);
-                
-                // 2. Calculate a position relative to the current scene center using a spiral
-                const angle = atomGroups.length * Math.PI * 0.618; 
-                const largestExistingRadius = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0);
-                const newAtomMaxRadius = 4 + ((atomData.electronOrbits.length - 1) * 2 || 0);
-                const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; 
-                
-                let offsetX = Math.cos(angle) * separationDistance;
-                let offsetZ = Math.sin(angle) * separationDistance;
-                
-                initialPositionArray = [offsetX, 0, offsetZ]; 
-                
-                // 3. Reposition all existing atoms so the new origin (scene center) is correct relative to them.
-                const repositionDelta = currentSceneCenter.clone().negate();
-                atomGroups.forEach(group => {
-                    group.center.add(repositionDelta);
-                    group.nucleusMeshes.forEach(m => {
-                        m.position.add(repositionDelta);
-                        m.userData.initialPosition.add(repositionDelta);
-                    });
-                    group.electronMeshes.forEach(m => {
-                        m.position.add(repositionDelta);
-                        m.userData.initialPosition.add(repositionDelta);
-                    });
-                    group.neutronCenterOfVolume.add(repositionDelta);
-                    group.nucleusCenter.add(repositionDelta);
-                });
-            }
-            // --- END NEW ---
-
-            // loadAtom loads the new atom at the correct initial position
-            loadAtom(atomData, multiSelectMode ? atomGroups.length : 0, initialPositionArray);
-        }
-    } else {
-        // --- Remove atom ---
-        addPrompt(`Checkbox REMOVE: ${symbol}`);
+    // ALWAYS ADD ATOM, REGARDLESS OF CHECKED STATE
+    const atom = allElementsData.find(el => el.protons === protonId);
+    if (atom) {
+        addPrompt(`Checkbox ADD: ${atom.elementName}`);
+        const atomData = {
+            ...atom,
+            protons: parseInt(atom.protons), neutrons: parseInt(atom.neutrons), electrons: parseInt(atom.electrons),
+            electronOrbits: Array.isArray(atom.electronOrbits) ? atom.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0) : [],
+        };
         
-        // Find all atom groups that match this symbol
-        // We iterate backwards to safely remove while iterating
-        for (let i = atomGroups.length - 1; i >= 0; i--) {
-            const group = atomGroups[i];
-            try {
-                const elementData = JSON.parse(group.elementData);
-                if (elementData.elementSymbol === symbol) {
-                    removeAtomGroup(group.id);
-                    addPrompt(`Removed ${group.name}.`);
-                }
-            } catch (err) {
-                // Ignore parsing errors
-            }
+        let initialPositionArray = null;
+        
+        // --- NEW: Single Atom Positioning Logic for Dynamic Scene Update ---
+        if (atomGroups.length > 0) {
+             // 1. Calculate the current center of volume of all existing atoms. 
+            let currentSceneCenter = new THREE.Vector3();
+            atomGroups.forEach(g => currentSceneCenter.add(g.center));
+            currentSceneCenter.divideScalar(atomGroups.length);
+            
+            // 2. Calculate a position relative to the current scene center using a spiral
+            const angle = atomGroups.length * Math.PI * 0.618; 
+            const largestExistingRadius = atomGroups.reduce((max, g) => Math.max(max, g.maxRadius), 0);
+            const newAtomMaxRadius = 4 + ((atomData.electronOrbits.length - 1) * 2 || 0);
+            const separationDistance = largestExistingRadius + newAtomMaxRadius + 3; 
+            
+            let offsetX = Math.cos(angle) * separationDistance;
+            let offsetZ = Math.sin(angle) * separationDistance;
+            
+            initialPositionArray = [offsetX, 0, offsetZ]; 
+            
+            // 3. Reposition all existing atoms so the new origin (scene center) is correct relative to them.
+            const repositionDelta = currentSceneCenter.clone().negate();
+            atomGroups.forEach(group => {
+                group.center.add(repositionDelta);
+                group.nucleusMeshes.forEach(m => {
+                    m.position.add(repositionDelta);
+                    m.userData.initialPosition.add(repositionDelta);
+                });
+                group.electronMeshes.forEach(m => {
+                    m.position.add(repositionDelta);
+                    m.userData.initialPosition.add(repositionDelta);
+                });
+                group.neutronCenterOfVolume.add(repositionDelta);
+                group.nucleusCenter.add(repositionDelta);
+            });
         }
+        // --- END NEW ---
+
+        // loadAtom loads the new atom at the correct initial position
+        // loadAtom will also call updateElementCheckboxes, which will re-check the box,
+        // making this a "button" behavior instead of a "toggle" behavior.
+        loadAtom(atomData, multiSelectMode ? atomGroups.length : 0, initialPositionArray);
     }
+    // REMOVED THE 'ELSE' BLOCK that handled removal.
 }
+
+/**
+ * --- ADDED FUNCTION ---
+ * Loops through all loaded element data and adds one of each to the scene.
+ */
+function addAllElementsToScene() {
+    if (!allElementsData || allElementsData.length === 0) {
+        addPrompt("Element data not loaded. Cannot add all.");
+        return;
+    }
+
+    addPrompt("Loading all elements to scene...");
+    
+    // We must set multiSelectMode = true temporarily, or clearScene() will be called
+    // on the second atom.
+    const originalMultiSelect = multiSelectMode;
+    multiSelectMode = true; 
+
+    allElementsData.forEach((atom, index) => {
+        const atomData = {
+            ...atom,
+            protons: parseInt(atom.protons), neutrons: parseInt(atom.neutrons), electrons: parseInt(atom.electrons),
+            electronOrbits: Array.isArray(atom.electronOrbits) ? atom.electronOrbits.map(n => parseInt(n)).filter(n => !isNaN(n) && n > 0) : [],
+        };
+        
+        // We pass 'null' for initialPositionArray so loadAtom uses its internal
+        // spiral positioning logic, which is what we want for this feature.
+        // We use the full 'index' to ensure the spiral logic works correctly.
+        loadAtom(atomData, atomGroups.length, null); 
+    });
+
+    // Restore the user's original multi-select setting
+    multiSelectMode = originalMultiSelect; 
+    
+    addPrompt("Finished loading all elements.");
+}
+
 
 /**
  * --- ADDED FUNCTION ---
@@ -2821,8 +2842,11 @@ function handleCanvasDrop(e) {
     switch (currentDragTool) {
         case 'AtomDrag':
             const selectedElement = ui.molElementSelect.options[ui.molElementSelect.selectedIndex];
-            const symbol = allElementsData.find(el => el.elementSymbol === selectedElement.value)?.elementSymbol || '??';
+            const protonId = parseInt(selectedElement.value, 10);
+            const atomData = allElementsData.find(el => el.protons === protonId);
+            const symbol = atomData ? atomData.elementSymbol : '??';
             newItem.symbol = symbol;
+            newItem.protons = protonId;
             newItem.hasAtomPairBond = false; // New property for AtomPair visual
             
             molCanvasState.atoms.push(newItem);
@@ -3800,7 +3824,7 @@ function createCompoundFromCanvas() {
     const compoundAtoms = [];
     
     molCanvasState.atoms.forEach(atom2D => {
-        const atomData = allElementsData.find(el => el.elementSymbol === atom2D.symbol);
+        const atomData = allElementsData.find(el => el.protons === atom2D.protons);
         if (atomData) {
             const attachedDelta = molCanvasState.tools.find(t => t.tool === 'OrbitDelta' && t.attachedTo === atom2D.id);
             
@@ -4124,8 +4148,8 @@ function fetchData() {
                 : [];
 
             return {
-                elementName: el.elementName,
-                elementSymbol: el.elementName ? el.elementName.slice(0, 2).replace(/\s/g, '').toUpperCase() : `UN${el.protons || '?'}`.toUpperCase(),
+                elementName: el.elementName ? el.elementName.trim() : `Element ${el.protons}`,
+                elementSymbol: el.elementName ? el.elementName.trim().slice(0, 2).replace(/\s/g, '').toUpperCase() : `UN${el.protons || '?'}`.toUpperCase(),
                 protons: parseInt(el.protons) || 0,
                 neutrons: parseInt(el.neutrons) || 0,
                 electrons: parseInt(el.electrons) || 0,
