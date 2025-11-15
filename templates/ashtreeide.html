@@ -25,6 +25,7 @@
     .button:hover { background-color: #4a4d51; }
     #buildAndRunBtn { background-color: #4CAF50; font-weight: bold; }
     .upload-btn { background-color: #007acc; }
+    .save-btn { background-color: #28a745; } /* Save button style */
     #autoLoadBtn { background-color: #8A2BE2; } /* Style for the new button */
 
 
@@ -64,12 +65,18 @@
                 <button class="button upload-btn" onclick="document.getElementById('templateUpload').click()">Upload Output Syntax</button>
                 <input type="file" id="templateUpload" style="display: none" accept=".json, .txt">
                 <button id="clearConsoleBtn" class="button">Clear Consoles</button>
-                <button id="autoLoadBtn" class="button">Auto Load Ash</button> <a href="https://github.com/DART-Skyboard/Ariel/tree/main/dartide" 
+                <button id="autoLoadBtn" class="button">Auto Load Ash</button>
+                <a href="https://github.com/DART-Skyboard/Ariel/tree/main/dartide" 
                    target="_blank" 
                    class="button">
                    View Ash Files on GitHub
                 </a>
                 <hr style="width: 100%; border-top: 1px solid #444; margin: 5px 0;">
+                
+                <button id="saveAshBtn" class="button save-btn">Save Ash</button>
+                <button class="button upload-btn" onclick="document.getElementById('ashUpload').click()">Import Ash</button>
+                <input type="file" id="ashUpload" style="display: none" accept=".ash,.txt">
+                
                 <button id="clearEditorContentBtn" class="button">Clear Editor Content</button>
                 <button id="refreshEditorContentBtn" class="button">Refresh Editor Content</button>
             </div>
@@ -233,7 +240,6 @@
                 return ast;
             },
 
-            /* --- THIS FUNCTION HAS BEEN FIXED --- */
             interpret(astOrNodeArray) {
                 if (!this.executionMap || !this.outputTemplates) { this.log('INTERPRETER ERROR', 'Required definition files not loaded.'); return; }
 
@@ -391,6 +397,39 @@ maze_generate(width: 10, height: 10)
             DART_PROCESSOR.log('SYSTEM', 'Auto-load process complete.');
         }
 
+        // --- New Save Ash Function (FIXED) ---
+        function saveAshFile() {
+            const content = editor.value;
+            // Use 'application/octet-stream' to force download as-is
+            const blob = new Blob([content], { type: 'application/octet-stream' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'ashtree.ash'; // Default file name
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            DART_PROCESSOR.log("SYSTEM", "Ash file save prompted.");
+        }
+
+        // --- New Import Ash Function ---
+        function handleAshFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const content = e.target.result;
+                    editor.value = content; // Clear and set new content
+                    updateHighlighting(); // Update highlighting
+                    DART_PROCESSOR.log("SYSTEM", `Loaded Ash file: ${file.name}`);
+                } catch (err) {
+                    DART_PROCESSOR.log('FILE ERROR', `Error reading ${file.name}: ${err.message}`);
+                }
+            };
+            reader.readAsText(file);
+            // Clear the input value so the 'change' event fires even if the same file is selected
+            event.target.value = null;
+        }
 
         function handleFileUpload(event, callback) {
             const file = event.target.files[0];
@@ -403,11 +442,17 @@ maze_generate(width: 10, height: 10)
                 } catch (err) { DART_PROCESSOR.log('FILE ERROR', `Error parsing ${file.name}: ${err.message}`); }
             };
             reader.readAsText(file);
+             // Clear the input value
+            event.target.value = null;
         }
 
         document.getElementById("syntaxUpload").addEventListener('change', (e) => handleFileUpload(e, (json, fileName) => { DART_PROCESSOR.syntaxDefs = json; DART_PROCESSOR.log('SYSTEM', `Loaded Syntax Definitions from '${fileName}'.`); updateHighlighting(); }));
         document.getElementById("execUpload").addEventListener('change', (e) => handleFileUpload(e, (json, fileName) => { DART_PROCESSOR.executionMap = json; DART_PROCESSOR.log('SYSTEM', `Loaded Execution Map from '${fileName}'.`); }));
         document.getElementById("templateUpload").addEventListener('change', (e) => handleFileUpload(e, (json, fileName) => { DART_PROCESSOR.outputTemplates = json; DART_PROCESSOR.log('SYSTEM', `Loaded Display Templates from '${fileName}'.`); }));
+        
+        // --- New Ash File Listeners ---
+        document.getElementById("ashUpload").addEventListener('change', handleAshFileUpload);
+        document.getElementById("saveAshBtn").addEventListener('click', saveAshFile);
         
         function updateHighlighting() { const code = editor.value; let html = ''; if (DART_PROCESSOR.syntaxDefs) { DART_PROCESSOR.lex(code).forEach(t => { html += `<span class="token-${t.type}">${t.value.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span>`; }); } else { html = code.replace(/&/g, '&amp;').replace(/</g, '&lt;'); } highlighting.innerHTML = html; }
 
@@ -431,6 +476,7 @@ maze_generate(width: 10, height: 10)
 
         // Initialize with default example code
         editor.value = DEFAULT_EDITOR_CODE;
+        updateHighlighting(); // Call on init
         MAZE_VISUALIZER.init();
         DART_PROCESSOR.log("SYSTEM", "IDE Ready. Please upload all three definition files or use 'Auto Load LEATR'. Files: https://github.com/DART-Skyboard/Ariel/tree/main/dartide");
     </script>
