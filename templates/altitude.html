@@ -3,20 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Atmospheric & Gravitational Calculators</title>
+    <title>Dynamic Altitude & Depth Visualizer</title>
+    <!-- NOTE: For a functional 3D scene, you must include Three.js here: -->
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script> -->
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
 
         :root {
             --primary-bg: #1a1e23;
             --secondary-bg: #2c323a;
+            --tertiary-bg: #3c424a;
             --border-color: #4a5461;
             --text-color: #e1e1e1;
-            --accent-color-psi: #00bfff; /* Deep Sky Blue */
+            --accent-color-psi: #00bfff;
             --accent-hover-psi: #009acd;
-            --accent-color-gravity: #39e75f; /* Neon Green */
+            --accent-color-gravity: #39e75f;
             --accent-hover-gravity: #28b847;
+            --accent-color-ocean: #0077c2;
+            --accent-hover-ocean: #005f9c;
             --font-main: 'Roboto', sans-serif;
+            
+            --viz-width: 400px;
+            --viz-height: 600px;
+            --calc-min-width: 280px;
         }
 
         body {
@@ -24,351 +33,541 @@
             background-color: var(--primary-bg);
             color: var(--text-color);
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+            justify-content: flex-start;
             align-items: center;
             min-height: 100vh;
-            padding: 2rem 0;
+            padding: 3rem 1rem 2rem 1rem; /* Added margin at the top */
             margin: 0;
             font-size: 16px;
         }
 
-        #app-wrapper {
+        #main-app-container {
             display: flex;
             flex-direction: column;
             gap: 40px;
             width: 100%;
-            max-width: 550px;
+            max-width: 1000px;
+            align-items: center;
+        }
+
+        /* --- LOGO Placeholder --- */
+        #logo-placeholder {
+            width: 300px;
+            height: 300px;
+            background-color: var(--secondary-bg);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            border: 2px solid var(--border-color);
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #777;
+        }
+
+
+        /* --- VISUALIZATION VIEWPORT --- */
+        #visualization-wrapper {
+            position: relative;
+            width: var(--viz-width);
+            height: var(--viz-height);
+            background: linear-gradient(0deg, var(--secondary-bg) 0%, #0d0f11 100%);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--border-color);
+        }
+
+        #three-js-canvas { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 10; }
+        #visual-scale { position: absolute; right: 0; top: 0; height: 100%; width: 60px; z-index: 20; background: rgba(0, 0, 0, 0.3); border-left: 1px solid var(--border-color); }
+        .scale-label { position: absolute; right: 65px; color: var(--text-color); font-size: 0.75em; transform: translateY(-50%); white-space: nowrap; padding: 2px 4px; border-radius: 4px; text-shadow: 0 0 4px rgba(0, 0, 0, 0.9); }
+        .scale-mark { position: absolute; left: -15px; width: 15px; height: 1px; background-color: var(--text-color); }
+        
+        .indicator { position: absolute; width: var(--viz-width); height: 3px; z-index: 30; transform: translateY(-50%); transition: top 0.5s ease-out; pointer-events: none; }
+        .indicator-label { position: absolute; left: -5px; top: -20px; padding: 4px 8px; background: rgba(0, 0, 0, 0.8); border-radius: 4px; font-size: 0.7em; font-weight: 700; }
+        
+        #celestial-marker { /* Visual element for Moon, Phobos, Saturn, etc. */
+            position: absolute;
+            top: 40px;
+            left: 20px;
+            width: 80px;
+            height: 80px;
+            background-color: #f0f0f0;
+            border-radius: 50%;
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+            z-index: 1;
+            text-align: center;
+            line-height: 80px;
+            font-size: 0.6em;
+        }
+
+        /* --- MASTER CONTROL --- */
+        #master-control-container {
+            width: var(--viz-width);
+            padding: 15px 20px;
+            background-color: var(--secondary-bg);
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-color);
+        }
+        #master-control-container label { text-align: center; font-size: 1.1em; font-weight: 700; color: var(--text-color); display: block; margin-bottom: 10px; }
+
+
+        /* --- CALCULATOR CONTAINER --- */
+        #calculators-container {
+            display: flex; justify-content: center; gap: 20px; width: 100%; flex-wrap: wrap; 
         }
 
         .calculator-container {
-            width: 100%;
-            background-color: var(--secondary-bg);
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-            border: 1px solid var(--border-color);
-            overflow: hidden;
+            width: 100%; min-width: var(--calc-min-width); max-width: 350px; flex: 1 1 var(--calc-min-width); 
+            background-color: var(--secondary-bg); border-radius: 12px; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3); 
+            border: 1px solid var(--border-color); overflow: hidden;
         }
 
-        header {
-            background-color: var(--primary-bg);
-            padding: 20px 25px;
-            border-bottom: 1px solid var(--border-color);
-        }
+        header { background-color: var(--primary-bg); padding: 15px 20px; border-bottom: 1px solid var(--border-color); }
+        header h1 { margin: 0; font-size: 1.4em; font-weight: 400; text-align: center; }
+        .main-content { padding: 20px; }
+        .control-group { margin-bottom: 15px; }
 
-        header h1 {
-            margin: 0;
-            font-size: 1.5em;
-            font-weight: 400;
-            text-align: center;
-            letter-spacing: 1px;
-        }
-        
-        header h1 span.psi { color: var(--accent-color-psi); }
-        header h1 span.gravity { color: var(--accent-color-gravity); }
-
-        .main-content {
-            padding: 25px;
-        }
-
-        .control-group {
-            margin-bottom: 20px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 300;
-            font-size: 0.9em;
-        }
-
+        /* INPUT/SELECT STYLES - FIXES text color */
         input, select {
-            width: 100%;
-            padding: 12px;
-            background-color: var(--primary-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            color: var(--text-color);
-            font-family: var(--font-main);
-            font-size: 1em;
-            box-sizing: border-box;
-            transition: border-color 0.3s, box-shadow 0.3s;
+            width: 100%; padding: 10px; background-color: var(--primary-bg); border: 1px solid var(--border-color); 
+            border-radius: 6px; color: var(--text-color) !important; font-family: var(--font-main); font-size: 1em; 
+            box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s;
         }
 
-        select { cursor: pointer; }
+        /* FIX 1: Browser Autofill Dark Text Override */
+        input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus, input:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0px 1000px var(--primary-bg) inset !important;
+            -webkit-text-fill-color: var(--text-color) !important; 
+            transition: background-color 5000s ease-in-out 0s;
+        }
         
+        /* FIX 2: Placeholder Text Color */
+        input::placeholder { color: #999; opacity: 1; }
+        select { cursor: pointer; }
+        select option { background-color: var(--secondary-bg); color: var(--text-color); }
+
+        /* Focus styles */
         input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px rgba(0, 191, 255, 0.2); }
         .psi-calculator input:focus, .psi-calculator select:focus { border-color: var(--accent-color-psi); box-shadow: 0 0 0 3px rgba(0, 191, 255, 0.2); }
         .gravity-calculator input:focus, .gravity-calculator select:focus { border-color: var(--accent-color-gravity); box-shadow: 0 0 0 3px rgba(57, 231, 95, 0.2); }
+        .ocean-calculator input:focus, .ocean-calculator select:focus { border-color: var(--accent-color-ocean); box-shadow: 0 0 0 3px rgba(0, 119, 194, 0.2); }
 
-
-        .calculate-btn {
-            width: 100%;
-            padding: 15px;
-            border: none;
-            border-radius: 6px;
-            color: #ffffff;
-            font-size: 1.1em;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background-color 0.3s;
-            margin-top: 10px;
-        }
-
+        .calculate-btn { width: 100%; padding: 12px; border: none; border-radius: 6px; color: #ffffff; font-size: 1.05em; font-weight: 700; cursor: pointer; transition: background-color 0.3s; margin-top: 10px; }
         .calculate-btn.psi-btn { background-color: var(--accent-color-psi); }
         .calculate-btn.psi-btn:hover { background-color: var(--accent-hover-psi); }
         .calculate-btn.gravity-btn { background-color: var(--accent-color-gravity); }
         .calculate-btn.gravity-btn:hover { background-color: var(--accent-hover-gravity); }
+        .calculate-btn.ocean-btn { background-color: var(--accent-color-ocean); }
+        .calculate-btn.ocean-btn:hover { background-color: var(--accent-hover-ocean); }
+
+        hr { margin: 20px 0; border: none; height: 1px; background-color: var(--border-color); }
+        .results-container { background-color: var(--tertiary-bg); padding: 15px; border-radius: 6px; display: none; }
+        .results-container h2 { margin-top: 0; text-align: center; font-weight: 400; margin-bottom: 15px; }
+        .result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; text-align: center; }
+        .result-item { background-color: var(--secondary-bg); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); }
+        .result-item .unit { font-size: 0.8em; font-weight: 300; color: #aaa; }
+        .result-item .value { font-size: 1.1em; font-weight: 700; word-wrap: break-word; }
+
+        #human-body-results-psi, #human-body-results-ocean { margin-top: 15px; padding-top: 10px; border-top: 1px dashed var(--border-color); font-size: 0.9em; text-align: left; }
+        #human-body-results-psi strong, #human-body-results-ocean strong { color: var(--accent-color-ocean); display: block; margin-bottom: 5px; text-align: center; }
 
 
-        hr {
-            border: none;
-            height: 1px;
-            background-color: var(--border-color);
-            margin: 30px 0;
+        /* Responsive adjustments */
+        @media (max-width: 950px) {
+            #calculators-container { flex-direction: column; align-items: center; }
+            .calculator-container { max-width: 80%; }
         }
-
-        .results-container {
-            background-color: var(--primary-bg);
-            padding: 20px;
-            border-radius: 6px;
-            display: none; /* Initially hidden */
-        }
-        
-        .results-container h2 {
-            margin-top: 0;
-            text-align: center;
-            font-weight: 400;
-            margin-bottom: 20px;
-        }
-
-        .result-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            text-align: center;
-        }
-        
-        .result-item {
-            background-color: var(--secondary-bg);
-            padding: 15px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
-        }
-
-        .result-item .unit {
-            font-size: 0.85em;
-            font-weight: 300;
-            color: #aaa;
-        }
-
-        .result-item .value {
-            font-size: 1.25em;
-            font-weight: 700;
-            word-wrap: break-word;
-        }
-        .psi-calculator .result-item .value { color: var(--accent-color-psi); }
-        .gravity-calculator .result-item .value { color: var(--accent-color-gravity); }
-
-
     </style>
 </head>
 <body>
 
-<div id="app-wrapper">
-    <div class="calculator-container psi-calculator">
-        <header>
-            <h1>Atmospheric <span class="psi">Altitude</span> Calculator</h1>
-        </header>
-        <main class="main-content">
-            <div class="control-group">
-                <label for="preset-select-psi">Celestial Body Preset</label>
-                <select id="preset-select-psi">
-                    <option value="earth">Earth</option>
-                    <option value="moon">Moon</option>
-                    <option value="mars">Mars</option>
-                    <option value="titan">Titan</option>
-                    <option value="custom">Custom</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <label for="psi-input">Sea Level Pressure (PSI)</label>
-                <input type="number" id="psi-input" placeholder="e.g., 14.7">
-            </div>
-            <div class="control-group">
-                <label for="gravity-input-psi">Relative Gravity (Used to scale depletion rate)</label>
-                <input type="number" id="gravity-input-psi" placeholder="e.g., 1.0">
-            </div>
-            <button class="calculate-btn psi-btn" id="calculate-btn-psi">Calculate Max Atmospheric Altitude</button>
-            <hr>
-            <div class="results-container" id="results-container-psi">
-                <h2>Max Atmospheric Altitude</h2>
-                <div class="result-grid">
-                    <div class="result-item"><div class="value" id="result-in-psi">0</div><div class="unit">Inches</div></div>
-                    <div class="result-item"><div class="value" id="result-ft-psi">0</div><div class="unit">Feet</div></div>
-                    <div class="result-item"><div class="value" id="result-m-psi">0</div><div class="unit">Meters</div></div>
-                    <div class="result-item"><div class="value" id="result-mi-psi">0</div><div class="unit">Miles</div></div>
-                    <div class="result-item"><div class="value" id="result-km-psi">0</div><div class="unit">Kilometers</div></div>
-                </div>
-            </div>
-        </main>
+<div id="main-app-container">
+
+<img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/rdlogo.png" alt="Logo Placeholder" width="400" height="auto">
+
+    
+    <!-- VISUALIZATION VIEWPORT (400x600) - TOP SECTION -->
+    <div id="visualization-wrapper">
+        <canvas id="three-js-canvas"></canvas>
+        <div id="celestial-marker">Moon</div>
+        <div id="visual-scale">
+            <!-- Fixed Marks (Adjusted for 600px height: Ocean starts at 450px) -->
+            <div id="ocean-surface-mark" class="scale-mark" style="top: 450px; background-color: var(--accent-color-ocean);"></div>
+            <div class="scale-label" style="top: 450px; color: var(--accent-color-ocean);">14.7 PSI (Surface)</div>
+
+            <div id="mariana-trench-mark" class="scale-mark" style="bottom: 0; background-color: var(--accent-color-ocean);"></div>
+            <div class="scale-label" style="bottom: 8px; color: var(--accent-color-ocean);">~15964 PSI (10.92km)</div>
+
+            <div id="atmosphere-stop-mark" class="scale-mark" style="top: 80px; background-color: var(--accent-color-psi);"></div>
+            <div class="scale-label" style="top: 80px; color: var(--accent-color-psi);">Atmosphere Stop (~100km)</div>
+        </div>
+        
+        <!-- Dynamic Indicators for all three calculators -->
+        <div id="indicator-psi" class="indicator" style="background-color: var(--accent-color-psi);"><span id="indicator-label-psi" class="indicator-label" style="color: var(--accent-color-psi);"></span></div>
+        <div id="indicator-ocean" class="indicator" style="background-color: var(--accent-color-ocean); display: none;"><span id="indicator-label-ocean" class="indicator-label" style="color: var(--accent-color-ocean);"></span></div>
+        <div id="indicator-gravity" class="indicator" style="background-color: var(--accent-color-gravity); display: none;"><span id="indicator-label-gravity" class="indicator-label" style="color: var(--accent-color-gravity);"></span></div>
+    </div>
+    
+    <!-- MASTER CELESTIAL CONTROL DROPDOWN -->
+    <div id="master-control-container">
+        <label for="master-preset-select">Master Celestial Body Preset</label>
+        <select id="master-preset-select">
+            <option value="earth">Earth</option>
+            <option value="moon">Moon</option>
+            <option value="mars">Mars</option>
+            <option value="titan">Titan</option>
+            <option value="custom">Custom</option>
+        </select>
     </div>
 
-    <div class="calculator-container gravity-calculator">
-        <header>
-            <h1>Gravitational <span class="gravity">Altitude</span> Calculator</h1>
-        </header>
-        <main class="main-content">
-            <div class="control-group">
-                <label for="preset-select-gravity">Celestial Body Preset</label>
-                <select id="preset-select-gravity">
-                    <option value="earth">Earth</option>
-                    <option value="moon">Moon</option>
-                    <option value="mars">Mars</option>
-                    <option value="titan">Titan</option>
-                    <option value="custom">Custom</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <label for="gravity-input-surface">Surface Gravity (Relative to Earth = 1 G)</label>
-                <input type="number" id="gravity-input-surface" placeholder="e.g., 1.0">
-            </div>
-            <button class="calculate-btn gravity-btn" id="calculate-btn-gravity">Calculate Max Gravitational Altitude</button>
-            <hr>
-            <div class="results-container" id="results-container-gravity">
-                <h2>Max Gravitational Altitude</h2>
-                <div class="result-grid">
-                    <div class="result-item"><div class="value" id="result-in-gravity">0</div><div class="unit">Inches</div></div>
-                    <div class="result-item"><div class="value" id="result-ft-gravity">0</div><div class="unit">Feet</div></div>
-                    <div class="result-item"><div class="value" id="result-m-gravity">0</div><div class="unit">Meters</div></div>
-                    <div class="result-item"><div class="value" id="result-mi-gravity">0</div><div class="unit">Miles</div></div>
-                    <div class="result-item"><div class="value" id="result-km-gravity">0</div><div class="unit">Kilometers</div></div>
+    <!-- CALCULATORS CONTAINER (Horizontal Stack) - BOTTOM SECTION -->
+    <div id="calculators-container">
+        
+        <!-- ATMOSPHERIC (PSI) CALCULATOR -->
+        <div class="calculator-container psi-calculator">
+            <header><h1>Atmospheric <span class="psi">Altitude</span></h1></header>
+            <main class="main-content">
+                <div class="control-group">
+                    <label for="psi-input">Sea Level Pressure (PSI)</label>
+                    <input type="number" id="psi-input" placeholder="e.g., 14.7" readonly>
                 </div>
-            </div>
-        </main>
+                <div class="control-group">
+                    <label for="gravity-input-psi">Relative Gravity (Used to scale depletion rate)</label>
+                    <input type="number" id="gravity-input-psi" placeholder="e.g., 1.0" readonly>
+                </div>
+                <button class="calculate-btn psi-btn" id="calculate-btn-psi">Calculate Max Atmospheric Altitude</button>
+                <hr>
+                <div class="results-container" id="results-container-psi">
+                    <h2>Max Altitude</h2>
+                    <div class="result-grid">
+                        <div class="result-item"><div class="value" id="result-km-psi">0</div><div class="unit">Kilometers</div></div>
+                        <div class="result-item"><div class="value" id="result-mi-psi">0</div><div class="unit">Miles</div></div>
+                    </div>
+                    <div id="human-body-results-psi"></div>
+                </div>
+            </main>
+        </div>
+
+        <!-- OCEAN DEPTH CALCULATOR (NEW) -->
+        <div class="calculator-container ocean-calculator">
+            <header><h1>Ocean <span class="ocean">Depth</span> Calculator</h1></header>
+            <main class="main-content">
+                <div class="control-group"><label for="ocean-calc-mode">Calculation Mode</label><select id="ocean-calc-mode">
+                        <option value="depth-to-psi">Depth to Total PSI</option>
+                        <option value="psi-to-depth">Total PSI to Depth</option>
+                    </select></div>
+                <div class="control-group" id="depth-input-group"><label for="depth-input-m">Ocean Depth (Meters)</label><input type="number" id="depth-input-m" placeholder="e.g., 10920 (Mariana Trench)"></div>
+                <div class="control-group" id="psi-target-input-group" style="display: none;"><label for="psi-target-input-ocean">Target Total Pressure (PSI)</label><input type="number" id="psi-target-input-ocean" placeholder="e.g., 15964"></div>
+                 <div class="control-group"><label for="density-scale-ocean">Density/Falloff Scale (1.0 = Seawater)</label><input type="number" id="density-scale-ocean" placeholder="e.g., 1.0"></div>
+                <button class="calculate-btn ocean-btn" id="calculate-btn-ocean">Calculate Ocean Pressure/Depth</button>
+                <hr>
+                <div class="results-container" id="results-container-ocean">
+                    <h2>Ocean Results</h2>
+                    <div class="result-grid">
+                        <div class="result-item"><div class="value" id="result-psi-ocean">0</div><div class="unit">Total PSI</div></div>
+                        <div class="result-item"><div class="value" id="result-depth-m-ocean">0</div><div class="unit">Depth (Meters)</div></div>
+                    </div>
+                    <div id="human-body-results-ocean"></div>
+                </div>
+            </main>
+        </div>
+        
+        <!-- GRAVITATIONAL CALCULATOR -->
+        <div class="calculator-container gravity-calculator">
+            <header><h1>Gravitational <span class="gravity">Altitude</span></h1></header>
+            <main class="main-content">
+                <div class="control-group">
+                    <label for="gravity-input-surface">Surface Gravity (Relative to Earth = 1 G)</label>
+                    <input type="number" id="gravity-input-surface" placeholder="e.g., 1.0" readonly>
+                </div>
+                <button class="calculate-btn gravity-btn" id="calculate-btn-gravity">Calculate Max Gravitational Altitude</button>
+                <hr>
+                <div class="results-container" id="results-container-gravity">
+                    <h2>Max Altitude</h2>
+                    <div class="result-grid">
+                        <div class="result-item"><div class="value" id="result-km-gravity">0</div><div class="unit">Kilometers</div></div>
+                        <div class="result-item"><div class="value" id="result-mi-gravity">0</div><div class="unit">Miles</div></div>
+                    </div>
+                </div>
+            </main>
+        </div>
     </div>
 </div>
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // --- Shared Data ---
+        // --- CONSTANTS & SHARED DATA ---
         const presets = {
-            earth: { psi: 14.7, gravity: 1.0 },
-            moon: { psi: 0.000000000000044, gravity: 0.166 },
-            mars: { psi: 0.095, gravity: 0.379 },
-            titan: { psi: 21.0, gravity: 0.138 },
-            custom: { psi: '', gravity: ''}
+            earth: { psi: 14.7, gravity: 1.0, marker: 'Moon' },
+            moon: { psi: 0.000000000000044, gravity: 0.166, marker: 'Earth' },
+            mars: { psi: 0.095, gravity: 0.379, marker: 'Phobos' },
+            titan: { psi: 21.0, gravity: 0.138, marker: 'Saturn' },
+            custom: { psi: 14.7, gravity: 1.0, marker: 'Custom' }
         };
 
-        const formatNumber = (num) => {
-             if (num < 1000) return num.toFixed(2);
-             return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        const ATMO_PSI_PER_INCH = 14.7 / (62 * 5280 * 12); 
+        const SEA_LEVEL_PSI = 14.7;
+        const WATER_CUBIC_INCH_WEIGHT_PSI = 0.037; 
+        const MARIANA_TRENCH_M = 10920;
+        
+        const HUMAN_SURFACE_AREA_SQ_INCH = 2800; 
+        const POUNDS_PER_TON = 2000;
+
+        const VIZ_HEIGHT = 600;
+        const OCEAN_PIXEL_HEIGHT = 150; 
+        const ATMOS_PIXEL_HEIGHT = 450; 
+
+        const style = getComputedStyle(document.body);
+        const ACCENT_PSI_COLOR = style.getPropertyValue('--accent-color-psi').trim();
+        const ACCENT_OCEAN_COLOR = style.getPropertyValue('--accent-color-ocean').trim();
+        const ACCENT_GRAVITY_COLOR = style.getPropertyValue('--accent-color-gravity').trim();
+        
+        const MASTER_PRESET_SELECT = document.getElementById('master-preset-select');
+        const CELESTIAL_MARKER = document.getElementById('celestial-marker');
+        const PSI_INPUT = document.getElementById('psi-input');
+        const GRAVITY_INPUT_PSI = document.getElementById('gravity-input-psi');
+        const GRAVITY_INPUT_SURFACE = document.getElementById('gravity-input-surface');
+
+
+        const formatNumber = (num, dp = 2) => {
+             if (num === null || isNaN(num)) return 'N/A';
+             if (Math.abs(num) > 1e6 && num !== 0) return num.toExponential(1); // Use scientific notation for large numbers
+             if (Math.abs(num) < 1e-3 && num !== 0) return num.toExponential(1);
+             return num.toLocaleString(undefined, { maximumFractionDigits: dp });
+        };
+
+        // --- VISUALIZATION SETUP (Conceptual Three.js/Particle Skeleton) ---
+        const VIZ_MAPPING = {
+            MAX_ATMO_INCHES: 62 * 5280 * 12 * 1.5, 
+            MAX_OCEAN_INCHES: MARIANA_TRENCH_M * 39.37, 
+            ATMO_PPI: ATMOS_PIXEL_HEIGHT / (62 * 5280 * 12 * 1.5),
+            OCEAN_PPI: OCEAN_PIXEL_HEIGHT / (MARIANA_TRENCH_M * 39.37)
         };
         
-        // --- PSI Calculator Logic ---
-        const psiPresetSelect = document.getElementById('preset-select-psi');
-        const psiInput = document.getElementById('psi-input');
-        const psiGravityInput = document.getElementById('gravity-input-psi');
-        const psiCalculateBtn = document.getElementById('calculate-btn-psi');
-        const psiResultsContainer = document.getElementById('results-container-psi');
+        const indicators = {
+            psi: { element: document.getElementById('indicator-psi'), label: document.getElementById('indicator-label-psi'), active: false, color: ACCENT_PSI_COLOR },
+            ocean: { element: document.getElementById('indicator-ocean'), label: document.getElementById('indicator-label-ocean'), active: false, color: ACCENT_OCEAN_COLOR },
+            gravity: { element: document.getElementById('indicator-gravity'), label: document.getElementById('indicator-label-gravity'), active: false, color: ACCENT_GRAVITY_COLOR }
+        };
         
-        function setupPsiCalculator() {
-            function updateInputs(preset) {
-                psiInput.value = presets[preset].psi;
-                psiGravityInput.value = presets[preset].gravity;
-                psiInput.readOnly = (preset !== 'custom');
-                psiGravityInput.readOnly = (preset !== 'custom');
-            }
-
-            psiPresetSelect.addEventListener('change', () => {
-                updateInputs(psiPresetSelect.value);
-                psiResultsContainer.style.display = 'none';
-            });
-
-            psiCalculateBtn.addEventListener('click', () => {
-                const seaLevelPsi = parseFloat(psiInput.value);
-                const relativeGravity = parseFloat(psiGravityInput.value);
-
-                if (isNaN(seaLevelPsi) || isNaN(relativeGravity) || seaLevelPsi < 0 || relativeGravity < 0) {
-                    alert("Please enter valid, non-negative numbers for PSI and gravity.");
-                    return;
-                }
-                if (seaLevelPsi === 0) { displayResults(0); return; }
-                if (relativeGravity === 0) {
-                     alert("Gravity cannot be zero for the pressure calculation, as it would imply an infinitely tall atmosphere.");
-                    return;
-                }
+        function setupVisualization() {
+            // Placeholder: Initialize Three.js scene, camera, renderer (400x600)
+            const canvas = document.getElementById('three-js-canvas');
+            canvas.addEventListener('click', handleTouch);
+            canvas.addEventListener('mousemove', handleTouch);
+        }
+        
+        function handleTouch(event) {
+            // Placeholder: Conceptual logic to disturb ocean particles (ripples)
+        }
+        
+        function swapVisualization(celestialBody) {
+            const preset = presets[celestialBody];
+            
+            // 1. Update Celestial Marker
+            CELESTIAL_MARKER.textContent = preset.marker;
+            
+            // 2. Placeholder for 3D/Particle/Background swap
+            // IF body has ocean (Earth/Titan) -> Render ocean particles
+            // ELSE -> Render only atmosphere/space background
+            
+            // 3. Set Calculator Inputs (Read-only values are now driven by master control)
+            if (celestialBody !== 'custom') {
+                PSI_INPUT.value = preset.psi;
+                GRAVITY_INPUT_PSI.value = preset.gravity;
+                GRAVITY_INPUT_SURFACE.value = preset.gravity;
                 
-                const earthAtmosphereInches = 62 * 5280 * 12; // ~3.9M inches
-                const basePsiDecreasePerInch = 14.7 / earthAtmosphereInches;
-                const currentPsiDecreasePerInch = basePsiDecreasePerInch * relativeGravity;
-                const totalInches = seaLevelPsi / currentPsiDecreasePerInch;
-                displayResults(totalInches);
-            });
-
-            function displayResults(totalInches) {
-                document.getElementById('result-in-psi').textContent = formatNumber(totalInches);
-                document.getElementById('result-ft-psi').textContent = formatNumber(totalInches / 12);
-                document.getElementById('result-m-psi').textContent = formatNumber(totalInches * 0.0254);
-                document.getElementById('result-mi-psi').textContent = formatNumber(totalInches / 12 / 5280);
-                document.getElementById('result-km-psi').textContent = formatNumber(totalInches * 0.0254 / 1000);
-                psiResultsContainer.style.display = 'block';
+                PSI_INPUT.readOnly = true;
+                GRAVITY_INPUT_PSI.readOnly = true;
+                GRAVITY_INPUT_SURFACE.readOnly = true;
+            } else {
+                 PSI_INPUT.readOnly = false;
+                 GRAVITY_INPUT_PSI.readOnly = false;
+                 GRAVITY_INPUT_SURFACE.readOnly = false;
             }
-            updateInputs('earth');
+            
+            // Re-run calculations for the new body's default inputs
+            document.getElementById('calculate-btn-psi').click();
+            document.getElementById('calculate-btn-gravity').click();
+
+            // Ocean calculator needs manual calculation because it relies on user-set depth/psi
+            // It runs a default calculation on switch if input is valid
+            const oceanCalcBtn = document.getElementById('calculate-btn-ocean');
+            const oceanMode = document.getElementById('ocean-calc-mode').value;
+            const depthInputM = parseFloat(document.getElementById('depth-input-m').value);
+            const psiTargetInputOcean = parseFloat(document.getElementById('psi-target-input-ocean').value);
+
+            // Trigger ocean calculation only if user has input a depth or target psi
+            if ((oceanMode === 'depth-to-psi' && !isNaN(depthInputM) && depthInputM > 0) || 
+                (oceanMode === 'psi-to-depth' && !isNaN(psiTargetInputOcean) && psiTargetInputOcean > SEA_LEVEL_PSI)) {
+                oceanCalcBtn.click();
+            } else {
+                 // Reset indicator to surface if no valid ocean calculation is present
+                 updateVisualization('ocean', 0, true, SEA_LEVEL_PSI);
+                 document.getElementById('results-container-ocean').style.display = 'none';
+            }
+        }
+        
+        function updateVisualization(source, distanceInches, isDepth, psiValue) {
+            let topPx;
+            const indicator = indicators[source];
+            
+            if (isDepth) {
+                const pixelOffset = distanceInches * VIZ_MAPPING.OCEAN_PPI;
+                topPx = ATMOS_PIXEL_HEIGHT + pixelOffset;
+            } else {
+                const pixelOffset = distanceInches * VIZ_MAPPING.ATMO_PPI;
+                topPx = ATMOS_PIXEL_HEIGHT - pixelOffset;
+            }
+
+            topPx = Math.max(0, Math.min(topPx, VIZ_HEIGHT));
+            indicator.element.style.top = `${topPx}px`;
+            indicator.element.style.display = 'block';
+
+            const distanceKM = distanceInches * 0.0254 / 1000;
+            const distanceLabel = isDepth ? `-${formatNumber(distanceKM, 3)} km` : `${formatNumber(distanceKM, 3)} km`;
+            indicator.label.textContent = `${formatNumber(psiValue, 1)} PSI | ${distanceLabel}`;
         }
 
-        // --- Gravity Calculator Logic ---
-        const gravityPresetSelect = document.getElementById('preset-select-gravity');
-        const gravitySurfaceInput = document.getElementById('gravity-input-surface');
-        const gravityCalculateBtn = document.getElementById('calculate-btn-gravity');
-        const gravityResultsContainer = document.getElementById('results-container-gravity');
+        function calculateHumanPressure(psiValue) {
+            const totalPounds = psiValue * HUMAN_SURFACE_AREA_SQ_INCH;
+            const totalTons = totalPounds / POUNDS_PER_TON;
+            
+            return {
+                pounds: totalPounds,
+                tons: totalTons
+            };
+        }
 
-        function setupGravityCalculator() {
-             function updateInputs(preset) {
-                gravitySurfaceInput.value = presets[preset].gravity;
-                gravitySurfaceInput.readOnly = (preset !== 'custom');
-            }
+        // --- PSI Calculator Logic ---
+        function setupPsiCalculator() {
+            document.getElementById('calculate-btn-psi').addEventListener('click', () => {
+                const seaLevelPsi = parseFloat(PSI_INPUT.value);
+                const relativeGravity = parseFloat(GRAVITY_INPUT_PSI.value);
 
-            gravityPresetSelect.addEventListener('change', () => {
-                updateInputs(gravityPresetSelect.value);
-                gravityResultsContainer.style.display = 'none';
+                if (isNaN(seaLevelPsi) || isNaN(relativeGravity) || seaLevelPsi < 0 || relativeGravity < 0) return alert("Please enter valid, non-negative numbers.");
+                if (relativeGravity === 0) return alert("Gravity cannot be zero.");
+
+                const currentPsiDecreasePerInch = ATMO_PSI_PER_INCH * relativeGravity;
+                const totalInches = seaLevelPsi / currentPsiDecreasePerInch;
+                const finalPSI = 0.0000001; 
+                
+                // Human pressure is calculated at the base atmospheric pressure for this body
+                const humanPressure = calculateHumanPressure(seaLevelPsi);
+                
+                document.getElementById('result-km-psi').textContent = formatNumber(totalInches * 0.0254 / 1000);
+                document.getElementById('result-mi-psi').textContent = formatNumber(totalInches / 12 / 5280);
+                document.getElementById('results-container-psi').style.display = 'block';
+                
+                document.getElementById('human-body-results-psi').innerHTML = `
+                    <strong>Force on Avg Human (at ${formatNumber(seaLevelPsi, 1)} PSI):</strong>
+                    <div class="result-item" style="display:inline-block;"><div class="value">${formatNumber(humanPressure.pounds, 0)}</div><div class="unit">Pounds</div></div>
+                    <div class="result-item" style="display:inline-block;"><div class="value">${formatNumber(humanPressure.tons, 1)}</div><div class="unit">Tons</div></div>
+                `;
+
+                updateVisualization('psi', totalInches, false, finalPSI);
             });
+        }
 
-            gravityCalculateBtn.addEventListener('click', () => {
-                const surfaceGravityG = parseFloat(gravitySurfaceInput.value);
+        // --- OCEAN DEPTH CALCULATOR LOGIC ---
+        function setupOceanCalculator() {
+            const oceanModeSelect = document.getElementById('ocean-calc-mode');
+            const depthInputM = document.getElementById('depth-input-m');
+            const psiTargetInputOcean = document.getElementById('psi-target-input-ocean');
+            const densityScaleOcean = document.getElementById('density-scale-ocean');
+            const resultsContainer = document.getElementById('results-container-ocean');
 
-                if (isNaN(surfaceGravityG) || surfaceGravityG <= 0) {
-                    alert("Please enter a valid, positive number for surface gravity.");
-                    return;
-                }
-                
-                // This is a simplified linear model and not physically accurate.
-                // It assumes Earth's significant gravity "ends" at the exosphere boundary (~10,000 km) for this model.
-                const earthGravityAltitudeKm = 10000;
-                const earthGravityAltitudeInches = earthGravityAltitudeKm * 1000 / 0.0254;
-                
-                // Base rate is for Earth's 1G depleting over that distance.
-                const baseGravityDecreasePerInch = 1.0 / earthGravityAltitudeInches;
-                
-                // The total altitude is scaled directly from the surface gravity.
-                const totalInches = surfaceGravityG / baseGravityDecreasePerInch;
-
-                displayResults(totalInches);
+            oceanModeSelect.addEventListener('change', () => {
+                const isDepthMode = oceanModeSelect.value === 'depth-to-psi';
+                document.getElementById('depth-input-group').style.display = isDepthMode ? 'block' : 'none';
+                document.getElementById('psi-target-input-group').style.display = isDepthMode ? 'none' : 'block';
+                resultsContainer.style.display = 'none';
+                updateVisualization('ocean', 0, true, parseFloat(PSI_INPUT.value) || SEA_LEVEL_PSI); 
             });
             
-            function displayResults(totalInches) {
-                document.getElementById('result-in-gravity').textContent = formatNumber(totalInches);
-                document.getElementById('result-ft-gravity').textContent = formatNumber(totalInches / 12);
-                document.getElementById('result-m-gravity').textContent = formatNumber(totalInches * 0.0254);
-                document.getElementById('result-mi-gravity').textContent = formatNumber(totalInches / 12 / 5280);
-                document.getElementById('result-km-gravity').textContent = formatNumber(totalInches * 0.0254 / 1000);
-                gravityResultsContainer.style.display = 'block';
-            }
-            updateInputs('earth');
-        }
+            densityScaleOcean.value = 1.0; 
+            
+            document.getElementById('calculate-btn-ocean').addEventListener('click', () => {
+                const mode = oceanModeSelect.value;
+                const densityScale = parseFloat(densityScaleOcean.value) || 1.0;
+                const currentSeaLevelPsi = parseFloat(PSI_INPUT.value) || SEA_LEVEL_PSI; // Use the selected body's PSI
+                let totalPSI, depthInches;
 
-        // --- Initialize Both Calculators ---
+                if (mode === 'depth-to-psi') {
+                    const depthM = parseFloat(depthInputM.value);
+                    if (isNaN(depthM) || depthM < 0) return alert("Please enter a valid, non-negative depth.");
+                    depthInches = depthM * 39.3701;
+                    const waterPressurePSI = depthInches * WATER_CUBIC_INCH_WEIGHT_PSI * densityScale;
+                    totalPSI = currentSeaLevelPsi + waterPressurePSI;
+                } else {
+                    totalPSI = parseFloat(psiTargetInputOcean.value);
+                    if (isNaN(totalPSI) || totalPSI < currentSeaLevelPsi) return alert(`Pressure must be at least ${formatNumber(currentSeaLevelPsi, 2)} PSI.`);
+                    const waterPressurePSI = totalPSI - currentSeaLevelPsi;
+                    depthInches = waterPressurePSI / (WATER_CUBIC_INCH_WEIGHT_PSI * densityScale);
+                }
+                
+                const depthM = depthInches * 0.0254;
+                const humanPressure = calculateHumanPressure(totalPSI); 
+                
+                document.getElementById('result-psi-ocean').textContent = formatNumber(totalPSI);
+                document.getElementById('result-depth-m-ocean').textContent = formatNumber(depthM);
+                resultsContainer.style.display = 'block';
+                
+                document.getElementById('human-body-results-ocean').innerHTML = `
+                    <strong>Total External Force on Avg Human:</strong>
+                    <div class="result-item" style="display:inline-block;"><div class="value">${formatNumber(humanPressure.pounds, 0)}</div><div class="unit">Pounds</div></div>
+                    <div class="result-item" style="display:inline-block;"><div class="value">${formatNumber(humanPressure.tons, 1)}</div><div class="unit">Tons</div></div>
+                `;
+
+                updateVisualization('ocean', depthInches, true, totalPSI);
+            });
+            oceanModeSelect.dispatchEvent(new Event('change'));
+        }
+        
+        // --- Gravity Calculator Logic ---
+        function setupGravityCalculator() {
+            document.getElementById('calculate-btn-gravity').addEventListener('click', () => {
+                const surfaceGravityG = parseFloat(GRAVITY_INPUT_SURFACE.value);
+                if (isNaN(surfaceGravityG) || surfaceGravityG <= 0) return alert("Please enter a valid, positive number for surface gravity.");
+
+                const earthGravityAltitudeKm = 10000;
+                const earthGravityAltitudeInches = earthGravityAltitudeKm * 1000 / 0.0254;
+                const baseGravityDecreasePerInch = 1.0 / earthGravityAltitudeInches;
+                const totalInches = surfaceGravityG / baseGravityDecreasePerInch;
+
+                const totalKM = totalInches * 0.0254 / 1000;
+                const totalMI = totalInches / 12 / 5280;
+
+                // Conceptual PSI: Decay from the selected body's sea level PSI
+                const currentSeaLevelPsi = parseFloat(PSI_INPUT.value) || SEA_LEVEL_PSI;
+                const conceptualPsi = currentSeaLevelPsi * (1 - (totalInches / VIZ_MAPPING.MAX_ATMO_INCHES));
+                
+                document.getElementById('result-km-gravity').textContent = formatNumber(totalKM);
+                document.getElementById('result-mi-gravity').textContent = formatNumber(totalMI);
+                document.getElementById('results-container-gravity').style.display = 'block';
+                
+                updateVisualization('gravity', totalInches, false, conceptualPsi);
+            });
+        }
+        
+        // --- MASTER CONTROL INITIALIZATION ---
+        MASTER_PRESET_SELECT.addEventListener('change', () => {
+            const selectedBody = MASTER_PRESET_SELECT.value;
+            swapVisualization(selectedBody);
+        });
+
+        // --- Initialize All ---
+        setupVisualization();
         setupPsiCalculator();
+        setupOceanCalculator();
         setupGravityCalculator();
+        
+        // Initial setup on 'Earth'
+        MASTER_PRESET_SELECT.dispatchEvent(new Event('change'));
     });
 </script>
 
