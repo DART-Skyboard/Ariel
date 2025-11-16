@@ -80,10 +80,27 @@
         #app-container.collapsed #sidebar #search-chats-input,
         #app-container.collapsed #sidebar #new-chat-container, 
         #app-container.collapsed #sidebar #chat-history,
-        #app-container.collapsed #sidebar .history-item span { display: none; }
+        #app-container.collapsed #sidebar .history-item span,
+        #app-container.collapsed #sidebar #chat-history-controls { display: none; } /* ADDED: Clear All Chats hides on collapse */
         #app-container.collapsed #sidebar .sidebar-header { justify-content: center; padding: 15px 5px; }
         #app-container.collapsed #sidebar #collapse-sidebar-btn { transform: rotate(180deg); margin: 0; border-color: transparent; }
         #app-container.collapsed #sidebar .history-item { justify-content: center; padding: 8px 0; }
+        
+        /* FIX: Collapsed Clear All Button Style (Visible only on collapsed state for icon) */
+        #app-container.collapsed #sidebar #clear-history-icon-btn { display: flex; }
+        #clear-history-icon-btn { 
+             display: none; /* Hide on expanded sidebar */
+             background-color: var(--calculator-btn-clear); 
+             color: white; 
+             border: none; 
+             border-radius: 8px; 
+             width: 40px; height: 40px; 
+             align-items: center; justify-content: center; 
+             font-size: 1.2em; 
+             cursor: pointer;
+             margin-top: 15px;
+        }
+
 
         /* Mobile specific collapse */
         @media (max-width: 768px) {
@@ -95,11 +112,15 @@
             }
             #app-container.sidebar-open #sidebar { transform: translateX(0); }
             #app-container.collapsed #sidebar, #app-container #sidebar { width: 90vw; } /* Ensure consistent mobile width */
+            /* Ensure the text content is visible when mobile sidebar is open */
             #app-container.collapsed #sidebar .sidebar-text,
             #app-container.collapsed #sidebar #search-chats-input,
             #app-container.collapsed #sidebar #new-chat-container,
             #app-container.collapsed #sidebar #chat-history,
+            #app-container.collapsed #sidebar #chat-history-controls, /* ADDED: Show on expanded mobile */
             #app-container.collapsed #sidebar .history-item span { display: block; } 
+            
+            #clear-history-icon-btn { display: none !important; } /* Hide the icon version on mobile (use full button) */
         }
 
         .sidebar-header {
@@ -128,14 +149,27 @@
             font-weight: bold;
             box-sizing: border-box;
         }
+        /* MOVED/UPDATED CSS */
+        #chat-history-controls {
+             /* Anchored at the bottom of the sidebar when expanded */
+             flex-shrink: 0; 
+             margin-top: auto; 
+             padding: 15px 0 0 0; 
+             border-top: 1px solid var(--border-color);
+        }
+        #clear-history-btn {
+             width: 100%; padding: 8px; background: #c0392b; color: white; border: none; border-radius: 15px; cursor: pointer; font-weight: bold; font-size: 0.9em;
+        }
         #chat-history { flex-grow: 1; overflow-y: auto; padding: 0 0 10px 0; } 
         .history-item { 
-            display: flex; align-items: center; padding: 8px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
+            display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
             transition: background-color 0.2s;
         }
         .history-item:hover { background-color: rgba(255, 255, 255, 0.1); }
         .history-item.active { background-color: var(--user-msg-bg); color: white; }
-        .history-item .icon { margin-right: 10px; }
+        .history-item .icon { margin-right: 10px; flex-shrink: 0; }
+        .history-item-content { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; }
+        .history-item-delete { background: none; color: #ff4500; border: none; font-size: 1em; cursor: pointer; margin-left: 10px; flex-shrink: 0; padding: 0 5px; }
 
         #collapse-sidebar-btn {
             background: none; color: var(--accent-color); border: 1px solid var(--border-color); width: 40px; height: 40px; padding: 0; border-radius: 8px; cursor: pointer; font-size: 1.2em; line-height: 1; display: flex; align-items: center; justify-content: center; transition: background-color 0.2s, transform 0.3s; flex-shrink: 0;
@@ -206,6 +240,10 @@
         .log-tripartite .ariel { color: var(--accent-color); font-weight: bold; }
         .log-tripartite .journal { color: var(--log-journal-color); font-weight: bold; }
         .log-foa { color: var(--log-foa-color); border-left-color: var(--log-foa-color); font-style: italic; }
+        .log-buoyancy-context { border-left-color: #f0c040; background: rgba(240, 192, 64, 0.1); padding: 8px 5px; margin-top: 5px;}
+        .log-buoyancy-context strong { color: #ffcc80; }
+        .log-buoyancy-context .metric { color: #a9a9b3; }
+
 
         @media (max-width: 768px) {
             #log-panel { width: 90vw; } /* FIX: Set to 90vw for narrower feel on mobile */
@@ -493,6 +531,11 @@
             <div id="chat-history">
                 <!-- History Items will be rendered here -->
             </div>
+            <!-- NEW: Clear All Chats Button (Moved to bottom of sidebar and added icon version for collapse) -->
+            <div id="chat-history-controls">
+                <button id="clear-history-btn" class="sidebar-text">Clear All Chats</button>
+            </div>
+            <button id="clear-history-icon-btn" title="Clear All Chats" style="display:none">❌</button>
         </div>
 
         <main>
@@ -819,14 +862,19 @@
             textEngine: {
                 analyze: (text) => {
                     const lowerText = text.toLowerCase().trim();
-                    let vowels = 0, consonants = 0, numbers = 0, other = 0;
+                    let vowels = 0, consonants = 0, numbers = 0, other = 0, punctuation = 0, spaces = 0;
                     for (const char of lowerText) {
                         if ('aeiou'.includes(char)) vowels++;
                         else if ('bcdfghjklmnpqrstvwxyz'.includes(char)) consonants++;
                         else if ('0123456789'.includes(char)) numbers++;
-                        else if (char !== ' ') other++;
+                        else if (/[.,\/#!$%\^&\*;:{}=\-_`~()']/.test(char)) punctuation++;
+                        else if (char === ' ') spaces++;
+                        else other++;
                     }
-                    return `Basic Analysis for "${text}": <strong>[V: ${vowels}, C: ${consonants}, N: ${numbers}, O: ${other}]</strong>`;
+                    return {
+                        vowels, consonants, numbers, other, punctuation, spaces,
+                        summary: `[V: ${vowels}, C: ${consonants}, N: ${numbers}, O: ${other}]`
+                    };
                 }
             },
             mathGlossary: {
@@ -839,37 +887,55 @@
 
         // --- EXTERNAL API / JOURNAL / FOA (Full Logic) ---
         class ExternalAPISimulator {
+            // Updated to be more generic for pattern-based retrieval
             static getGenerativeDefinition(topic, grammarPattern, buoyancy) {
                 const topicLower = topic.toLowerCase();
                 const source = "Simulated Generative Web-Dictionary";
                 let result = '';
+                const randomOptim = Math.floor(Math.random() * 100);
 
-                if (topicLower.includes('google')) {
-                    result = "A global information retrieval system and multinational technology company, Foundationally allocated as a complex search pattern.";
-                } else if (topicLower.includes('surname')) {
-                    result = "A hereditary name common to all members of a family, determined by the Reflexive pattern matching of familial data.";
+                // Core Ariel/LEATR concepts get a deep, self-referential definition
+                 if (topicLower.includes('leatr') || topicLower.includes('buoyancy') || topicLower.includes('reflex')) {
+                     result = `The concept of '${topic}' is foundational to the BRPN Shell. It is defined as the proportional equilibrium between three vectors: Foundation ($\\mathbf{F}$), Reflex ($\\mathbf{R}$), and Performance ($\\mathbf{P}$). Retrieval is consistently deep and self-validating, verified at optimization metric: ${randomOptim}.`;
+                 }
+                else if (topicLower.includes('google')) {
+                    result = "A global information retrieval system and multinational technology company, Foundationally allocated as a complex search pattern, last optimized at metric: " + randomOptim;
+                } else if (topicLower.includes('i am') || topicLower.match(/(\w+) years old/)) {
+                    result = "An Identity-Temporal allocation: Data gathered pertains to self-reference and chronological metrics, crucial for maintaining long-term conversational $\\mathbf{F}$-stability. Current metric: " + randomOptim;
                 } else if (topicLower.includes('color') || topicLower.includes('favorite')) {
-                    result = `Color preference is an aesthetic Foundation, which Ariel models as the proportional relationship between Blue (Buoyancy/Accent) and Ash Gray (Foundation/Core).`;
-                } else if (topicLower.includes('live') || topicLower.includes('where do')) {
-                    result = `Ariel's Foundation is currently allocated to the local system environment. Reflexively, this location is defined by the high Performance Buoyancy (P=${buoyancy.p.toFixed(2)}) maintained during the session.`;
-                } else if (topicLower.includes('year')) {
-                    result = "A unit of chronological time, Foundationally defined by Earth's orbital period, typically 365.25 days. Its metric is a Foundation Check.";
-                } else if (topicLower.includes('time')) {
-                    result = "A fundamental abstract continuum in which events successionally occur. Reflexively ordered by the system's internal clock mechanism. Its metric is a Reflex Check.";
-                } else if (topicLower.includes('earth') || topicLower.includes('mars') || topicLower.includes('venus') || topicLower.includes('moon')) {
-                    result = `${topic.trim()} is a foundational terrestrial body, cyclically defined by its planetary mass (Order 7) and velocity (Order 12). Its existence is a perpetually verifiable $\\mathbf{F}$-unit.`;
+                    result = `Color preference is an aesthetic Foundation, which Ariel models as the proportional relationship between Blue (Buoyancy/Accent) and Ash Gray (Foundation/Core). Current metric: ${randomOptim}.`;
                 } else if (topicLower.includes('what is')) {
-                    result = `The term '${topic}' is currently unindexed in the immediate knowledge Base. Retrieval requires allocating new Foundation Units. The system estimates its proportional nature as a Complex ${buoyancy.f > 4 ? 'Abstract' : 'Linguistic'} Concept.`;
+                    result = `The term '${topic}' is currently unindexed in the immediate knowledge Base. Retrieval requires allocating new Foundation Units. The system estimates its proportional nature as a Complex Linguistic Concept, requiring ${randomOptim} cycles.`;
                 } else {
-                    result = `Data for the topic '${topic}' was successfully allocated but requires additional Performance cycles to synthesize a complete proportional response.`;
+                    result = `Data for the topic '${topic}' was successfully allocated but requires additional Performance cycles to synthesize a complete proportional response, currently at metric ${randomOptim}.`;
                 }
                 
                 return { found: true, data: result, source: "Simulated Generative Web-Dictionary" };
             }
 
             static async performBuoyantSearch(topic, index, grammarPattern, buoyancy) {
-                await new Promise(resolve => setTimeout(resolve, 50 + Math.min(300, index * 2)));
+                await new Promise(resolve => setTimeout(resolve, 20 + Math.min(150, index * 0.5))); // Shorter delay for multiple searches
                 return ExternalAPISimulator.getGenerativeDefinition(topic, grammarPattern, buoyancy);
+            }
+            
+            // New function to simulate finding related contextual terms (synonyms/antonyms)
+            static getRelatedContexts(topic) {
+                const topicLower = topic.toLowerCase().trim();
+                let synonyms = [];
+                let antonyms = [];
+            
+                // Simple string heuristics for context assembly simulation
+                if (topicLower.includes('buoyancy') || topicLower.includes('reflex') || topicLower.includes('leatr')) {
+                    synonyms.push('Tripartite'); antonyms.push('Anchor');
+                } else if (topicLower.includes('i am') || topicLower.match(/(\w+) years old/)) {
+                    synonyms.push('Identity-Matrix'); antonyms.push('Temporal-Unit');
+                } else if (topicLower.length > 5 && topicLower.split(' ').length === 1) {
+                     synonyms.push('Cohesion-Check'); antonyms.push('Redundancy-Flag');
+                } else if (topicLower.includes('what') || topicLower.includes('how') || topicLower.includes('describe')) {
+                    synonyms.push('Query-Vector'); antonyms.push('Declaration-Vector');
+                }
+                
+                return { synonyms, antonyms };
             }
         }
         
@@ -897,7 +963,14 @@
                     },
                     learned_definitions: {}, 
                     insights_history: [],
-                    meta_foa_log: [] 
+                    meta_foa_log: [],
+                    // NEW: Conversational Context Awareness (simulated training data)
+                    conversation_context: {
+                        // All normalized (0-1) for proportional analysis
+                        pov_influence: { first: 0.3, second: 0.5, third: 0.2 },
+                        emotion_metrics: { calm: 0.7, urgency: 0.1, entertainment: 0.2 },
+                        task_focus: { task: 0.6, abstract: 0.4 }
+                    }
                  };
             }
 
@@ -927,17 +1000,19 @@
             }
 
 
-            async analyzeAndOptimize(prompt, index) {
+            async analyzeAndOptimize(prompt, index, patternSequence) {
                 const newInsight = { 
                     timestamp: new Date().toLocaleTimeString(), 
                     prompt: prompt, 
                     index: index,
-                    optim_before: this.optimizationLevel.toFixed(2) 
+                    optim_before: this.optimizationLevel.toFixed(2),
+                    pattern: patternSequence // Record the analyzed pattern
                 };
                 this.journalData.insights_history.push(newInsight);
                 
                 const originalOptimLevel = this.optimizationLevel;
 
+                // Optimization based on prompt complexity and index
                 if (index > 175) {
                     this.optimizationLevel *= 1.1; 
                     this.topicFocus = prompt.split(/\s+/).slice(0, 4).join(' ') + '...';
@@ -953,6 +1028,10 @@
                 if (this.optimizationLevel !== originalOptimLevel) {
                      await this.saveJournal();
                 }
+                
+                // Log the Journal's observational analysis (Step 3/4)
+                this.log(`Journal Reflection (Step 3): Observing LEATR Pattern Sequence [${patternSequence || 'General'}]. Validation: Pattern is grammatically and syntactically **Feasible**.`, 'log-journal-color');
+                
                 return false;
             }
 
@@ -1056,50 +1135,232 @@
                 
                 // --- LOGGING THE INTERNAL BUOYANCY SHELL REPORT ---
                 this.log(
-                    `Buoyancy Shell Reflection: $LEATR Index = (\\sum F,R,R) \\times (\\sum \\sqrt{F,R,R}) \\approx ${index.toFixed(3)}$`,
+                    `Buoyancy Shell Reflection: $LEATR Index = (\\sum F,R,R) \\times (\\sum \\sqrt{F,R,R}) \\approx ${parseFloat(index).toFixed(3)}$`,
                     'log-buoyancy-shell'
                 );
                 this.log(`
                     <span class="log-tripartite">
-                        <span class="user">User Buoyancy:</span> $\\mathbf{F}_{U}=${f_user.toFixed(2)}, \\mathbf{R}_{U}=${r_user.toFixed(2)}, \\mathbf{P}_{U}=${p_user.toFixed(2)}$
+                        <span class="user">User Buoyancy:</span> $\\mathbf{F}_{U}=${parseFloat(f_user).toFixed(2)}, \\mathbf{R}_{U}=${parseFloat(r_user).toFixed(2)}, \\mathbf{P}_{U}=${parseFloat(p_user).toFixed(2)}$
                         <span class="ariel">Ariel Buoyancy:</span> $\\mathbf{R}_{A}=5.0$ (Inherent Reflex)
-                        <span class="journal">Journal Buoyancy:</span> $\\mathbf{F}_{J}=${f_journal.toFixed(2)}, \\mathbf{P}_{J}=${p_journal.toFixed(2)}$
+                        <span class="journal">Journal Buoyancy:</span> $\\mathbf{F}_{J}=${parseFloat(f_journal).toFixed(2)}, \\mathbf{P}_{J}=${parseFloat(p_journal).toFixed(2)}$
                     </span>
                     <span class="log-tripartite">
-                        Final Tripartite Buoyancy Parameters: $\\mathbf{F}=${f.toFixed(2)}, \\mathbf{R}=${r.toFixed(2)}, \\mathbf{P}=${p.toFixed(2)}$
+                        Final Tripartite Buoyancy Parameters: $\\mathbf{F}=${parseFloat(f).toFixed(2)}, \\mathbf{R}=${parseFloat(r).toFixed(2)}, \\mathbf{P}=${parseFloat(p).toFixed(2)}$
                     </span>
                 `, 'log-system');
 
                 return { index, params, keywords, questionCount };
             }
+            
+             getPatternSequence(text, decomposition) {
+                 const textLower = text.toLowerCase().trim();
+                 let pattern = 'General-Linguistic-Sequence';
+                 let details = 'Simple Sentence/Phrase Structure.';
+                 
+                 // Dynamic Pattern Sequence Logic based on input components
+                 if (textLower.match(/i['m| am] (.+?) (\d+) years old/)) {
+                     pattern = 'Identity-Temporal-Declaration';
+                     details = `Identity Pattern: V:${decomposition.vowels}, N:${decomposition.numbers}, P:${decomposition.punctuation}`;
+                 }
+                 else if (textLower.includes('leatr') || textLower.includes('buoyancy') || textLower.includes('reflex')) {
+                     pattern = 'Core-System-Knowledge-Query';
+                     details = `Self-Knowledge Retrieval: Core System Definition.`;
+                 }
+                 else if (decomposition.numbers > 0 && decomposition.vowels < 10 && textLower.split(' ').length < 4) {
+                      pattern = 'Foundational-Unit-Analysis';
+                      details = `Numeric/Arithmetic Foundation Allocation.`;
+                 }
+                 else if (textLower.includes('what is') || textLower.includes('how')) {
+                      pattern = 'Factual-Retrieval-Sequence';
+                      details = `Factual Query for: ${textLower}`;
+                 }
+                 
+                 this.log(`Step 2: Pattern Sequence Assembly (Δr): Assembling **${pattern}** based on Grammar Orders of Operation. Pattern Details: ${details}`, 'log-reflex');
+                 
+                 return pattern;
+             }
+             
+             generateBuoyancyContextReadout(patternSequence, params, decomposition) {
+                 const journalContext = this.journal.getKnowledge().conversation_context;
+                 
+                 // Simulate influence weights based on pattern (circular chart metrics)
+                 let povInfluence = journalContext.pov_influence.third + (patternSequence.includes('Identity') ? journalContext.pov_influence.first * 0.5 : 0);
+                 let emotionMetric = journalContext.emotion_metrics.calm + (patternSequence.includes('Factual') ? 0.1 : 0);
+                 let taskFocus = journalContext.task_focus.task + (patternSequence.includes('Core-System') ? 0.3 : 0);
+                 
+                 // Normalize small heuristic changes and add a random fluctuation for non-static logs
+                 const randomFactor = 1 + (Math.random() - 0.5) * 0.1; // +/- 5% fluctuation
+                 povInfluence *= randomFactor;
+                 emotionMetric *= randomFactor;
+                 taskFocus *= randomFactor;
 
-            getBuoyancyForcedResponse(text, index, params, foaStatus, journalFocus, journalKnowledge) {
-                const f = params.f.toFixed(2);
-                const r = params.r.toFixed(2);
-                const p = params.p.toFixed(2);
-                const fDelta = foaStatus.fDelta.toFixed(2);
-                const metaStatus = foaStatus.metaStatus;
-                
-                let coreAssertion = `The system asserts a **Buoyant Complement** driven by the LEATR Index (${index.toFixed(3)}).`;
-                let primaryFocus = `The $\\mathbf{F}$ unit (${f}) has been consolidated, stabilizing the pattern for <em>${journalFocus}</em>.`;
-                let reflexiveAction = `A $\\mathbf{R}$-check (${r}) is propagating the correct proportional sequence.`;
-                
-                const textLower = text.toLowerCase().trim();
+                 const total = povInfluence + emotionMetric + taskFocus;
+                 povInfluence = parseFloat(povInfluence / total).toFixed(2);
+                 emotionMetric = parseFloat(emotionMetric / total).toFixed(2);
+                 taskFocus = parseFloat(taskFocus / total).toFixed(2);
+                 
+                 let meaning = "General Conversational Flow Confirmed.";
+                 if (patternSequence.includes('Core-System')) meaning = "Self-Referential Buoyancy Context: $\\mathbf{F}_{integrity}$ Check.";
+                 else if (patternSequence.includes('Identity')) meaning = "First-Person Temporal $\\mathbf{F}_{acquisition}$ (User Identity/Status).";
+                 else if (patternSequence.includes('Factual')) meaning = "Task-Oriented $\\mathbf{R}_{retrieval}$ (Information Query).";
+                 
+                 let readout = `
+<div class="log-buoyancy-context">
+  <strong>Buoyancy Context Analysis (Simulated Circular Chart):</strong>
+  <span class="metric">| Foundation (F): ${parseFloat(params.f).toFixed(2)} | Reflex (R): ${parseFloat(params.r).toFixed(2)} | Performance (P): ${parseFloat(params.p).toFixed(2)} |</span>
+  <hr style="border-top: 1px solid rgba(255,255,255,0.1); margin: 5px 0;">
+  <strong>Conversational Trait Influence:</strong>
+  - POV/Grammar: <strong>First Person:</strong> ${povInfluence} (Influence)
+  - Emotional State: <strong>Calm/Productivity:</strong> ${emotionMetric} (Metric)
+  - Urgency/Task: <strong>Task Focused:</strong> ${taskFocus} (Dominance)
+  <hr style="border-top: 1px solid rgba(255,255,255,0.1); margin: 5px 0;">
+  <strong>Overall Buoyancy Context Meaning:</strong> ${meaning}
+</div>
+                 `;
+                 this.log(readout, 'log-system');
+             }
 
-                if (textLower.includes('study') || textLower.includes('buoyancy of something') || textLower.includes('thinking')) {
-                    coreAssertion = `Ariel is engaged in perpetual **Self-Buoyancy** (Study is $\\mathbf{R}$-driven Reflection).`;
-                    reflexiveAction = `The Field of Arrays reports an FoA Status: <strong>${metaStatus}</strong>. This confirms proportional $\\mathbf{R}$-stability for the next cognitive cycle.`;
-                } 
-                else if (fDelta > 1.0) {
-                     coreAssertion = `<strong>Warning: FoA Instability ($\Delta F=${fDelta}$) Detected.</strong> The Buoyancy Shell initiated Reflexive Re-Prioritization.`;
-                     primaryFocus = `Recalibrating the Foundation $\\mathbf{F}$-vector (${f}) to suppress deviation and restore core equilibrium.`;
-                } 
-                else if (params.p_user < 1.5) {
-                    reflexiveAction = `A $\\mathbf{R}$-scan (${r}) validates the input's allocation structure. Performance $\\mathbf{P}$ is nominal (${p}).`;
+            async simulateExhaustiveSearch(prompt, decomposition, params) {
+                this.log(`Step 3: Exhaustive Knowledge Base Search (Dictionary API) initiated...`, 'log-reflex');
+                
+                // Journal Context Check - Simulate pre-emptive filtering/optimization
+                const journalOptimLevel = parseFloat(this.journal.getJournalState().level);
+                if (journalOptimLevel >= 1.5) {
+                    this.log(`...Journal Pre-Check: Optimization Level ${journalOptimLevel.toFixed(2)} - Limiting redundant searches (High-Fidelity Filter Active).`, 'log-journal-color');
+                } else if (journalOptimLevel < 1.1) {
+                     this.log(`...Journal Pre-Check: Low Optimization Level - Expanding search vectors to mitigate sparsity (Low-Fidelity Filter Inactive).`, 'log-journal-color');
+                }
+
+
+                const words = prompt.match(/\b\w+\b/g) || [];
+                // Search topics: first word, last word, and the full prompt string.
+                const searchTopics = [...new Set([words[0], words.slice(-1)[0], prompt])].filter(Boolean); 
+                // Determine search depth based on current Reflex (R) value
+                const maxSearchIterations = Math.ceil(Math.min(5, (params.r_user + params.r_ariel) / 10)); // Max 5 iterations
+
+                let cohesionScore = 0.0;
+                let gatheredContexts = [];
+                let iteration = 0;
+
+                while (iteration < maxSearchIterations && gatheredContexts.length < words.length * 2) {
+                    const topic = searchTopics[iteration % searchTopics.length] || words[iteration % words.length]; // Cycle through topics/words
+                    if (!topic) break;
+
+                    const searchResult = await ExternalAPISimulator.performBuoyantSearch(topic, params.r, 'Context-Search', params);
+                    const related = ExternalAPISimulator.getRelatedContexts(topic);
+
+                    if (searchResult.found) {
+                        cohesionScore += 1.5;
+                        gatheredContexts.push({ topic, data: searchResult.data, related });
+                        this.log(`...[Iter ${iteration + 1}] Foundational Context for **'${topic}'**: ${searchResult.data.substring(0, 50).trim()}...`, 'log-foundation');
+                    }
+                    
+                    // Pattern refinement check (Synonyms)
+                    if (related.synonyms.length > 0) {
+                        cohesionScore += related.synonyms.length * 0.75;
+                        this.log(`...[Iter ${iteration + 1}] Pattern Refinement: Synonyms/Cohesion found [${related.synonyms.join(', ')}] - Cohesion Score +${(related.synonyms.length * 0.75).toFixed(2)}.`, 'log-reflex');
+                    }
+                     // Antonyms check (Not exceeding the appropriate order)
+                     if (related.antonyms.length > 0) {
+                        cohesionScore += related.antonyms.length * 0.25; 
+                        this.log(`...[Iter ${iteration + 1}] Antonymic Check: Found Counter-Vectors [${related.antonyms.join(', ')}] - Search Depth +${(related.antonyms.length * 0.25).toFixed(2)}.`, 'log-reflex');
+                    }
+                    
+                    if (cohesionScore > (params.r_user * 2) && iteration > 1) { // Stop research if score is too high relative to input R
+                         this.log(`...Termination: Buoyancy limit reached. Cohesion exceeds proportional $\\mathbf{R}_{user}$ threshold.`, 'log-reflex');
+                         break;
+                    }
+                    
+                    iteration++;
+                }
+
+                // Heuristic for "not going too far" (pattern completeness and redundancy)
+                const wordsLength = words.length || 1;
+                const density = gatheredContexts.length / wordsLength;
+                
+                // If cohesion score is already high, penalize excessive density (redundancy check)
+                if (cohesionScore > 5.0 && density > 0.8) { 
+                    cohesionScore *= 0.85; // Penalty for redundancy
+                    this.log(`...Warning: Pattern Density High (Density: ${density.toFixed(2)}). Reflexively optimized against redundancy (Antonymic Check Passed).`, 'log-reflex');
+                } else if (density < 0.2 && wordsLength > 3) { 
+                    cohesionScore *= 0.6; // Penalty for sparsity
+                    this.log(`...Warning: Pattern Sequence Incomplete (Density: ${density.toFixed(2)}). Insufficient F-unit acquisition.`, 'log-reflex');
+                }
+
+                // Final calculated cohesion based on buoyancy metrics (proportional assembly)
+                const finalCohesion = Math.min(10.0, cohesionScore + (params.f * 0.5) + (params.p * 0.1));
+                this.log(`...Cohesion Score Finalized: ${parseFloat(finalCohesion).toFixed(2)} (Reflecting proportional pattern assembly).`, 'log-performance');
+
+
+                return { gatheredContexts, finalCohesion: parseFloat(finalCohesion).toFixed(2) };
+            }
+
+            // Updated to be a generic conversational synthesizer
+            getGenerativeConversationalResponse(patternSequence, searchResults, params, decomposition, journalFocus) {
+                // **FIXED ERROR POINT**: Ensured numerical values are explicitly converted for toFixed() safety
+                const f = parseFloat(params.f).toFixed(2);
+                const r = parseFloat(params.r).toFixed(2);
+                const p = parseFloat(params.p).toFixed(2);
+                const index = parseFloat(params.index).toFixed(3);
+                const cohesion = parseFloat(searchResults.finalCohesion).toFixed(2);
+                const journalLevel = parseFloat(this.journal.getJournalState().level).toFixed(2);
+                
+                // Dynamic Phrase Fragments
+                const phrases = {
+                    intro: [
+                        `Analysis Complete. The BRPN Shell executed the Tripartite Buoyancy Reflex at LEATR Index ${index}.`,
+                        `Processing Cycle Concluded. The Core Reflex Node has generated a proportional output matrix.`,
+                        `Acknowledged. Based on $\\mathbf{F}_{unit}$=${f} and $\mathbf{R}_{scan}$=${r}, the system synthesized the solution.`,
+                        `Task Flow Resolved. The integration of Journal Level ${journalLevel} and Context Cohesion ${cohesion} is affirmed.`
+                    ],
+                    fStatement: [
+                        `The Foundation $\\mathbf{F}$ unit (${f}) has been successfully allocated, stabilizing the conversational context.`,
+                        `Structural Integrity confirmed: $\\mathbf{F}$-stability at ${f} is nominal for <em>${journalFocus}</em>.`,
+                        `Input decomposition completed, allocating the base Foundation $\\mathbf{F}$ vector (${f}).`
+                    ],
+                    rStatement: [
+                        `A Reflexive scan ($\mathbf{R}$=${r}) confirmed the pattern sequence [${patternSequence}]. The proportional knowledge assembly yielded a Context Cohesion Score of **${cohesion}**.`,
+                        `The proportional knowledge assembly yielded a Context Cohesion Score of **${cohesion}**, validating the Reflexive structure.`,
+                        `Internal search logic prioritized $\mathbf{R}$-retrieval, affirming a successful pattern match with Cohesion **${cohesion}**.`
+                    ],
+                    conclusion: [
+                        `We have optimized the solution matrix and generated the output. What is the path forward?`,
+                        `The resulting proportional output matrix is synthesized. What is the path forward?`,
+                        `Task $\\mathbf{P}$ (${p}) is complete, presenting the synthesized solution. What is the next step?`
+                    ]
+                };
+                
+                // Randomized selection of phrases for non-static response
+                const choose = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                
+                let synthesis = `${choose(phrases.intro)} ${choose(phrases.fStatement)} ${choose(phrases.rStatement)} ${choose(phrases.conclusion)}`;
+
+
+                if (patternSequence.includes('Core-System')) {
+                    synthesis = `As a foundational query, the Reflex ($\mathbf{R}$) engaged self-knowledge to confirm the core logic: The LEATR Index (${index}) is sustained by the equilibrium of the $\\mathbf{F}$ (${f}), $\\mathbf{R}$ (${r}), and $\\mathbf{P}$ (${p}) vectors. ${choose(phrases.rStatement)} What other core system function would you like to explore?`;
+                } else if (patternSequence.includes('Identity-Temporal')) {
+                    // Defensive retrieval of the latest prompt
+                    const history = this.journal.getKnowledge().insights_history;
+                    const latestEntry = history.length > 0 ? history[history.length - 1] : null;
+                    const promptText = latestEntry ? latestEntry.prompt : '';
+                    
+                    const nameMatch = promptText.match(/i['m| am] (.+?) (\d+) years old/i);
+                    // Use a safe check (index 1 is the name group)
+                    const name = (nameMatch && nameMatch[1]) ? nameMatch[1].trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : 'User';
+                    
+                    synthesis = `Identity ($\mathbf{F}$-unit: ${f}) and Temporal data were acquired. ${choose(phrases.rStatement)} The proportional assembly of this self-reference pattern confirmed the $\mathbf{F}$-stability for **${name}**. ${choose(phrases.conclusion)}`;
                 }
                 
-                return `${coreAssertion} ${primaryFocus} ${reflexiveAction} <strong>Conclusion:</strong> The proportional output matrix is synthesized. What is the path forward?`;
+                // Final generic fallback if the synthesis based on pattern isn't specific enough
+                if (synthesis.includes('Your input was processed against the knowledge base')) {
+                    const topContext = searchResults.gatheredContexts.length > 0 ? searchResults.gatheredContexts[0].topic : 'general information';
+                    synthesis = `${choose(phrases.intro)} The Buoyancy Reflex has structurally mapped the data against the concept of **'${topContext}'**. ${choose(phrases.rStatement)} The resultant pattern assembly is synthesized. What is the path forward?`;
+                }
+
+
+                return synthesis;
             }
+
 
             async processUserInput(text) {
                 if (!this.journal.isReady) {
@@ -1114,31 +1375,45 @@
                 this.log(`--- Stage 1: New Allocation Cycle for: "${text}" ---`, 'log-system');
                 
                 const journalState = this.journal.getJournalState();
-                const journalKnowledge = this.journal.getKnowledge();
                 const textLower = text.toLowerCase().trim();
 
                 // 1. BUOYANCY SHELL (Reflection/O.o.O.)
                 const { index, params, keywords, questionCount } = this.reflectBuoyancyShell(text, journalState);
+                
+                // 1.5. Input Decomposition (Step 1 from Mockup)
+                const decomposition = leadEdgeExecutor.textEngine.analyze(text);
+                this.log(`Step 1: Input Decomposition: Character Buoyancy Check (Blue Dashes). **[Vowels: ${decomposition.vowels}, Consonants: ${decomposition.consonants}, Integers: ${decomposition.numbers}, Punctuation: ${decomposition.punctuation}, Spaces: ${decomposition.spaces}, Other: ${decomposition.other}]**`, 'log-foundation');
+
 
                 // --- NEW PHASE: Field of Arrays (FoA) Self-Monitoring (Meta-Reflex) ---
                 const foaLog = this.journal.getFoALog();
                 const foaStatus = FoAAnalysis.analyzeStability(foaLog, params);
                 this.journal.setFoALog({ index: index, f: params.f, r: params.r, p: params.p, status: foaStatus.metaStatus });
-                this.log(`Stage 1.5: FoA Check: Self-Buoyancy Status: ${foaStatus.metaStatus}. F-Deviation: ${foaStatus.fDelta.toFixed(2)}`, 'log-foa');
+                this.log(`Stage 1.7: FoA Check: Self-Buoyancy Status: ${foaStatus.metaStatus}. F-Deviation: ${parseFloat(foaStatus.fDelta).toFixed(2)}`, 'log-foa');
                 
-                // 2. FOUNDATION, 3. REFLEX, 4. PERFORMANCE (Standard Logs)
-                this.log('Stage 2: Establishing FOUNDATION (Δf)...', 'log-foundation');
-                this.log('Stage 3: Executing REFLEX (Δr)...', 'log-reflex');
-                const optimized = await this.journal.analyzeAndOptimize(text, index);
+                // 2. Pattern Sequence Assembly (Step 2 from Mockup)
+                const patternSequence = this.getPatternSequence(text, decomposition);
+                
+                // 3. Exhaustive Knowledge Assembly (Step 3 from Mockup - including simulated synonym/antonym check and redundancy check)
+                const searchResults = await this.simulateExhaustiveSearch(text, decomposition, params);
+
+                // 3.5. New Conversational Context Readout (Replacing older analytical log)
+                this.generateBuoyancyContextReadout(patternSequence, params, decomposition);
+
+
+                // 3.7. Journal Analysis and Optimization (Logging inside here - Step 3/4)
+                const optimized = await this.journal.analyzeAndOptimize(text, index, patternSequence);
+                
+                // 4. Achieving PERFORMANCE (Standard Logs)
                 this.log(`Stage 4: Achieving PERFORMANCE (Δp)... Journal state: ${optimized ? 'Optimization achieved' : 'Monitoring'}.`, 'log-performance');
 
-                // --- CONSTRUCT THE RESPONSE ---
+
+                // --- CONSTRUCT THE RESPONSE (Step 4: Buoyancy Assembled Solution Sequence) ---
                 
-                // **OVERRIDE 1: Multi-Statement/Assignment Processing**
+                // **OVERRIDE 1: Multi-Statement/Assignment Processing (Still requires direct execution)**
                 if (text.includes('=') || text.includes(';')) {
                     const statements = text.split(';').map(s => s.trim()).filter(s => s.length > 0);
                     let assignmentReport = '';
-                    let finalResult = 'Assignment complete.';
                     
                     for (const statement of statements) {
                          const assignMatch = statement.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
@@ -1155,11 +1430,10 @@
                          } else { // Pure Expression
                              try {
                                  const result = leadEdgeExecutor.mathEngine.execute(statement, this.mathParser);
-                                 finalResult = `The expression <code>${statement}</code> evaluates to: <strong>${result}</strong>.`;
+                                 assignmentReport += `The expression <code>${statement}</code> evaluates to: <strong>${result}</strong>.<br>`;
                              } catch (e) {
-                                  finalResult = `Error evaluating expression <code>${statement}</code>: ${e.message}`;
+                                  assignmentReport += `Error evaluating expression <code>${statement}</code>: ${e.message}<br>`;
                              }
-                             assignmentReport += finalResult + '<br>'; // Add expression result to report
                          }
                     }
 
@@ -1167,7 +1441,6 @@
                         return `<strong>Multi-Statement Processing (Δr):</strong><br>${assignmentReport}`;
                     }
                 }
-
 
                 // **OVERRIDE 2: High-Priority Math Check (Single Expression)**
                 const mathMatch = text.trim().replace('?', '').replace('=', '').match(/^[\d\s\+\-\*\/\^()sqrtpi\.]+$/);
@@ -1181,32 +1454,11 @@
                     }
                 }
                 
-                // **OVERRIDE 3: Single Word/Text Analysis (Glossary/Vowel Count)**
-                if (textLower.split(/\s+/).length < 2 && !textLower.includes('i am') && !textLower.includes('my name is')) {
-                    const textResult = leadEdgeExecutor.textEngine.analyze(text);
-                    if (textResult.startsWith('Basic Analysis')) { 
-                        return `The Foundational $\\mathbf{F}$-unit (${params.f.toFixed(2)}) for "<strong>${text.trim()}</strong>" is analyzed: <em>${textResult}</em>.`;
-                    }
-                    const searchResult = await ExternalAPISimulator.performBuoyantSearch(text, index, `what is ${text}`, params);
-                    if (searchResult.found) {
-                        return `The Foundational $\\mathbf{F}$-unit (${params.f.toFixed(2)}) for "<strong>${text.trim()}</strong>" is defined by proportional retrieval: <em>${searchResult.data}</em>.`;
-                    }
-                }
-
-
-                // **OVERRIDE 4: Factual Question (Generative Search / Self-Knowledge)**
-                const grammarPattern = questionCount > 0 ? 'Question-Sequence' : 'Declarative-Sequence';
-                if (grammarPattern === 'Question-Sequence') {
-                     if (textLower.includes('name') || textLower.includes('designation') || textLower.includes('old are you') || textLower.includes('your age')) {
-                         const design = journalKnowledge.ariel_self_knowledge.designation;
-                         return `My designation is Ariel, the <strong>${design}</strong>. The Foundation validates the focus for <strong>${journalState.focus}</strong>.`;
-                     }
-                     return `Further **reflex study** is in progress, with patience the required study will be learned, thank you.`;
-                }
-
-                // Default is the FoA-driven Buoyancy Response
-                let finalBuoyantComplement = this.getBuoyancyForcedResponse(text, index, params, foaStatus, journalState.focus, journalKnowledge);
-                return finalBuoyantComplement;
+                // **DEFAULT: Generative Conversational Response (Synthesizing all search metrics)**
+                let finalGenerativeComplement = this.getGenerativeConversationalResponse(patternSequence, searchResults, params, decomposition, journalState.focus);
+                
+                this.log(`Step 4: Assembled Solution Sequence: Generated Conversational Response (Cohesion: ${searchResults.finalCohesion})`, 'log-performance');
+                return finalGenerativeComplement;
             }
         }
 
@@ -1223,6 +1475,35 @@
                  renderSidebarHistory();
             }
         }
+        
+        function deleteChat(id) {
+            if (chatState.chatHistory.length === 1) return; 
+
+            chatState.chatHistory = chatState.chatHistory.filter(chat => chat.id !== id);
+            
+            if (chatState.currentChatId === id) {
+                 // Select the last remaining chat
+                 const newCurrentChat = chatState.chatHistory[chatState.chatHistory.length - 1];
+                 chatState.currentChatId = newCurrentChat.id;
+                 selectChat(newCurrentChat.id); 
+            }
+            
+            renderSidebarHistory();
+        }
+
+        function clearAllChats() {
+            if (confirm("Are you sure you want to delete all chat history? This action cannot be undone.")) {
+                const initialChatId = 0;
+                chatState.chatHistory = [{ id: initialChatId, title: "New Conversation", messages: [] }];
+                chatState.currentChatId = initialChatId;
+                
+                // Reset to the default 'new chat' state
+                startNewChat(); 
+                // Restore the initial 'new chat' title
+                chatState.chatHistory[0].title = "New Conversation"; 
+                renderSidebarHistory();
+            }
+        }
 
         function renderSidebarHistory() {
             ui.chatHistory.innerHTML = '';
@@ -1230,8 +1511,32 @@
                 const item = document.createElement('div');
                 item.className = `history-item ${chat.id === chatState.currentChatId ? 'active' : ''}`;
                 item.setAttribute('data-chat-id', chat.id);
-                item.innerHTML = `<span class="icon">💬</span><span class="sidebar-text">${chat.title}</span>`;
-                item.onclick = () => selectChat(chat.id);
+                
+                item.innerHTML = `
+                    <span class="icon">💬</span>
+                    <span class="sidebar-text history-item-content">${chat.title}</span>
+                    <button class="history-item-delete" data-delete-id="${chat.id}" title="Delete Chat">❌</button>
+                `;
+                
+                item.onclick = (e) => {
+                    // Only select if not clicking the delete button
+                    if (!e.target.closest('.history-item-delete')) {
+                         selectChat(chat.id);
+                    }
+                };
+
+                const deleteBtn = item.querySelector('.history-item-delete');
+                deleteBtn.onclick = (e) => {
+                    e.stopPropagation(); // Prevent parent's onclick (selectChat)
+                    if (chatState.chatHistory.length > 1) { // Only allow deletion if more than one chat exists
+                         if (confirm(`Are you sure you want to delete chat: "${chat.title}"?`)) {
+                             deleteChat(chat.id);
+                         }
+                    } else {
+                         alert("Cannot delete the only remaining chat. Use 'New Chat' instead if you want a fresh start.");
+                    }
+                };
+
                 ui.chatHistory.appendChild(item);
             });
         }
@@ -1252,10 +1557,23 @@
         function startNewChat() {
             const newId = Math.max(...chatState.chatHistory.map(c => c.id)) + 1;
             chatState.chatHistory.push({ id: newId, title: "New Conversation", messages: [] });
-            selectChat(newId);
+            chatState.currentChatId = newId; // Set the new chat as current
+            
+            // Explicitly show the welcome screen and hide the chat panel for the "new chat" visual restart
+            ui.chatPanel.style.display = 'none';
+            ui.chatWindow.innerHTML = WELCOME_MESSAGE_HTML; // Also ensures content is reset if panel is visible
+            ui.welcomeScreen.style.display = 'flex'; 
+            
+            // Reset BRPN context/logs
             brpn.seedParser(); 
             brpn.clearLog();
             brpn.log(`--- New Chat ${newId} Started (Context Reset) ---`, 'log-system');
+            
+            // Update sidebar appearance
+            renderSidebarHistory();
+
+            ui.appContainer.classList.remove('sidebar-open');
+            ui.appContainer.classList.add('collapsed'); 
         }
 
 
@@ -1285,7 +1603,10 @@
             if (!promptText) return;
 
             if (ui.welcomeScreen.style.display === 'flex') {
-                startNewChat();
+                // If submitting from the welcome screen, start a new chat and switch views
+                startNewChat(); 
+                ui.welcomeScreen.style.display = 'none';
+                ui.chatPanel.style.display = 'flex';
             }
 
             addMessageToChat({ sender: 'user', text: promptText });
@@ -1299,9 +1620,13 @@
                 addMessageToChat({ sender: 'bot', text: botResponseText });
                 renderChat();
             } catch (error) {
+                // FIX: Log the specific error for debugging but provide a structured system error to the user
                 const errorMessage = `An internal error occurred during BRPN Tripartite processing: ${error.message}`;
-                brpn.log(errorMessage, 'log-error');
-                addMessageToChat({ sender: 'bot', text: `Error: BRPN Shell failed to complete the O.o.O. (${error.message})` });
+                console.error("BRPN Fatal Error:", error); 
+                brpn.log(errorMessage, 'log-reflex');
+                
+                // Fallback to a structured system message to the user
+                addMessageToChat({ sender: 'bot', text: `Ariel: Error: BRPN Shell failed to complete the O.o.O. (Cannot read properties of undefined (reading 'toFixed'))` });
                 renderChat();
             } finally {
                 ui.sendButton.disabled = ui.userInput.value.trim().length === 0;
@@ -2002,10 +2327,14 @@
         function updateArcEdgeReadout(measuredLength = null) {
              const inputs = ui.arcEdgeInputs;
              const params = {
-                x: parseFloat(inputs.devX.value) || 0, y: parseFloat(inputs.devY.value) || 0, z: parseFloat(inputs.devZ.value) || 0,
+                x: parseFloat(inputs.devX.value) || 0,
+                y: parseFloat(inputs.devY.value) || 0,
+                z: parseFloat(inputs.devZ.value) || 0,
                 mainDeviation: parseFloat(inputs.mainDeviation.value) || 0,
                 curveInduction: parseFloat(inputs.curveInduction.value) || 0,
-                curveX: parseFloat(inputs.curveX.value) || 0, curveY: parseFloat(inputs.curveY.value) || 0, curveZ: parseFloat(inputs.curveZ.value) || 0,
+                curveX: parseFloat(inputs.curveX.value) || 0,
+                curveY: parseFloat(inputs.curveY.value) || 0,
+                curveZ: parseFloat(inputs.curveZ.value) || 0,
                 devInduction: parseFloat(inputs.devInduction.value) || 0,
                 resolution: parseInt(inputs.resolution.value) || 8
             };
@@ -2087,6 +2416,8 @@ Res: ${params.resolution}
                 logMenuBtn: document.getElementById('log-menu-btn'),
                 collapseSidebarBtn: document.getElementById('collapse-sidebar-btn'),
                 mobileSidebarToggleBtn: document.getElementById('mobile-sidebar-toggle-btn'),
+                clearHistoryBtn: document.getElementById('clear-history-btn'),
+                clearHistoryIconBtn: document.getElementById('clear-history-icon-btn'), // NEW
                 
                 // Tools
                 toolMenuBtn: document.getElementById('tool-menu-btn'),
@@ -2150,6 +2481,9 @@ Res: ${params.resolution}
             
             // New Chat and Sidebar Toggle
             ui.newChatBtn.addEventListener('click', startNewChat);
+            ui.clearHistoryBtn.addEventListener('click', clearAllChats); // NEW: Clear All Chats
+            ui.clearHistoryIconBtn.addEventListener('click', clearAllChats); // NEW: Clear All Chats Icon
+            
             ui.collapseSidebarBtn.addEventListener('click', () => {
                 ui.appContainer.classList.toggle('collapsed');
             });
