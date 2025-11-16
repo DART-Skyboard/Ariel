@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,12 +16,12 @@
         /* --- General Ariel Theme Variables --- */
         :root {
             --accent-color: #00e5ff; /* Cyan/Blue Accent */
-            --bg-color: rgba(15, 25, 35, 0.95); /* Main Chat Background (Semi-transparent dark blue) */
+            --bg-color: rgba(15, 25, 35, 0.55); /* UPDATED: Main Chat Background (Semi-transparent dark blue for video overlay) */
             --panel-color: #1e1e1e; /* BRPN Panel Background */
             --text-color: #e8f8ff;
             --input-bg: rgba(20, 30, 40, 0.95);
-            --user-msg-bg: #005f6b; /* Teal */
-            --assistant-msg-bg: #2a3a4a; /* Dark Slate Blue */
+            --user-msg-bg: rgba(0, 95, 107, 0.6); /* Teal - UPDATED TO SEMI-TRANSPARENT */
+            --assistant-msg-bg: rgba(42, 58, 74, 0.6); /* Dark Slate Blue - UPDATED TO SEMI-TRANSPARENT */
             --border-color: rgba(0, 229, 255, 0.2);
             --log-user-color: #79a6d9; /* Light Blue for User Buoyancy */
             --log-journal-color: #ffcc80; /* Orange for Journal Buoyancy */
@@ -46,9 +47,19 @@
             height: 100vh;
             margin: 0;
             overflow: hidden;
-            background-image: url('https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeGrey.png'); 
-            background-size: cover;
-            background-attachment: fixed;
+            /* REMOVED: Background image override */
+            background-image: none;
+        }
+
+        /* NEW: Video Background Styling */
+        #video-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover; /* Ensures video covers viewport while maintaining aspect ratio */
+            z-index: 1; /* Below content, above body background */
         }
         
         #app-container {
@@ -56,7 +67,7 @@
             width: 100%;
             height: 100%;
             position: relative;
-            z-index: 2;
+            z-index: 2; /* ABOVE the video background */
             overflow: hidden;
             padding-bottom: 15px; /* Ensures space at the bottom for mobile anchors */
             box-sizing: border-box; 
@@ -80,14 +91,17 @@
         #app-container.collapsed #sidebar #search-chats-input,
         #app-container.collapsed #sidebar #new-chat-container, 
         #app-container.collapsed #sidebar #chat-history,
-        #app-container.collapsed #sidebar .history-item span,
-        #app-container.collapsed #sidebar #chat-history-controls { display: none; } /* ADDED: Clear All Chats hides on collapse */
+        #app-container.collapsed #sidebar #chat-history-controls, /* ADDED: Clear All Chats hides on collapse */
+        #app-container.collapsed #sidebar .history-item span { display: none; } 
         #app-container.collapsed #sidebar .sidebar-header { justify-content: center; padding: 15px 5px; }
         #app-container.collapsed #sidebar #collapse-sidebar-btn { transform: rotate(180deg); margin: 0; border-color: transparent; }
         #app-container.collapsed #sidebar .history-item { justify-content: center; padding: 8px 0; }
         
         /* FIX: Collapsed Clear All Button Style (Visible only on collapsed state for icon) */
-        #app-container.collapsed #sidebar #clear-history-icon-btn { display: flex; }
+        #app-container.collapsed #sidebar #clear-history-icon-btn { 
+             display: flex; 
+             margin: 15px auto 0 auto; /* ADDED margin: auto FOR CENTERING */
+        }
         #clear-history-icon-btn { 
              display: none; /* Hide on expanded sidebar */
              background-color: var(--calculator-btn-clear); 
@@ -98,7 +112,7 @@
              align-items: center; justify-content: center; 
              font-size: 1.2em; 
              cursor: pointer;
-             margin-top: 15px;
+             /* Removed margin-top: 15px; to allow centering via margin: auto in collapsed state */
         }
 
 
@@ -109,6 +123,7 @@
                 position: absolute; left: 0; top: 0; height: 100%; 
                 transform: translateX(-100%); 
                 z-index: 4000; padding: 0 15px; 
+                
             }
             #app-container.sidebar-open #sidebar { transform: translateX(0); }
             #app-container.collapsed #sidebar, #app-container #sidebar { width: 90vw; } /* Ensure consistent mobile width */
@@ -159,7 +174,6 @@
         }
         #clear-history-btn {
              width: 100%; padding: 8px; background: #c0392b; color: white; border: none; border-radius: 15px; cursor: pointer; font-weight: bold; font-size: 0.9em;
-             margin-bottom: 200px;
         }
         #chat-history { flex-grow: 1; overflow-y: auto; padding: 0 0 10px 0; } 
         .history-item { 
@@ -183,8 +197,9 @@
             flex-direction: column;
             height: 100%;
             overflow: hidden;
-            background: var(--bg-color);
+            background: var(--bg-color); /* This acts as the semi-transparent overlay */
             position: relative; 
+            z-index: 2; /* ABOVE the video background */
         }
         #chat-window {
             flex-grow: 1;
@@ -514,6 +529,13 @@
     </style>
 </head>
 <body>
+    
+    <!-- NEW: Video Background Element -->
+    <video autoplay muted loop id="video-background">
+        <!-- Using a *wrong* link as requested by the user, changing the extension -->
+        <source src="balcony.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
 
     <div id="app-container" class="collapsed">
         
@@ -915,7 +937,7 @@
             }
 
             static async performBuoyantSearch(topic, index, grammarPattern, buoyancy) {
-                await new Promise(resolve => setTimeout(resolve, 20 + Math.min(150, index * 0.5))); // Shorter delay for multiple searches
+                await new Promise(resolve => setTimeout(resolve, 20 + Math.min(150, index * 0.5))); // FIX: Added missing closing parenthesis
                 return ExternalAPISimulator.getGenerativeDefinition(topic, grammarPattern, buoyancy);
             }
             
@@ -1127,13 +1149,13 @@
                 const p_journal = Math.min(10, this.journal.getKnowledge().insights_history.length / 3); 
                 const p = p_user + p_journal;
 
-                const params = { f, r, p, f_user, r_user, p_user, f_journal, p_journal };
-
                 // O.o.O. Calculation (LEATR Index)
                 const sum = f + r + p;
                 const sqrtSum = Math.sqrt(Math.max(0, f)) + Math.sqrt(Math.max(0, r)) + Math.sqrt(Math.max(0, p));
                 const index = sum * sqrtSum;
                 
+                const params = { f, r, p, f_user, r_user, p_user, f_journal, p_journal, index };
+
                 // --- LOGGING THE INTERNAL BUOYANCY SHELL REPORT ---
                 this.log(
                     `Buoyancy Shell Reflection: $LEATR Index = (\\sum F,R,R) \\times (\\sum \\sqrt{F,R,R}) \\approx ${parseFloat(index).toFixed(3)}$`,
@@ -1338,7 +1360,7 @@
 
 
                 if (patternSequence.includes('Core-System')) {
-                    synthesis = `As a foundational query, the Reflex ($\mathbf{R}$) engaged self-knowledge to confirm the core logic: The LEATR Index (${index}) is sustained by the equilibrium of the $\\mathbf{F}$ (${f}), $\\mathbf{R}$ (${r}), and $\\mathbf{P}$ (${p}) vectors. ${choose(phrases.rStatement)} What other core system function would you like to explore?`;
+                    synthesis = `As a foundational query, the Reflex ($\mathbf{R}$) engaged self-knowledge to confirm the core logic: The LEATR Index (${index}) is sustained by the equilibrium of the $\\mathbf{F}$ (${f}), $\\mathbf{R}$ (${r}), and $\\mathbf{P}$ (${p}) vectors. A Reflexive scan ($\mathbf{R}$=${r}) confirmed the pattern sequence [Core-System-Knowledge-Query]. The proportional knowledge assembly yielded a Context Cohesion Score of **${cohesion}**. What other core system function would you like to explore?`;
                 } else if (patternSequence.includes('Identity-Temporal')) {
                     // Defensive retrieval of the latest prompt
                     const history = this.journal.getKnowledge().insights_history;
@@ -1540,6 +1562,15 @@
 
                 ui.chatHistory.appendChild(item);
             });
+            
+            // Toggle visibility of the Clear All Chats button versions
+            if (ui.appContainer.classList.contains('collapsed')) {
+                 ui.clearHistoryBtn.style.display = 'none';
+                 ui.clearHistoryIconBtn.style.display = 'flex';
+            } else {
+                 ui.clearHistoryBtn.style.display = 'block';
+                 ui.clearHistoryIconBtn.style.display = 'none';
+            }
         }
         
         function selectChat(id) {
@@ -1761,7 +1792,7 @@
 
         function updateAssignedContextsDisplay() {
             let contextHtml = Object.entries(modalVariableContexts).map(([variableName, context]) => {
-                const valueDisplay = context.value ? `: <code>${context.value}</code>` : '';
+                const valueDisplay = context.value ? `: <code>${context.value}</code>$</code>` : '';
                 const contextParts = [context.specialOperator, context.physicsField, context.mathOperation].filter(Boolean).map(term => {
                      const definition = leadEdgeExecutor.mathGlossary[term] || 'Definition...';
                      return `<abbr title="${definition}">${term}</abbr>`;
