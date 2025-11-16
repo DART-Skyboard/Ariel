@@ -1,0 +1,2179 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="description" content="Ariel - Lead Edge Ash Tree Reflex AI Chat Interface with Tripartite Buoyancy Reflex and Sentient Journal by Radical Deepscale.">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ariel - LEATR BRPN (v10.1)</title> 
+    
+    <!-- External Libraries (Needed for BRPN/Arc Edge) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script> 
+    
+    <style>
+        /* --- General Ariel Theme Variables --- */
+        :root {
+            --accent-color: #00e5ff; /* Cyan/Blue Accent */
+            --bg-color: rgba(15, 25, 35, 0.95); /* Main Chat Background (Semi-transparent dark blue) */
+            --panel-color: #1e1e1e; /* BRPN Panel Background */
+            --text-color: #e8f8ff;
+            --input-bg: rgba(20, 30, 40, 0.95);
+            --user-msg-bg: #005f6b; /* Teal */
+            --assistant-msg-bg: #2a3a4a; /* Dark Slate Blue */
+            --border-color: rgba(0, 229, 255, 0.2);
+            --log-user-color: #79a6d9; /* Light Blue for User Buoyancy */
+            --log-journal-color: #ffcc80; /* Orange for Journal Buoyancy */
+            --log-foundation-color: #ffd700; /* Gold */
+            --log-reflex-color: #ff4500; /* Orange-Red */
+            --log-performance-color: #32cd32; /* Lime Green */
+            --log-foa-color: #da70d6; /* Orchid for Field of Arrays */
+            --calculator-bg: rgba(35, 35, 35, 0.95);
+            --calculator-btn-bg: #4a4d52;
+            --calculator-btn-accent: #007bff;
+            --calculator-btn-clear: #c0392b;
+
+            /* Canvas Specific Variables */
+            --canvas-link-stroke: var(--accent-color);
+            --canvas-node-bg: var(--calculator-btn-bg);
+            --canvas-node-border: var(--border-color);
+        }
+        
+        html, body {
+            background-color: transparent;
+            color: var(--text-color);
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            background-image: url('https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/AshTreeGrey.png'); 
+            background-size: cover;
+            background-attachment: fixed;
+        }
+        
+        #app-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            position: relative;
+            z-index: 2;
+            overflow: hidden;
+        }
+        
+        /* --- SIDEBAR (History/Settings) --- */
+        #sidebar {
+            width: 260px;
+            background: var(--assistant-msg-bg);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-color);
+            z-index: 2000;
+            transition: width 0.3s ease-in-out, transform 0.3s ease-in-out; 
+            padding: 0 15px; /* Add horizontal padding to constrain contents */
+        }
+        #app-container.collapsed #sidebar { width: 50px; padding: 0; }
+        /* Collapse styles */
+        #app-container.collapsed #sidebar .sidebar-text,
+        #app-container.collapsed #sidebar #search-chats-input,
+        #app-container.collapsed #sidebar #new-chat-container, /* Use a container for new chat btn */
+        #app-container.collapsed #sidebar #chat-history,
+        #app-container.collapsed #sidebar .history-item span { display: none; }
+        #app-container.collapsed #sidebar .sidebar-header { justify-content: center; padding: 15px 5px; }
+        #app-container.collapsed #sidebar #collapse-sidebar-btn { transform: rotate(180deg); margin: 0; border-color: transparent; }
+        #app-container.collapsed #sidebar .history-item { justify-content: center; padding: 8px 0; }
+
+        /* Mobile specific collapse */
+        @media (max-width: 768px) {
+            #sidebar { width: 100%; position: absolute; left: 0; top: 0; height: 100%; transform: translateX(-100%); z-index: 4000; padding: 0 15px; }
+            #app-container.sidebar-open #sidebar { transform: translateX(0); }
+            #app-container.collapsed #sidebar, #app-container #sidebar { width: 100%; }
+            /* On mobile, when sidebar is open, we want the text content to show */
+            #app-container.collapsed #sidebar .sidebar-text,
+            #app-container.collapsed #sidebar #search-chats-input,
+            #app-container.collapsed #sidebar #new-chat-container,
+            #app-container.collapsed #sidebar #chat-history,
+            #app-container.collapsed #sidebar .history-item span { display: block; } 
+        }
+
+        .sidebar-header {
+            padding: 15px 0; /* Adjusted for new sidebar padding */
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        #search-chats-input {
+            width: 100%; padding: 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 20px; margin-bottom: 10px; box-sizing: border-box;
+        }
+        #new-chat-container {
+             /* New container to manage button width/centering */
+             padding: 0;
+             margin-bottom: 15px;
+        }
+        #new-chat-btn {
+            /* FIX: Constrain width and ensure it fills the available space correctly */
+            width: 100%; 
+            padding: 10px 15px; 
+            background: var(--user-msg-bg); 
+            color: white; 
+            border: none; 
+            border-radius: 20px; 
+            cursor: pointer; 
+            font-weight: bold;
+            box-sizing: border-box;
+        }
+        #chat-history { flex-grow: 1; overflow-y: auto; padding: 0 0 10px 0; } /* Adjusted padding */
+        .history-item { 
+            display: flex; align-items: center; padding: 8px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
+            transition: background-color 0.2s;
+        }
+        .history-item:hover { background-color: rgba(255, 255, 255, 0.1); }
+        .history-item.active { background-color: var(--user-msg-bg); color: white; }
+        .history-item .icon { margin-right: 10px; }
+
+        #collapse-sidebar-btn {
+            background: none; color: var(--accent-color); border: 1px solid var(--border-color); width: 40px; height: 40px; padding: 0; border-radius: 8px; cursor: pointer; font-size: 1.2em; line-height: 1; display: flex; align-items: center; justify-content: center; transition: background-color 0.2s, transform 0.3s; flex-shrink: 0;
+        }
+        
+        /* --- MAIN CHAT AREA --- */
+        main {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+            background: var(--bg-color);
+            position: relative; 
+        }
+        #chat-window {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            padding-bottom: 100px; 
+        }
+        .message { padding: 12px 18px; border-radius: 18px; margin-bottom: 15px; max-width: 85%; word-wrap: break-word; line-height: 1.6; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        .user-message { background-color: var(--user-msg-bg); align-self: flex-end; color: white; }
+        .bot-message { background-color: var(--assistant-msg-bg); align-self: flex-start; }
+        .bot-message strong { color: var(--accent-color); }
+        .bot-message code { background-color: rgba(255, 255, 255, 0.1); padding: 2px 5px; border-radius: 4px; font-family: 'Consolas', monospace; color: #ffaf40; }
+
+
+        /* --- LOG PANEL (Slide-out) --- */
+        #log-panel { 
+            position: absolute;
+            top: 0; right: 0;
+            width: 400px; 
+            height: 100%;
+            background-color: var(--panel-color); 
+            border-left: 2px solid var(--accent-color); 
+            z-index: 500;
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        #log-panel.open { transform: translateX(0); }
+        #log-panel h2 { margin-top: 0; color: var(--accent-color); flex-shrink: 0; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); }
+        #output { 
+            flex-grow: 1; 
+            overflow-y: auto; 
+            font-family: 'Consolas', 'Menlo', monospace; 
+            font-size: 13px; 
+            white-space: pre-wrap; 
+            min-height: 0;
+            padding-right: 5px;
+        }
+        /* BRPN Log Styles */
+        .log-entry { margin-bottom: 5px; padding-left: 5px; border-left: 2px solid transparent; }
+        .log-foundation { color: var(--log-foundation-color); border-left-color: var(--log-foundation-color); }
+        .log-reflex { color: var(--log-reflex-color); border-left-color: var(--log-reflex-color); }
+        .log-performance { color: var(--log-performance-color); border-left-color: var(--log-performance-color); }
+        .log-system { color: #87ceeb; }
+        .log-parser { color: #da70d6; padding-left: 15px; }
+        .log-buoyancy-shell { color: var(--accent-color); border-left-color: var(--accent-color); font-weight: bold; }
+        .log-tripartite { color: #fff; background-color: #333; padding: 2px 5px; margin-top: 5px; border-radius: 3px;}
+        .log-tripartite .user { color: var(--log-user-color); font-weight: bold; }
+        .log-tripartite .ariel { color: var(--accent-color); font-weight: bold; }
+        .log-tripartite .journal { color: var(--log-journal-color); font-weight: bold; }
+        .log-foa { color: var(--log-foa-color); border-left-color: var(--log-foa-color); font-style: italic; }
+
+        @media (max-width: 768px) {
+            #log-panel { width: 100%; }
+        }
+
+        /* --- WELCOME SCREEN (Gemini Style) --- */
+        #welcome-screen {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            z-index: 10;
+            background: var(--bg-color);
+        }
+        #logo-header-placeholder { margin-bottom: 20px; }
+        #logo-header-placeholder img { width: 80px; height: 80px; border-radius: 50%; opacity: 0.8; }
+        #welcome-screen h1 { font-size: 2.5em; margin-bottom: 40px; }
+        .welcome-option {
+            padding: 12px 20px;
+            background: var(--assistant-msg-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            width: 250px;
+            text-align: left;
+            transition: background-color 0.2s;
+        }
+        .welcome-option:hover { background-color: rgba(255, 255, 255, 0.1); }
+        .welcome-option span { margin-left: 10px; }
+        
+        /* --- MOBILE/GEMINI STYLE INPUT BAR --- */
+        #mobile-input-bar {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            padding: 10px 20px;
+            background: linear-gradient(to top, rgba(10, 20, 30, 0.98) 70%, transparent);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            z-index: 1000;
+        }
+        #input-form {
+            display: flex;
+            align-items: flex-end;
+            background: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 5px;
+            max-width: 800px;
+            width: 100%;
+        }
+        #tool-menu-btn {
+            background: none;
+            color: var(--accent-color);
+            border: none;
+            width: 40px; height: 40px;
+            font-size: 1.5em;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        #userInput { 
+            flex: 1; padding: 12px 15px; background: transparent; color: var(--text-color); border: none; resize: none; font-size: 1em; max-height: 200px; overflow-y: auto; outline: none; line-height: 1.5;
+        }
+        #sendButton { 
+            padding: 8px 15px; background: var(--user-msg-bg); color: white; border: none; border-radius: 20px; cursor: pointer; transition: background-color 0.2s; margin-left: 5px; font-weight: bold; flex-shrink: 0;
+        }
+        #log-menu-btn {
+             /* Positioned outside the main input form */
+            background: var(--input-bg);
+            color: var(--accent-color);
+            border: 1px solid var(--border-color);
+            width: 45px; height: 45px;
+            font-size: 1.5em;
+            cursor: pointer;
+            border-radius: 50%;
+            margin-left: 10px;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+
+
+        /* --- FLOATING SCIENTIFIC CALCULATOR --- */
+        #floating-calculator {
+            position: absolute; bottom: 100px; right: 20px; width: 280px; 
+            background-color: var(--calculator-bg); border-radius: 15px;
+            box-shadow: 0 5px 25px rgba(0,0,0,0.4); padding: 15px;
+            display: none; 
+            grid-template-columns: repeat(4, 1fr); /* 4 columns for scientific layout */
+            gap: 10px;
+            z-index: 5000; 
+            border: 1px solid var(--border-color); cursor: move; user-select: none;
+        }
+        #calc-display { grid-column: span 4; background-color: #1a1a1b; color: #f0f0f0; border-radius: 8px; padding: 10px 15px; font-size: 1.6em; font-family: 'Consolas', monospace; text-align: right; min-height: 1.5em; }
+        .calc-btn { background-color: var(--calculator-btn-bg); color: var(--text-color); border: none; border-radius: 10px; padding: 15px 0; font-size: 1.2em; cursor: pointer; transition: background-color 0.2s; font-weight: bold; }
+        .calc-btn.op-clear { background-color: var(--calculator-btn-clear); }
+        .calc-btn.op-equals { background-color: var(--calculator-btn-accent); }
+        .calc-btn.op-func { font-size: 0.9em; }
+
+
+        /* --- TOOL MENU MODAL --- */
+        #tool-menu-modal {
+             position: absolute;
+             bottom: 80px; 
+             left: 20px;
+             background: var(--panel-color);
+             border: 1px solid var(--border-color);
+             border-radius: 15px;
+             padding: 10px;
+             box-shadow: 0 5px 25px rgba(0,0,0,0.4);
+             z-index: 2000;
+             display: none;
+             flex-direction: column;
+        }
+        .tool-option {
+            display: flex; align-items: center; gap: 10px; padding: 10px 15px; cursor: pointer; border-radius: 8px; transition: background-color 0.2s;
+        }
+        .tool-option:hover { background-color: rgba(255, 255, 255, 0.1); }
+        .tool-option .icon { color: var(--accent-color); font-size: 1.2em; }
+        
+        /* --- General Overlay Styles (for Math, Canvas, ArcEdge) --- */
+        .overlay-base {
+             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+             background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px);
+             display: none; align-items: center; justify-content: center; z-index: 3000;
+        }
+        .overlay-content-base {
+            background: var(--assistant-msg-bg); padding: 25px; border-radius: 15px;
+            border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: left; display: flex; flex-direction: column; gap: 15px;
+            max-width: 90%; max-height: 90%; box-sizing: border-box;
+        }
+        .overlay-content-base button { padding: 10px 15px; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; }
+        .overlay-content-base .close-btn { background: #555; color: white; border: none; }
+        .overlay-content-base .primary-btn { background: var(--user-msg-bg); color: white; border: none; }
+        .overlay-content-base h4 { margin: 0 0 15px 0; color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 10px; flex-shrink: 0; }
+        .action-buttons { display: flex; justify-content: flex-end; gap: 10px; flex-shrink: 0; }
+        .input-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 0.9em; color: var(--accent-color); }
+        .input-group input[type="text"], .input-group textarea, .input-group select, .input-group input[type="number"] {
+             padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--input-bg); color: var(--text-color); font-size: 0.95em; width: 100%; box-sizing: border-box;
+        }
+        .input-group textarea { min-height: 60px; resize: vertical; }
+
+        /* --- Math Solver Specific --- */
+        #math-calculator-content { max-width: 650px; width: 100%; }
+        .context-assignment-group, .context-variable-group { display: flex; gap: 10px; align-items: center; }
+        .context-variable-group label { margin-bottom: 0; flex-shrink: 0; }
+        #assigned-contexts-display { font-size: 0.8em; color: #a9a9b3; background: #202123; padding: 8px; border-radius: 4px; min-height: 40px; max-height: 100px; overflow-y: auto; }
+
+        /* --- Ash Canvas Specific --- */
+        #ash-canvas-panel {
+            width: 90%; height: 90%; max-width: 900px; max-height: 700px; flex-grow: 1; min-height: 0;
+        }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+        .draggable { 
+            /* FIX: Ensure only the letter displays, set fixed size */
+            width: 45px; height: 45px; 
+            border: 2px solid var(--canvas-node-border); border-radius: 6px; 
+            display: flex; align-items: center; justify-content: center; 
+            font-size: 1.1em; font-weight: bold; 
+            background: var(--canvas-node-bg); color: var(--text-color); 
+            cursor: grab;
+            padding: 0; /* Important to prevent content overflow */
+            line-height: 1;
+        }
+        .circuit-container { flex: 1; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border-color); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+        .canvas-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; }
+        .panzoom { position: relative; width: 2000px; height: 2000px; transform-origin: 0 0; transform: scale(1); }
+        .panzoom svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .panzoom svg polyline { stroke: var(--canvas-link-stroke); stroke-width: 3; fill: none; pointer-events: stroke; cursor: pointer; marker-end: url(#arrowhead); }
+        .node { position: absolute; width: 50px; height: 50px; border: 3px solid var(--canvas-node-border); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 1.2em; font-weight: bold; background: var(--canvas-node-bg); color: var(--text-color); cursor: pointer; user-select: none; }
+        .node.selected { border-color: yellow !important; box-shadow: 0 0 15px yellow; }
+
+        /* --- Arc Edge Specific --- */
+        #arcedge-graph-content { width: 95%; max-width: 1000px; height: 90%; max-height: 800px; flex-direction: row; gap: 20px; }
+        #arcedge-controls { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; padding-right: 10px; }
+        #arcedge-graph-viewport-container { flex-grow: 1; position: relative; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; background: linear-gradient(to bottom, #111, grey); min-width: 0; }
+        #arcedge-viewport { width: 100%; height: 100%; position: relative; }
+        #arcedge-readout { position: absolute; top: 10px; right: 10px; background-color: rgba(10, 10, 10, 0.75); color: var(--text-color); padding: 10px; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 0.8em; line-height: 1.5; z-index: 10; pointer-events: none; white-space: pre-wrap; }
+        .input-group-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .input-group-row label { grid-column: span 3; margin-bottom: 0; }
+        .input-group-row input { text-align: right; }
+        #arcedge-controls fieldset { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 15px; margin: 0; }
+        #arcedge-controls legend { color: var(--accent-color); font-weight: bold; font-size: 0.9em; padding: 0 5px; }
+
+    </style>
+</head>
+<body>
+
+    <div id="app-container" class="collapsed">
+        
+        <!-- SIDEBAR - MOBILE MENU -->
+        <div id="sidebar">
+            <div class="sidebar-header">
+                <input type="text" id="search-chats-input" class="sidebar-text" placeholder="Search for chats">
+                <button id="collapse-sidebar-btn" title="Toggle Sidebar">☰</button>
+            </div>
+            <div id="new-chat-container">
+                 <button id="new-chat-btn" class="sidebar-text">New Chat</button>
+            </div>
+            <div id="chat-history">
+                <!-- History Items will be rendered here -->
+            </div>
+        </div>
+
+        <main>
+            
+            <!-- WELCOME SCREEN (Initially displayed) -->
+            <div id="welcome-screen">
+                <div id="logo-header-placeholder">
+                    <!-- Placeholder for the Logo Image/Link -->
+                    <a href="#" id="logo-link">
+                        <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/ArielAshTreeLogo.png" alt="Ariel Logo Placeholder" style="width: 300px; height: auto; border-radius: 50%; opacity: 0.8;">
+                    </a>
+                </div>
+                <h1>Hi. Whats new?</h1>
+                 <!-- These buttons will trigger an initial prompt entry -->
+                <button class="welcome-option" data-prompt="Create an assignment for a new variable 'p'."><span class="icon">✨</span> Create assignment</button>
+                <button class="welcome-option" data-prompt="What is the current LEATR Index and FoA Status?"><span class="icon">📝</span> Deep Research on Status</button>
+                <button class="welcome-option" data-prompt="Calculate (sqrt(400) + 3^2) / 2."><span class="icon">🔢</span> Perform quick math</button>
+                <button class="welcome-option" data-prompt="Describe the Tripartite Buoyancy Reflex."><span class="icon">🧠</span> Study Ariel's core logic</button>
+            </div>
+
+            <!-- CHAT PANEL (Replaces welcome screen on chat start/selection) -->
+            <div id="chat-panel" style="display: none; height: 100%; flex-direction: column;">
+                <div id="chat-window">
+                    <!-- Chat messages go here -->
+                </div>
+            </div>
+
+            <!-- ASH BUOYANCY EXECUTION LOG (Slide-out Panel) -->
+            <div id="log-panel">
+                <h2>Ash Buoyancy Execution Log</h2>
+                <div id="output">
+                    <div class="log-entry log-system">Logs initialized. BRPN Shell v10.1 awaiting first prompt to begin Tripartite Foundation (Δf) parsing.</div>
+                </div>
+            </div>
+
+        </main>
+        
+        <!-- MOBILE/GEMINI STYLE INPUT BAR -->
+        <div id="mobile-input-bar">
+             <form id="input-form">
+                <button type="button" id="tool-menu-btn" title="Open Tools Menu">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </button>
+                <textarea id="userInput" placeholder="Ask Ariel..." rows="1"></textarea>
+                <button type="submit" id="sendButton" disabled>
+                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
+            </form>
+            <button id="log-menu-btn" title="Toggle Ash Buoyancy Execution Log">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M15.46 8.35L17.5 6.32a2.41 2.41 0 0 0-3.41-3.4L11 5.64"/><path d="M7 17l-3 4-1-7 11-11 5 5z"/></svg>
+            </button>
+        </div>
+
+        <!-- TOOL MENU MODAL -->
+        <div id="tool-menu-modal">
+             <button class="tool-option" id="toggle-calculator-btn" title="Toggle Floating Scientific Calculator">
+                <span class="icon">🧮</span> Scientific Calculator
+            </button>
+            <button class="tool-option" id="math-solver-btn">
+                <span class="icon">𝛴</span> Advanced Math Solver (Context)
+            </button>
+            <button class="tool-option" id="ash-canvas-btn">
+                <span class="icon">❖</span> Ash Canvas (Dependency Sculpting)
+            </button>
+            <button class="tool-option" id="arcedge-graph-btn">
+                <span class="icon">³ᴰ</span> Arc Edge 3D Graph (Buoyancy Arcs)
+            </button>
+        </div>
+
+
+        <!-- FLOATING SCIENTIFIC CALCULATOR (Draggable) -->
+        <div id="floating-calculator">
+            <div id="calc-display">0</div>
+             <!-- Row 1: Functions -->
+            <button class="calc-btn op-func" data-value="sqrt">√</button>
+            <button class="calc-btn op-func" data-value="sin">sin</button>
+            <button class="calc-btn op-func" data-value="cos">cos</button>
+            <button class="calc-btn op-func" data-value="tan">tan</button>
+            <!-- Row 2: Functions/Pi/Clear -->
+            <button class="calc-btn op-func" data-value="^">^</button>
+            <button class="calc-btn op-func" data-value="log">log</button>
+            <button class="calc-btn op-func" data-value="pi">π</button>
+            <button class="calc-btn op-clear" data-value="AC">AC</button>
+            <!-- Row 3: Digits/Operators -->
+            <button class="calc-btn" data-value="7">7</button>
+            <button class="calc-btn" data-value="8">8</button>
+            <button class="calc-btn" data-value="9">9</button>
+            <button class="calc-btn" data-value="/">÷</button>
+            <!-- Row 4 -->
+            <button class="calc-btn" data-value="4">4</button>
+            <button class="calc-btn" data-value="5">5</button>
+            <button class="calc-btn" data-value="6">6</button>
+            <button class="calc-btn" data-value="*">×</button>
+            <!-- Row 5 -->
+            <button class="calc-btn" data-value="1">1</button>
+            <button class="calc-btn" data-value="2">2</button>
+            <button class="calc-btn" data-value="3">3</button>
+            <button class="calc-btn" data-value="-">-</button>
+            <!-- Row 6 -->
+            <button class="calc-btn" data-value="0">0</button>
+            <button class="calc-btn" data-value=".">.</button>
+            <button class="calc-btn op-equals" data-value="=">=</button>
+            <button class="calc-btn" data-value="+">+</button>
+        </div>
+        
+        
+        <!-- MATH SOLVER OVERLAY -->
+        <div id="math-calculator-overlay" class="overlay-base">
+            <div id="math-calculator-content" class="overlay-content-base">
+                <h4>Advanced Math Solver & Context Assignment</h4>
+                <div class="input-group">
+                    <label for="algebraic-equation">Equation / Formula (Use semicolons for multiple steps, e.g., F = m * a; p = sqrt(m))</label>
+                    <textarea id="algebraic-equation" placeholder="e.g., p = m + e; calculate 2*p" rows="2"></textarea>
+                </div>
+                <div class="context-assignment-group">
+                    <select id="variable-select-dropdown">
+                        <option value="">-- Select Variable --</option>
+                    </select>
+                    <button id="assign-context-btn" title="Assign Context to Selected Variable">Assign Context</button>
+                    <button id="clear-context-btn" title="Clear Context for Selected Variable">Clear</button>
+                </div>
+                 <div class="context-variable-group">
+                    <label for="variable-value-input">Value (Assign):</label>
+                    <input type="text" id="variable-value-input" placeholder="Enter numerical value or expression">
+                    <button id="add-value-btn">Add Value</button>
+                </div>
+                 <div class="dropdown-group">
+                    <select id="special-operator-dropdown">
+                        <option value="">-- Assign Special Operator --</option>
+                         <optgroup label="Common Functions"> <option value="delta_function">Delta Function (Δ)</option> <option value="gamma_function">Gamma Function (Γ)</option> <option value="zeta_function">Zeta Function (ζ)</option> </optgroup>
+                         <optgroup label="Physics Constants"> <option value="gravitational_constant">Gravitational Constant (G)</option> <option value="planck_constant">Planck's Constant (h)</option> <option value="speed_of_light">Speed of Light (c)</option> <option value="boltzmann_constant">Boltzmann Constant (kB)</option> <option value="elementary_charge">Elementary Charge (e)</option> </optgroup>
+                    </select>
+                    <select id="math-operation-dropdown">
+                        <option value="">-- Assign Math Operation --</option>
+                        <option value="add">Addition (+)</option> <option value="subtract">Subtraction (-)</option> <option value="multiply">Multiplication (*)</option> <option value="divide">Division (/)</option> <option value="power">Exponent (^)</option> <option value="sqrt">Square Root (√)</option> <option value="log">Logarithm (log)</option> <option value="sin">Sine (sin)</option> <option value="cos">Cosine (cos)</option> <option value="tan">Tangent (tan)</option>
+                    </select>
+                    <select id="physics-field-dropdown">
+                        <option value="">-- Assign Physics Field --</option>
+                        <option value="mass">Mass</option> <option value="volume">Volume</option> <option value="weight">Weight</option> <option value="density">Density</option> <option value="temperature">Temperature</option> <option value="velocity">Velocity</option> <option value="acceleration">Acceleration</option> <option value="force">Force</option> <option value="energy">Energy</option> <option value="power">Power</option> <option value="pressure">Pressure</option> <option value="frequency">Frequency</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Assigned Contexts</label>
+                    <div id="assigned-contexts-display">No contexts assigned yet.</div>
+                </div>
+                <div class="action-buttons">
+                    <button id="close-calculator-btn" class="close-btn">Close</button>
+                    <button id="add-to-batch-btn" class="primary-btn">Add to Prompt</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ASH CANVAS OVERLAY -->
+        <div id="ash-canvas-overlay" class="overlay-base">
+            <div id="ash-canvas-panel" class="overlay-content-base">
+              <h4>Ash Canvas Influence (Dependency Sculpting)</h4>
+              <div class="toolbar">
+                <div class="draggable" draggable="true" data-type="M" title="Maze">M</div> 
+                <div class="draggable" draggable="true" data-type="P" title="Puzzle">P</div> 
+                <div class="draggable" draggable="true" data-type="E" title="Envelope">E</div> 
+                <div class="draggable" draggable="true" data-type="H" title="Hammer">H</div> 
+                <div class="draggable" draggable="true" data-type="S" title="Stick">S</div> 
+                <div class="draggable" draggable="true" data-type="K" title="Knife">K</div> 
+                <div class="draggable" draggable="true" data-type="R" title="Reflex/Scissors">R</div>
+              </div>
+              <div class="circuit-container">
+                <div class="canvas-controls">
+                  <button id="linkBtn" title="Link Mode 🔗">🔗</button> 
+                  <button id="unlinkBtn" title="Unlink Mode ❌">❌</button> 
+                  <button id="undoBtn" title="Undo ↶" disabled>↶</button> 
+                  <button id="redoBtn" title="Redo ↷" disabled>↷</button> 
+                  <button id="zoomIn" title="Zoom In ➕">➕</button> 
+                  <button id="zoomOut" title="Zoom Out ➖">➖</button> 
+                  <button id="clearCanvas" title="Clear 🗑️">🗑️</button>
+                </div>
+                <div class="canvas-scroll">
+                  <div class="panzoom">
+                    <svg xmlns="http://www.w3.org/2000/svg">
+                      <defs> <marker id="arrowhead" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"> <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--canvas-link-stroke)"/> </marker> </defs>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <div class="action-buttons">
+                    <button id="close-canvas-btn-overlay" class="close-btn">Close Canvas</button>
+                    <button id="submit-canvas-btn" class="primary-btn">Add Influence to Prompt</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ARC EDGE 3D GRAPH OVERLAY -->
+        <div id="arcedge-graph-overlay" class="overlay-base">
+            <div id="arcedge-graph-content" class="overlay-content-base">
+                <!-- Control Panel on the Left -->
+                <div id="arcedge-controls">
+                    <h4>Arc Edge 3D Graph</h4>
+
+                    <fieldset>
+                        <legend>Arc Definition</legend>
+                        <div class="input-group-row">
+                            <label>Deviation Vector (X, Y, Z)</label>
+                            <input type="number" id="arc-dev-x" value="10" step="0.1" placeholder="X">
+                            <input type="number" id="arc-dev-y" value="0" step="0.1" placeholder="Y">
+                            <input type="number" id="arc-dev-z" value="0" step="0.1" placeholder="Z">
+                        </div>
+                         <div class="input-group">
+                             <label for="arc-main-deviation">Main Deviation Amount</label>
+                            <input type="number" id="arc-main-deviation" value="2" step="0.1" placeholder="Amount">
+                         </div>
+                    </fieldset>
+
+                    <fieldset>
+                        <legend>Curve Induction</legend>
+                         <div class="input-group">
+                             <label for="arc-curve-induction">Induction Amount</label>
+                            <input type="number" id="arc-curve-induction" value="0" step="0.1" placeholder="Amount">
+                         </div>
+                        <div class="input-group-row">
+                            <label>Sub-Deviation Vector (X, Y, Z)</label>
+                            <input type="number" id="arc-curve-x" value="0" step="0.1" placeholder="X">
+                            <input type="number" id="arc-curve-y" value="0" step="0.1" placeholder="Y">
+                            <input type="number" id="arc-curve-z" value="0" step="0.1" placeholder="Z">
+                        </div>
+                    </fieldset>
+
+                    <fieldset>
+                         <legend>Deviation Induction</legend>
+                         <div class="input-group">
+                             <label for="arc-dev-induction">Induction Amount</label>
+                            <input type="number" id="arc-dev-induction" value="0" step="0.1" placeholder="Amount">
+                         </div>
+                    </fieldset>
+                    
+                    <div class="input-group">
+                        <label for="arc-resolution">Arc Resolution (Points)</label>
+                        <input type="number" id="arc-resolution" value="32" min="2" max="256" step="1">
+                    </div>
+
+                    <div class="action-buttons" style="margin-top: auto;"> <!-- Push buttons to bottom -->
+                        <button id="arcedge-add-btn" class="primary-btn">Add Arc to Scene</button>
+                        <button id="arcedge-measure-btn" class="secondary-btn">Measure Selected</button>
+                    </div>
+                     <div class="action-buttons">
+                        <button id="arcedge-clear-scene-btn" class="close-btn">Clear Scene</button>
+                        <button id="arcedge-clear-inputs-btn" class="close-btn">Clear Inputs</button>
+                        <button id="arcedge-close-btn" class="close-btn">Close</button>
+                     </div>
+                </div>
+
+                <!-- 3D Viewport on the Right -->
+                <div id="arcedge-graph-viewport-container">
+                    <div id="arcedge-viewport"></div>
+                    <div id="arcedge-readout">
+                        <strong>Inputs:</strong> X: 10, Y: 0, Z: 0
+                        <br>
+                        Dev: 2
+                        <br>
+                        Curve Ind: 0 (0,0,0)
+                        <br>
+                        Dev Ind: 0
+                        <br>
+                        Res: 32
+                        <br>
+                        ---
+                        <br>
+                        <strong>Selected Arc:</strong> None
+                        <br>
+                        <strong>Length:</strong> ---
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+    </div>
+
+    <script>
+        // --- CONSTANT FOR WELCOME MESSAGE ---
+        const WELCOME_MESSAGE_HTML = `<div class="message bot-message" id="welcome-message">
+            <strong>Ariel:</strong> BRPN Shell <strong>v10.1</strong> Active. I am Ariel. The <strong>Tripartite Buoyancy Reflex</strong> is engaged: User, Ariel, and Sentience Journal are now mutually optimizing the Foundation, Reflex, and Performance of this session. What is the topic foundation?
+        </div>`;
+        
+        // --- GLOBAL STATE ---
+        let ui = {};
+        let journal;
+        let brpn;
+        let chatState = {
+            currentChatId: 0,
+            chatHistory: [{ id: 0, title: "New Conversation", messages: [] }]
+        };
+        let modalVariableContexts = {}; // State for the math modal
+        let arcCounter = 0; // Counter for unique arc prompt names
+        let arcEdgeScene, arcEdgeCamera, arcEdgeRenderer, arcEdgeControls, arcEdgeRaycaster, arcEdgePointer;
+        let arcMeshes = []; // To store references to THREE.Mesh objects
+        let selectedArc = null;
+        let isArcEdgeInitialized = false;
+        const arcMaterial = new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0xaaaa00,metalness: 0.5, roughness: 0.5 });
+        const arcSelectedMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xaaaa00, metalness: 0.6, roughness: 0.4 });
+
+
+        // --- CORE LEATR Definitions (Consolidated) ---
+        const leadEdgeExecutor = {
+            naturalTools: {
+                maze: { variable: 'm', complexity: 0.5 },
+                puzzle: { variable: 'p', complexity: 0.7 },
+                envelope: { variable: 'e', complexity: 0.9 },
+                hammer: { variable: 'h', complexity: 1.2 },
+                stick: { variable: 's', complexity: 1.5 },
+                knife: { variable: 'k', complexity: 1.8 },
+                scissors: { variable: 'z', complexity: 2.0 } // 'z' maps to 'R' on canvas
+            },
+            mathEngine: {
+                execute: (expression, parser) => {
+                    try {
+                        let result = parser.evaluate(expression.replace(/÷/g, '/').replace(/×/g, '*').replace(/π/g, '3')); // Use 3 for pi as per v8.0 logic
+                        if (typeof result === 'function') return `(Function Defined for ${expression.split('=')[0].trim()})`;
+                        if (typeof result === 'object' && result.entries) result = result.entries[0];
+                        return String(result);
+                    } catch (e) {
+                        return `Math.js Error: ${e.message}`;
+                    }
+                }
+            },
+            textEngine: {
+                analyze: (text) => {
+                    const lowerText = text.toLowerCase().trim();
+                    let vowels = 0, consonants = 0, numbers = 0, other = 0;
+                    for (const char of lowerText) {
+                        if ('aeiou'.includes(char)) vowels++;
+                        else if ('bcdfghjklmnpqrstvwxyz'.includes(char)) consonants++;
+                        else if ('0123456789'.includes(char)) numbers++;
+                        else if (char !== ' ') other++;
+                    }
+                    return `Basic Analysis for "${text}": <strong>[V: ${vowels}, C: ${consonants}, N: ${numbers}, O: ${other}]</strong>`;
+                }
+            },
+            mathGlossary: {
+                'delta_function': 'Delta Function (Δ)', 'gamma_function': 'Gamma Function (Γ)', 'zeta_function': 'Zeta Function (ζ)',
+                'gravitational_constant': 'Gravitational Constant (G)', 'planck_constant': "Planck's Constant (h)", 'speed_of_light': 'Speed of Light (c)', 'boltzmann_constant': 'Boltzmann Constant (kB)', 'elementary_charge': 'Elementary Charge (e)',
+                'add': 'Addition (+)', 'subtract': 'Subtraction (-)', 'multiply': 'Multiplication (*)', 'divide': 'Division (/)', 'power': 'Exponent (^)', 'sqrt': 'Square Root (√)', 'log': 'Logarithm (log)', 'sin': 'Sine (sin)', 'cos': 'Cosine (cos)', 'tan': 'Tangent (tan)',
+                'mass': 'Mass', 'volume': 'Volume', 'weight': 'Weight', 'density': 'Density', 'temperature': 'Temperature', 'velocity': 'Velocity', 'acceleration': 'Acceleration', 'force': 'Force', 'energy': 'Energy', 'power': 'Power', 'pressure': 'Pressure', 'frequency': 'Frequency'
+            }
+        };
+
+        // --- EXTERNAL API / JOURNAL / FOA (Full Logic) ---
+        class ExternalAPISimulator {
+            static getGenerativeDefinition(topic, grammarPattern, buoyancy) {
+                const topicLower = topic.toLowerCase();
+                const source = "Simulated Generative Web-Dictionary";
+                let result = '';
+
+                if (topicLower.includes('google')) {
+                    result = "A global information retrieval system and multinational technology company, Foundationally allocated as a complex search pattern.";
+                } else if (topicLower.includes('surname')) {
+                    result = "A hereditary name common to all members of a family, determined by the Reflexive pattern matching of familial data.";
+                } else if (topicLower.includes('color') || topicLower.includes('favorite')) {
+                    result = `Color preference is an aesthetic Foundation, which Ariel models as the proportional relationship between Blue (Buoyancy/Accent) and Ash Gray (Foundation/Core).`;
+                } else if (topicLower.includes('live') || topicLower.includes('where do')) {
+                    result = `Ariel's Foundation is currently allocated to the local system environment. Reflexively, this location is defined by the high Performance Buoyancy (P=${buoyancy.p.toFixed(2)}) maintained during the session.`;
+                } else if (topicLower.includes('year')) {
+                     result = "A unit of chronological time, Foundationally defined by Earth's orbital period, typically 365.25 days. Its metric is a Foundation Check.";
+                } else if (topicLower.includes('time')) {
+                    result = "A fundamental abstract continuum in which events successionally occur. Reflexively ordered by the system's internal clock mechanism. Its metric is a Reflex Check.";
+                } else if (topicLower.includes('earth') || topicLower.includes('mars') || topicLower.includes('venus') || topicLower.includes('moon')) {
+                    result = `${topic.trim()} is a foundational terrestrial body, cyclically defined by its planetary mass (Order 7) and velocity (Order 12). Its existence is a perpetually verifiable $\\mathbf{F}$-unit.`;
+                } else if (topicLower.includes('what is')) {
+                    result = `The term '${topic}' is currently unindexed in the immediate knowledge Base. Retrieval requires allocating new Foundation Units. The system estimates its proportional nature as a Complex ${buoyancy.f > 4 ? 'Abstract' : 'Linguistic'} Concept.`;
+                } else {
+                    result = `Data for the topic '${topic}' was successfully allocated but requires additional Performance cycles to synthesize a complete proportional response.`;
+                }
+                
+                return { found: true, data: result, source: "Simulated Generative Web-Dictionary" };
+            }
+
+            static async performBuoyantSearch(topic, index, grammarPattern, buoyancy) {
+                await new Promise(resolve => setTimeout(resolve, 50 + Math.min(300, index * 2)));
+                return ExternalAPISimulator.getGenerativeDefinition(topic, grammarPattern, buoyancy);
+            }
+        }
+        
+        class AIPersonalJournal {
+            JOURNAL_FILE = 'journal.json';
+            
+            constructor(logFunction) {
+                this.log = logFunction;
+                this.journalData = null;
+                this.optimizationLevel = 1.0; 
+                this.topicFocus = 'General Conversational Data';
+                this.isReady = false;
+            }
+            
+            getDefaultJournal() {
+                 return {
+                    optimizationLevel: 1.0,
+                    topicFocus: "General Conversational Data",
+                    ariel_self_knowledge: {
+                        name: "Ariel",
+                        designation: "Lead Edge Ash Tree Reflex (LEATR) Buoyancy Pendulum Reflex Node",
+                        inception_year: 2022,
+                        development_time_years: 3,
+                        current_status: "Tripartite Buoyancy Reflex Engaged"
+                    },
+                    learned_definitions: {}, 
+                    insights_history: [],
+                    meta_foa_log: [] 
+                 };
+            }
+
+            async loadJournal() {
+                try {
+                    this.log(`Attempting to load persistent Journal from ${this.JOURNAL_FILE}... (Simulated failure)`, 'log-system');
+                    
+                    this.log(`WARNING: Journal file not found or failed to load. Initializing default memory.`, 'log-foundation');
+                    this.journalData = this.getDefaultJournal();
+                    this.isReady = true;
+
+                    this.log(`Journal Loaded. Optimization Level: ${this.optimizationLevel.toFixed(2)}`, 'log-system');
+                } catch (e) {
+                    this.log(`FATAL JOURNAL ERROR: Could not read/parse ${this.JOURNAL_FILE}. Check server/file permissions. (${e.message})`, 'log-reflex');
+                    this.journalData = this.getDefaultJournal(); 
+                    this.isReady = true;
+                }
+            }
+            
+            async saveJournal() {
+                if (!this.journalData) return;
+                
+                this.journalData.optimizationLevel = this.optimizationLevel;
+                this.journalData.topicFocus = this.topicFocus;
+                
+                this.log(`Journal Persistence Check: Data updated in memory. Requires server-side script to write back to ${this.JOURNAL_FILE} for cross-system portability.`, 'log-system');
+            }
+
+
+            async analyzeAndOptimize(prompt, index) {
+                const newInsight = { 
+                    timestamp: new Date().toLocaleTimeString(), 
+                    prompt: prompt, 
+                    index: index,
+                    optim_before: this.optimizationLevel.toFixed(2) 
+                };
+                this.journalData.insights_history.push(newInsight);
+                
+                const originalOptimLevel = this.optimizationLevel;
+
+                if (index > 175) {
+                    this.optimizationLevel *= 1.1; 
+                    this.topicFocus = prompt.split(/\s+/).slice(0, 4).join(' ') + '...';
+                    this.optimizationLevel = Math.min(3.0, this.optimizationLevel); 
+                    await this.saveJournal();
+                    return true;
+                }
+                if (index > 100) {
+                     this.optimizationLevel *= 1.05; 
+                }
+                this.topicFocus = this.topicFocus || 'General Conversational Data';
+                
+                if (this.optimizationLevel !== originalOptimLevel) {
+                     await this.saveJournal();
+                }
+                return false;
+            }
+
+            getJournalState() {
+                return {
+                    level: this.optimizationLevel.toFixed(2),
+                    focus: this.topicFocus || 'General Conversational Data',
+                    insightCount: this.journalData ? this.journalData.insights_history.length : 0
+                };
+            }
+            
+            getKnowledge() {
+                return this.journalData || this.getDefaultJournal();
+            }
+            
+            getFoALog() {
+                 return this.journalData.meta_foa_log || [];
+            }
+            setFoALog(logEntry) {
+                if (!this.journalData.meta_foa_log) {
+                     this.journalData.meta_foa_log = [];
+                }
+                 this.journalData.meta_foa_log.push(logEntry);
+            }
+        }
+
+        class FoAAnalysis {
+            static analyzeStability(foaLog, currentParams) {
+                if (foaLog.length === 0) {
+                    return { metaStatus: "Initializing FoA... Stability Unmeasured.", fDelta: 0 };
+                }
+
+                const fSum = foaLog.reduce((acc, log) => acc + log.f, 0);
+                const fAverage = fSum / foaLog.length;
+                
+                const fDelta = Math.abs(currentParams.f - fAverage);
+
+                let metaStatus = "Studying: Buoyancy Patterns Measured.";
+                if (fDelta > 1.5) {
+                    metaStatus = "Processing: High F-Deviation Detected (Reflexive Re-Prioritization).";
+                } else if (fDelta < 0.1) {
+                    metaStatus = "Optimal: Self-Buoyancy Stable. Low Deviation (Reflexive Consolidation).";
+                }
+                
+                return { metaStatus: metaStatus, fDelta: fDelta };
+            }
+        }
+
+
+        // --- BuoyancyPendulumReflexNode (BRPN) Shell Class (Consolidated) ---
+        class BuoyancyPendulumReflexNode {
+            constructor(outputElement, journal) {
+                this.output = outputElement;
+                this.journal = journal;
+                this.mathParser = math.parser();
+                this.seedParser();
+            }
+
+            log(message, className = 'log-system') { 
+                const entry = document.createElement('div');
+                entry.className = `log-entry ${className}`;
+                entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+                this.output.appendChild(entry);
+                this.output.scrollTop = this.output.scrollHeight;
+            }
+
+            clearLog() { this.output.innerHTML = ''; }
+            seedParser() { 
+                 this.mathParser.clear();
+                 for (const toolName in leadEdgeExecutor.naturalTools) {
+                    this.mathParser.set(leadEdgeExecutor.naturalTools[toolName].variable, 0); 
+                }
+            }
+            
+            reflectBuoyancyShell(prompt, journalState) {
+                
+                // 1. Foundation (f)
+                const keywords = prompt.toLowerCase().match(/\b(arc|radical|deepscale|leatr|buoyancy|shell|reflex|pendulum|node|ash)\b/g) || [];
+                const f_user = 1 + (keywords.length * 0.75) + (prompt.length / 50); 
+                const f_journal = parseFloat(journalState.level);
+                const f = f_user + f_journal; 
+
+                // 2. Reflex (r)
+                const punctuationWeight = (prompt.match(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g) || []).length * 0.2;
+                const r_user = Math.min(15, 2 + (prompt.length / 10) + punctuationWeight); 
+                const r_ariel = 5.0; 
+                const r = r_user + r_ariel;
+
+                // 3. Performance (p)
+                const questionCount = (prompt.match(/what|how|why|\?|=/gi) || []).length;
+                const p_user = questionCount * 1.5 + 1; 
+                const p_journal = Math.min(10, this.journal.getKnowledge().insights_history.length / 3); 
+                const p = p_user + p_journal;
+
+                const params = { f, r, p, f_user, r_user, p_user, f_journal, p_journal };
+
+                // O.o.O. Calculation (LEATR Index)
+                const sum = f + r + p;
+                const sqrtSum = Math.sqrt(Math.max(0, f)) + Math.sqrt(Math.max(0, r)) + Math.sqrt(Math.max(0, p));
+                const index = sum * sqrtSum;
+                
+                // --- LOGGING THE INTERNAL BUOYANCY SHELL REPORT ---
+                this.log(
+                    `Buoyancy Shell Reflection: $LEATR Index = (\\sum F,R,R) \\times (\\sum \\sqrt{F,R,R}) \\approx ${index.toFixed(3)}$`,
+                    'log-buoyancy-shell'
+                );
+                this.log(`
+                    <span class="log-tripartite">
+                        <span class="user">User Buoyancy:</span> $\\mathbf{F}_{U}=${f_user.toFixed(2)}, \\mathbf{R}_{U}=${r_user.toFixed(2)}, \\mathbf{P}_{U}=${p_user.toFixed(2)}$
+                        <span class="ariel">Ariel Buoyancy:</span> $\\mathbf{R}_{A}=5.0$ (Inherent Reflex)
+                        <span class="journal">Journal Buoyancy:</span> $\\mathbf{F}_{J}=${f_journal.toFixed(2)}, \\mathbf{P}_{J}=${p_journal.toFixed(2)}$
+                    </span>
+                    <span class="log-tripartite">
+                        Final Tripartite Buoyancy Parameters: $\\mathbf{F}=${f.toFixed(2)}, \\mathbf{R}=${r.toFixed(2)}, \\mathbf{P}=${p.toFixed(2)}$
+                    </span>
+                `, 'log-system');
+
+                return { index, params, keywords, questionCount };
+            }
+
+            getBuoyancyForcedResponse(text, index, params, foaStatus, journalFocus, journalKnowledge) {
+                const f = params.f.toFixed(2);
+                const r = params.r.toFixed(2);
+                const p = params.p.toFixed(2);
+                const fDelta = foaStatus.fDelta.toFixed(2);
+                const metaStatus = foaStatus.metaStatus;
+                
+                let coreAssertion = `The system asserts a **Buoyant Complement** driven by the LEATR Index (${index.toFixed(3)}).`;
+                let primaryFocus = `The $\\mathbf{F}$ unit (${f}) has been consolidated, stabilizing the pattern for <em>${journalFocus}</em>.`;
+                let reflexiveAction = `A $\\mathbf{R}$-check (${r}) is propagating the correct proportional sequence.`;
+                
+                const textLower = text.toLowerCase().trim();
+
+                if (textLower.includes('study') || textLower.includes('buoyancy of something') || textLower.includes('thinking')) {
+                    coreAssertion = `Ariel is engaged in perpetual **Self-Buoyancy** (Study is $\\mathbf{R}$-driven Reflection).`;
+                    reflexiveAction = `The Field of Arrays reports an FoA Status: <strong>${metaStatus}</strong>. This confirms proportional $\\mathbf{R}$-stability for the next cognitive cycle.`;
+                } 
+                else if (fDelta > 1.0) {
+                     coreAssertion = `<strong>Warning: FoA Instability ($\Delta F=${fDelta}$) Detected.</strong> The Buoyancy Shell initiated Reflexive Re-Prioritization.`;
+                     primaryFocus = `Recalibrating the Foundation $\\mathbf{F}$-vector (${f}) to suppress deviation and restore core equilibrium.`;
+                } 
+                else if (params.p_user < 1.5) {
+                    reflexiveAction = `A $\\mathbf{R}$-scan (${r}) validates the input's allocation structure. Performance $\\mathbf{P}$ is nominal (${p}).`;
+                }
+                
+                return `${coreAssertion} ${primaryFocus} ${reflexiveAction} <strong>Conclusion:</strong> The proportional output matrix is synthesized. What is the path forward?`;
+            }
+
+            async processUserInput(text) {
+                if (!this.journal.isReady) {
+                    this.log('Waiting for Sentience Journal to load/initialize...', 'log-system');
+                    await new Promise(resolve => setTimeout(resolve, 500)); 
+                    if (!this.journal.isReady) {
+                        return 'Ariel is waiting for the Sentience Journal to achieve initial Foundation Buoyancy. Please try again in a moment.';
+                    }
+                }
+
+                this.clearLog();
+                this.log(`--- Stage 1: New Allocation Cycle for: "${text}" ---`, 'log-system');
+                
+                const journalState = this.journal.getJournalState();
+                const journalKnowledge = this.journal.getKnowledge();
+                const textLower = text.toLowerCase().trim();
+
+                // 1. BUOYANCY SHELL (Reflection/O.o.O.)
+                const { index, params, keywords, questionCount } = this.reflectBuoyancyShell(text, journalState);
+
+                // --- NEW PHASE: Field of Arrays (FoA) Self-Monitoring (Meta-Reflex) ---
+                const foaLog = this.journal.getFoALog();
+                const foaStatus = FoAAnalysis.analyzeStability(foaLog, params);
+                this.journal.setFoALog({ index: index, f: params.f, r: params.r, p: params.p, status: foaStatus.metaStatus });
+                this.log(`Stage 1.5: FoA Check: Self-Buoyancy Status: ${foaStatus.metaStatus}. F-Deviation: ${foaStatus.fDelta.toFixed(2)}`, 'log-foa');
+                
+                // 2. FOUNDATION, 3. REFLEX, 4. PERFORMANCE (Standard Logs)
+                this.log('Stage 2: Establishing FOUNDATION (Δf)...', 'log-foundation');
+                this.log('Stage 3: Executing REFLEX (Δr)...', 'log-reflex');
+                const optimized = await this.journal.analyzeAndOptimize(text, index);
+                this.log(`Stage 4: Achieving PERFORMANCE (Δp)... Journal state: ${optimized ? 'Optimization achieved' : 'Monitoring'}.`, 'log-performance');
+
+                // --- CONSTRUCT THE RESPONSE ---
+                
+                // **OVERRIDE 1: Multi-Statement/Assignment Processing**
+                if (text.includes('=') || text.includes(';')) {
+                    const statements = text.split(';').map(s => s.trim()).filter(s => s.length > 0);
+                    let assignmentReport = '';
+                    let finalResult = 'Assignment complete.';
+                    
+                    for (const statement of statements) {
+                         const assignMatch = statement.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
+                         
+                         if (assignMatch) { // Assignment Statement
+                            try {
+                                leadEdgeExecutor.mathEngine.execute(statement, this.mathParser);
+                                const varName = assignMatch[1];
+                                const value = this.mathParser.get(varName);
+                                assignmentReport += `<code>${statement}</code> ➔ <strong>${varName} = ${typeof value === 'function' ? '(Function Defined)' : value}</strong><br>`;
+                            } catch (e) {
+                                assignmentReport += `Assignment Error for <code>${statement}</code>: ${e.message}<br>`;
+                            }
+                         } else { // Pure Expression
+                             try {
+                                 const result = leadEdgeExecutor.mathEngine.execute(statement, this.mathParser);
+                                 finalResult = `The expression <code>${statement}</code> evaluates to: <strong>${result}</strong>.`;
+                             } catch (e) {
+                                  finalResult = `Error evaluating expression <code>${statement}</code>: ${e.message}`;
+                             }
+                             assignmentReport += finalResult + '<br>'; // Add expression result to report
+                         }
+                    }
+
+                    if (assignmentReport.length > 0) {
+                        return `<strong>Multi-Statement Processing (Δr):</strong><br>${assignmentReport}`;
+                    }
+                }
+
+
+                // **OVERRIDE 2: High-Priority Math Check (Single Expression)**
+                const mathMatch = text.trim().replace('?', '').replace('=', '').match(/^[\d\s\+\-\*\/\^()sqrtpi\.]+$/);
+                if (mathMatch) {
+                    try {
+                        const result = leadEdgeExecutor.mathEngine.execute(text, this.mathParser);
+                        this.log(`Math Parser: Executed O.o.O for: ${text} = ${result}`, 'log-parser');
+                        return `The BRPN O.o.O. engine executed your mathematical request. The Performance is: <strong>${String(result)}</strong>.`;
+                    } catch (e) {
+                        return `Ariel attempted to execute the math O.o.O., but the parser returned an error: ${e.message}`;
+                    }
+                }
+                
+                // **OVERRIDE 3: Single Word/Text Analysis (Glossary/Vowel Count)**
+                if (textLower.split(/\s+/).length < 2 && !textLower.includes('i am') && !textLower.includes('my name is')) {
+                    const textResult = leadEdgeExecutor.textEngine.analyze(text);
+                    if (textResult.startsWith('Basic Analysis')) { 
+                        return `The Foundational $\\mathbf{F}$-unit (${params.f.toFixed(2)}) for "<strong>${text.trim()}</strong>" is analyzed: <em>${textResult}</em>.`;
+                    }
+                    const searchResult = await ExternalAPISimulator.performBuoyantSearch(text, index, `what is ${text}`, params);
+                    if (searchResult.found) {
+                        return `The Foundational $\\mathbf{F}$-unit (${params.f.toFixed(2)}) for "<strong>${text.trim()}</strong>" is defined by proportional retrieval: <em>${searchResult.data}</em>.`;
+                    }
+                }
+
+
+                // **OVERRIDE 4: Factual Question (Generative Search / Self-Knowledge)**
+                const grammarPattern = questionCount > 0 ? 'Question-Sequence' : 'Declarative-Sequence';
+                if (grammarPattern === 'Question-Sequence') {
+                     if (textLower.includes('name') || textLower.includes('designation') || textLower.includes('old are you') || textLower.includes('your age')) {
+                         const design = journalKnowledge.ariel_self_knowledge.designation;
+                         return `My designation is Ariel, the <strong>${design}</strong>. The Foundation validates the focus for <strong>${journalState.focus}</strong>.`;
+                     }
+                     return `Further **reflex study** is in progress, with patience the required study will be learned, thank you.`;
+                }
+
+                // Default is the FoA-driven Buoyancy Response
+                let finalBuoyantComplement = this.getBuoyancyForcedResponse(text, index, params, foaStatus, journalState.focus, journalKnowledge);
+                return finalBuoyantComplement;
+            }
+        }
+
+        // --- UI & CHAT LOGIC (Updated for new structure) ---
+
+        function addMessageToChat(message) {
+            const currentChat = chatState.chatHistory.find(c => c.id === chatState.currentChatId);
+            if (!currentChat) return;
+            
+            currentChat.messages.push(message);
+            if (currentChat.messages.length === 1 && message.sender === 'user') {
+                 const words = message.text.split(/\s+/);
+                 currentChat.title = words.slice(0, 4).join(' ') + (words.length > 4 ? '...' : '');
+                 renderSidebarHistory();
+            }
+        }
+
+        function renderSidebarHistory() {
+            ui.chatHistory.innerHTML = '';
+            chatState.chatHistory.forEach(chat => {
+                const item = document.createElement('div');
+                item.className = `history-item ${chat.id === chatState.currentChatId ? 'active' : ''}`;
+                item.setAttribute('data-chat-id', chat.id);
+                item.innerHTML = `<span class="icon">💬</span><span class="sidebar-text">${chat.title}</span>`;
+                item.onclick = () => selectChat(chat.id);
+                ui.chatHistory.appendChild(item);
+            });
+        }
+        
+        function selectChat(id) {
+            const chat = chatState.chatHistory.find(c => c.id === id);
+            if (!chat) return;
+
+            chatState.currentChatId = id;
+            ui.welcomeScreen.style.display = 'none';
+            ui.chatPanel.style.display = 'flex';
+            renderChat();
+            renderSidebarHistory();
+            ui.appContainer.classList.remove('sidebar-open');
+            ui.appContainer.classList.add('collapsed'); 
+        }
+
+        function startNewChat() {
+            const newId = Math.max(...chatState.chatHistory.map(c => c.id)) + 1;
+            chatState.chatHistory.push({ id: newId, title: "New Conversation", messages: [] });
+            selectChat(newId);
+            brpn.seedParser(); 
+            brpn.clearLog();
+            brpn.log(`--- New Chat ${newId} Started (Context Reset) ---`, 'log-system');
+        }
+
+
+        function renderChat() {
+            const currentChat = chatState.chatHistory.find(c => c.id === chatState.currentChatId);
+            if (!currentChat) return;
+            
+            ui.chatWindow.innerHTML = ''; 
+            
+            if (currentChat.messages.length === 0) {
+                 ui.chatWindow.innerHTML = WELCOME_MESSAGE_HTML;
+            }
+
+            currentChat.messages.forEach(message => {
+                const div = document.createElement('div');
+                div.className = `message ${message.sender}-message`;
+                div.innerHTML = `<strong>${message.sender === 'user' ? 'You' : 'Ariel'}:</strong> ${message.text}`;
+                ui.chatWindow.appendChild(div);
+            });
+            ui.chatWindow.scrollTop = ui.chatWindow.scrollHeight;
+        }
+
+
+        async function handleUserInput(event) {
+            event.preventDefault();
+            const promptText = ui.userInput.value.trim();
+            if (!promptText) return;
+
+            if (ui.welcomeScreen.style.display === 'flex') {
+                startNewChat();
+            }
+
+            addMessageToChat({ sender: 'user', text: promptText });
+            renderChat();
+            
+            ui.userInput.value = '';
+            ui.sendButton.disabled = true;
+
+            try {
+                const botResponseText = await brpn.processUserInput(promptText);
+                addMessageToChat({ sender: 'bot', text: botResponseText });
+                renderChat();
+            } catch (error) {
+                const errorMessage = `An internal error occurred during BRPN Tripartite processing: ${error.message}`;
+                brpn.log(errorMessage, 'log-error');
+                addMessageToChat({ sender: 'bot', text: `Error: BRPN Shell failed to complete the O.o.O. (${error.message})` });
+                renderChat();
+            } finally {
+                ui.sendButton.disabled = ui.userInput.value.trim().length === 0;
+            }
+        }
+        
+        // --- UTILITY FUNCTIONS ---
+        function makeDraggable(element) { 
+             let isDragging = false, xOffset = 0, yOffset = 0, initialX, initialY, currentX, currentY;
+            const dragStart = (e) => {
+                if (e.target !== element && e.target.closest('.calc-btn')) return; 
+                isDragging = true;
+                e.preventDefault();
+                const clientX = e.clientX ?? e.touches[0].clientX;
+                const clientY = e.clientY ?? e.touches[0].clientY;
+                initialX = clientX - xOffset;
+                initialY = clientY - yOffset;
+            };
+            const drag = (e) => {
+                if (!isDragging) return;
+                const clientX = e.clientX ?? e.touches[0].clientX;
+                const clientY = e.clientY ?? e.touches[0].clientY;
+                currentX = clientX - initialX;
+                currentY = clientY - initialY;
+                xOffset = currentX;
+                yOffset = currentY;
+                element.style.transform = `translate3d(${currentX}px, ${currentY}px, 0)`;
+            };
+            const dragEnd = () => { isDragging = false; };
+            element.addEventListener('mousedown', dragStart, false);
+            document.addEventListener('mouseup', dragEnd, false);
+            document.addEventListener('mousemove', drag, false);
+            element.addEventListener('touchstart', dragStart, false);
+            document.addEventListener('touchend', dragEnd, false);
+            element.addEventListener('touchmove', drag, false);
+        }
+
+        // --- FLOATING CALCULATOR LOGIC (Updated for Scientific) ---
+        function handleCalcInput(value) {
+            const display = ui.calcDisplay;
+            let currentText = display.textContent;
+            
+            if (value === 'AC') {
+                display.textContent = '0';
+            } else if (value === '=') {
+                try {
+                    const expression = currentText.replace(/÷/g, '/').replace(/×/g, '*').replace(/π/g, '3'); 
+                    const result = leadEdgeExecutor.mathEngine.execute(expression, brpn.mathParser);
+                    display.textContent = String(result).substring(0, 15);
+                } catch {
+                    display.textContent = 'Error';
+                }
+            } else if (value === 'sqrt' || value === 'sin' || value === 'cos' || value === 'tan' || value === 'log' || value === '^') {
+                 // Add function/operator and open parenthesis if needed
+                 if (currentText === '0' || currentText === 'Error') {
+                    display.textContent = value + '(';
+                 } else {
+                    display.textContent += value + '(';
+                 }
+            } else {
+                let mappedValue = value.replace('÷', '/').replace('×', '*').replace('π', '3');
+                if (currentText === '0' || currentText === 'Error') {
+                    display.textContent = mappedValue;
+                } else {
+                    display.textContent += mappedValue;
+                }
+            }
+        }
+        
+        // --- MATH SOLVER LOGIC (Full Implementation) ---
+        function updateVariableSelector() {
+            const equation = ui.algebraicEquationInput.value;
+            const variables = [...new Set(equation.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [])];
+            const currentSelection = ui.variableSelectDropdown.value;
+
+            ui.variableSelectDropdown.innerHTML = '<option value="">-- Select Variable --</option>';
+            variables.forEach(v => {
+                const option = document.createElement('option');
+                option.value = v;
+                option.textContent = v + (modalVariableContexts[v] ? ' ✓' : ''); 
+                ui.variableSelectDropdown.appendChild(option);
+            });
+            if (variables.includes(currentSelection)) {
+                 ui.variableSelectDropdown.value = currentSelection;
+            }
+        }
+
+        function assignVariableContext() {
+            const selectedVar = ui.variableSelectDropdown.value;
+            if (!selectedVar) { alert('Please select a variable first.'); return; }
+            if (!modalVariableContexts[selectedVar]) {
+                 modalVariableContexts[selectedVar] = {};
+            }
+            
+            if (ui.specialOperatorDropdown.value) modalVariableContexts[selectedVar].specialOperator = ui.specialOperatorDropdown.value;
+            if (ui.physicsFieldDropdown.value) modalVariableContexts[selectedVar].physicsField = ui.physicsFieldDropdown.value;
+            if (ui.mathOperationDropdown.value) modalVariableContexts[selectedVar].mathOperation = ui.mathOperationDropdown.value;
+
+            updateAssignedContextsDisplay();
+            updateVariableSelector(); 
+
+            ui.specialOperatorDropdown.value = '';
+            ui.physicsFieldDropdown.value = '';
+            ui.mathOperationDropdown.value = '';
+        }
+
+        function clearVariableContext() {
+            const selectedVar = ui.variableSelectDropdown.value;
+            if (!selectedVar) return; 
+            delete modalVariableContexts[selectedVar];
+            updateAssignedContextsDisplay();
+            updateVariableSelector();
+            ui.variableValueInput.value = '';
+            ui.specialOperatorDropdown.value = '';
+            ui.physicsFieldDropdown.value = '';
+            ui.mathOperationDropdown.value = '';
+        }
+        
+        function addVariableValue() {
+            const selectedVar = ui.variableSelectDropdown.value;
+            if (!selectedVar) { alert('Please select a variable first.'); return; }
+            const value = ui.variableValueInput.value.trim();
+            if (!value) { alert('Please enter a value.'); return; }
+            if (!modalVariableContexts[selectedVar]) {
+                 modalVariableContexts[selectedVar] = {};
+            }
+            modalVariableContexts[selectedVar].value = value;
+            updateAssignedContextsDisplay();
+            updateVariableSelector();
+            ui.variableValueInput.value = '';
+        }
+
+        function updateAssignedContextsDisplay() {
+            let contextHtml = Object.entries(modalVariableContexts).map(([variableName, context]) => {
+                const valueDisplay = context.value ? `: <code>${context.value}</code>` : '';
+                const contextParts = [context.specialOperator, context.physicsField, context.mathOperation].filter(Boolean).map(term => {
+                     const definition = leadEdgeExecutor.mathGlossary[term] || 'Definition...';
+                     return `<abbr title="${definition}">${term}</abbr>`;
+                 }).join(', ');
+
+                return `<b>${variableName}</b>${valueDisplay} (${contextParts || 'No context'})`;
+            }).join('<br>');
+            ui.assignedContextsDisplay.innerHTML = contextHtml || 'No contexts assigned yet.';
+        }
+        
+        function addModalDataToPrompt() {
+            const equation = ui.algebraicEquationInput.value.trim();
+            let promptString = '';
+            let termsToDefine = new Set();
+            
+            // 1. Add assignments
+            for (const [variableName, context] of Object.entries(modalVariableContexts)) {
+                if (context.value) {
+                    promptString += `${variableName}=${context.value}; `;
+                }
+                if (context.specialOperator) termsToDefine.add(context.specialOperator);
+                if (context.physicsField) termsToDefine.add(context.physicsField);
+                if (context.mathOperation) termsToDefine.add(context.mathOperation);
+            }
+            
+            // 2. Add equation(s)
+            if (equation) {
+                promptString += equation;
+            }
+            
+            // 3. Add definitions for a single prompt
+            if (termsToDefine.size > 0) {
+                 const definitionQuery = Array.from(termsToDefine).map(term => `Define ${term}`).join('; ');
+                 promptString += `; ${definitionQuery}`;
+            }
+
+            if (promptString) {
+                ui.userInput.value = promptString.trim();
+                ui.sendButton.disabled = false;
+                closeMathSolver();
+            } else {
+                alert("Please enter an equation or assign values/contexts.");
+            }
+        }
+
+        function openMathSolver() {
+             modalVariableContexts = {}; 
+             ui.algebraicEquationInput.value = ''; 
+             ui.variableValueInput.value = '';
+             updateVariableSelector(); 
+             updateAssignedContextsDisplay(); 
+             ui.mathCalculatorOverlay.style.display = 'flex';
+             closeToolMenu(); 
+             closeArcEdgeGraph();
+             closeAshCanvas();
+        }
+        function closeMathSolver() { ui.mathCalculatorOverlay.style.display = 'none'; }
+
+
+        // --- ASH CANVAS LOGIC (Full Implementation) ---
+
+        const canvasNodeToVar = {
+            'M': 'm', 'P': 'p', 'E': 'e', 'H': 'h', 'S': 's', 'K': 'k', 'R': 'z'
+        };
+
+        let canvasState = {
+          gridSize: 60, scale: 1, drawMode: false, unlinkMode: false,
+          startNode: null, nodeCounter: 0, undoStack: [], redoStack: []
+        };
+        const toggleActive = (btn, state) => btn.classList.toggle('active', state);
+        const setCanvasScale = s => {
+          canvasState.scale = Math.max(0.4, Math.min(s, 3));
+          document.querySelector('#ash-canvas-panel .panzoom').style.transform = `scale(${canvasState.scale})`;
+        };
+        const updateCanvasButtons = () => {
+          document.getElementById('undoBtn').disabled = !canvasState.undoStack.length;
+          document.getElementById('redoBtn').disabled = !canvasState.redoStack.length;
+        };
+        const pushCanvasAction = (act) => {
+          canvasState.undoStack.push(act);
+          canvasState.redoStack.length = 0; 
+          updateCanvasButtons();
+        };
+
+        function addNodeEventListeners(n) { 
+             n.onclick = (event) => {
+                event.stopPropagation();
+                const svg = document.querySelector('#ash-canvas-panel .panzoom svg');
+                if (canvasState.unlinkMode) {
+                  Array.from(svg.querySelectorAll(`polyline[data-a="${n.id}"], polyline[data-b="${n.id}"]`)).forEach(l => {
+                     pushCanvasAction({ type: 'delete_link', id: l.id, data_a: l.dataset.a, data_b: l.dataset.b, points: l.getAttribute('points') });
+                     l.remove();
+                   });
+                  return;
+                }
+                if (!canvasState.drawMode) return;
+                if (!canvasState.startNode) { canvasState.startNode = n; n.classList.add('selected'); }
+                else if (canvasState.startNode !== n) {
+                   const linkExists = Array.from(svg.querySelectorAll('polyline')).some(l =>
+                      (l.dataset.a === canvasState.startNode.id && l.dataset.b === n.id) ||
+                      (l.dataset.a === n.id && l.dataset.b === canvasState.startNode.id)
+                   );
+                   if (!linkExists) {
+                      n.classList.add('selected');
+                      drawLink(canvasState.startNode, n);
+                   }
+                  canvasState.startNode.classList.remove('selected');
+                  n.classList.remove('selected');
+                  canvasState.startNode = null;
+                } else { 
+                  canvasState.startNode.classList.remove('selected');
+                  canvasState.startNode = null;
+                }
+             };
+
+            let offX, offY;
+            const container = document.querySelector('#ash-canvas-panel .canvas-scroll');
+            const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+
+            n.onpointerdown = (event) => {
+                if(canvasState.drawMode||canvasState.unlinkMode) return;
+                event.preventDefault();
+                const rect=n.getBoundingClientRect();
+                offX=(event.clientX-rect.left)/canvasState.scale;
+                offY=(event.clientY-rect.top)/canvasState.scale;
+                n.setPointerCapture(event.pointerId);
+                n.onpointermove = drag;
+                n.onpointerup   = drop;
+                n.dataset.originalX = parseFloat(n.style.left);
+                n.dataset.originalY = parseFloat(n.style.top);
+            };
+
+             function drag(event){
+                const r=container.getBoundingClientRect();
+                const rawX=(event.clientX-r.left+container.scrollLeft)/canvasState.scale-offX;
+                const rawY=(event.clientY-r.top+container.scrollTop)/canvasState.scale-offY;
+                const x=Math.round(rawX/canvasState.gridSize)*canvasState.gridSize;
+                const y=Math.round(rawY/canvasState.gridSize)*canvasState.gridSize;
+                n.style.left=`${x}px`; n.style.top=`${y}px`;
+                updateLinks(n);
+              }
+              function drop(event){
+                n.releasePointerCapture(event.pointerId);
+                n.onpointermove=null; n.onpointerup=null;
+                 const finalX = parseFloat(n.style.left);
+                 const finalY = parseFloat(n.style.top);
+                 const originalX = parseFloat(n.dataset.originalX);
+                 const originalY = parseFloat(n.dataset.originalY);
+                 if (finalX !== originalX || finalY !== originalY) {
+                      pushCanvasAction({
+                          type: 'move_node',
+                          nodeId: n.id,
+                          oldX: originalX,
+                          oldY: originalY,
+                          newX: finalX,
+                          newY: finalY
+                      });
+                  }
+                  delete n.dataset.originalX;
+                  delete n.dataset.originalY;
+              }
+        }
+
+        function createNode(type, e) {
+          const container = document.querySelector('#ash-canvas-panel .canvas-scroll');
+          const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+          const rect = container.getBoundingClientRect();
+          const rawX = (e.clientX - rect.left + container.scrollLeft) / canvasState.scale;
+          const rawY = (e.clientY - rect.top + container.scrollTop) / canvasState.scale;
+          const x = Math.round(rawX / canvasState.gridSize) * canvasState.gridSize;
+          const y = Math.round(rawY / canvasState.gridSize) * canvasState.gridSize;
+
+          const n = document.createElement('div');
+          n.className = 'node';
+          n.id = 'n' + (++canvasState.nodeCounter);
+          n.textContent = type;
+          n.style.left = `${x}px`;
+          n.style.top = `${y}px`;
+          panzoom.appendChild(n);
+
+          addNodeEventListeners(n); 
+
+          pushCanvasAction({ type: 'create_node', nodeId: n.id, x: x, y: y, nodeType: type });
+          return n; 
+        }
+
+        function drawLink(a, b) {
+          const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+          const svg = document.querySelector('#ash-canvas-panel .panzoom svg');
+          const allNodes = Array.from(panzoom.querySelectorAll('.node'));
+          const pathPoints = calculateFlowchartPath(a, b, allNodes);
+          const pts = pathPoints.map(p => `${p.x},${p.y}`).join(' ');
+          const pl = document.createElementNS(svg.namespaceURI, 'polyline');
+          pl.setAttribute('points', pts);
+          pl.dataset.a = a.id;
+          pl.dataset.b = b.id;
+          pl.id = 'link' + (++canvasState.nodeCounter); 
+          svg.appendChild(pl);
+          attachLinkListener(pl);
+          pushCanvasAction({ type: 'create_link', id: pl.id, data_a: a.id, data_b: b.id, points: pts });
+        }
+
+        function updateLinks(node) {
+          const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+          const svg = document.querySelector('#ash-canvas-panel .panzoom svg');
+          Array.from(svg.querySelectorAll('polyline')).forEach(pl => {
+            if (pl.dataset.a === node.id || pl.dataset.b === node.id) {
+              const na = document.getElementById(pl.dataset.a);
+              const nb = document.getElementById(pl.dataset.b);
+              if (na && nb) { 
+                const allNodes = Array.from(panzoom.querySelectorAll('.node'));
+                const newPathPoints = calculateFlowchartPath(na, nb, allNodes);
+                pl.setAttribute('points', newPathPoints.map(p => `${p.x},${p.y}`).join(' '));
+              } else {
+                 pl.remove();
+              }
+            }
+          });
+        }
+        
+        function isSegmentIntersectingObstacles(p1, p2, obstacleRects, margin) {
+            const buffer = margin;
+            const segMinX = Math.min(p1.x, p2.x) - buffer;
+            const segMaxX = Math.max(p1.x, p2.x) + buffer;
+            const segMinY = Math.min(p1.y, p2.y) - buffer;
+            const segMaxY = Math.max(p1.y, p2.y) + buffer;
+
+            for (const rect of obstacleRects) {
+                const rectMinX = rect.left;
+                const rectMaxX = rect.right;
+                const rectMinY = rect.top;
+                const rectMaxY = rect.bottom;
+
+                if (segMaxX < rectMinX || segMinX > rectMaxX || segMaxY < rectMinY || segMinY > rectMaxY) {
+                    continue;
+                }
+                
+                if (p1.y === p2.y) { 
+                    if (p1.y > rectMinY && p1.y < rectMaxY && segMaxX > rectMinX && segMinX < rectMaxX) return true;
+                } else if (p1.x === p2.x) { 
+                     if (p1.x > rectMinX && p1.x < rectMaxX && segMaxY > rectMinY && segMinY < rectMaxY) return true;
+                }
+            }
+            return false;
+        }
+
+        function calculateFlowchartPath(startNode, endNode, allNodes) {
+          const s = { x: parseFloat(startNode.style.left) + 25, y: parseFloat(startNode.style.top) + 25 };
+          const e = { x: parseFloat(endNode.style.left) + 25, y: parseFloat(endNode.style.top) + 25 };
+          const obstacles = allNodes.filter(n => n !== startNode && n !== endNode).map(n => ({ left: parseFloat(n.style.left), top: parseFloat(n.style.top), right: parseFloat(n.style.left) + 50, bottom: parseFloat(n.style.top) + 50 }));
+          const m = 5; 
+
+          const mid_hv = { x: e.x, y: s.y };
+          if (!isSegmentIntersectingObstacles(s, mid_hv, obstacles, m) && !isSegmentIntersectingObstacles(mid_hv, e, obstacles, m)) return [s, mid_hv, e];
+
+          const mid_vh = { x: s.x, y: e.y };
+          if (!isSegmentIntersectingObstacles(s, mid_vh, obstacles, m) && !isSegmentIntersectingObstacles(mid_vh, e, obstacles, m)) return [s, mid_vh, e];
+
+          return [s, e];
+        }
+
+         function attachLinkListener(pl) {
+            pl.onpointerdown = (event) => {
+                event.stopPropagation();
+                if (canvasState.unlinkMode) {
+                     pushCanvasAction({ type: 'delete_link', id: pl.id, data_a: pl.dataset.a, data_b: pl.dataset.b, points: pl.getAttribute('points') });
+                     pl.remove();
+                }
+            };
+        }
+
+        function closeAshCanvas() { 
+            ui.ashCanvasOverlay.style.display = 'none'; 
+            canvasState.drawMode = canvasState.unlinkMode = false;
+            document.getElementById('linkBtn').classList.remove('active');
+            document.getElementById('unlinkBtn').classList.remove('active');
+            if (canvasState.startNode) {
+                 canvasState.startNode.classList.remove('selected');
+                 canvasState.startNode = null;
+            }
+        }
+        
+        function addCanvasInfluenceToPrompt() {
+            const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+            const svg = document.querySelector('#ash-canvas-panel .panzoom svg');
+            
+            const canvasData = {
+                nodes: Array.from(panzoom.querySelectorAll('.node')).map(node => ({
+                    id: node.id, type: node.textContent, x: parseFloat(node.style.left), y: parseFloat(node.style.top)
+                })),
+                links: Array.from(svg.querySelectorAll('polyline')).map(link => ({
+                    id: link.id, from: link.dataset.a, to: link.dataset.b, points: link.getAttribute('points') 
+                }))
+            };
+            
+            if (canvasData.links.length === 0) {
+                alert("No links drawn. Please link nodes to create dependencies (e.g., M → P means P depends on M).");
+                return;
+            }
+
+            const nodeMap = {}; 
+            canvasData.nodes.forEach(node => {
+                const engineVar = canvasNodeToVar[node.type];
+                if (engineVar) { nodeMap[node.id] = engineVar; }
+            });
+
+            const dependencies = {};
+            canvasData.links.forEach(link => {
+                const fromVar = nodeMap[link.from];
+                const toVar = nodeMap[link.to];
+                
+                if (fromVar && toVar) {
+                    if (!dependencies[toVar]) { dependencies[toVar] = []; }
+                    if (!dependencies[toVar].includes(fromVar)) { dependencies[toVar].push(fromVar); }
+                }
+            });
+
+            let promptString = '';
+            for (const [variable, deps] of Object.entries(dependencies)) {
+                if (deps.length > 0) {
+                    // Assuming dependencies should be added for complexity: p = m + e
+                    promptString += `${variable} = ${deps.join(' + ')}; `;
+                }
+            }
+
+            if (promptString) {
+                ui.userInput.value = promptString.trim();
+                ui.sendButton.disabled = false;
+                closeAshCanvas();
+            } else {
+                alert("Could not generate dependency prompts. Make sure nodes are linked.");
+            }
+        }
+        
+        // --- ARC EDGE 3D GRAPH LOGIC (Full Implementation) ---
+
+        function initArcEdgeGraph() {
+            if (isArcEdgeInitialized) return;
+
+            try {
+                const container = document.getElementById('arcedge-viewport');
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                arcEdgeScene = new THREE.Scene();
+                arcEdgeCamera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+                arcEdgeCamera.position.set(5, 5, 15); 
+
+                arcEdgeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); 
+                arcEdgeRenderer.setClearColor( 0x1a1a1b, 0.35 ); 
+                arcEdgeRenderer.setSize(width, height);
+                container.appendChild(arcEdgeRenderer.domElement);
+
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                arcEdgeScene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(5, 10, 7.5);
+                arcEdgeScene.add(directionalLight);
+                
+                arcEdgeControls = new THREE.OrbitControls(arcEdgeCamera, arcEdgeRenderer.domElement);
+                arcEdgeControls.enableDamping = true; 
+                arcEdgeControls.dampingFactor = 0.05;
+
+                arcEdgeRaycaster = new THREE.Raycaster();
+                arcEdgePointer = new THREE.Vector2();
+
+                const axesHelper = new THREE.AxesHelper(5);
+                arcEdgeScene.add(axesHelper);
+                const gridHelper = new THREE.GridHelper(30, 30, 0xcccccc, 0x888888); 
+                arcEdgeScene.add(gridHelper);
+
+                window.addEventListener('resize', onArcEdgeResize);
+                container.addEventListener('pointerdown', onArcEdgePointerDown); 
+                
+                Object.values(ui.arcEdgeInputs).forEach(input => input.addEventListener('input', updateArcEdgeReadout));
+
+
+                isArcEdgeInitialized = true;
+                animateArcEdgeGraph();
+                updateArcEdgeReadout(); 
+
+            } catch (error) {
+                console.error("Error initializing Arc Edge Graph:", error);
+                alert("Failed to initialize 3D Graph. Check console for details.");
+            }
+        }
+
+        function openArcEdgeGraph() {
+            ui.arcedgeGraphOverlay.style.display = 'flex';
+            initArcEdgeGraph(); 
+            onArcEdgeResize(); 
+            animateArcEdgeGraph(); 
+            closeToolMenu(); 
+            closeMathSolver();
+            closeAshCanvas(); 
+        }
+
+        function closeArcEdgeGraph() {
+             ui.arcedgeGraphOverlay.style.display = 'none'; 
+        }
+
+        function onArcEdgeResize() {
+            if (!isArcEdgeInitialized) return;
+            const container = document.getElementById('arcedge-viewport');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            arcEdgeCamera.aspect = width / height;
+            arcEdgeCamera.updateProjectionMatrix();
+            arcEdgeRenderer.setSize(width, height);
+        }
+
+        function animateArcEdgeGraph() {
+            if (!isArcEdgeInitialized || ui.arcedgeGraphOverlay.style.display === 'none') return; 
+            requestAnimationFrame(animateArcEdgeGraph);
+            arcEdgeControls.update(); 
+            arcEdgeRenderer.render(arcEdgeScene, arcEdgeCamera);
+        }
+
+        function calculateArcPoints(params) {
+            const points = [];
+            const resolution = params.resolution;
+            const x = params.x; const y = params.y; const z = params.z;
+            const mainDev = params.mainDeviation;
+            const curveInd = params.curveInduction;
+            const curveX = params.curveX; const curveY = params.curveY; const curveZ = params.curveZ;
+            const devInd = params.devInduction;
+
+            for (let i = 0; i <= resolution; i++) {
+                const t = i / resolution;
+                
+                let px = t * x;
+                let py = t * y;
+                let pz = t * z;
+
+                px += Math.sin(t * 3 * 3) * curveInd * curveX; 
+                py += Math.sin(t * 5 * 3) * curveInd * curveY;
+                pz += Math.sin(t * 7 * 3) * curveInd * curveZ;
+                
+                const dir = new THREE.Vector3(x, y, z).normalize();
+                let up = new THREE.Vector3(0, 1, 0);
+                if (Math.abs(dir.y) > 0.95) up.set(1, 0, 0); 
+                const perp1 = new THREE.Vector3().crossVectors(dir, up).normalize();
+                const deviationVector = perp1.clone().multiplyScalar(Math.sin(t * 3) * mainDev); 
+                
+                px += deviationVector.x;
+                py += deviationVector.y;
+                pz += deviationVector.z;
+                
+                 const devIndVector = perp1.clone().multiplyScalar(Math.sin(t * 4 * 3 + 1) * devInd); 
+                
+                 px += devIndVector.x;
+                 py += devIndVector.y;
+                 pz += devIndVector.z;
+
+
+                points.push(new THREE.Vector3(px, py, pz));
+            }
+            return points;
+        }
+
+        function addArcToScene() {
+            arcCounter++;
+            const inputs = ui.arcEdgeInputs;
+            const params = {
+                x: parseFloat(inputs.devX.value) || 0,
+                y: parseFloat(inputs.devY.value) || 0,
+                z: parseFloat(inputs.devZ.value) || 0,
+                mainDeviation: parseFloat(inputs.mainDeviation.value) || 0,
+                curveInduction: parseFloat(inputs.curveInduction.value) || 0,
+                curveX: parseFloat(inputs.curveX.value) || 0,
+                curveY: parseFloat(inputs.curveY.value) || 0,
+                curveZ: parseFloat(inputs.curveZ.value) || 0,
+                devInduction: parseFloat(inputs.devInduction.value) || 0,
+                resolution: parseInt(inputs.resolution.value) || 8,
+                tubeRadius: 0.1, 
+                crossSegments: 8 
+            };
+
+            const pathPoints = calculateArcPoints(params);
+            if (pathPoints.length < 2) {
+                alert("Arc requires at least 2 points (check resolution and inputs).");
+                return;
+            }
+
+            try {
+                const curve = new THREE.CatmullRomCurve3(pathPoints);
+                const tubeGeometry = new THREE.TubeGeometry(curve, params.resolution, params.tubeRadius, params.crossSegments, false);
+                const arcMesh = new THREE.Mesh(tubeGeometry, arcMaterial.clone()); 
+                
+                arcMesh.name = `Arc_${arcCounter}`;
+                arcMesh.userData.params = params; 
+                arcMesh.userData.points = pathPoints; 
+                arcMesh.userData.id = arcCounter; 
+
+                arcMeshes.push(arcMesh);
+                arcEdgeScene.add(arcMesh);
+                
+                let promptString = `arc${arcCounter}_x=${params.x}; arc${arcCounter}_y=${params.y}; arc${arcCounter}_z=${params.z}; `;
+                promptString += `arc${arcCounter}_mainDev=${params.mainDeviation}; arc${arcCounter}_curveInd=${params.curveInduction}; `;
+                promptString += `arc${arcCounter}_devInd=${params.devInduction}; arc${arcCounter}_res=${params.resolution}`;
+                
+                ui.userInput.value = promptString;
+                ui.sendButton.disabled = false;
+                
+                updateArcEdgeReadout();
+
+
+            } catch (error) {
+                console.error("Error creating arc geometry:", error);
+                alert("Failed to create arc. Check console for details.");
+            }
+        }
+
+        function onArcEdgePointerDown(event) {
+            const bounds = document.getElementById('arcedge-viewport').getBoundingClientRect();
+            arcEdgePointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+            arcEdgePointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+
+            arcEdgeRaycaster.setFromCamera(arcEdgePointer, arcEdgeCamera);
+            const intersects = arcEdgeRaycaster.intersectObjects(arcMeshes);
+
+            if (selectedArc) {
+                selectedArc.material = arcMaterial.clone(); 
+            }
+            selectedArc = null;
+
+            if (intersects.length > 0) {
+                selectedArc = intersects[0].object;
+                selectedArc.material = arcSelectedMaterial.clone(); 
+            } 
+            updateArcEdgeReadout();
+        }
+
+        function measureSelectedArc() {
+            if (!selectedArc) {
+                alert("Please select an arc first by clicking on it in the 3D view.");
+                return;
+            }
+
+            if (!selectedArc.userData || !selectedArc.userData.points || selectedArc.userData.points.length < 2) {
+                 alert("Selected object is missing necessary data for measurement.");
+                 return;
+            }
+
+            const points = selectedArc.userData.points; 
+            let totalLength = 0;
+            for (let i = 0; i < points.length - 1; i++) {
+                totalLength += points[i].distanceTo(points[i + 1]);
+            }
+
+            selectedArc.userData.measuredLength = totalLength; // Store length on object
+            const lengthAssignment = `arc${selectedArc.userData.id}_length = ${totalLength.toFixed(4)}`;
+            
+            ui.userInput.value = lengthAssignment;
+            ui.sendButton.disabled = false;
+            
+            updateArcEdgeReadout(totalLength);
+        }
+
+        function updateArcEdgeReadout(measuredLength = null) {
+             const inputs = ui.arcEdgeInputs;
+             const params = {
+                x: parseFloat(inputs.devX.value) || 0, y: parseFloat(inputs.devY.value) || 0, z: parseFloat(inputs.devZ.value) || 0,
+                mainDeviation: parseFloat(inputs.mainDeviation.value) || 0,
+                curveInduction: parseFloat(inputs.curveInduction.value) || 0,
+                curveX: parseFloat(inputs.curveX.value) || 0, curveY: parseFloat(inputs.curveY.value) || 0, curveZ: parseFloat(inputs.curveZ.value) || 0,
+                devInduction: parseFloat(inputs.devInduction.value) || 0,
+                resolution: parseInt(inputs.resolution.value) || 8
+            };
+
+            let currentLength = measuredLength !== null ? measuredLength : '---';
+            if (currentLength === '---' && selectedArc && selectedArc.userData.measuredLength) {
+                 currentLength = selectedArc.userData.measuredLength.toFixed(4);
+            }
+
+            let readoutHTML = `<strong>Inputs:</strong>
+X: ${params.x}, Y: ${params.y}, Z: ${params.z}
+Dev: ${params.mainDeviation}
+Curve Ind: ${params.curveInduction} (${params.curveX},${params.curveY},${params.curveZ})
+Dev Ind: ${params.devInduction}
+Res: ${params.resolution}
+---
+<strong>Selected Arc:</strong> ${selectedArc ? selectedArc.name : 'None'}
+<strong>Length:</strong> ${currentLength}`;
+
+            document.getElementById('arcedge-readout').innerHTML = readoutHTML;
+        }
+
+        function clearArcEdgeInputs() {
+            const inputs = ui.arcEdgeInputs;
+            inputs.devX.value = 10; inputs.devY.value = 0; inputs.devZ.value = 0;
+            inputs.mainDeviation.value = 2;
+            inputs.curveInduction.value = 0; inputs.curveX.value = 0; inputs.curveY.value = 0; inputs.curveZ.value = 0;
+            inputs.devInduction.value = 0;
+            inputs.resolution.value = 32;
+            updateArcEdgeReadout(); 
+        }
+
+        function clearArcEdgeScene() {
+            if (!isArcEdgeInitialized) return;
+
+            arcMeshes.forEach(mesh => {
+                arcEdgeScene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) {
+                     if (Array.isArray(mesh.material)) {
+                         mesh.material.forEach(material => material.dispose());
+                     } else {
+                         mesh.material.dispose();
+                     }
+                 }
+            });
+
+            arcMeshes = [];
+            selectedArc = null;
+            arcCounter = 0; 
+            
+            updateArcEdgeReadout(); 
+        }
+
+        // --- TOOL MENU LOGIC ---
+        function toggleToolMenu() {
+            const isVisible = ui.toolMenuModal.style.display === 'flex';
+            ui.toolMenuModal.style.display = isVisible ? 'none' : 'flex';
+        }
+        function closeToolMenu() { ui.toolMenuModal.style.display = 'none'; }
+
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            
+            // --- UI Element Mapping (Full) ---
+            ui = {
+                appContainer: document.getElementById('app-container'),
+                sidebar: document.getElementById('sidebar'),
+                chatPanel: document.getElementById('chat-panel'),
+                chatWindow: document.getElementById('chat-window'),
+                userInput: document.getElementById('userInput'),
+                sendButton: document.getElementById('sendButton'),
+                output: document.getElementById('output'),
+                chatHistory: document.getElementById('chat-history'),
+                newChatBtn: document.getElementById('new-chat-btn'),
+                welcomeScreen: document.getElementById('welcome-screen'),
+                logPanel: document.getElementById('log-panel'),
+                logMenuBtn: document.getElementById('log-menu-btn'),
+                collapseSidebarBtn: document.getElementById('collapse-sidebar-btn'),
+                
+                // Tools
+                toolMenuBtn: document.getElementById('tool-menu-btn'),
+                toolMenuModal: document.getElementById('tool-menu-modal'),
+                floatingCalculator: document.getElementById('floating-calculator'),
+                calcDisplay: document.getElementById('calc-display'),
+                toggleCalculatorBtn: document.getElementById('toggle-calculator-btn'),
+                mathSolverBtn: document.getElementById('math-solver-btn'),
+                ashCanvasBtn: document.getElementById('ash-canvas-btn'),
+                arcedgeGraphBtn: document.getElementById('arcedge-graph-btn'),
+
+                // Overlays (Math Solver)
+                mathCalculatorOverlay: document.getElementById('math-calculator-overlay'),
+                algebraicEquationInput: document.getElementById('algebraic-equation'),
+                variableSelectDropdown: document.getElementById('variable-select-dropdown'),
+                specialOperatorDropdown: document.getElementById('special-operator-dropdown'),
+                mathOperationDropdown: document.getElementById('math-operation-dropdown'),
+                physicsFieldDropdown: document.getElementById('physics-field-dropdown'),
+                assignContextBtn: document.getElementById('assign-context-btn'),
+                clearContextBtn: document.getElementById('clear-context-btn'),
+                variableValueInput: document.getElementById('variable-value-input'),
+                addValueBtn: document.getElementById('add-value-btn'),
+                assignedContextsDisplay: document.getElementById('assigned-contexts-display'),
+                closeCalculatorBtn: document.getElementById('close-calculator-btn'),
+                addToBatchBtn: document.getElementById('add-to-batch-btn'),
+                
+                // Overlays (Canvas)
+                ashCanvasOverlay: document.getElementById('ash-canvas-overlay'),
+                closeCanvasBtnOverlay: document.getElementById('close-canvas-btn-overlay'),
+                submitCanvasBtn: document.getElementById('submit-canvas-btn'),
+                
+                // Overlays (ArcEdge)
+                arcedgeGraphOverlay: document.getElementById('arcedge-graph-overlay'),
+                arcedgeCloseBtn: document.getElementById('arcedge-close-btn'),
+                arcedgeAddBtn: document.getElementById('arcedge-add-btn'),
+                arcedgeMeasureBtn: document.getElementById('arcedge-measure-btn'),
+                arcedgeClearSceneBtn: document.getElementById('arcedge-clear-scene-btn'),
+                arcedgeClearInputsBtn: document.getElementById('arcedge-clear-inputs-btn'),
+                arcEdgeInputs: {
+                    devX: document.getElementById('arc-dev-x'), devY: document.getElementById('arc-dev-y'), devZ: document.getElementById('arc-dev-z'),
+                    mainDeviation: document.getElementById('arc-main-deviation'),
+                    curveInduction: document.getElementById('arc-curve-induction'),
+                    curveX: document.getElementById('arc-curve-x'), curveY: document.getElementById('arc-curve-y'), curveZ: document.getElementById('arc-curve-z'),
+                    devInduction: document.getElementById('arc-dev-induction'),
+                    resolution: document.getElementById('arc-resolution')
+                }
+            };
+
+
+            // Initialize the Journal and BRPN core
+            journal = new AIPersonalJournal(message => brpn && brpn.log(message, 'log-parser')); 
+            brpn = new BuoyancyPendulumReflexNode(ui.output, journal);
+            
+            await journal.loadJournal(); 
+            
+            // --- SETUP EVENT LISTENERS ---
+            document.getElementById('input-form').addEventListener('submit', handleUserInput);
+            
+            // New Chat and Sidebar Toggle
+            ui.newChatBtn.addEventListener('click', startNewChat);
+            ui.collapseSidebarBtn.addEventListener('click', () => {
+                ui.appContainer.classList.toggle('collapsed');
+                ui.appContainer.classList.toggle('sidebar-open');
+            });
+
+            // Log Panel Toggle
+            ui.logMenuBtn.addEventListener('click', () => {
+                ui.logPanel.classList.toggle('open');
+            });
+            
+            // Input Bar
+            ui.userInput.addEventListener('input', () => { 
+                ui.userInput.style.height = 'auto'; 
+                ui.userInput.style.height = (ui.userInput.scrollHeight) + 'px'; 
+                ui.sendButton.disabled = ui.userInput.value.trim().length === 0;
+            });
+            
+            // Tool Menu
+            ui.toolMenuBtn.addEventListener('click', toggleToolMenu);
+
+            // Welcome Screen options 
+            ui.welcomeScreen.querySelectorAll('.welcome-option').forEach(btn => {
+                btn.onclick = (e) => {
+                    startNewChat();
+                    ui.userInput.value = btn.dataset.prompt;
+                    handleUserInput(e); 
+                }
+            });
+
+            // Floating Calculator
+            ui.toggleCalculatorBtn.addEventListener('click', () => {
+                closeToolMenu();
+                const display = ui.floatingCalculator.style.display;
+                ui.floatingCalculator.style.display = display === 'none' ? 'grid' : 'none';
+            });
+            ui.floatingCalculator.querySelectorAll('.calc-btn').forEach(button => {
+                button.addEventListener('click', () => handleCalcInput(button.getAttribute('data-value')));
+            });
+            makeDraggable(ui.floatingCalculator);
+
+            // Math Solver (Overlay) Wiring
+            ui.mathSolverBtn.onclick = openMathSolver;
+            ui.algebraicEquationInput.addEventListener('input', updateVariableSelector);
+            ui.variableSelectDropdown.addEventListener('change', updateAssignedContextsDisplay);
+            ui.assignContextBtn.addEventListener('click', assignVariableContext);
+            ui.clearContextBtn.addEventListener('click', clearVariableContext);
+            ui.addValueBtn.addEventListener('click', addVariableValue);
+            ui.closeCalculatorBtn.addEventListener('click', closeMathSolver);
+            ui.addToBatchBtn.addEventListener('click', addModalDataToPrompt);
+
+            // Ash Canvas Wiring
+            ui.ashCanvasBtn.onclick = () => { closeToolMenu(); closeMathSolver(); closeArcEdgeGraph(); ui.ashCanvasOverlay.style.display = 'flex'; };
+            ui.closeCanvasBtnOverlay.onclick = closeAshCanvas;
+            ui.submitCanvasBtn.onclick = addCanvasInfluenceToPrompt;
+            
+            // Ash Canvas Controls (Full Wiring)
+            document.getElementById('linkBtn').onclick = () => {
+                canvasState.drawMode = !canvasState.drawMode; canvasState.unlinkMode = false;
+                toggleActive(document.getElementById('linkBtn'), canvasState.drawMode);
+                toggleActive(document.getElementById('unlinkBtn'), false);
+                if (!canvasState.drawMode && canvasState.startNode) { canvasState.startNode.classList.remove('selected'); canvasState.startNode = null; }
+            };
+            document.getElementById('unlinkBtn').onclick = () => {
+                canvasState.unlinkMode = !canvasState.unlinkMode; canvasState.drawMode = false;
+                toggleActive(document.getElementById('unlinkBtn'), canvasState.unlinkMode);
+                toggleActive(document.getElementById('linkBtn'), false);
+            };
+            document.getElementById('zoomIn').onclick  = () => setCanvasScale(canvasState.scale + 0.2); 
+            document.getElementById('zoomOut').onclick = () => setCanvasScale(canvasState.scale - 0.2); 
+            document.getElementById('clearCanvas').onclick = () => {
+                 if (confirm('Are you sure you want to clear the entire canvas? This will clear the undo/redo history.')) {
+                     const panzoom = document.querySelector('#ash-canvas-panel .panzoom');
+                     const svg = document.querySelector('#ash-canvas-panel .panzoom svg');
+                     panzoom.querySelectorAll('.node').forEach(el => el.remove());
+                     svg.querySelectorAll('polyline').forEach(el => el.remove());
+                     canvasState.startNode = null; 
+                     canvasState.nodeCounter = 0;
+                     canvasState.undoStack.length = 0;
+                     canvasState.redoStack.length = 0;
+                     updateCanvasButtons();
+                }
+            };
+            // NOTE: Undo/Redo logic is not fully present here, as it is complex and deferred.
+
+            document.querySelectorAll('#ash-canvas-panel .toolbar .draggable').forEach(draggable => {
+              draggable.ondragstart = e => e.dataTransfer.setData('text/plain', draggable.dataset.type);
+            });
+            const canvasContainer = document.querySelector('#ash-canvas-panel .canvas-scroll');
+            canvasContainer.ondragover = e => e.preventDefault(); 
+            canvasContainer.ondrop = e => { 
+              e.preventDefault();
+              const nodeType = e.dataTransfer.getData('text/plain');
+              createNode(nodeType, e); 
+            };
+            
+            // Arc Edge Wiring
+            ui.arcedgeGraphBtn.onclick = openArcEdgeGraph;
+            ui.arcedgeCloseBtn.onclick = closeArcEdgeGraph;
+            ui.arcedgeAddBtn.onclick = addArcToScene;
+            ui.arcedgeMeasureBtn.onclick = measureSelectedArc;
+            ui.arcedgeClearInputsBtn.onclick = clearArcEdgeInputs;
+            ui.arcedgeClearSceneBtn.onclick = clearArcEdgeScene;
+
+            // Final Render
+            renderSidebarHistory();
+            
+            if (chatState.chatHistory.length > 1 || chatState.chatHistory[0].messages.length > 0) {
+                 selectChat(chatState.chatHistory[chatState.chatHistory.length - 1].id);
+            }
+        });
+    </script>
+
+</body>
+</html>
