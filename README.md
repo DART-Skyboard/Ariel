@@ -11,7 +11,7 @@
   <br>
   <p align="center">
   <a href="https://arielnpu.space/" target="_blank">
-    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/ArielEmerald.png" alt="ArielFire" width="200" height="200">
+    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/ArielAshTreeLogo.png" alt="ArielFire" width="200" height="200">
   </a>
   <br>
   <a href="https://arielnpu.space/">Ariel NPU</a>
