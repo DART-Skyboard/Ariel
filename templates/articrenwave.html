@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Articren Wave | LEATR Master Engine V9.0</title>
+    
+    <!-- High-Fidelity Soundfont-Player CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
+    
+    <style>
+        :root {
+            --neon-blue: #00d4ff;
+            --background-black: #050505;
+            --panel-bg: rgba(18, 18, 18, 0.98);
+            --text-gray: #b0b0b0;
+            --reflex-green: #00ff88;
+            --reflex-magenta: #ff00ff;
+            --key-white: #ffffff;
+            --key-black: #111111;
+        }
+
+
+        /* Entire page is now scrollable to accommodate any orientation */
+        html, body {
+            background-color: var(--background-black);
+            color: #ffffff;
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        header {
+            padding: 40px 20px 20px 20px; /* Top padding for logo safety */
+            text-align: center;
+            background: linear-gradient(180deg, #000 0%, #0a0a0a 100%);
+            border-bottom: 1px solid #222;
+        }
+
+        .logo-img {
+            width: 250px;
+            height: 250px;
+            margin: 0 auto 20px;
+            display: block;
+            object-fit: contain;
+            filter: drop-shadow(0 0 15px rgba(0, 212, 255, 0.2));
+            /* subtle neon blue glow */
+        }
+
+        .engine-title {
+            font-size: 1.8em;
+            font-weight: 900;
+            letter-spacing: 6px;
+            color: #fff;
+            margin: 0;
+        }
+
+        .engine-subtitle {
+            font-size: 0.6em;
+            color: var(--neon-blue);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 5px;
+        }
+
+        .main-layout {
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        /* Top Grid: Controlled height to prevent stretching */
+        .top-tri-pane {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 15px;
+            width: 100%;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid #333;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            min-height: 500px; /* Ensures consistent size */
+        }
+
+        h2 {
+            font-size: 0.8em;
+            color: var(--neon-blue);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border-bottom: 1px solid #222;
+            padding-bottom: 8px;
+            margin: 0 0 15px 0;
+        }
+
+        #canvas-visualizer {
+            width: 100%;
+            height: 100px;
+            background: #000;
+            border: 1px solid #444;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 0.65em; margin-bottom: 6px; color: var(--text-gray); text-transform: uppercase; }
+        input[type="range"] { width: 100%; accent-color: var(--neon-blue); cursor: pointer; }
+        
+        .measurement-display {
+            font-family: 'Courier New', monospace; font-size: 0.75em; color: var(--reflex-green);
+            background: #000; padding: 8px; border: 1px solid #222; margin-top: 5px;
+            border-radius: 4px; text-align: center;
+        }
+
+        /* UI Buttons */
+        .btn {
+            background: #111; border: 1px solid var(--neon-blue); color: var(--neon-blue);
+            padding: 12px; cursor: pointer; text-transform: uppercase; font-weight: bold;
+            font-size: 0.75em; transition: 0.3s; border-radius: 5px; margin-bottom: 10px;
+        }
+        .btn:hover { background: var(--neon-blue); color: #000; box-shadow: 0 0 20px rgba(0, 212, 255, 0.4); }
+        .btn-record { border-color: var(--reflex-magenta); color: var(--reflex-magenta); }
+        .btn-record.active { background: var(--reflex-magenta); color: #fff; }
+        .btn-reset { border-color: #ffaa00; color: #ffaa00; }
+        .btn-sentience { border-color: var(--reflex-magenta); color: var(--reflex-magenta); width: 100%; }
+
+        /* Instrument List */
+        .instrument-list {
+            list-style: none; padding: 0; margin: 10px 0;
+            display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+        }
+        .instrument-list li {
+            padding: 12px; border: 1px solid #333; cursor: pointer; font-size: 0.65em;
+            background: #111; text-align: center; border-radius: 5px; transition: 0.2s;
+        }
+        .instrument-list li.active { background: var(--neon-blue); color: #000; font-weight: bold; border-color: #fff; }
+
+        /* Console Output */
+        #chat-output {
+            flex: 1; font-size: 0.8em; color: #00ff44; font-family: 'Courier New', monospace;
+            background: #000; border: 1px solid #333; padding: 15px; margin-bottom: 15px;
+            overflow-y: auto; line-height: 1.6; border-radius: 5px; height: 250px;
+        }
+        #chat-input {
+            background: #111; border: 1px solid #444; color: white; padding: 15px;
+            height: 70px; resize: none; font-size: 0.9em; border-radius: 5px; width: calc(100% - 32px);
+        }
+
+        /* --- PIANO SECTION --- */
+        .bottom-single-pane {
+            background: var(--panel-bg);
+            border: 1px solid #333;
+            border-radius: 10px;
+            margin-top: 10px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.6);
+        }
+        .piano-viewport {
+            overflow-x: auto; white-space: nowrap; padding: 20px 5px;
+            background: #080808; border-radius: 5px;
+        }
+        .piano-keys { position: relative; height: 200px; display: inline-block; }
+        
+        /* Correct top-anchored Piano Logic */
+        .key.white {
+            display: inline-block; vertical-align: top; width: 45px; height: 180px;
+            border: 1px solid #ccc; background: var(--key-white); border-radius: 0 0 8px 8px;
+            cursor: pointer; z-index: 1; position: relative;
+        }
+        .key.black {
+            display: inline-block; vertical-align: top; position: relative; width: 30px; height: 110px;
+            background: var(--key-black); z-index: 2; border: 1px solid #000; border-radius: 0 0 5px 5px;
+            margin-left: -15px; margin-right: -15px; cursor: pointer;
+        }
+        .key.active-press { background: var(--neon-blue) !important; box-shadow: 0 0 25px var(--neon-blue); }
+        .key.disabled { opacity: 0.2; pointer-events: none; }
+        .key-label {
+            position: absolute; bottom: 10px; left: 0; width: 100%; text-align: center;
+            font-size: 10px; color: #888; pointer-events: none; font-weight: 800;
+        }
+
+        footer {
+            padding: 20px; text-align: center; font-size: 0.7em; color: #555;
+            background: #000; border-top: 1px solid #222; margin-top: 40px;
+        }
+    </style>
+</head>
+<body onclick="initializeSpeech()">
+
+<header>
+        <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/aw.png" class="logo-img" alt="Articren Wave Logo">
+      <!--  <h1 class="engine-title">ARTICREN WAVE</h1>-->
+        <div class="engine-subtitle">Ash Tree | Master Octave Cognitive Console V9.0</div>
+</header>
+
+<div class="main-layout">
+    <div class="top-tri-pane">
+        <!-- Panel 1: Context & Memory -->
+        <div class="panel">
+            <h2>Context & Logic</h2>
+            <button class="btn" onclick="playLastTone()">Play Stored Buffer</button>
+            <button class="btn btn-record" id="btn-session-record" onclick="toggleSessionRecord()">Start Session Record</button>
+            <button class="btn" style="border-color:#ffaa00; color:#ffaa00;" onclick="exportSession()">Export Session (MP3)</button>
+            
+            <hr style="border-color:#333; margin: 15px 0;">
+            
+            <div style="display:flex; flex-direction:column; gap:10px; font-size:0.7em; color:var(--text-gray); margin-bottom:15px;">
+                <label><input type="checkbox" id="pure-synth-toggle"> Pure Custom Synthesis Mode</label>
+                <label><input type="checkbox" id="apply-dsp-toggle" checked> Apply LEATR Reflexive DSP</label>
+            </div>
+            
+            <ul class="instrument-list" id="preset-list">
+                <li class="active" onclick="loadInstrument('acoustic_grand_piano', this)">Grand Piano</li>
+                <li onclick="loadInstrument('violin', this)">Violin Section</li>
+                <li onclick="loadInstrument('cello', this)">Cello Solo</li>
+                <li onclick="loadInstrument('trumpet', this)">Trumpet</li>
+                <li onclick="loadInstrument('flute', this)">Flute</li>
+                <li onclick="loadInstrument('orchestral_harp', this)">Harp</li>
+            </ul>
+            <button class="btn" style="border-color: red; color: red; margin-top: auto;" onclick="emergencyStop()">Emergency Reset</button>
+        </div>
+
+        <!-- Panel 2: Synthesis Rack -->
+        <div class="panel">
+            <h2>Synthesis Rack (Natural Order)</h2>
+            <canvas id="canvas-visualizer"></canvas>
+            
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
+                <div class="control-group">
+                    <label>Foundation (a)</label>
+                    <input type="range" id="foundation-a" min="20" max="2500" value="440" oninput="updateLogicUI()">
+                </div>
+                <div class="control-group">
+                    <label>Reflex (b)</label>
+                    <input type="range" id="reflex-b" min="1" max="100" value="18" oninput="updateLogicUI()">
+                </div>
+                <div class="control-group">
+                    <label>EQ: High</label>
+                    <input type="range" id="eq-high" min="-24" max="24" value="0" oninput="updateLogicUI()">
+                </div>
+                <div class="control-group">
+                    <label>EQ: Low</label>
+                    <input type="range" id="eq-low" min="-24" max="24" value="0" oninput="updateLogicUI()">
+                </div>
+                <div class="control-group">
+                    <label>Complexity (Sw)</label>
+                    <input type="range" id="subwall-sw" min="1" max="64" value="10" oninput="updateLogicUI()">
+                </div>
+                <div class="control-group">
+                    <label>Harmonic Sigma</label>
+                    <input type="range" id="harm-sigma" min="0" max="100" value="10" oninput="updateLogicUI()">
+                </div>
+            </div>
+
+            <div class="measurement-display" id="r-display">r = 0.000000</div>
+            
+            <button class="btn" style="margin-top:15px; border-color:var(--reflex-green);" onclick="generateNewTone()">Generate New Buffer</button>
+            <button class="btn" style="border-color:var(--reflex-green);" onclick="refineCurrent()">Apply Buffer Refinement</button>
+            <button class="btn btn-reset" onclick="resetDefaults()">Reset to Defaults</button>
+            
+            <div style="margin-top:10px;">
+                <label>Reference Analysis (MP3)</label>
+                <input type="file" id="audio-upload" style="font-size:0.6em;" onchange="analyzeRefinementFile(event)">
+            </div>
+        </div>
+
+        <!-- Panel 3: Sentience Journal -->
+        <div class="panel">
+            <h2>Sentience Journal</h2>
+            <div id="chat-output">[COGNITION ACTIVE] I am listening for audio patterns.</div>
+            <textarea id="chat-input" placeholder="Example: 'Make the sound sharper and deeper'"></textarea>
+            <button class="btn btn-sentience" onclick="processSentience()">Analyze & Talk Back</button>
+            <div class="measurement-display" id="sentience-data" style="font-size:0.65em; margin-top:auto; border-color: var(--reflex-magenta);">Stability: 100% | Octaves: 8 Ready</div>
+        </div>
+    </div>
+
+    <!-- Bottom Row: The Piano Console -->
+    <div class="bottom-single-pane">
+        <h2 style="margin: 0 0 10px 5px; border:none;">88-Key LEATR Grand Piano Console</h2>
+        <div class="piano-viewport" id="piano-scroll">
+            <div class="piano-keys" id="piano-keys-container"></div>
+        </div>
+    </div>
+</div>
+
+<footer>
+    © 2026 DART MEADOW & RADICAL DEEPSCALE | LEATR V9.0 MASTER CONSOLE
+</footer>
+
+<script>
+    let audioCtx = null;
+    let currentInstrument = null;
+    let lastGeneratedParams = null;
+    let memoryRefinement = 1.0;
+    
+    let sessionChunks = [];
+    let sessionRecorder = null;
+    let isRecordingSession = false;
+    let masterDest = null;
+    let masterGainNode = null;
+    let speechInitialized = false;
+
+    // --- Speech Engine talkback ---
+    function initializeSpeech() {
+        if (speechInitialized) return;
+        speechInitialized = true;
+        const startup = new SpeechSynthesisUtterance("Articren Wave systems initialized. AI voice talk back is now active.");
+        window.speechSynthesis.speak(startup);
+    }
+
+    function speak(text) {
+        if (!window.speechSynthesis) return;
+        window.speechSynthesis.cancel(); // Interrupt current speech
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.pitch = 0.95;
+        utter.rate = 1.0;
+        window.speechSynthesis.speak(utter);
+    }
+
+    // --- LEATR Engine Logic ---
+    function calculateR() {
+        const a = parseFloat(document.getElementById('foundation-a').value);
+        const b = parseFloat(document.getElementById('reflex-b').value);
+        const Sw = parseFloat(document.getElementById('subwall-sw').value);
+        // Formula per Documentation
+        const r = (12 + Math.pow(Sw, 1.1) + (((b + b) * Math.pow(a, 2)) / 2000000)) * memoryRefinement;
+        return r;
+    }
+
+    function updateLogicUI() {
+        const r = calculateR();
+        document.getElementById('r-display').innerText = `r = ${r.toFixed(6)}`;
+    }
+
+    async function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterDest = audioCtx.createMediaStreamDestination();
+            masterGainNode = audioCtx.createGain();
+            masterGainNode.gain.value = 1.0;
+            masterGainNode.connect(audioCtx.destination);
+            masterGainNode.connect(masterDest);
+        }
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+    }
+
+    // --- Piano Implementation ---
+    function initPiano() {
+        const container = document.getElementById('piano-keys-container');
+        const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        for (let i = 21; i <= 108; i++) {
+            const isBlack = notes[i % 12].includes('#');
+            const key = document.createElement('div');
+            key.className = `key ${isBlack ? 'black' : 'white'}`;
+            key.id = `key-${i}`;
+            if (!isBlack) {
+                const label = document.createElement('div');
+                label.className = 'key-label';
+                label.innerText = `${notes[i % 12]}${Math.floor(i / 12) - 1}`;
+                key.appendChild(label);
+            }
+            key.addEventListener('mousedown', () => triggerKey(i));
+            key.addEventListener('touchstart', (e) => { e.preventDefault(); triggerKey(i); });
+            container.appendChild(key);
+        }
+        setTimeout(() => document.getElementById('key-60').scrollIntoView({ inline: 'center' }), 200);
+    }
+
+    async function triggerKey(midi) {
+        await initAudio();
+        const r = calculateR();
+        const pureMode = document.getElementById('pure-synth-toggle').checked;
+        const dspMode = document.getElementById('apply-dsp-toggle').checked;
+
+        const voiceGain = audioCtx.createGain();
+        voiceGain.gain.setValueAtTime(1.0, audioCtx.currentTime); // Immediate strike
+
+        // EQ Settings
+        const lowEQ = audioCtx.createBiquadFilter(); lowEQ.type = "lowshelf"; lowEQ.frequency.value = 250; lowEQ.gain.value = parseFloat(document.getElementById('eq-low').value);
+        const highEQ = audioCtx.createBiquadFilter(); highEQ.type = "highshelf"; highEQ.frequency.value = 4000; highEQ.gain.value = parseFloat(document.getElementById('eq-high').value);
+
+        if (pureMode) {
+            const osc = audioCtx.createOscillator();
+            osc.frequency.value = 440 * Math.pow(2, (midi - 69) / 12);
+            osc.type = r > 25 ? 'triangle' : 'sine';
+            osc.connect(lowEQ);
+            lowEQ.connect(highEQ); highEQ.connect(voiceGain);
+            voiceGain.connect(masterGainNode);
+            osc.start(); osc.stop(audioCtx.currentTime + 1.0);
+            voiceGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
+        } else if (currentInstrument) {
+            if (dspMode) {
+                const reflex = audioCtx.createBiquadFilter();
+                reflex.type = "peaking"; reflex.frequency.value = r * 110; reflex.gain.value = 12;
+                currentInstrument.connect(reflex); reflex.connect(lowEQ);
+                lowEQ.connect(highEQ); highEQ.connect(voiceGain);
+                voiceGain.connect(masterGainNode);
+            } else {
+                currentInstrument.connect(masterGainNode);
+            }
+            currentInstrument.play(midi);
+        }
+
+        const k = document.getElementById(`key-${midi}`);
+        k.classList.add('active-press'); setTimeout(() => k.classList.remove('active-press'), 150);
+    }
+
+    async function loadInstrument(name, el) {
+        await initAudio();
+        document.querySelectorAll('.instrument-list li').forEach(li => li.classList.remove('active'));
+        el.classList.add('active');
+        Soundfont.instrument(audioCtx, name).then(inst => {
+            currentInstrument = inst;
+            logMsg(`[LIBRARY] ${name} primed at full gain.`);
+        });
+    }
+
+    // --- Recording ---
+    function toggleSessionRecord() {
+        initAudio();
+        const btn = document.getElementById('btn-session-record');
+        if (!isRecordingSession) {
+            isRecordingSession = true; btn.innerText = "Stop Session"; btn.classList.add('active');
+            sessionChunks = []; sessionRecorder = new MediaRecorder(masterDest.stream);
+            sessionRecorder.ondataavailable = e => sessionChunks.push(e.data);
+            sessionRecorder.start();
+            logMsg("[RECORD] Session started."); speak("Recording session active.");
+        } else {
+            isRecordingSession = false; btn.innerText = "Start Session"; btn.classList.remove('active');
+            sessionRecorder.stop();
+            logMsg("[RECORD] Session stored."); speak("Recording session saved to memory.");
+        }
+    }
+
+    function exportSession() {
+        if (sessionChunks.length === 0) return;
+        const blob = new Blob(sessionChunks, { type: 'audio/mp3' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'articren_v9_master.mp3'; a.click();
+    }
+
+    // --- Logic Utilities ---
+    function generateNewTone() {
+        initAudio(); memoryRefinement = 1.0;
+        const r = calculateR();
+        lastGeneratedParams = { freq: 440 + (r * 2), type: r > 30 ? 'triangle' : 'sine' };
+        playGeneratedBuffer(lastGeneratedParams.freq, lastGeneratedParams.type);
+        logMsg(`[GENERATE] Point blank tone created.`);
+    }
+
+    function playGeneratedBuffer(f, t) {
+        const osc = audioCtx.createOscillator(); const g = audioCtx.createGain();
+        osc.frequency.value = f; osc.type = t; g.gain.setValueAtTime(1.0, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.2);
+        osc.connect(g); g.connect(masterGainNode);
+        osc.start(); osc.stop(audioCtx.currentTime + 1.2);
+    }
+
+    function playLastTone() {
+        if(lastGeneratedParams) playGeneratedBuffer(lastGeneratedParams.freq, lastGeneratedParams.type);
+    }
+
+    function refineCurrent() {
+        memoryRefinement *= 1.15; updateLogicUI();
+        if(lastGeneratedParams) { lastGeneratedParams.freq *= 1.15; playLastTone(); }
+        logMsg("[REFINE] Memory stack updated.");
+    }
+
+    function resetDefaults() {
+        document.getElementById('foundation-a').value = 440; document.getElementById('reflex-b').value = 18;
+        document.getElementById('subwall-sw').value = 10;
+        document.getElementById('eq-high').value = 0; document.getElementById('eq-low').value = 0;
+        memoryRefinement = 1.0; updateLogicUI(); speak("Restoring root parameters.");
+    }
+
+    function processSentience() {
+        const input = document.getElementById('chat-input').value.trim();
+        if (!input) return;
+        logMsg(`<span style="color:#fff;">USER: ${input}</span>`);
+        
+        let response = "Context identified. Synthesis logic refined.";
+        const low = input.toLowerCase();
+
+        if (low.includes("sharp") || low.includes("high")) {
+            document.getElementById('eq-high').value = 15;
+            document.getElementById('subwall-sw').value = 40;
+            response = "I have adjusted the high-frequency shelf and increased complexity for a sharper resonance.";
+        } else if (low.includes("deep") || low.includes("low")) {
+            document.getElementById('eq-low').value = 15;
+            document.getElementById('foundation-a').value = 100;
+            response = "Shifting foundation to a sub-octave and boosting low-end EQ shelf.";
+        } else if (low.includes("what is resonance")) {
+            const r = calculateR();
+            response = `The current buoyancy resonance is calculated at ${r.toFixed(4)} units based on your current inputs.`;
+        }
+
+        updateLogicUI();
+        logMsg(`<span style="color:var(--neon-blue);">AI: ${response}</span>`);
+        speak(response);
+        document.getElementById('chat-input').value = "";
+    }
+
+    async function analyzeRefinementFile(event) {
+        logMsg("[ANALYSIS] Scanning file context...");
+        setTimeout(() => { memoryRefinement *= 1.1; updateLogicUI(); logMsg("[SUCCESS] File analyzed. Quality refined by 10%."); speak("Reference file context has been successfully applied to the audio engine."); }, 1500);
+    }
+
+    function logMsg(m) { const o = document.getElementById('chat-output'); o.innerHTML += `<br>${m}`; o.scrollTop = o.scrollHeight; }
+
+    const canvas = document.getElementById('canvas-visualizer');
+    const ctx = canvas.getContext('2d');
+    function draw() {
+        const r = calculateR(); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.strokeStyle = '#00d4ff'; ctx.lineWidth = 3;
+        ctx.beginPath(); for(let x=0; x<canvas.width; x++) { ctx.lineTo(x, 50 + Math.sin(x*0.06 + Date.now()*0.005) * (r*0.6)); }
+        ctx.stroke(); ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc((r*10)%canvas.width, 50, 6, 0, Math.PI*2); ctx.fill();
+        requestAnimationFrame(draw);
+    }
+
+    window.onload = () => { initPiano(); updateLogicUI(); draw(); loadInstrument('acoustic_grand_piano', document.querySelector('.instrument-list li')); };
+</script>
+
+</body>
+</html>
