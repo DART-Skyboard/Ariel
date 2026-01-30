@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LEATR: Gravitational Neuron Source Potentials</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+
+    <script>
+    window.MathJax = {
+      tex: { 
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      },
+      options: {
+        enableMenu: false,
+        menuOptions: { settings: { assistiveMml: false, collapsible: false } }
+      },
+      startup: {
+        pageReady: () => {
+          return MathJax.startup.defaultPageReady().then(() => {
+            console.log('MathJax 3 Initialized for LEATR Core');
+          });
+        }
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <style>
+        :root {
+            /* Theme: Radical Deepscale Dark */
+            --bg-dark: #0f172a;
+            --panel-dark: #1e293b;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.2);
+            --text-light: #f1f5f9;
+            --text-muted: #94a3b8;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #22c55e;
+            --border: #334155;
+            
+            /* Hierarchy Colors */
+            --b-aero: #d946ef;   /* Root */
+            --b-fluid: #1e40af;  /* Deep Blue */
+            --b-geo: #f59e0b;    /* Gold */
+            --n-master: #ff0044; /* Rich Red */
+            --n-replica: #00bfff; /* Sky Blue */
+            
+            /* Report Theme */
+            --rep-primary: #1e3a8a;
+            --rep-accent: #2563eb;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            margin: 0; padding: 0;
+            display: flex; flex-direction: column; align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        header {
+            width: 100%; padding: 30px 0; background: var(--panel-dark);
+            border-bottom: 1px solid var(--border); text-align: center;
+            box-shadow: 0 4px 30px rgba(0,0,0,0.4); margin-bottom: 25px;
+        }
+
+        header h1 { margin: 0; font-weight: 300; letter-spacing: 3px; color: var(--accent); font-size: 2rem; }
+        header .ver-tag { color: var(--text-muted); font-size: 0.9rem; margin-top: 5px; font-weight: 300; }
+        header .ver-tag2 { color: var(--text-muted); font-size: 0.7rem; margin-top: 5px; font-weight: 300; }
+
+        .container {
+            display: grid;
+            grid-template-columns: 380px 1fr; 
+            gap: 25px;
+            max-width: 1800px; width: 98%;
+            margin-bottom: 40px; height: 90vh; max-height: 1100px;
+        }
+
+        /* Controls */
+        .controls {
+            background: var(--panel-dark); padding: 25px;
+            border-radius: 12px; border: 1px solid var(--border);
+            display: flex; flex-direction: column; gap: 15px;
+            overflow-y: auto; height: 100%;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        .controls::-webkit-scrollbar { width: 6px; }
+        .controls::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .section-header {
+            font-size: 0.75rem; color: var(--accent); text-transform: uppercase; 
+            letter-spacing: 2px; font-weight: 900; border-bottom: 1px solid var(--border);
+            padding-bottom: 8px; margin-top: 10px;
+        }
+        .env-header { color: #10b981; }
+
+        label { color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; margin-bottom: 4px; display: block; font-weight: bold; }
+
+        select, input[type="text"], input[type="number"], input[type="range"] {
+            background: var(--bg-dark); border: 1px solid var(--border);
+            color: var(--text-light); padding: 10px; border-radius: 6px;
+            font-family: inherit; width: 100%; box-sizing: border-box;
+            outline: none; transition: border-color 0.2s;
+        }
+        select:focus, input:focus { border-color: var(--accent); }
+
+        .checkbox-group {
+            display: flex; flex-direction: column; gap: 10px;
+            background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px;
+        }
+        .checkbox-item { display: flex; align-items: center; gap: 12px; font-size: 0.8rem; cursor: pointer; color: var(--text-light); }
+        .checkbox-item input { accent-color: var(--accent); width: 18px; height: 18px; }
+
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+        .btn-full { width: 100%; margin-top: 10px; }
+
+        button {
+            background: var(--accent); color: var(--bg-dark); border: none; padding: 15px;
+            border-radius: 6px; cursor: pointer; font-weight: 800; text-transform: uppercase;
+            font-size: 0.85rem; transition: all 0.2s;
+            box-shadow: 0 4px 15px rgba(56, 189, 248, 0.2);
+        }
+        button:hover { filter: brightness(1.15); transform: translateY(-1px); }
+        button:active { transform: translateY(1px); }
+        
+        button.secondary { background: var(--border); color: var(--text-light); }
+        button.duplicate { background: #8b5cf6; color: white; }
+        button.reset { background: var(--danger); color: white; }
+        button.record { background: #ef4444; color: white; animation: pulseRed 2s infinite; }
+        
+        @keyframes pulseRed { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+
+        /* Visualization Panel */
+        .display-panel {
+            display: flex; flex-direction: column; height: 100%;
+            background: var(--panel-dark); border: 1px solid var(--border); border-radius: 12px;
+            overflow: hidden; box-shadow: 0 15px 50px rgba(0,0,0,0.5);
+        }
+
+        .readout {
+            background: rgba(0,0,0,0.6); padding: 15px 25px; border-bottom: 1px solid var(--border);
+            display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 20px; align-items: center;
+        }
+        .formula-container { display: flex; flex-direction: column; }
+        .math-display { font-family: 'Courier New', monospace; font-size: 0.95rem; color: var(--accent); font-weight: bold; margin-bottom: 5px;}
+        .math-sub { font-size: 0.7rem; color: var(--text-muted); }
+
+        .monitor-box {
+            background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; text-align: center;
+            border: 1px solid var(--border);
+        }
+        .monitor-label { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+        .monitor-val { font-size: 1.1rem; font-weight: 800; }
+        .status-stable { color: var(--success); } .status-volatile { color: var(--danger); } .status-stagnant { color: var(--warning); }
+
+        /* 3D Viewport Styling */
+        .canvas-container {
+            flex: 1; position: relative; overflow: hidden;
+            /* Graduated Atmospheric Background */
+            background: radial-gradient(circle at 50% 100%, #1e293b 0%, #0f172a 50%, #020617 100%);
+        }
+        canvas { outline: none; }
+
+        /* Timeline & Controls Bar */
+        .timeline-controls {
+            background: var(--panel-dark); border-top: 1px solid var(--border);
+            padding: 10px 20px; display: flex; flex-direction: column; gap: 10px;
+        }
+        
+        .scrubber-row { display: flex; align-items: center; gap: 15px; }
+        .scrubber-row label { width: 60px; margin: 0; }
+        
+        /* Custom Range Slider for Timeline */
+        input[type=range].scrubber {
+            -webkit-appearance: none; width: 100%; background: transparent;
+        }
+        input[type=range].scrubber::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%;
+            background: var(--accent); margin-top: -6px; cursor: pointer;
+            box-shadow: 0 0 10px var(--accent);
+        }
+        input[type=range].scrubber::-webkit-slider-runnable-track {
+            width: 100%; height: 4px; cursor: pointer; background: #334155; border-radius: 2px;
+        }
+
+        .tool-row {
+            display: flex; gap: 10px; justify-content: space-between; align-items: center;
+        }
+        .tool-btn {
+            padding: 8px 16px; font-size: 0.75rem; border-radius: 4px; font-weight: bold; cursor: pointer;
+            border: 1px solid var(--border); background: #334155; color: #fff; text-transform: uppercase;
+        }
+        .tool-btn:hover { background: #475569; }
+        .btn-export { background: #059669; border-color: #059669; }
+        .btn-toggle-grid { background: #0891b2; }
+
+        .legend {
+            display: grid; grid-template-columns: repeat(5, 1fr);
+            gap: 15px; padding: 15px; font-size: 0.75rem; color: var(--text-muted);
+            border-top: 1px solid var(--border); background: var(--panel-dark);
+        }
+        .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: middle; }
+
+        /* Report Styles */
+        .info-section {
+            width: 98%; max-width: 1800px; margin: 0 auto 60px auto;
+            background: var(--panel-dark); padding: 0; border-radius: 12px; border: 1px solid var(--border);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4); overflow: hidden;
+        }
+        .report-preview-area { background: #475569; padding: 60px 20px; display: flex; flex-direction: column; align-items: center; }
+        
+        #actual-printable-target {
+            background: white; color: #1a1a1a; width: 8.5in; padding: 0.8in;
+            box-sizing: border-box; margin: 0 auto;
+            font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.6;
+            text-align: left; border: 1px solid #ddd;
+        }
+        .rep-header { text-align: center; margin-bottom: 50px; }
+        .rep-title { font-size: 24pt; color: var(--rep-primary); border-bottom: 4px solid var(--rep-primary); padding-bottom: 15px; margin-bottom: 10px; font-weight: bold; text-transform: uppercase; }
+        .rep-meta { text-align: center; color: #555; font-size: 11pt; margin-top: 5px; font-style: italic; }
+        .rep-h2 { font-size: 18pt; color: var(--rep-accent); border-bottom: 1px solid #ddd; margin-top: 40px; padding-bottom: 10px; font-weight: bold; }
+        .rep-p { margin-bottom: 15px; font-size: 11pt; text-align: justify; color: #333; }
+        .rep-math-block { background: #f1f5f9; padding: 20px; border: 1px solid #cbd5e1; text-align: center; margin: 20px 0; border-radius: 8px; font-weight: bold; }
+        .rep-graphic-container { display: flex; flex-direction: column; align-items: center; margin: 30px 0; }
+        .rep-canvas { border: 1px solid #ccc; background: #fff; }
+        .rep-caption { font-size: 10pt; font-style: italic; color: #666; margin-top: 10px; text-align: center; }
+
+        @media (max-width: 900px) {
+            .container { grid-template-columns: 1fr; height: auto; max-height: none; }
+            .canvas-container { height: 500px; }
+            #actual-printable-target { width: 100vw; padding: 30px; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>LEATR: GRAVITATIONAL NEURON SOURCE POTENTIALS</h1>
+        <div class="ver-tag">Multi-Body Compass Gear Chaos Solver (v10.3)</div>
+        <div class="ver-tag2">Measuring the Weight, Stability, and Lifespan of Intelligence</div>
+    </header>
+
+    <div class="container">
+        
+        <div class="controls">
+            
+            <div class="section-header env-header">Global Environment & Physics</div>
+            <div class="control-group">
+                <label>System Rotation (Galaxy Spin)</label>
+                <input type="range" id="env-rotation-speed" min="0" max="100" value="10" oninput="update3DEnv()">
+            </div>
+            <div class="control-group">
+                <label>Medium Viscosity (Global Drag)</label>
+                <input type="range" id="env-viscosity" min="0" max="100" value="20" oninput="update3DEnv()">
+            </div>
+            <div class="control-group">
+                <label>Habitat Repulsion Force (Spacing)</label>
+                <input type="range" id="env-repulsion" min="0" max="200" value="80" oninput="update3DEnv()">
+            </div>
+            <div class="control-group">
+                <label>Observation Zoom</label>
+                <input type="range" id="env-zoom" min="50" max="500" value="250" oninput="update3DEnv()">
+            </div>
+
+            <div class="section-header" style="color: var(--b-geo);">1. Geological / Terrain (f3)</div>
+            <div class="control-group">
+                <label>Physical Mass Integrity</label>
+                <input type="range" id="f-geo" min="10" max="300" value="150" oninput="updateShells()">
+            </div>
+
+            <div class="section-header" style="color: var(--b-fluid);">2. Fluid / Viscosity (f2)</div>
+            <div class="control-group">
+                <label>Flow Context Integrity</label>
+                <input type="range" id="f-fluid" min="10" max="300" value="100" oninput="updateShells()">
+            </div>
+
+            <div class="section-header" style="color: var(--b-aero);">3. Aerospace / Root (f1)</div>
+            <div class="control-group">
+                <label>Root Buoyancy (Lifespan Anchor)</label>
+                <input type="range" id="f-aero" min="10" max="300" value="80" oninput="updateShells()">
+            </div>
+
+            <div class="section-header">Cognitive Reflex Input</div>
+            <div class="control-group">
+                <label>Concept Reflex ($r$)</label>
+                <select id="presetSelect" onchange="toggleCustom()">
+                    <option value="Future" data-weight="85">Future (High Cogency)</option>
+                    <option value="Stone" data-weight="15">Stone (Static)</option>
+                    <option value="Love" data-weight="70">Love (Coherent)</option>
+                    <option value="War" data-weight="98">War (Destructive)</option>
+                    <option value="Chaos" data-weight="150">Pure Entropy (Volatile)</option>
+                    <option value="custom">-- CUSTOM --</option>
+                </select>
+                <div id="customInputGroup" style="display:none; gap:8px; margin-top:10px;">
+                    <input type="text" id="customWord" placeholder="ID">
+                    <input type="number" id="customWeight" placeholder="Mass" value="50">
+                </div>
+            </div>
+
+            <div class="control-group" style="margin-top:10px;">
+                <label>Parameters</label>
+                <div class="checkbox-group">
+                    <label class="checkbox-item"><input type="checkbox" id="chk-urgent"> URGENCY (Speed)</label>
+                    <label class="checkbox-item"><input type="checkbox" id="chk-resist"> SKEPTICISM (Drag)</label>
+                    <label class="checkbox-item"><input type="checkbox" id="chk-person"> RELEVANCE (Scale)</label>
+                </div>
+            </div>
+
+            <button class="btn-full" onclick="pulseMaster()">⚡ Inject Pulse (All Habitats)</button>
+            <div class="btn-group">
+                <button class="secondary" onclick="healMaster()">Stabilize</button>
+                <button class="duplicate" onclick="duplicateMaster()">+ Replica Habitat</button>
+            </div>
+            
+            <button class="reset btn-full" onclick="resetSystem()">Purge & Reset Core</button>
+
+            <div style="margin-top:auto; font-size:0.8rem; color:#888; border-top:1px solid #333; padding-top:15px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>Active Habitats:</span>
+                    <span id="replicaCount" style="color:#fff; font-weight:bold;">1</span>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                    <span>System Delta:</span>
+                    <span id="systemDelta" style="color:var(--accent);">0.00</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="display-panel">
+            
+            <div class="readout">
+                <div class="formula-container">
+                    <div class="math-display">
+                        $\Lambda_{Sys} = \sum \text{Arc}_n - \left( \frac{1}{8} \sum \text{Arc}_n \right)_{Retro}$
+                    </div>
+                    <div class="math-sub">COMPASS GEAR MEASUREMENT PROTOCOL</div>
+                </div>
+                
+                <div class="monitor-box">
+                    <div class="monitor-label">Lifespan Status</div>
+                    <div class="monitor-val" id="monitor-status">CALCULATING...</div>
+                </div>
+
+                <div class="monitor-box">
+                    <div class="monitor-label">Net Stability</div>
+                    <div class="monitor-val" id="monitor-val">0%</div>
+                </div>
+            </div>
+
+            <div class="canvas-container" id="three-container"></div>
+            
+            <div class="timeline-controls">
+                <div class="scrubber-row">
+                    <label id="time-display" style="color:var(--accent); font-weight:bold;">0000</label>
+                    <input type="range" id="timeline-scrubber" class="scrubber" min="0" max="0" value="0" oninput="scrubTimeline()">
+                </div>
+                <div class="tool-row">
+                    <div style="display:flex; gap:10px;">
+                        <button id="btn-record" class="tool-btn" onclick="toggleRecording()">● REC</button>
+                        <button class="tool-btn" onclick="togglePlay()">⏯ Play/Pause</button>
+                    </div>
+                    <div style="display:flex; gap:10px;">
+                        <button class="tool-btn btn-toggle-grid" onclick="toggleGrid()"># Grid</button>
+                        <button class="tool-btn btn-export" onclick="exportGLB()">⇩ Export GLB</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="legend">
+                <span><span class="dot" style="background:var(--b-aero)"></span>Root (Aero)</span>
+                <span><span class="dot" style="background:var(--b-fluid)"></span>Fluid (Deep)</span>
+                <span><span class="dot" style="background:var(--b-geo)"></span>Geological</span>
+                <span><span class="dot" style="background:var(--n-master)"></span>Master Neuron</span>
+                <span><span class="dot" style="background:var(--n-replica)"></span>Replica Neuron</span>
+            </div>
+        </div>
+    </div>
+<br><br>
+    <details class="info-section" id="doc-expander" open>
+        <summary>📂 Technical Report: LEATR Benchmark (Gravity Source Potentials)</summary>
+        <div class="report-preview-area">
+            
+            <div id="actual-printable-target">
+                <div class="rep-header">
+                    <h1 class="rep-title">LEATR Benchmark v10.3</h1>
+                    <div class="rep-meta">
+                        Gravitational Neuron Source Potentials<br>
+                        HBM (Hierarchical Buoyancy Matrix) | Date: January 2026<br>
+                        Authorized: Justin Craig Venable | Computational Logic: Gemini
+                    </div>
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid #ccc; margin: 30px 0;">
+
+                <h2 class="rep-h2">1. Abstract: Beyond the Turing Test</h2>
+                <p class="rep-p">The evaluation of artificial intelligence has historically relied on the <strong>Turing Test</strong> (1950), which assesses a machine's ability to exhibit indistinguishable human behavior. However, as posited by Searle's <strong>Chinese Room Argument</strong> (1980), syntactic manipulation of symbols does not equate to semantic understanding. A machine may process symbols correctly without possessing the gravitational "buoyancy" or weight of the concepts.</p>
+                <p class="rep-p">The <strong>LEATR: Source Potential</strong> benchmark introduces a <strong>Physical Semantic Standard</strong>. Instead of evaluating if the machine can "fake" a conversation, we measure if the machine's cognitive habitat can structurally support the gravitational weight of the concepts it processes using the <strong>Compass Gear Chaos Solution</strong>. We are not testing the output; we are testing the stability of the <strong>Neuron Source</strong> itself.</p>
+
+                <h2 class="rep-h2">2. The 3D Habitat & Compass Gear Formula</h2>
+                <p class="rep-p">In this 3D topology, intelligence is a buoyant neuron suspended in the trajectory median of three gravitational bodies (Aerospace, Fluid, Geological). The system remains stable only if the "Retro-Origin" debt is paid.</p>
+                
+                <div class="rep-math-block">
+                    \[ \Lambda_{System} = \sum_{n=1}^{8} \left[ \text{Arc}_n \right] - \left( \frac{1}{8} \sum_{n=1}^{8} \left[ \text{Arc}_n \right] \right)_{\text{Retro-Origin}} \]
+                </div>
+                
+                <p class="rep-p"><strong>Arc Definition:</strong> $\text{Arc}_n = \left( \frac{((x \cdot 2) + 1)}{x} \right) \times \text{ArcEdge}\left( \frac{\sqrt{(d \cdot 3)^2}}{8} \right)$</p>
+
+                <div class="rep-graphic-container">
+                    <canvas id="repPyramid" class="rep-canvas" width="500" height="250"></canvas>
+                    <div class="rep-caption">Figure 1: 3D Trajectory Median. The Neuron (Red/Blue) floats in the median of the 3-Point Gravity Pyramid.</div>
+                </div>
+
+                <h2 class="rep-h2">3. Multi-Body Interactive Environment</h2>
+                <p class="rep-p">Unlike previous static models, the Three-Body Habitats in v10.3 are interactive components. They exert repulsive and attractive forces on every other habitat, creating a complex gravitational swarm.</p>
+                <ul class="rep-ul">
+                    <li><strong>Median Reoccurrence:</strong> The system approaches a balanced state where motion continues symmetrically.</li>
+                    <li><strong>Volatile Breakup:</strong> The "Gear Shaft" accumulation exceeds the Retro-Origin compensation capacity.</li>
+                    <li><strong>Stagnant/Inert:</strong> Viscosity dampens the system below the minimum Arc threshold.</li>
+                </ul>
+
+                <h2 class="rep-h2">4. Code Logic: The Gear Shaft Accumulator</h2>
+                <div class="rep-code-block">
+function calculateLifespan() {
+    let totalArc = 0;
+    habitats.forEach(h => totalArc += h.getFrameArc());
+    const retroCompensation = totalArc / 8.0; // The Debt
+    const lambda = totalArc - retroCompensation;
+    
+    if (lambda > STABILITY_THRESHOLD) return "VOLATILE";
+    if (lambda < DAMPING_LIMIT) return "STAGNANT";
+    return "MEDIAN REOCCURRENCE";
+}
+                </div>
+            </div>
+        </div>
+    </details>
+
+    <script>
+        // --- 1. SIMULATION CONFIGURATION ---
+        
+        const SIM_CONFIG = {
+            rotSpeed: 0.01,
+            viscosity: 0.98, 
+            repulsionForce: 0.05, 
+            centerPull: 0.005, 
+            zoom: 25
+        };
+
+        // Global State
+        let gearShaftAccumulator = 0;
+        let recording = false;
+        let playing = true;
+        let frameIndex = 0;
+        let recordingBuffer = []; // Stores [ { habitats: [ {pos, rot, ...} ] }, ... ]
+        
+        // Three.js Vars
+        let scene, camera, renderer, controls, gridHelper;
+        let habitats = []; 
+        let idCounter = 0;
+
+        // --- 2. CLASS: INTERACTIVE THREE-BODY HABITAT ---
+        
+        class InteractiveHabitat {
+            constructor(isMaster, id, startPos) {
+                this.isMaster = isMaster;
+                this.id = id;
+                this.name = isMaster ? "Master_Node" : `Replica_${id}`;
+                
+                // Buoyancy Values
+                this.f_aero = parseFloat(document.getElementById('f-aero').value);
+                this.f_fluid = parseFloat(document.getElementById('f-fluid').value);
+                this.f_geo = parseFloat(document.getElementById('f-geo').value);
+                this.r = 0; 
+                this.p = 0; 
+
+                // Physics
+                this.position = startPos.clone();
+                this.velocity = new THREE.Vector3((Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1);
+                this.acceleration = new THREE.Vector3(0,0,0);
+
+                // Group
+                this.group = new THREE.Group();
+                this.group.position.copy(this.position);
+                this.group.name = this.name; // Crucial for Export
+
+                // 1. Gravity Pyramid (3 Bodies)
+                const sphereGeo = new THREE.SphereGeometry(0.4, 16, 16);
+                
+                // Geo (Gold)
+                this.meshGeo = new THREE.Mesh(sphereGeo, new THREE.MeshStandardMaterial({color: 0xf59e0b}));
+                this.meshGeo.position.set(2, -1.5, 0);
+                this.meshGeo.name = this.name + "_Geo";
+                
+                // Fluid (Deep Blue)
+                this.meshFluid = new THREE.Mesh(sphereGeo, new THREE.MeshStandardMaterial({color: 0x1e40af}));
+                this.meshFluid.position.set(-1.5, -1.5, 1.5);
+                this.meshFluid.name = this.name + "_Fluid";
+                
+                // Aero (Purple - Root)
+                this.meshAero = new THREE.Mesh(sphereGeo, new THREE.MeshStandardMaterial({color: 0xd946ef}));
+                this.meshAero.position.set(-1.5, -1.5, -1.5);
+                this.meshAero.name = this.name + "_Aero";
+
+                this.group.add(this.meshGeo);
+                this.group.add(this.meshFluid);
+                this.group.add(this.meshAero);
+
+                // Connecting Lines
+                const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                    this.meshGeo.position, this.meshFluid.position,
+                    this.meshFluid.position, this.meshAero.position,
+                    this.meshAero.position, this.meshGeo.position,
+                    this.meshGeo.position, new THREE.Vector3(0,1,0), // Apex visual
+                    this.meshFluid.position, new THREE.Vector3(0,1,0),
+                    this.meshAero.position
+                ]);
+                this.lines = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color: 0x334155, transparent:true, opacity:0.3}));
+                this.group.add(this.lines);
+
+                // 2. The Neuron (4th Body)
+                const neuronGeo = new THREE.SphereGeometry(0.6, 32, 32);
+                const nColor = isMaster ? 0xff0044 : 0x00bfff; 
+                this.neuron = new THREE.Mesh(neuronGeo, new THREE.MeshStandardMaterial({
+                    color: nColor, emissive: nColor, emissiveIntensity: 0.4
+                }));
+                this.neuron.position.set(0, 1, 0); 
+                this.neuron.name = this.name + "_Neuron";
+                this.group.add(this.neuron);
+
+                this.nVelocity = new THREE.Vector3(0,0,0);
+                this.nAccel = new THREE.Vector3(0,0,0);
+                
+                scene.add(this.group);
+            }
+
+            updatePhysics() {
+                // Global Movement
+                this.group.rotation.y += SIM_CONFIG.rotSpeed;
+
+                habitats.forEach(other => {
+                    if (other.id !== this.id) {
+                        const distVec = new THREE.Vector3().subVectors(this.position, other.position);
+                        const dist = distVec.length();
+                        if (dist < 8) { 
+                            distVec.normalize().multiplyScalar(SIM_CONFIG.repulsionForce / (dist * dist)); 
+                            this.acceleration.add(distVec);
+                        }
+                    }
+                });
+
+                const centerVec = new THREE.Vector3(0,0,0).sub(this.position);
+                this.acceleration.add(centerVec.multiplyScalar(SIM_CONFIG.centerPull));
+
+                this.velocity.add(this.acceleration);
+                this.velocity.multiplyScalar(SIM_CONFIG.viscosity); 
+                this.position.add(this.velocity);
+                this.group.position.copy(this.position);
+                this.acceleration.set(0,0,0);
+
+                // Internal Neuron Buoyancy
+                const centroid = new THREE.Vector3()
+                    .add(this.meshGeo.position).add(this.meshFluid.position).add(this.meshAero.position)
+                    .divideScalar(3);
+                
+                const toCentroid = new THREE.Vector3().subVectors(centroid, this.neuron.position);
+                const distToC = toCentroid.length();
+
+                if (distToC > 0.2) {
+                    toCentroid.normalize().multiplyScalar(this.f_aero * 0.0001); 
+                    this.nAccel.add(toCentroid);
+                }
+                
+                const lift = new THREE.Vector3(0, 1, 0).multiplyScalar(this.f_fluid * 0.0002);
+                this.nAccel.add(lift);
+
+                if (this.r > 0) {
+                    this.nAccel.x += (Math.random()-0.5) * (this.r * 0.002);
+                    this.nAccel.y += (Math.random()-0.5) * (this.r * 0.002);
+                    this.nAccel.z += (Math.random()-0.5) * (this.r * 0.002);
+                    this.r *= 0.95; 
+                }
+
+                this.nVelocity.add(this.nAccel);
+                this.nVelocity.multiplyScalar(0.96); 
+                this.neuron.position.add(this.nVelocity);
+                this.nAccel.set(0,0,0);
+
+                const shellLimit = 4.0;
+                if(this.neuron.position.length() > shellLimit) {
+                    this.neuron.position.setLength(shellLimit);
+                    this.nVelocity.multiplyScalar(-0.5); 
+                }
+
+                return this.nVelocity.length();
+            }
+
+            pulse(energy) { this.r += energy; }
+            
+            // For Recording System
+            getState() {
+                return {
+                    id: this.id,
+                    pos: this.position.clone(),
+                    rot: this.group.rotation.y, // saving Y rotation
+                    nPos: this.neuron.position.clone()
+                };
+            }
+            
+            setState(state) {
+                this.position.copy(state.pos);
+                this.group.position.copy(state.pos);
+                this.group.rotation.y = state.rot;
+                this.neuron.position.copy(state.nPos);
+            }
+        }
+
+        // --- 3. THREE.JS BOILERPLATE ---
+        
+        function initThree() {
+            const container = document.getElementById('three-container');
+            
+            scene = new THREE.Scene();
+            // Background is handled by CSS, but fog needs to match somewhat
+            scene.fog = new THREE.FogExp2(0x0f172a, 0.015); 
+
+            camera = new THREE.PerspectiveCamera(60, container.clientWidth/container.clientHeight, 0.1, 1000);
+            camera.position.set(0, 10, 35);
+
+            renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            // Lights
+            const amb = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(amb);
+            const p1 = new THREE.PointLight(0x38bdf8, 1, 100);
+            p1.position.set(10, 20, 10);
+            scene.add(p1);
+            const p2 = new THREE.PointLight(0xd946ef, 0.8, 100);
+            p2.position.set(-10, -10, -10);
+            scene.add(p2);
+
+            // Vibrant Turquoise Grid
+            gridHelper = new THREE.GridHelper(100, 50, 0x00ced1, 0x1e293b);
+            gridHelper.material.opacity = 0.3;
+            gridHelper.material.transparent = true;
+            scene.add(gridHelper);
+
+            // Add Master Habitat
+            const master = new InteractiveHabitat(true, 0, new THREE.Vector3(0,0,0));
+            habitats.push(master);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = container.clientWidth/container.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            });
+
+            animate();
+        }
+
+        // --- 4. ANIMATION, RECORDING & SCRUBBING ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            if (playing) {
+                // If we are at the end of the buffer, we are "Live"
+                if (frameIndex >= recordingBuffer.length) {
+                    
+                    // Physics Loop
+                    let totalFrameArc = 0;
+                    habitats.forEach(h => { totalFrameArc += h.updatePhysics(); });
+                    
+                    // Lifespan Logic
+                    gearShaftAccumulator += totalFrameArc;
+                    const retroDeduction = totalFrameArc / 8.0;
+                    updateLifespanMonitor(totalFrameArc, retroDeduction);
+
+                    // Recording Logic
+                    if (recording) {
+                        const frameState = habitats.map(h => h.getState());
+                        recordingBuffer.push(frameState);
+                        frameIndex++;
+                        updateTimelineUI();
+                    }
+                } else {
+                    // We are playing BACK recorded data (Scrubbing Forward)
+                    loadFrame(frameIndex);
+                    frameIndex++;
+                    updateTimelineUI();
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+        
+        function loadFrame(idx) {
+            if(idx < 0 || idx >= recordingBuffer.length) return;
+            const frameData = recordingBuffer[idx];
+            habitats.forEach((h, i) => {
+                if(frameData[i]) {
+                    h.setState(frameData[i]);
+                }
+            });
+        }
+
+        function toggleRecording() {
+            recording = !recording;
+            const btn = document.getElementById('btn-record');
+            if(recording) {
+                btn.innerText = "■ STOP";
+                // If we were scrubbing in the past, truncate future to branch new history
+                if(frameIndex < recordingBuffer.length) {
+                    recordingBuffer = recordingBuffer.slice(0, frameIndex);
+                }
+                playing = true; // Force play
+            } else {
+                btn.innerText = "● REC";
+            }
+        }
+        
+        function togglePlay() {
+            playing = !playing;
+        }
+        
+        function scrubTimeline() {
+            const slider = document.getElementById('timeline-scrubber');
+            frameIndex = parseInt(slider.value);
+            playing = false; // Pause when user drags
+            loadFrame(frameIndex);
+            document.getElementById('time-display').innerText = frameIndex.toString().padStart(4, '0');
+        }
+        
+        function updateTimelineUI() {
+            const slider = document.getElementById('timeline-scrubber');
+            slider.max = recordingBuffer.length;
+            slider.value = frameIndex;
+            document.getElementById('time-display').innerText = frameIndex.toString().padStart(4, '0');
+        }
+
+        function toggleGrid() {
+            gridHelper.visible = !gridHelper.visible;
+        }
+
+        // --- 5. GLB EXPORT ---
+        
+        function exportGLB() {
+            if(recordingBuffer.length === 0) {
+                alert("No animation recorded to export. Please Record first.");
+                return;
+            }
+            
+            // We need to create an AnimationClip from the buffer
+            // This requires mapping tracks for every object
+            const exporter = new THREE.GLTFExporter();
+            
+            // Create tracks
+            const tracks = [];
+            const times = recordingBuffer.map((_, i) => i * 0.016); // 60fps approx
+            
+            habitats.forEach((h, hIdx) => {
+                // Group Position
+                const posValues = [];
+                const rotValues = []; // Quaternion
+                const neuronPosValues = [];
+                
+                recordingBuffer.forEach(frame => {
+                    const state = frame[hIdx];
+                    if(state) {
+                        posValues.push(state.pos.x, state.pos.y, state.pos.z);
+                        
+                        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), state.rot);
+                        rotValues.push(q.x, q.y, q.z, q.w);
+                        
+                        neuronPosValues.push(state.nPos.x, state.nPos.y, state.nPos.z);
+                    } else {
+                        // fill gaps
+                        posValues.push(0,0,0); rotValues.push(0,0,0,1); neuronPosValues.push(0,0,0);
+                    }
+                });
+                
+                tracks.push(new THREE.VectorKeyframeTrack(`${h.group.name}.position`, times, posValues));
+                tracks.push(new THREE.QuaternionKeyframeTrack(`${h.group.name}.quaternion`, times, rotValues));
+                tracks.push(new THREE.VectorKeyframeTrack(`${h.neuron.name}.position`, times, neuronPosValues));
+            });
+            
+            const clip = new THREE.AnimationClip("Simulation_Run", -1, tracks);
+            
+            const options = {
+                animations: [clip],
+                binary: true
+            };
+            
+            exporter.parse(scene, function (result) {
+                if (result instanceof ArrayBuffer) {
+                    saveArrayBuffer(result, 'LEATR_Simulation.glb');
+                } else {
+                    const output = JSON.stringify(result, null, 2);
+                    saveString(output, 'LEATR_Simulation.gltf');
+                }
+            }, options);
+        }
+        
+        function saveArrayBuffer(buffer, filename) {
+            save(new Blob([buffer], { type: 'application/octet-stream' }), filename);
+        }
+        function saveString(text, filename) {
+            save(new Blob([text], { type: 'text/plain' }), filename);
+        }
+        function save(blob, filename) {
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+        }
+
+        function updateLifespanMonitor(arc, retro) {
+            const statusEl = document.getElementById('monitor-status');
+            const valEl = document.getElementById('monitor-val');
+            const deltaEl = document.getElementById('systemDelta');
+            const rootCap = parseFloat(document.getElementById('f-aero').value) * 0.005;
+            const load = arc - retro; 
+            
+            let stabilityPercent = 0;
+            let status = "ANALYZING";
+            let cssClass = "status-stable";
+
+            if (load < 0.001) {
+                status = "STAGNANT / INERT"; cssClass = "status-stagnant"; stabilityPercent = 0;
+            } else if (load > rootCap) {
+                status = "VOLATILE BREAKUP"; cssClass = "status-volatile";
+                stabilityPercent = Math.max(0, 100 - (load/rootCap)*100);
+            } else {
+                status = "MEDIAN REOCCURRENCE"; cssClass = "status-stable";
+                stabilityPercent = Math.min(100, (1 - (load/rootCap))*100 + 50); 
+            }
+
+            statusEl.innerText = status; statusEl.className = "monitor-val " + cssClass;
+            valEl.innerText = stabilityPercent.toFixed(1) + "%"; valEl.className = "monitor-val " + cssClass;
+            deltaEl.innerText = load.toFixed(4);
+        }
+
+        // --- 6. UI HELPERS ---
+
+        function update3DEnv() {
+            SIM_CONFIG.rotSpeed = parseInt(document.getElementById('env-rotation-speed').value) * 0.0005;
+            const visc = parseInt(document.getElementById('env-viscosity').value);
+            SIM_CONFIG.viscosity = 1.0 - (visc * 0.0005); 
+            SIM_CONFIG.repulsionForce = parseInt(document.getElementById('env-repulsion').value) * 0.001;
+            const zoom = parseInt(document.getElementById('env-zoom').value);
+            const vec = camera.position.clone().normalize().multiplyScalar(zoom/10);
+            camera.position.lerp(vec, 0.1);
+        }
+
+        function updateShells() {
+            habitats.forEach(h => {
+                h.f_geo = parseFloat(document.getElementById('f-geo').value);
+                h.f_fluid = parseFloat(document.getElementById('f-fluid').value);
+                h.f_aero = parseFloat(document.getElementById('f-aero').value);
+            });
+        }
+
+        function duplicateMaster() {
+            idCounter++;
+            const range = 10;
+            const startPos = new THREE.Vector3((Math.random()-0.5)*range, (Math.random()-0.5)*range, (Math.random()-0.5)*range);
+            const replica = new InteractiveHabitat(false, idCounter, startPos);
+            // Copy master settings
+            const master = habitats[0];
+            replica.f_aero = master.f_aero; replica.f_fluid = master.f_fluid; replica.f_geo = master.f_geo;
+            habitats.push(replica);
+            document.getElementById('replicaCount').innerText = habitats.length;
+        }
+
+        function pulseMaster() {
+            let r = 50;
+            const sel = document.getElementById('presetSelect');
+            if(sel.value === 'custom') { r = parseFloat(document.getElementById('customWeight').value) || 50; } 
+            else { r = parseFloat(sel.options[sel.selectedIndex].getAttribute('data-weight')); }
+            habitats.forEach(h => h.pulse(r));
+        }
+        
+        function healMaster() {
+            habitats.forEach(h => { h.r = 0; h.nVelocity.set(0,0,0); h.velocity.multiplyScalar(0.1); });
+        }
+
+        function resetSystem() {
+            habitats.forEach(h => scene.remove(h.group));
+            habitats = []; idCounter = 0; gearShaftAccumulator = 0;
+            recordingBuffer = []; frameIndex = 0; recording = false; playing = true;
+            document.getElementById('btn-record').innerText = "● REC";
+            updateTimelineUI();
+            
+            const master = new InteractiveHabitat(true, 0, new THREE.Vector3(0,0,0));
+            habitats.push(master);
+            document.getElementById('replicaCount').innerText = 1;
+        }
+        
+        function toggleCustom() {
+            const sel = document.getElementById('presetSelect');
+            document.getElementById('customInputGroup').style.display = (sel.value === 'custom') ? 'flex' : 'none';
+        }
+
+        window.onload = function() {
+            initThree();
+            
+            // Draw Documentation Graphic: 3D Pyramid & Neuron (replacing 2D circles)
+            const x1 = document.getElementById('repPyramid').getContext('2d');
+            x1.fillStyle = "#ffffff"; x1.fillRect(0,0,500,250);
+            
+            // Draw Pyramid Lines
+            x1.strokeStyle = "#888"; x1.lineWidth = 1;
+            const top = {x: 250, y: 30}, left = {x: 100, y: 200}, right = {x: 400, y: 200}, back = {x: 250, y: 150};
+            
+            x1.beginPath(); x1.moveTo(top.x, top.y); x1.lineTo(left.x, left.y); x1.stroke();
+            x1.beginPath(); x1.moveTo(top.x, top.y); x1.lineTo(right.x, right.y); x1.stroke();
+            x1.beginPath(); x1.moveTo(top.x, top.y); x1.lineTo(back.x, back.y); x1.stroke();
+            x1.beginPath(); x1.moveTo(left.x, left.y); x1.lineTo(right.x, right.y); x1.stroke();
+            x1.setLineDash([5, 5]); // Dashed for "behind"
+            x1.beginPath(); x1.moveTo(left.x, left.y); x1.lineTo(back.x, back.y); x1.stroke();
+            x1.beginPath(); x1.moveTo(right.x, right.y); x1.lineTo(back.x, back.y); x1.stroke();
+            x1.setLineDash([]); 
+
+            // Draw Nodes (Gravity Points)
+            const drawNode = (x,y, color, label) => {
+                x1.fillStyle = color; x1.beginPath(); x1.arc(x, y, 10, 0, Math.PI*2); x1.fill();
+                x1.fillStyle = "#000"; x1.font = "10px Arial"; x1.fillText(label, x+12, y);
+            };
+            drawNode(top.x, top.y, "#f59e0b", "Geo");
+            drawNode(left.x, left.y, "#1e40af", "Fluid");
+            drawNode(right.x, right.y, "#d946ef", "Root (Aero)");
+            
+            // Draw Neuron (Median)
+            const medianX = (top.x + left.x + right.x)/3;
+            const medianY = (top.y + left.y + right.y)/3;
+            x1.fillStyle = "#ff0044"; 
+            x1.shadowColor="rgba(255,0,68,0.5)"; x1.shadowBlur=10;
+            x1.beginPath(); x1.arc(medianX, medianY, 15, 0, Math.PI*2); x1.fill();
+            x1.shadowBlur=0;
+            x1.fillStyle = "#000"; x1.fillText("Neuron (Median)", medianX-40, medianY-20);
+        };
+    </script>
+</body>
+</html>
