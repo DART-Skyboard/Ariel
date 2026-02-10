@@ -33,12 +33,15 @@
             gap: 12px;
             width: 220px;
             z-index: 10;
+            max-height: 90vh;
+            overflow-y: auto;
         }
 
         .control-group { display: flex; justify-content: space-between; align-items: center; }
-        label { margin-right: 10px; font-size: 12px; }
+        label { margin-right: 10px; font-size: 11px; text-transform: uppercase; }
         input[type=range] { width: 100px; }
         input[type=checkbox] { transform: scale(1.5); accent-color: #ff0055; }
+        select { background: #111; color: #00ffcc; border: 1px solid #00ffcc; padding: 5px; cursor: pointer; font-family: 'Courier New'; font-size: 11px; }
 
         button {
             background: #ff0055; color: white; border: none; padding: 10px; 
@@ -67,11 +70,19 @@
     <div id="info">
         <h3>Lead Edge Maze Ash</h3>
         <p>Method: <strong>Algebraic Byproduct</strong></p>
-        <p>Logic: (Maze Perimeter) - (Dead Ends) = Solution Path</p>
+        <p id="logicText">Logic: (Maze Perimeter) - (Dead Ends) = Solution Path</p>
         <div class="status" id="statusText">Initializing...</div>
     </div>
 
     <div id="controls">
+        <label>Structure Mode</label>
+        <select id="modeSelect">
+            <option value="planar">Planar (2D Grid)</option>
+            <option value="cubic">Cubic (3D Voxel)</option>
+        </select>
+
+        <div class="divider"></div>
+
         <div class="control-group">
             <label>Width (X)</label>
             <input type="range" id="widthSlider" min="5" max="50" value="20">
@@ -79,6 +90,10 @@
         <div class="control-group">
             <label>Height (Y)</label>
             <input type="range" id="heightSlider" min="5" max="50" value="20">
+        </div>
+        <div class="control-group" id="depthWrapper" style="display:none;">
+            <label>Depth (Z)</label>
+            <input type="range" id="depthSlider" min="3" max="25" value="8">
         </div>
         <div class="control-group">
             <label>Unit Size</label>
@@ -98,11 +113,11 @@
         <div class="divider"></div>
 
         <button id="btnExportGLB">Export Scene (.GLB)</button>
-        <button id="btnExportPNG">Export 4K Image</button>
+        <button id="btnExportPNG">Export 4K Transparent</button>
         
         <div class="divider"></div>
         
-        <button id="btnInfoCard">Download Math Info Card</button>
+        <button id="btnInfoCard">Download Master Math Card</button>
     </div>
 
     <script type="module">
@@ -111,9 +126,6 @@
         import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
         import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 
-        // ------------------------------------------------------------------
-        // GLOBAL STATE
-        // ------------------------------------------------------------------
         let scene, camera, renderer, controls;
         let mazeGroup, solutionGroup, markersGroup, masterGroup;
         
@@ -122,13 +134,15 @@
         let animationSpeed = 2; 
 
         let MAZE_STATE = {
+            mode: 'planar',
             width: 20,
             height: 20,
+            depth: 8,
             unitSize: 1.0,
             wallHeight: 1.5,
             grid: [],
-            start: {x:0, y:0},
-            end: {x:0, y:0}
+            start: null,
+            end: null
         };
 
         init();
@@ -140,7 +154,7 @@
             scene.fog = new THREE.FogExp2(0x050505, 0.002); 
 
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 10000);
-            camera.position.set(0, 30, 20);
+            camera.position.set(30, 30, 30);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -152,409 +166,356 @@
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
 
+            // Lights - Original Intensities
             const ambient = new THREE.AmbientLight(0x404040);
             scene.add(ambient);
 
             const dirLight = new THREE.DirectionalLight(0xffffff, 3);
             dirLight.position.set(50, 200, 100); 
             dirLight.castShadow = true; 
-
-            const d = 500; 
-            dirLight.shadow.camera.left = -d;
-            dirLight.shadow.camera.right = d;
-            dirLight.shadow.camera.top = d;
-            dirLight.shadow.camera.bottom = -d;
-            dirLight.shadow.camera.far = 1000; 
-            dirLight.shadow.bias = -0.0005;
+            dirLight.shadow.camera.left = -500;
+            dirLight.shadow.camera.right = 500;
+            dirLight.shadow.camera.top = 500;
+            dirLight.shadow.camera.bottom = -500;
             dirLight.shadow.mapSize.width = 4096;
             dirLight.shadow.mapSize.height = 4096;
             scene.add(dirLight);
 
-            // Create Groups
             mazeGroup = new THREE.Group();
             solutionGroup = new THREE.Group();
             markersGroup = new THREE.Group();
-            
             masterGroup = new THREE.Group();
-            masterGroup.name = "RadicalMaze";
-            masterGroup.add(mazeGroup);
-            masterGroup.add(solutionGroup);
-            masterGroup.add(markersGroup);
+            masterGroup.add(mazeGroup, solutionGroup, markersGroup);
             scene.add(masterGroup);
 
             // Listeners
-            document.getElementById('btnGenerate').addEventListener('click', generateMaze);
-            document.getElementById('btnSolve').addEventListener('click', solveAlgebraic);
+            document.getElementById('btnGenerate').addEventListener('click', generate);
+            document.getElementById('btnSolve').addEventListener('click', solve);
             document.getElementById('btnExportGLB').addEventListener('click', exportGLB_Baked);
-            document.getElementById('btnExportPNG').addEventListener('click', export4KPNG);
-            document.getElementById('btnInfoCard').addEventListener('click', downloadInfoCard);
+            document.getElementById('btnExportPNG').addEventListener('click', export4KTransparent);
+            document.getElementById('btnInfoCard').addEventListener('click', downloadMasterInfoCard);
             
-            ['widthSlider', 'heightSlider', 'scaleSlider'].forEach(id => {
-                document.getElementById(id).addEventListener('input', updateSettings);
+            document.getElementById('modeSelect').addEventListener('change', (e) => {
+                MAZE_STATE.mode = e.target.value;
+                document.getElementById('depthWrapper').style.display = MAZE_STATE.mode === 'cubic' ? 'flex' : 'none';
+                generate();
             });
 
-            generateMaze();
+            generate();
         }
 
         function updateSettings() {
             MAZE_STATE.width = parseInt(document.getElementById('widthSlider').value);
             MAZE_STATE.height = parseInt(document.getElementById('heightSlider').value);
+            MAZE_STATE.depth = parseInt(document.getElementById('depthSlider').value);
             MAZE_STATE.unitSize = parseFloat(document.getElementById('scaleSlider').value);
         }
 
-        // ------------------------------------------------------------------
-        // MAZE GENERATION
-        // ------------------------------------------------------------------
-        function generateMaze() {
-            document.getElementById('statusText').innerText = "Constructing Perimeters...";
-            isAnimating = false;
-            
+        function clearGroups() {
             [mazeGroup, solutionGroup, markersGroup].forEach(g => {
                 while(g.children.length > 0){ 
-                    if(g.children[0].geometry) g.children[0].geometry.dispose();
-                    if(g.children[0].material) g.children[0].material.dispose();
-                    g.remove(g.children[0]); 
+                    const child = g.children[0];
+                    if(child.geometry) child.geometry.dispose();
+                    if(child.material) {
+                        if(Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else child.material.dispose();
+                    }
+                    g.remove(child); 
                 }
             });
+            isAnimating = false;
+            animationQueue = [];
+        }
 
-            const w = MAZE_STATE.width;
-            const h = MAZE_STATE.height;
-            
-            MAZE_STATE.grid = [];
-            for(let y=0; y<h; y++) {
-                let row = [];
-                for(let x=0; x<w; x++) {
-                    row.push({ top: true, right: true, bottom: true, left: true, visited: false });
-                }
-                MAZE_STATE.grid.push(row);
-            }
+        function generate() {
+            updateSettings();
+            clearGroups();
+            if (MAZE_STATE.mode === 'planar') generatePlanar();
+            else generateCubic();
+        }
 
-            let stack = [];
-            let current = { x: Math.floor(Math.random() * w), y: Math.floor(Math.random() * h) };
-            MAZE_STATE.grid[current.y][current.x].visited = true;
-            stack.push(current);
+        // --- PLANAR LOGIC ---
+        function generatePlanar() {
+            const w = MAZE_STATE.width, h = MAZE_STATE.height;
+            let grid = Array(h).fill().map(() => Array(w).fill().map(() => ({ top: true, right: true, bottom: true, left: true, visited: false })));
+            let stack = [{x:0, y:0}];
+            grid[0][0].visited = true;
 
             while(stack.length > 0) {
-                let cell = stack[stack.length - 1];
-                let neighbors = getUnvisitedNeighbors(cell.x, cell.y, w, h);
+                let curr = stack[stack.length - 1];
+                let ns = [];
+                if(curr.y > 0 && !grid[curr.y-1][curr.x].visited) ns.push({x:curr.x, y:curr.y-1, d1:'top', d2:'bottom'});
+                if(curr.y < h-1 && !grid[curr.y+1][curr.x].visited) ns.push({x:curr.x, y:curr.y+1, d1:'bottom', d2:'top'});
+                if(curr.x > 0 && !grid[curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y, d1:'left', d2:'right'});
+                if(curr.x < w-1 && !grid[curr.y][curr.x+1].visited) ns.push({x:curr.x+1, y:curr.y, d1:'right', d2:'left'});
 
-                if(neighbors.length > 0) {
-                    let next = neighbors[Math.floor(Math.random() * neighbors.length)];
-                    removeWalls(cell, next);
-                    MAZE_STATE.grid[next.y][next.x].visited = true;
+                if(ns.length > 0) {
+                    let next = ns[Math.floor(Math.random() * ns.length)];
+                    grid[curr.y][curr.x][next.d1] = false;
+                    grid[next.y][next.x][next.d2] = false;
+                    grid[next.y][next.x].visited = true;
                     stack.push(next);
-                } else {
-                    stack.pop();
-                }
+                } else stack.pop();
             }
 
-            MAZE_STATE.start = { x: 0, y: 0 };
-            MAZE_STATE.end = { x: w-1, y: h-1 };
-            MAZE_STATE.grid[0][0].left = false; 
-            MAZE_STATE.grid[h-1][w-1].right = false; 
+            // Perimeter randomization
+            MAZE_STATE.start = getRandomPerimeter2D(w, h);
+            MAZE_STATE.end = getRandomPerimeter2D(w, h, MAZE_STATE.start);
+            grid[MAZE_STATE.start.y][MAZE_STATE.start.x][MAZE_STATE.start.face] = false;
+            grid[MAZE_STATE.end.y][MAZE_STATE.end.x][MAZE_STATE.end.face] = false;
 
-            drawMazeGeometry();
+            MAZE_STATE.grid = grid;
+            drawPlanarGeometry();
             drawMarkers();
-            document.getElementById('statusText').innerText = "Maze Constructed.";
+            document.getElementById('statusText').innerText = "Planar Structure Baked.";
         }
 
-        function getUnvisitedNeighbors(x, y, w, h) {
-            let n = [];
-            if(y > 0 && !MAZE_STATE.grid[y-1][x].visited) n.push({x:x, y:y-1, dir:'top'});
-            if(x < w-1 && !MAZE_STATE.grid[y][x+1].visited) n.push({x:x+1, y:y, dir:'right'});
-            if(y < h-1 && !MAZE_STATE.grid[y+1][x].visited) n.push({x:x, y:y+1, dir:'bottom'});
-            if(x > 0 && !MAZE_STATE.grid[y][x-1].visited) n.push({x:x-1, y:y, dir:'left'});
-            return n;
+        function getRandomPerimeter2D(w, h, exclude = null) {
+            let res;
+            do {
+                const side = Math.floor(Math.random()*4);
+                if(side === 0) res = {x: Math.floor(Math.random()*w), y: 0, face: 'top'};
+                else if(side === 1) res = {x: Math.floor(Math.random()*w), y: h-1, face: 'bottom'};
+                else if(side === 2) res = {x: 0, y: Math.floor(Math.random()*h), face: 'left'};
+                else res = {x: w-1, y: Math.floor(Math.random()*h), face: 'right'};
+            } while (exclude && res.x === exclude.x && res.y === exclude.y);
+            return res;
         }
 
-        function removeWalls(a, b) {
-            let xDiff = a.x - b.x;
-            let yDiff = a.y - b.y;
-            if(xDiff === 1) { MAZE_STATE.grid[a.y][a.x].left = false; MAZE_STATE.grid[b.y][b.x].right = false; }
-            else if (xDiff === -1) { MAZE_STATE.grid[a.y][a.x].right = false; MAZE_STATE.grid[b.y][b.x].left = false; }
-            else if (yDiff === 1) { MAZE_STATE.grid[a.y][a.x].top = false; MAZE_STATE.grid[b.y][b.x].bottom = false; }
-            else if (yDiff === -1) { MAZE_STATE.grid[a.y][a.x].bottom = false; MAZE_STATE.grid[b.y][b.x].top = false; }
-        }
-
-        function drawMazeGeometry() {
-            const wallGeo = new THREE.BoxGeometry(MAZE_STATE.unitSize, MAZE_STATE.wallHeight, MAZE_STATE.unitSize * 0.1);
+        function drawPlanarGeometry() {
+            const u = MAZE_STATE.unitSize, w = MAZE_STATE.width, h = MAZE_STATE.height;
+            const wallGeo = new THREE.BoxGeometry(u, MAZE_STATE.wallHeight, u * 0.1);
             const wallMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
-            const instancedMesh = new THREE.InstancedMesh(wallGeo, wallMat, MAZE_STATE.width * MAZE_STATE.height * 4);
-            
-            let i = 0;
+            const inst = new THREE.InstancedMesh(wallGeo, wallMat, w * h * 4);
             const dummy = new THREE.Object3D();
-            const offset = (MAZE_STATE.width * MAZE_STATE.unitSize) / 2;
-            const u = MAZE_STATE.unitSize;
+            const ox = (w * u) / 2, oz = (h * u) / 2;
+            let i = 0;
 
-            for(let y=0; y<MAZE_STATE.height; y++) {
-                for(let x=0; x<MAZE_STATE.width; x++) {
-                    let cell = MAZE_STATE.grid[y][x];
-                    let cx = (x * u) - offset + (u/2);
-                    let cz = (y * u) - offset + (u/2);
-
-                    if(cell.top) { dummy.position.set(cx, 0, cz - u/2); dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); instancedMesh.setMatrixAt(i++, dummy.matrix); }
-                    if(cell.bottom) { dummy.position.set(cx, 0, cz + u/2); dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); instancedMesh.setMatrixAt(i++, dummy.matrix); }
-                    if(cell.left) { dummy.position.set(cx - u/2, 0, cz); dummy.rotation.set(0, Math.PI/2, 0); dummy.updateMatrix(); instancedMesh.setMatrixAt(i++, dummy.matrix); }
-                    if(cell.right) { dummy.position.set(cx + u/2, 0, cz); dummy.rotation.set(0, Math.PI/2, 0); dummy.updateMatrix(); instancedMesh.setMatrixAt(i++, dummy.matrix); }
+            for(let y=0; y<h; y++) {
+                for(let x=0; x<w; x++) {
+                    const c = MAZE_STATE.grid[y][x], cx = x*u - ox + u/2, cz = y*u - oz + u/2;
+                    if(c.top) { dummy.position.set(cx, 0, cz - u/2); dummy.rotation.set(0,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                    if(c.bottom) { dummy.position.set(cx, 0, cz + u/2); dummy.rotation.set(0,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                    if(c.left) { dummy.position.set(cx - u/2, 0, cz); dummy.rotation.set(0,Math.PI/2,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                    if(c.right) { dummy.position.set(cx + u/2, 0, cz); dummy.rotation.set(0,Math.PI/2,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
                 }
             }
-            instancedMesh.count = i;
-            instancedMesh.instanceMatrix.needsUpdate = true;
-            instancedMesh.castShadow = true;
-            instancedMesh.receiveShadow = true;
-            mazeGroup.add(instancedMesh);
+            inst.count = i;
+            mazeGroup.add(inst);
+        }
+
+        // --- CUBIC LOGIC ---
+        function generateCubic() {
+            const w = MAZE_STATE.width, h = MAZE_STATE.height, d = MAZE_STATE.depth;
+            let grid = Array(d).fill().map(() => Array(h).fill().map(() => Array(w).fill().map(() => ({
+                top:true, bottom:true, left:true, right:true, front:true, back:true, visited:false
+            }))));
+
+            let stack = [{x:0, y:0, z:0}];
+            grid[0][0][0].visited = true;
+
+            while(stack.length > 0) {
+                let curr = stack[stack.length-1];
+                let ns = [];
+                if(curr.x > 0 && !grid[curr.z][curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y, z:curr.z, d1:'left', d2:'right'});
+                if(curr.x < w-1 && !grid[curr.z][curr.y][curr.x+1].visited) ns.push({x:curr.x+1, y:curr.y, z:curr.z, d1:'right', d2:'left'});
+                if(curr.y > 0 && !grid[curr.z][curr.y-1][curr.x].visited) ns.push({x:curr.x, y:curr.y-1, z:curr.z, d1:'bottom', d2:'top'});
+                if(curr.y < h-1 && !grid[curr.z][curr.y+1][curr.x].visited) ns.push({x:curr.x, y:curr.y+1, z:curr.z, d1:'top', d2:'bottom'});
+                if(curr.z > 0 && !grid[curr.z-1][curr.y][curr.x].visited) ns.push({x:curr.x, y:curr.y, z:curr.z-1, d1:'back', d2:'front'});
+                if(curr.z < d-1 && !grid[curr.z+1][curr.y][curr.x].visited) ns.push({x:curr.x, y:curr.y, z:curr.z+1, d1:'front', d2:'back'});
+
+                if(ns.length > 0) {
+                    let next = ns[Math.floor(Math.random() * ns.length)];
+                    grid[curr.z][curr.y][curr.x][next.d1] = false;
+                    grid[next.z][next.y][next.x][next.d2] = false;
+                    grid[next.z][next.y][next.x].visited = true;
+                    stack.push(next);
+                } else stack.pop();
+            }
+
+            MAZE_STATE.start = getRandomPerimeter3D(w, h, d);
+            MAZE_STATE.end = getRandomPerimeter3D(w, h, d, MAZE_STATE.start);
+            grid[MAZE_STATE.start.z][MAZE_STATE.start.y][MAZE_STATE.start.x][MAZE_STATE.start.face] = false;
+            grid[MAZE_STATE.end.z][MAZE_STATE.end.y][MAZE_STATE.end.x][MAZE_STATE.end.face] = false;
+
+            MAZE_STATE.grid = grid;
+            drawCubicGeometry();
+            drawMarkers();
+            document.getElementById('statusText').innerText = "Cubic Structure Baked.";
+        }
+
+        function getRandomPerimeter3D(w, h, d, exclude = null) {
+            let res;
+            do {
+                const face = Math.floor(Math.random()*6);
+                if(face === 0) res = {x:0, y:Math.floor(Math.random()*h), z:Math.floor(Math.random()*d), face:'left'};
+                else if(face === 1) res = {x:w-1, y:Math.floor(Math.random()*h), z:Math.floor(Math.random()*d), face:'right'};
+                else if(face === 2) res = {x:Math.floor(Math.random()*w), y:0, z:Math.floor(Math.random()*d), face:'bottom'};
+                else if(face === 3) res = {x:Math.floor(Math.random()*w), y:h-1, z:Math.floor(Math.random()*d), face:'top'};
+                else if(face === 4) res = {x:Math.floor(Math.random()*w), y:Math.floor(Math.random()*h), z:0, face:'back'};
+                else res = {x:Math.floor(Math.random()*w), y:Math.floor(Math.random()*h), z:d-1, face:'front'};
+            } while (exclude && res.x === exclude.x && res.y === exclude.y && res.z === exclude.z);
+            return res;
+        }
+
+        function drawCubicGeometry() {
+            const u = MAZE_STATE.unitSize, w = MAZE_STATE.width, h = MAZE_STATE.height, d = MAZE_STATE.depth;
+            const wallGeo = new THREE.PlaneGeometry(u, u);
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+            const inst = new THREE.InstancedMesh(wallGeo, wallMat, w*h*d*6);
+            const dummy = new THREE.Object3D();
+            const ox = (w*u)/2, oy = (h*u)/2, oz = (d*u)/2;
+            let i = 0;
+
+            for(let z=0; z<d; z++) {
+                for(let y=0; y<h; y++) {
+                    for(let x=0; x<w; x++) {
+                        const c = MAZE_STATE.grid[z][y][x], cx = x*u-ox+u/2, cy = y*u-oy+u/2, cz = z*u-oz+u/2;
+                        if(c.left) { dummy.position.set(cx-u/2, cy, cz); dummy.rotation.set(0,Math.PI/2,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                        if(c.right) { dummy.position.set(cx+u/2, cy, cz); dummy.rotation.set(0,Math.PI/2,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                        if(c.bottom) { dummy.position.set(cx, cy-u/2, cz); dummy.rotation.set(Math.PI/2,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                        if(c.top) { dummy.position.set(cx, cy+u/2, cz); dummy.rotation.set(Math.PI/2,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                        if(c.back) { dummy.position.set(cx, cy, cz-u/2); dummy.rotation.set(0,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                        if(c.front) { dummy.position.set(cx, cy, cz+u/2); dummy.rotation.set(0,0,0); dummy.updateMatrix(); inst.setMatrixAt(i++, dummy.matrix); }
+                    }
+                }
+            }
+            inst.count = i;
+            mazeGroup.add(inst);
         }
 
         function drawMarkers() {
             const u = MAZE_STATE.unitSize;
-            const offset = (MAZE_STATE.width * MAZE_STATE.unitSize) / 2;
-            const markerGeo = new THREE.BoxGeometry(u*0.8, 0.1, u*0.8);
-            
-            const startMesh = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color: 0x0088ff, emissive: 0x0044aa, roughness: 0.2}));
-            startMesh.position.set((MAZE_STATE.start.x * u) - offset + u/2, 0.05, (MAZE_STATE.start.y * u) - offset + u/2);
-            
-            const endMesh = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color: 0x9900ff, emissive: 0x5500aa, roughness: 0.2}));
-            endMesh.position.set((MAZE_STATE.end.x * u) - offset + u/2, 0.05, (MAZE_STATE.end.y * u) - offset + u/2);
+            const markerGeo = new THREE.SphereGeometry(u*0.35);
+            const sM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color:0x00ffcc, emissive:0x00ffcc}));
+            const eM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color:0xff0055, emissive:0xff0055}));
 
-            markersGroup.add(startMesh);
-            markersGroup.add(endMesh);
-        }
+            const ox = (MAZE_STATE.width*u)/2, oy = (MAZE_STATE.height*u)/2, oz = (MAZE_STATE.mode === 'cubic' ? (MAZE_STATE.depth*u)/2 : (MAZE_STATE.height*u)/2);
 
-        function solveAlgebraic() {
-            document.getElementById('statusText').innerText = "Running Dead End Division...";
-            while(solutionGroup.children.length > 0){ 
-                solutionGroup.children[0].geometry.dispose();
-                solutionGroup.children[0].material.dispose();
-                solutionGroup.remove(solutionGroup.children[0]); 
+            function setPos(mesh, term) {
+                let px = term.x*u - ox + u/2, py = 0, pz = 0;
+                if(MAZE_STATE.mode === 'planar') {
+                    pz = term.y*u - oz + u/2;
+                    if(term.face === 'left') px -= u/2; if(term.face === 'right') px += u/2;
+                    if(term.face === 'top') pz -= u/2; if(term.face === 'bottom') pz += u/2;
+                } else {
+                    py = term.y*u - oy + u/2; pz = term.z*u - oz + u/2;
+                    if(term.face === 'left') px -= u/2; if(term.face === 'right') px += u/2;
+                    if(term.face === 'bottom') py -= u/2; if(term.face === 'top') py += u/2;
+                    if(term.face === 'back') pz -= u/2; if(term.face === 'front') pz += u/2;
+                }
+                mesh.position.set(px, py, pz);
             }
 
-            const w = MAZE_STATE.width;
-            const h = MAZE_STATE.height;
-            let solutionMap = Array(h).fill().map(() => Array(w).fill(0));
-            let counts = Array(h).fill().map(() => Array(w).fill(0));
+            setPos(sM, MAZE_STATE.start);
+            setPos(eM, MAZE_STATE.end);
+            markersGroup.add(sM, eM);
+        }
 
-            for(let y=0; y<h; y++) {
-                for(let x=0; x<w; x++) {
-                    let exits = 0;
-                    if(!MAZE_STATE.grid[y][x].top) exits++;
-                    if(!MAZE_STATE.grid[y][x].bottom) exits++;
-                    if(!MAZE_STATE.grid[y][x].left) exits++;
-                    if(!MAZE_STATE.grid[y][x].right) exits++;
-                    counts[y][x] = exits;
+        // --- SOLVER LOGIC ---
+        function solve() {
+            while(solutionGroup.children.length > 0) solutionGroup.remove(solutionGroup.children[0]);
+            
+            const is3D = MAZE_STATE.mode === 'cubic';
+            const grid = MAZE_STATE.grid;
+            let degreeMap = new Map();
+            let allCells = [];
+
+            if(!is3D) {
+                for(let y=0; y<MAZE_STATE.height; y++) for(let x=0; x<MAZE_STATE.width; x++){
+                    let d = 0, c = grid[y][x];
+                    if(!c.top) d++; if(!c.bottom) d++; if(!c.left) d++; if(!c.right) d++;
+                    degreeMap.set(`${x},${y}`, d); allCells.push({x,y});
+                }
+            } else {
+                for(let z=0; z<MAZE_STATE.depth; z++) for(let y=0; y<MAZE_STATE.height; y++) for(let x=0; x<MAZE_STATE.width; x++){
+                    let d = 0, c = grid[z][y][x];
+                    if(!c.top) d++; if(!c.bottom) d++; if(!c.left) d++; if(!c.right) d++; if(!c.front) d++; if(!c.back) d++;
+                    degreeMap.set(`${x},${y},${z}`, d); allCells.push({x,y,z});
                 }
             }
 
-            counts[MAZE_STATE.start.y][MAZE_STATE.start.x] += 10;
-            counts[MAZE_STATE.end.y][MAZE_STATE.end.x] += 10;
+            const sK = is3D ? `${MAZE_STATE.start.x},${MAZE_STATE.start.y},${MAZE_STATE.start.z}` : `${MAZE_STATE.start.x},${MAZE_STATE.start.y}`;
+            const eK = is3D ? `${MAZE_STATE.end.x},${MAZE_STATE.end.y},${MAZE_STATE.end.z}` : `${MAZE_STATE.end.x},${MAZE_STATE.end.y}`;
+            degreeMap.set(sK, 10); degreeMap.set(eK, 10);
 
             let changed = true;
+            let pruned = new Set();
             while(changed) {
                 changed = false;
-                for(let y=0; y<h; y++) {
-                    for(let x=0; x<w; x++) {
-                        if(solutionMap[y][x] === 0 && counts[y][x] === 1) {
-                            solutionMap[y][x] = 1; 
-                            changed = true;
-                            if(!MAZE_STATE.grid[y][x].top && y > 0) counts[y-1][x]--;
-                            if(!MAZE_STATE.grid[y][x].bottom && y < h-1) counts[y+1][x]--;
-                            if(!MAZE_STATE.grid[y][x].left && x > 0) counts[y][x-1]--;
-                            if(!MAZE_STATE.grid[y][x].right && x < w-1) counts[y][x+1]--;
-                        }
+                allCells.forEach(cell => {
+                    const key = is3D ? `${cell.x},${cell.y},${cell.z}` : `${cell.x},${cell.y}`;
+                    if(!pruned.has(key) && degreeMap.get(key) === 1) {
+                        pruned.add(key); changed = true;
+                        getNeighbors(cell, is3D).forEach(n => {
+                            const nk = is3D ? `${n.x},${n.y},${n.z}` : `${n.x},${n.y}`;
+                            degreeMap.set(nk, degreeMap.get(nk) - 1);
+                        });
                     }
-                }
+                });
             }
 
-            let orderedPath = [];
-            let visitedPath = new Set();
-            let stack = [MAZE_STATE.start];
-            
+            let path = allCells.filter(c => !pruned.has(is3D ? `${c.x},${c.y},${c.z}` : `${c.x},${c.y}`));
+            let ordered = [], current = {x: MAZE_STATE.start.x, y: MAZE_STATE.start.y, z: MAZE_STATE.start.z};
+            let pathSet = new Set(path.map(p => is3D ? `${p.x},${p.y},${p.z}` : `${p.x},${p.y}`));
+            let visited = new Set(), stack = [current];
+
             while(stack.length > 0) {
-                let curr = stack.pop();
-                let key = curr.x + "," + curr.y;
-                if(visitedPath.has(key)) continue;
-                
-                visitedPath.add(key);
-                orderedPath.push(curr);
-
-                if(curr.x === MAZE_STATE.end.x && curr.y === MAZE_STATE.end.y) break;
-
-                let ns = [];
-                if(curr.y > 0 && !MAZE_STATE.grid[curr.y][curr.x].top && solutionMap[curr.y-1][curr.x] === 0) ns.push({x:curr.x, y:curr.y-1});
-                if(curr.y < h-1 && !MAZE_STATE.grid[curr.y][curr.x].bottom && solutionMap[curr.y+1][curr.x] === 0) ns.push({x:curr.x, y:curr.y+1});
-                if(curr.x > 0 && !MAZE_STATE.grid[curr.y][curr.x].left && solutionMap[curr.y][curr.x-1] === 0) ns.push({x:curr.x-1, y:curr.y});
-                if(curr.x < w-1 && !MAZE_STATE.grid[curr.y][curr.x].right && solutionMap[curr.y][curr.x+1] === 0) ns.push({x:curr.x+1, y:curr.y});
-                
-                for(let n of ns) stack.push(n);
+                let p = stack.pop();
+                let key = is3D ? `${p.x},${p.y},${p.z}` : `${p.x},${p.y}`;
+                if(visited.has(key)) continue;
+                visited.add(key); ordered.push(p);
+                getNeighbors(p, is3D).forEach(n => { if(pathSet.has(is3D ? `${n.x},${n.y},${n.z}` : `${n.x},${n.y}`)) stack.push(n); });
             }
 
-            const isInstant = document.getElementById('chkInstant').checked;
-            
-            if(isInstant) {
-                drawPathInstant(orderedPath);
-                document.getElementById('statusText').innerText = "Path Calculated (Instant).";
+            if(document.getElementById('chkInstant').checked) drawPath(ordered);
+            else { animationQueue = ordered; isAnimating = true; }
+        }
+
+        function getNeighbors(k, is3D) {
+            let ns = [], g = MAZE_STATE.grid;
+            if(!is3D) {
+                let c = g[k.y][k.x];
+                if(!c.top && k.y > 0) ns.push({x:k.x, y:k.y-1});
+                if(!c.bottom && k.y < MAZE_STATE.height-1) ns.push({x:k.x, y:k.y+1});
+                if(!c.left && k.x > 0) ns.push({x:k.x-1, y:k.y});
+                if(!c.right && k.x < MAZE_STATE.width-1) ns.push({x:k.x+1, y:k.y});
             } else {
-                animationQueue = orderedPath;
-                isAnimating = true;
-                document.getElementById('statusText').innerText = "Animating Solution...";
+                let c = g[k.z][k.y][k.x];
+                if(!c.top && k.y < MAZE_STATE.height-1) ns.push({x:k.x, y:k.y+1, z:k.z});
+                if(!c.bottom && k.y > 0) ns.push({x:k.x, y:k.y-1, z:k.z});
+                if(!c.left && k.x > 0) ns.push({x:k.x-1, y:k.y, z:k.z});
+                if(!c.right && k.x < MAZE_STATE.width-1) ns.push({x:k.x+1, y:k.y, z:k.z});
+                if(!c.front && k.z < MAZE_STATE.depth-1) ns.push({x:k.x, y:k.y, z:k.z+1});
+                if(!c.back && k.z > 0) ns.push({x:k.x, y:k.y, z:k.z-1});
             }
+            return ns;
         }
 
-        function drawPathInstant(pathList) {
+        function drawPath(list) {
             const u = MAZE_STATE.unitSize;
-            const offset = (MAZE_STATE.width * u) / 2;
-            const pathGeo = new THREE.BoxGeometry(u*0.6, MAZE_STATE.wallHeight * 0.5, u*0.6);
-            const pathMat = new THREE.MeshStandardMaterial({ color: 0x0088ff, emissive: 0x0044aa, roughness: 0.2 });
-            const instanced = new THREE.InstancedMesh(pathGeo, pathMat, pathList.length);
-            
-            const dummy = new THREE.Object3D();
-            pathList.forEach((pos, i) => {
-                let cx = (pos.x * u) - offset + (u/2);
-                let cz = (pos.y * u) - offset + (u/2);
-                dummy.position.set(cx, MAZE_STATE.wallHeight * 0.25, cz);
-                dummy.updateMatrix();
-                instanced.setMatrixAt(i, dummy.matrix);
-            });
-            
-            instanced.instanceMatrix.needsUpdate = true;
-            solutionGroup.add(instanced);
-        }
+            const geo = new THREE.BoxGeometry(u*0.5, u*0.5, u*0.5);
+            const mat = new THREE.MeshStandardMaterial({color: 0xff0055, emissive: 0x550022});
+            const ox = (MAZE_STATE.width*u)/2, oy = (MAZE_STATE.height*u)/2, oz = (MAZE_STATE.mode === 'cubic' ? (MAZE_STATE.depth*u)/2 : (MAZE_STATE.height*u)/2);
 
-        function animatePathStep() {
-            if(animationQueue.length === 0) {
-                isAnimating = false;
-                document.getElementById('statusText').innerText = "Animation Complete.";
-                return;
-            }
-
-            const u = MAZE_STATE.unitSize;
-            const offset = (MAZE_STATE.width * u) / 2;
-            const pathGeo = new THREE.BoxGeometry(u*0.6, MAZE_STATE.wallHeight * 0.5, u*0.6);
-            const pathMat = new THREE.MeshStandardMaterial({ color: 0x0088ff, emissive: 0x0044aa, roughness: 0.2 });
-
-            for(let k=0; k<animationSpeed; k++) {
-                if(animationQueue.length === 0) break;
-                let pos = animationQueue.shift();
-                
-                let mesh = new THREE.Mesh(pathGeo, pathMat);
-                let cx = (pos.x * u) - offset + (u/2);
-                let cz = (pos.y * u) - offset + (u/2);
-                mesh.position.set(cx, MAZE_STATE.wallHeight * 0.25, cz);
+            list.forEach(p => {
+                const mesh = new THREE.Mesh(geo, mat);
+                const py = MAZE_STATE.mode === 'cubic' ? p.y*u - oy + u/2 : 0;
+                const pz = MAZE_STATE.mode === 'cubic' ? p.z*u - oz + u/2 : p.y*u - oz + u/2;
+                mesh.position.set(p.x*u - ox + u/2, py, pz);
                 solutionGroup.add(mesh);
-            }
+            });
         }
 
-        // ------------------------------------------------------------------
-        // BAKED GLB EXPORT (Fix for Nomad/Blender)
-        // ------------------------------------------------------------------
-        function exportGLB_Baked() {
-            document.getElementById('statusText').innerText = "Baking Geometry...";
+        // --- EXPORTS ---
+        function export4KTransparent() {
+            document.getElementById('statusText').innerText = "Exporting Transparent PNG...";
+            const w = 4096, h = 4096;
+            const originalBG = scene.background;
+            scene.background = null;
 
-            // Create a dedicated scene for export so we don't mess up the view
-            const exportScene = new THREE.Scene();
-
-            // 1. BAKE WALLS
-            // Find the wall instanced mesh
-            let wallInstancedMesh = null;
-            mazeGroup.traverse(c => { if(c.isInstancedMesh) wallInstancedMesh = c; });
-
-            if(wallInstancedMesh) {
-                const count = wallInstancedMesh.count;
-                const dummy = new THREE.Object3D();
-                const geometries = [];
-
-                for(let i=0; i<count; i++) {
-                    wallInstancedMesh.getMatrixAt(i, dummy.matrix);
-                    dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
-                    
-                    const cloneGeo = wallInstancedMesh.geometry.clone();
-                    cloneGeo.applyMatrix4(dummy.matrix);
-                    geometries.push(cloneGeo);
-                }
-
-                if(geometries.length > 0) {
-                    const mergedGeo = BufferGeometryUtils.mergeGeometries(geometries);
-                    const mergedMesh = new THREE.Mesh(mergedGeo, wallInstancedMesh.material);
-                    mergedMesh.name = "Maze_Walls";
-                    exportScene.add(mergedMesh);
-                }
-            }
-
-            // 2. BAKE PATH
-            // The path might be an InstancedMesh (Instant) or individual Meshes (Animated)
-            const pathGeometries = [];
-            let pathMaterial = null;
-
-            solutionGroup.traverse(c => {
-                if(c.isInstancedMesh) {
-                    pathMaterial = c.material;
-                    const count = c.count;
-                    const dummy = new THREE.Object3D();
-                    for(let i=0; i<count; i++) {
-                        c.getMatrixAt(i, dummy.matrix);
-                        const cloneGeo = c.geometry.clone();
-                        cloneGeo.applyMatrix4(dummy.matrix);
-                        pathGeometries.push(cloneGeo);
-                    }
-                } else if (c.isMesh) {
-                    pathMaterial = c.material;
-                    const cloneGeo = c.geometry.clone();
-                    c.updateMatrixWorld();
-                    cloneGeo.applyMatrix4(c.matrixWorld);
-                    pathGeometries.push(cloneGeo);
-                }
-            });
-
-            if(pathGeometries.length > 0 && pathMaterial) {
-                const mergedPathGeo = BufferGeometryUtils.mergeGeometries(pathGeometries);
-                const mergedPathMesh = new THREE.Mesh(mergedPathGeo, pathMaterial);
-                mergedPathMesh.name = "Solution_Path";
-                exportScene.add(mergedPathMesh);
-            }
-
-            // 3. ADD MARKERS (Already simple meshes)
-            markersGroup.traverse(c => {
-                if(c.isMesh) {
-                    const clone = c.clone();
-                    exportScene.add(clone);
-                }
-            });
-
-            // 4. EXPORT
-            const exporter = new GLTFExporter();
-            exporter.parse(
-                exportScene,
-                function ( result ) {
-                    const blob = new Blob( [ result ], { type: 'application/octet-stream' } );
-                    const url = URL.createObjectURL( blob );
-                    const link = document.createElement( 'a' );
-                    link.style.display = 'none';
-                    link.href = url;
-                    link.download = 'radical_maze_baked.glb';
-                    document.body.appendChild( link );
-                    link.click();
-                    document.body.removeChild( link );
-                    document.getElementById('statusText').innerText = "Baked GLB Exported.";
-                },
-                function ( error ) {
-                    console.error('GLB Error:', error);
-                    document.getElementById('statusText').innerText = "Export Failed.";
-                },
-                { binary: true }
-            );
-        }
-
-        function export4KPNG() {
-            document.getElementById('statusText').innerText = "Rendering 4K Image...";
-            const width = 4096;
-            const height = 4096;
-
-            const offscreenRenderer = new THREE.WebGLRenderer({ 
-                antialias: true, 
-                preserveDrawingBuffer: true,
-                alpha: true
-            });
-            
-            offscreenRenderer.setSize(width, height);
+            const offscreenRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+            offscreenRenderer.setSize(w, h);
             offscreenRenderer.setPixelRatio(1);
             
             const originalAspect = camera.aspect;
@@ -563,141 +524,85 @@
 
             offscreenRenderer.render(scene, camera);
             const dataURL = offscreenRenderer.domElement.toDataURL('image/png');
-
             const link = document.createElement('a');
-            link.download = 'radical_maze_4k.png';
+            link.download = 'LeadEdge_Transparent.png';
             link.href = dataURL;
-            document.body.appendChild(link);
             link.click();
-            document.body.removeChild(link);
 
-            offscreenRenderer.dispose();
+            scene.background = originalBG;
             camera.aspect = originalAspect;
             camera.updateProjectionMatrix();
-            document.getElementById('statusText').innerText = "4K Export Complete.";
+            offscreenRenderer.dispose();
+            document.getElementById('statusText').innerText = "PNG Exported.";
         }
 
-        // ------------------------------------------------------------------
-        // NEW FUNCTION: DOWNLOAD INFO CARD (Integrated from info.html)
-        // ------------------------------------------------------------------
-        function downloadInfoCard() {
-            document.getElementById('statusText').innerText = "Generating Math Card...";
-            
-            // Create in-memory canvas
+        function exportGLB_Baked() {
+            document.getElementById('statusText').innerText = "Baking Scene...";
+            const exportScene = new THREE.Scene();
+            [mazeGroup, solutionGroup, markersGroup].forEach(g => {
+                g.traverse(obj => {
+                    if (obj.isInstancedMesh) {
+                        const count = obj.count, dummy = new THREE.Object3D(), geos = [];
+                        for(let i=0; i<count; i++) {
+                            obj.getMatrixAt(i, dummy.matrix);
+                            const cloneGeo = obj.geometry.clone();
+                            cloneGeo.applyMatrix4(dummy.matrix);
+                            geos.push(cloneGeo);
+                        }
+                        const merged = BufferGeometryUtils.mergeGeometries(geos);
+                        exportScene.add(new THREE.Mesh(merged, obj.material.clone()));
+                    } else if (obj.isMesh) exportScene.add(obj.clone());
+                });
+            });
+
+            const exporter = new GLTFExporter();
+            exporter.parse(exportScene, (result) => {
+                const blob = new Blob([JSON.stringify(result)], { type: 'application/octet-stream' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'LeadEdge_Maze.glb';
+                link.click();
+            }, { binary: false });
+        }
+
+        function downloadMasterInfoCard() {
             const canvas = document.createElement('canvas');
-            canvas.width = 1920;
-            canvas.height = 1080;
+            canvas.width = 1920; canvas.height = 1080;
             const ctx = canvas.getContext('2d');
+            ctx.fillStyle = "#111"; ctx.fillRect(0,0,1920,1080);
+            ctx.strokeStyle = "#00ffcc"; ctx.lineWidth = 6; ctx.strokeRect(40,40,1840,1000);
+            ctx.strokeStyle = "#ff0055"; ctx.lineWidth = 2; ctx.strokeRect(50,50,1820,980);
+
+            const mono = "Courier New, monospace";
+            ctx.fillStyle = "#00ffcc"; ctx.font = "bold 60px "+mono; ctx.fillText("LEAD EDGE MAZE MASTER LOGIC", 100, 150);
             
-            // 1. Background
-            ctx.fillStyle = "#111111";
-            ctx.fillRect(0, 0, 1920, 1080);
+            ctx.fillStyle = "#ccc"; ctx.font = "36px "+mono;
+            ctx.fillText("ALGORITHM: DEAD END DIVISION (ALGEBRAIC BYPRODUCT)", 100, 240);
 
-            // 2. Borders (Cyan & Pink Accents)
-            ctx.lineWidth = 4;
-            ctx.strokeStyle = "rgba(0, 255, 204, 0.5)"; // Cyan
-            ctx.strokeRect(40, 40, 1840, 1000);
-            
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = "rgba(255, 0, 85, 0.3)"; // Pink
-            ctx.strokeRect(50, 50, 1820, 980);
+            ctx.fillStyle = "#ff0055"; ctx.font = "bold 44px "+mono; ctx.fillText("PLANAR LOGIC:", 100, 340);
+            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono;
+            ctx.fillText("P = Ω - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 410);
 
-            // 3. Fonts Setup
-            const fontMono = "Courier New, monospace";
+            ctx.fillStyle = "#00ffcc"; ctx.font = "bold 44px "+mono; ctx.fillText("CUBIC VOLUMETRIC LOGIC:", 100, 540);
+            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono;
+            ctx.fillText("P(3D) = Ω(V) - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 610);
 
-            // 4. Header
-            ctx.fillStyle = "#00ffcc";
-            ctx.font = "bold 60px " + fontMono;
-            ctx.fillText("LEAD EDGE MAZE ASH CREATOR", 100, 150);
-            
-            ctx.strokeStyle = "#444";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(100, 180);
-            ctx.lineTo(1820, 180);
-            ctx.stroke();
+            ctx.fillStyle = "#888"; ctx.font = "30px "+mono;
+            ctx.fillText("LEGEND: P=Path, Ω=Grid, Φ=Pruning Op, deg=Exits, {S,E}=Terminals", 100, 750);
 
-            // 5. Sub-Header
-            ctx.font = "40px " + fontMono;
-            ctx.fillStyle = "#cccccc";
-            ctx.fillText("METHOD:", 100, 260);
-            ctx.fillStyle = "#ff0055";
-            ctx.fillText("Algebraic Byproduct", 280, 260);
-            
-            ctx.fillStyle = "#888888";
-            ctx.font = "32px " + fontMono;
-            ctx.fillText("LOGIC:  Iterative Pruning / Dead End Division", 100, 310);
-
-            // 6. Equation Box
-            ctx.fillStyle = "#1a1a1a";
-            ctx.fillRect(100, 380, 1720, 240);
-            ctx.strokeStyle = "#333";
-            ctx.strokeRect(100, 380, 1720, 240);
-
-            // 7. The Equation
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "50px " + fontMono;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            const eq = "P = Ω - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }";
-            ctx.fillText(eq, 1920/2, 380 + 120);
-            
-            // Limit label
-            ctx.font = "30px " + fontMono;
-            ctx.fillStyle = "#666";
-            ctx.textAlign = "right";
-            ctx.fillText("k=1..∞", 1800, 430);
-
-            // 8. Legend Section
-            ctx.textAlign = "left";
-            ctx.textBaseline = "alphabetic";
-            ctx.fillStyle = "#00ffcc";
-            ctx.font = "bold 36px " + fontMono;
-            ctx.fillText("VARIABLE LEGEND", 100, 700);
-
-            // Legend Text
-            ctx.font = "30px " + fontMono;
-            const leftColX = 100;
-            const rightColX = 1000;
-            let yStart = 760;
-            let lineH = 60;
-
-            function drawVar(key, desc, x, y) {
-                ctx.fillStyle = "#ffffff";
-                ctx.fillText(key, x, y);
-                const width = ctx.measureText(key).width;
-                ctx.fillStyle = "#bbbbbb";
-                ctx.fillText(desc, x + width + 20, y);
-            }
-
-            drawVar("P", ":: Solution Path (The Byproduct)", leftColX, yStart);
-            drawVar("Ω", ":: Initial Maze (Total Set)", leftColX, yStart + lineH);
-            drawVar("deg(v)=1", ":: Dead End Condition", leftColX, yStart + lineH*2);
-
-            drawVar("Φ", ":: Recursive Pruning Operator", rightColX, yStart);
-            drawVar("{S,E}", ":: Terminals (Protected)", rightColX, yStart + lineH);
-            drawVar("Σ", ":: Sum of Removed Variables", rightColX, yStart + lineH*2);
-
-            // 9. Footer
-            ctx.fillStyle = "#444";
-            ctx.font = "24px " + fontMono;
-            ctx.textAlign = "right";
-            ctx.fillText("ALGORITHM REFERENCE :: RADICAL DEEPSCALE", 1820, 1000);
-            
-            // 10. Trigger Download
             const link = document.createElement('a');
-            link.download = 'Lead_Edge_InfoCard.png';
-            link.href = canvas.toDataURL('image/png');
-            document.body.appendChild(link);
+            link.download = 'LeadEdge_MasterCard.png';
+            link.href = canvas.toDataURL();
             link.click();
-            document.body.removeChild(link);
-            
-            document.getElementById('statusText').innerText = "Info Card Downloaded.";
         }
 
         function animate() {
             requestAnimationFrame(animate);
-            if(isAnimating) animatePathStep();
+            if(isAnimating && animationQueue.length > 0) {
+                for(let i=0; i<animationSpeed; i++) {
+                    if(animationQueue.length > 0) drawPath([animationQueue.shift()]);
+                }
+            }
             controls.update();
             renderer.render(scene, camera);
         }
