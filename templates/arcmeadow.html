@@ -2,517 +2,584 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arc Meadow - 3D Modeler</title>
-    <!-- Embedded CSS -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Arc Meadow | Arc Edge Tangents</title>
     <style>
         :root {
-            --bg-deep-dark: #121212;
-            --bg-dark: #1e1e1e;
-            --bg-medium: #2a2a2a;
-            --bg-light-hover: #3c3c3c;
-            --text-primary: #e0e0e0;
-            --text-secondary: #a0a0a0;
-            --accent-blue: #0095ff;
-            --accent-blue-dark: #007acc;
-            --border-color: #333333;
-            --input-bg: #1a1a1a;
-        }
-        body {
-            margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-deep-dark); color: var(--text-primary);
-            display: flex; flex-direction: column; height: 100vh;
-        }
-        #header {
-            background-color: var(--bg-dark); padding: 10px 20px;
-            border-bottom: 1px solid var(--border-color); z-index: 101;
-            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
-        }
-        .header-title { font-size: 1.3em; color: var(--text-primary); font-weight: 600; }
-        .header-subtitle { font-size: 0.8em; color: var(--text-secondary); }
-        #main-content {
-            display: flex;
-            flex-grow: 1;
-            overflow: hidden;
-            position: relative;
-        }
-        #canvas-container {
-            flex-grow: 1;
-            position: relative;
-            background-color: #1a1a1a;
-        }
-        canvas { display: block; width: 100%; height: 100%; }
-
-        #panel-splitter {
-            flex-shrink: 0; width: 8px; background-color: var(--bg-dark);
-            cursor: col-resize; position: relative; z-index: 101;
-            transition: background-color 0.2s;
-        }
-        #panel-splitter:hover, body.resizing #panel-splitter {
-            background-color: var(--accent-blue);
-        }
-        body.resizing { cursor: col-resize; user-select: none; }
-
-        #controls-panel {
-            width: 350px; flex-shrink: 0; background-color: var(--bg-dark);
-            overflow-y: auto; display: flex; flex-direction: column;
-            gap: 20px; padding: 20px; z-index: 100;
-            transition: width 0.3s ease-out, transform 0.3s ease-out, padding 0.3s ease-out;
-            transform: translateX(0);
-        }
-        #controls-panel.collapsed {
-            width: 0 !important; padding-left: 0; padding-right: 0;
-            transform: translateX(20px); overflow: hidden; border-left: none;
+            /* DART Meadow Theme */
+            --bg-color: #0f1115;       
+            --panel-bg: rgba(26, 30, 36, 0.95);       
+            --text-main: #e0e0e0;      
+            --text-dim: #8b9bb4;       
+            --accent: #4caf50;         
+            --accent-hover: #66bb6a;
+            --x-color: #ffca28;        
+            --y-color: #ef5350;        
+            --z-color: #42a5f5;        
+            --border-radius: 8px;
+            --font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
         }
 
-        #panel-toggle-tab {
-            position: absolute; top: 50%; right: 358px;
-            transform: translateY(-50%); width: 25px; height: 80px;
-            background-color: var(--bg-dark);
-            border: 1px solid var(--border-color); border-right: none;
-            border-radius: 8px 0 0 8px;
-            cursor: pointer; z-index: 99;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.2em; color: var(--text-secondary);
-            transition: right 0.3s ease-in-out;
-        }
-        #panel-toggle-tab:hover { background-color: var(--bg-light-hover); color: var(--accent-primary); }
-        #controls-panel.collapsed + #panel-toggle-tab {
-            right: 0;
+        body { margin: 0; overflow: hidden; background-color: var(--bg-color); font-family: var(--font-family); color: var(--text-main); user-select: none; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; z-index: 1; background: radial-gradient(circle at center, #1a1e24 0%, #0f1115 80%); }
+
+        /* Draggable Panel */
+        #ui-panel {
+            position: absolute; top: 20px; left: 20px; width: 340px;
+            background: var(--panel-bg); backdrop-filter: blur(12px);
+            border-radius: var(--border-radius);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            z-index: 100; display: flex; flex-direction: column;
+            transition: height 0.3s ease;
         }
 
-        #controls-panel h3 { margin: 0 0 15px 0; text-align: center; color: var(--accent-blue); font-size: 1.2em; border-bottom: 2px solid var(--accent-blue); padding-bottom: 8px; font-weight: 500;}
-        #controls-panel fieldset { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; background-color: var(--bg-medium); margin: 0; }
-        #controls-panel legend { color: var(--text-secondary); font-weight: 600; padding: 0 8px; }
+        .panel-header {
+            padding: 12px 15px; background: rgba(255,255,255,0.03);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            cursor: move; 
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .panel-header:active { background: rgba(255,255,255,0.05); }
 
-        .slider-container { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
-        .slider-container label { font-size: 0.9em; color: var(--text-secondary); min-width: 35px; text-align: right; }
-        .slider-container input[type="range"] { flex-grow: 1; accent-color: var(--accent-blue); }
-        .slider-container input[type="number"] {
-            width: 50px; background-color: var(--input-bg);
-            border: 1px solid var(--border-color); color: var(--text-primary);
-            border-radius: 4px; text-align: center; font-size: 0.85em; padding: 4px;
-            -moz-appearance: textfield;
-        }
-        .slider-container input[type="number"]::-webkit-outer-spin-button,
-        .slider-container input[type="number"]::-webkit-inner-spin-button {
-            -webkit-appearance: none; margin: 0;
-        }
+        .brand-container { display: flex; align-items: center; pointer-events: none; }
+        .brand-logo { width: 12px; height: 12px; background-color: var(--accent); border-radius: 50%; margin-right: 10px; box-shadow: 0 0 8px var(--accent); }
+        .brand-name { font-weight: 700; letter-spacing: 1.2px; font-size: 0.85rem; color: var(--accent); text-transform: uppercase; }
         
-        button { padding: 10px 15px; background-color: var(--bg-medium); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 5px; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s; font-weight: 500;}
-        button:hover { background-color: var(--bg-light-hover); border-color: var(--accent-primary); }
-        .action-buttons-row { display: flex; justify-content: space-around; gap: 8px; margin-top: 15px; }
-        .transform-radio-group { display: flex; justify-content: space-around; margin: 10px 0; }
-        .transform-radio-group label { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); cursor: pointer; }
-        .transform-radio-group input[type="radio"] { accent-color: var(--accent-blue); }
-        
-        /* Responsive */
-        @media (max-width: 768px) {
-            #main-content { flex-direction: column-reverse; }
-            #panel-splitter { width: 100%; height: 8px; cursor: row-resize; }
-            #controls-panel { width: 100%; height: 300px; border-left: none; border-top: 1px solid var(--border-color); }
+        .collapse-btn { 
+            color: var(--text-dim); font-size: 0.8rem; cursor: pointer; padding: 6px; 
+            width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+            border-radius: 4px; background: rgba(255,255,255,0.05);
+            pointer-events: auto;
         }
-        /* --- New CSS for Header Logo --- */
-.header-left {
-    display: flex;
-    align-items: center; /* This vertically aligns the logo and the title text */
-    gap: 15px;         /* This adds some space between the logo and the title */
-}
+        .collapse-btn:hover { background: rgba(255,255,255,0.2); color: white; }
 
-.header-logo {
-    height: 32px;      /*  <-- KEY PART: Set a specific height to scale the image down. Adjust as needed. */
-    width: auto;       /*  <-- This makes the width adjust automatically to maintain the aspect ratio. */
-}
+        .panel-content { padding: 15px 20px; overflow-y: auto; max-height: 80vh; }
+        #ui-panel.collapsed .panel-content { display: none; }
+        #ui-panel.collapsed { height: auto; }
+
+        .panel-content::-webkit-scrollbar { width: 5px; }
+        .panel-content::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+        .section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 15px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 2px; }
+        .section-title:first-child { margin-top: 0; }
+
+        .control-group { margin-bottom: 12px; }
+        .control-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .control-label { font-size: 0.75rem; color: var(--text-dim); }
+        .value-display { font-family: 'Courier New', monospace; font-weight: bold; font-size: 0.8rem; color: var(--text-main); }
+        .value-display.disabled { color: #555; text-decoration: line-through; }
+
+        input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; margin: 4px 0; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 12px; width: 12px; border-radius: 50%; background: var(--text-main); cursor: pointer; margin-top: -4px; border: 1px solid #000; }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; cursor: pointer; background: #333; border-radius: 2px; }
+        
+        #input-x::-webkit-slider-runnable-track { background: linear-gradient(90deg, var(--x-color), #333); } #input-x::-webkit-slider-thumb { background: var(--x-color); }
+        #input-y::-webkit-slider-runnable-track { background: linear-gradient(90deg, var(--y-color), #333); } #input-y::-webkit-slider-thumb { background: var(--y-color); }
+        #input-z::-webkit-slider-runnable-track { background: linear-gradient(90deg, var(--z-color), #333); } #input-z::-webkit-slider-thumb { background: var(--z-color); }
+
+        input[type=range]:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        .toggle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+        .toggle-btn {
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            color: var(--text-dim); padding: 6px; border-radius: 4px;
+            font-size: 0.65rem; cursor: pointer; text-align: center; transition: all 0.2s;
+        }
+        .toggle-btn:hover { background: rgba(255,255,255,0.1); }
+        .toggle-btn.active { background: var(--accent); color: #0f1115; font-weight: 700; border-color: var(--accent); }
+        
+        #btn-grid-xz.active { background: var(--y-color); border-color: var(--y-color); }
+        #btn-grid-xy.active { background: var(--z-color); border-color: var(--z-color); }
+        #btn-grid-yz.active { background: var(--x-color); border-color: var(--x-color); }
+        #btn-lock-orbit.active { background: #e91e63; border-color: #e91e63; color: white; }
+
+        .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 15px; }
+        .action-btn { background: #2196f3; color: white; border: none; padding: 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; cursor: pointer; text-transform: uppercase; }
+        .action-btn:hover { background: #42a5f5; }
+        .action-btn.secondary { background: #444; }
+
+        .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .data-item { background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; border-left: 2px solid #333; }
+        .data-item.radical { border-left: 2px solid var(--accent); }
+        .data-label { font-size: 0.6rem; color: var(--text-dim); display: block; margin-bottom: 2px; }
+        .data-value { font-size: 0.8rem; font-weight: 600; }
+
+        .author-note { font-size: 0.55rem; color: #555; margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px; font-style: italic; }
     </style>
-</head>
-<body>
-<div id="header">
-    <div class="header-left">
-        <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/templates/arcmeadow.png" alt="Logo" class="header-logo">
-        <span class="header-title">Arc Meadow</span>
-    </div>
-    <span class="header-subtitle">Arc Edge and Stylus Booleans</span>
-</div>
-
-    <div id="main-content">
-        <div id="canvas-container">
-            <canvas id="3d-canvas"></canvas>
-        </div>
-        <div id="panel-splitter"></div>
-        <div id="controls-panel">
-            <!-- Dynamically loaded controls -->
-        </div>
-        <div id="panel-toggle-tab" title="Toggle Controls Panel">&#9776;</div>
-    </div>
-
-    <!-- Libraries from CDNs -->
+    
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+</head>
+<body>
 
-    <!-- Embedded Application JavaScript -->
+    <div id="ui-panel">
+        <div class="panel-header" id="panel-header">
+            <div class="brand-container"><div class="brand-logo"></div><span class="brand-name">Arc Edge Tangents</span></div>
+            <div class="collapse-btn" id="btn-collapse" title="Collapse Menu">▼</div>
+        </div>
+        
+        <div class="panel-content">
+            <div class="section-title">View & Interaction</div>
+            <div class="toggle-grid">
+                <div id="btn-lock-orbit" class="toggle-btn">Lock Cam: OFF</div>
+                <div id="btn-snap" class="toggle-btn">Grid Snap: OFF</div>
+            </div>
+            <div class="toggle-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+                <div id="btn-grid-xz" class="toggle-btn active">XZ</div>
+                <div id="btn-grid-xy" class="toggle-btn">XY</div>
+                <div id="btn-grid-yz" class="toggle-btn">YZ</div>
+            </div>
+
+            <div class="section-title">Surface Properties</div>
+            <div class="toggle-grid">
+                <div id="btn-quads" class="toggle-btn active">Quads: ON</div>
+                <div id="btn-wire" class="toggle-btn active">Wireframe: ON</div>
+                <div id="btn-smooth-shade" class="toggle-btn">Smooth Shade: OFF</div>
+            </div>
+
+            <div class="section-title">Topology & Bevel</div>
+            <div class="toggle-grid">
+                <div id="btn-smooth-tan" class="toggle-btn active">Tangent: SMOOTH</div>
+                <div id="btn-bevel-type" class="toggle-btn active">Type: ROUND</div>
+            </div>
+            
+            <div class="control-group">
+                <div class="control-row"><span class="control-label">Box/Face Resolution</span><span id="val-res" class="value-display">4</span></div>
+                <input type="range" id="input-res" min="1" max="32" step="1" value="4">
+            </div>
+
+            <div class="control-group">
+                <div class="control-row"><span class="control-label">Bevel Size (0 = Off)</span><span id="val-bevel-size" class="value-display">0.0</span></div>
+                <input type="range" id="input-bevel-size" min="0" max="0.45" step="0.01" value="0">
+            </div>
+
+            <div class="control-group">
+                <div class="control-row"><span class="control-label">Bevel Segments (Corners)</span><span id="val-bevel-seg" class="value-display disabled">N/A</span></div>
+                <input type="range" id="input-bevel-seg" min="1" max="8" step="1" value="1" disabled>
+            </div>
+
+            <div class="section-title">Dimensions (Scales Deform)</div>
+            <div class="control-group"><div class="control-row"><span class="control-label">X</span><span id="val-x" class="value-display">6.00</span></div><input type="range" id="input-x" min="1" max="20" step="0.1" value="6"></div>
+            <div class="control-group"><div class="control-row"><span class="control-label">Y</span><span id="val-y" class="value-display">10.00</span></div><input type="range" id="input-y" min="1" max="20" step="0.1" value="10"></div>
+            <div class="control-group"><div class="control-row"><span class="control-label">Z</span><span id="val-z" class="value-display">4.00</span></div><input type="range" id="input-z" min="1" max="20" step="0.1" value="4"></div>
+
+            <div class="section-title">Sphere Vis</div>
+            <div class="control-group">
+                <div class="control-row"><span class="control-label">Opacity</span><span id="val-opacity" class="value-display">20%</span></div>
+                <input type="range" id="input-opacity" min="0" max="100" step="1" value="20">
+            </div>
+
+            <div class="section-title">Metrics</div>
+            <div class="data-grid">
+                <div class="data-item radical"><span class="data-label">Circumference</span><span id="rad-circ" class="data-value">0.00</span></div>
+                <div class="data-item radical"><span class="data-label">Area</span><span id="rad-area" class="data-value">0.00</span></div>
+                <div class="data-item radical"><span class="data-label">Volume</span><span id="rad-vol" class="data-value">0.00</span></div>
+                <div class="data-item radical"><span class="data-label">Sphere SA</span><span id="rad-sa" class="data-value">0.00</span></div>
+            </div>
+
+            <div class="action-row">
+                <button id="btn-export-png" class="action-btn secondary">PNG</button>
+                <button id="btn-export-glb" class="action-btn">GLB</button>
+            </div>
+
+            <div class="author-note">Formula: √((d*3)²) | Authored by Justin Craig Venable</div>
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+        import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-        // --- Declare Global Namespaces Once ---
-        const Core = {};
-        const Modules = {};
+        // --- Config ---
+        const config = { handleSize: 0.35, poleSize: 0.18, snapStep: 0.5 };
+        const state = {
+            res: 4,           // Face Resolution
+            bevelSeg: 1,      // Bevel Segment Addition
+            bevelSize: 0.0,   // Bevel Amount
+            bevelType: 'ROUND', // ROUND or SHARP
+            wire: true,
+            quads: true,
+            smoothShade: false,
+            smoothTan: true,
+            snap: false,
+            lockOrbit: false,
+            sphereOpacity: 0.2,
+            dragging: false,
+            selectedHandle: null,
+            x: 6, y: 10, z: 4 // Restored Original Sample Dimensions
+        };
 
-        // --- core/mathUtils.js ---
-        Core.MathUtils = (function() {
-            function init() {} // All modules must have an init function
-            function calculateArcPathLength(params) {
-                let length = 0;
-                const path = [];
-                const p = { y: 0, z: 0, ...params };
-                for (let i = 0; i <= p.resolution; i++) {
-                    const t = i / p.resolution;
-                    const deviatedY = (t * p.y) + Math.sin(3 * t) * p.deviation;
-                    path.push(new THREE.Vector3(t * p.x, deviatedY, t * p.z));
-                }
-                for (let i = 0; i < path.length - 1; i++) { length += path[i].distanceTo(path[i + 1]); }
-                return length;
-            }
-            return { init, calculateArcPathLength };
-        })();
+        // --- Draggable Menu ---
+        const panel = document.getElementById('ui-panel');
+        const header = document.getElementById('panel-header');
+        const btnCollapse = document.getElementById('btn-collapse');
+        let drag = { active: false, currentX: 0, currentY: 0, initialX: 0, initialY: 0, xOffset: 0, yOffset: 0 };
 
-        // --- core/threeManager.js ---
-        Core.ThreeManager = (function() {
-            let scene, camera, renderer, orbitControls;
-            function init() {
-                const container = document.getElementById('canvas-container');
-                scene = new THREE.Scene();
-                scene.background = new THREE.Color('#1a1a1a');
-                camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
-                camera.position.set(15, 20, 35);
-                camera.lookAt(0, 0, 0);
-                renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('3d-canvas'), antialias: true });
-                renderer.setPixelRatio(window.devicePixelRatio);
-                renderer.shadowMap.enabled = true;
-                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-                scene.add(ambientLight);
-                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                dirLight.position.set(20, 30, 20);
-                dirLight.castShadow = true;
-                scene.add(dirLight);
-                const gridHelper = new THREE.GridHelper(200, 200, 0x444444, 0x888888);
-                scene.add(gridHelper);
-                const axesHelper = new THREE.AxesHelper(10);
-                axesHelper.setColors(new THREE.Color(0xff3b30), new THREE.Color(0x34c759), new THREE.Color(0x0095ff));
-                scene.add(axesHelper);
-                orbitControls = new OrbitControls(camera, renderer.domElement);
-                orbitControls.enableDamping = true;
-                window.addEventListener('resize', onWindowResize);
-                onWindowResize();
-            }
-            function onWindowResize() {
-                const container = document.getElementById('canvas-container');
-                if (container.clientWidth > 0 && container.clientHeight > 0) {
-                    camera.aspect = container.clientWidth / container.clientHeight;
-                    camera.updateProjectionMatrix();
-                    renderer.setSize(container.clientWidth, container.clientHeight);
-                }
-            }
-            function animate() {
-                requestAnimationFrame(animate);
-                orbitControls.update();
-                renderer.render(scene, camera);
-            }
-            return { init, animate, onWindowResize, getScene: () => scene, getCamera: () => camera, getRenderer: () => renderer, getOrbitControls: () => orbitControls };
-        })();
+        header.addEventListener('mousedown', dragStart);
+        window.addEventListener('mouseup', dragEnd);
+        window.addEventListener('mousemove', dragMove);
 
-        // --- core/uiManager.js ---
-        Core.UIManager = (function() {
-            let controlsPanel, toggleTab;
-            function init() {
-                controlsPanel = document.getElementById('controls-panel');
-                toggleTab = document.getElementById('panel-toggle-tab');
-                if (toggleTab) {
-                    toggleTab.addEventListener('click', () => {
-                        controlsPanel.classList.toggle('collapsed');
-                        // Use a short timeout to allow the CSS transition to start before resizing the canvas
-                        setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
-                    });
-                }
-            }
-            function registerControls(moduleName, controlsHtml) {
-                const container = document.createElement('div');
-                container.id = `${moduleName}-controls`;
-                container.innerHTML = controlsHtml;
-                controlsPanel.appendChild(container);
-            }
-            function createRangeSlider(id, label, min, max, step, value) {
-                return `<div class="slider-container"><label for="${id}">${label}</label>
-                          <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
-                          <input type="number" id="${id}-input" min="${min}" max="${max}" step="${step}" value="${value}">
-                        </div>`;
-            }
-            function createButton(id, text) { return `<button id="${id}">${text}</button>`; }
-            function createRadioGroup(groupName, options, selected) {
-                let html = '<div class="transform-radio-group">';
-                options.forEach(opt => {
-                    html += `<label><input type="radio" name="${groupName}" value="${opt.value}" ${opt.value === selected ? 'checked' : ''}>${opt.label}</label>`;
-                });
-                return html + '</div>';
-            }
-            return { init, registerControls, createRangeSlider, createButton, createRadioGroup };
-        })();
-
-        // --- core/selectionManager.js ---
-        Core.SelectionManager = (function() {
-            let selectedObject = null;
-            const listeners = [];
-            let transformControls; // Reference to the gizmo
-            function init(gizmo) {
-                transformControls = gizmo;
-                const raycaster = new THREE.Raycaster();
-                const mouse = new THREE.Vector2();
-                Core.ThreeManager.getRenderer().domElement.addEventListener('pointerdown', (event) => {
-                    if (transformControls.dragging) return;
-                    const bounds = event.target.getBoundingClientRect();
-                    mouse.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
-                    mouse.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
-                    raycaster.setFromCamera(mouse, Core.ThreeManager.getCamera());
-                    const intersects = raycaster.intersectObjects(Core.ThreeManager.getScene().children, true);
-                    let newSelection = null;
-                    if (intersects.length > 0) {
-                        let obj = intersects[0].object;
-                        while(obj) { if (obj.userData.isSelectable) { newSelection = obj; break; } obj = obj.parent; }
-                    }
-                    selectObject(newSelection);
-                });
-            }
-            function selectObject(object) {
-                if (selectedObject === object) return;
-                if (selectedObject && selectedObject.material && selectedObject.material.emissive) {
-                    selectedObject.material.emissive.setHex(selectedObject.userData.originalEmissive || 0x000000);
-                }
-                selectedObject = object;
-                if (selectedObject && selectedObject.material && selectedObject.material.emissive) {
-                    selectedObject.userData.originalEmissive = selectedObject.material.emissive.getHex();
-                    selectedObject.material.emissive.setHex(0xaaaa00);
-                }
-                listeners.forEach(cb => cb(selectedObject));
-            }
-            return { init, addSelectionChangeListener: (cb) => listeners.push(cb) };
-        })();
-
-        // --- core/gestureManager.js ---
-        Core.GestureManager = (function() {
-            function init() { new Hammer(Core.ThreeManager.getRenderer().domElement); console.log("Gesture Manager initialized."); }
-            return { init };
-        })();
-
-        // --- core/splitterManager.js ---
-        Core.SplitterManager = (function() {
-            let splitter, panel, mainContent, toggleTab;
-            let isResizing = false;
-            const collapseThreshold = 50;
-            function init() {
-                splitter = document.getElementById('panel-splitter');
-                panel = document.getElementById('controls-panel');
-                mainContent = document.getElementById('main-content');
-                toggleTab = document.getElementById('panel-toggle-tab');
-                splitter.addEventListener('mousedown', startResize);
-                splitter.addEventListener('touchstart', startResize, { passive: false });
-            }
-            function startResize(e) {
-                isResizing = true; document.body.classList.add('resizing');
-                window.addEventListener('mousemove', handleResize);
-                window.addEventListener('mouseup', stopResize);
-                window.addEventListener('touchmove', handleResize, { passive: false });
-                window.addEventListener('touchend', stopResize);
+        function dragStart(e) {
+            if (e.target.closest('.collapse-btn')) return;
+            drag.initialX = e.clientX - drag.xOffset;
+            drag.initialY = e.clientY - drag.yOffset;
+            drag.active = true;
+            header.style.cursor = "grabbing";
+        }
+        function dragEnd() {
+            drag.initialX = drag.currentX; drag.initialY = drag.currentY;
+            drag.active = false; header.style.cursor = "move";
+        }
+        function dragMove(e) {
+            if (drag.active) {
                 e.preventDefault();
+                drag.currentX = e.clientX - drag.initialX;
+                drag.currentY = e.clientY - drag.initialY;
+                drag.xOffset = drag.currentX; drag.yOffset = drag.currentY;
+                panel.style.transform = `translate3d(${drag.currentX}px, ${drag.currentY}px, 0)`;
             }
-            function handleResize(e) {
-                if (!isResizing) return;
-                const rect = mainContent.getBoundingClientRect();
-                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-                const newWidth = rect.right - clientX;
-                if (newWidth < collapseThreshold) {
-                    panel.classList.add('collapsed');
-                    stopResize();
-                } else {
-                    panel.classList.remove('collapsed');
-                    panel.style.width = newWidth + 'px';
-                }
-                Core.ThreeManager.onWindowResize(); // Tell canvas to resize
-            }
-            function stopResize() {
-                if (!isResizing) return;
-                isResizing = false; document.body.classList.remove('resizing');
-                window.removeEventListener('mousemove', handleResize);
-                window.removeEventListener('mouseup', stopResize);
-                window.removeEventListener('touchmove', handleResize);
-                window.removeEventListener('touchend', stopResize);
-                if (!panel.classList.contains('collapsed')) {
-                     toggleTab.style.right = (panel.offsetWidth + splitter.offsetWidth) + 'px';
-                } else {
-                     toggleTab.style.right = '0px';
-                }
-            }
-            return { init };
-        })();
-        
-        // --- modules/arcGenerator.js (UPDATED with numeric inputs) ---
-        Modules.ArcGenerator = (function() {
-            let arcs = [null, null, null, null];
-            function init() {
-                const defaultParams = { x: 10, y: 0, z: 0, deviation: 1.5, resolution: 32 };
-                let controlsHtml = '<h3>Arc Generator</h3>';
-                for (let i = 1; i <= 3; i++) {
-                    controlsHtml += `<fieldset><legend>Arc ${i}</legend>
-                        ${Core.UIManager.createRangeSlider(`arc${i}_x`, 'X:', -20, 20, 0.1, defaultParams.x)}
-                        ${Core.UIManager.createRangeSlider(`arc${i}_dev`, 'Dev:', 0, 5, 0.1, defaultParams.deviation)}
-                        ${Core.UIManager.createRangeSlider(`arc${i}_res`, 'Res:', 8, 128, 1, defaultParams.resolution)}
-                        <div class="action-buttons-row">${Core.UIManager.createButton(`createArc${i}Btn`, `Create Arc ${i}`)}</div>
-                    </fieldset>`;
-                }
-                Core.UIManager.registerControls('ArcGenerator', controlsHtml);
-                for (let i = 1; i <= 3; i++) {
-                    const id = `arc${i}`;
-                    document.getElementById(`createArc${i}Btn`).addEventListener('click', () => createOrUpdateArc(i));
-                    // Link sliders to number inputs for 2-way data binding
-                    linkSliderAndInput(`${id}_x`);
-                    linkSliderAndInput(`${id}_dev`);
-                    linkSliderAndInput(`${id}_res`);
-                }
-            }
-            function linkSliderAndInput(baseId) {
-                const slider = document.getElementById(baseId);
-                const input = document.getElementById(`${baseId}-input`);
-                if (slider && input) {
-                    slider.addEventListener('input', () => input.value = slider.value);
-                    input.addEventListener('input', () => slider.value = input.value);
-                }
-            }
-            function createOrUpdateArc(index, manualParams) {
-                const defaults = { x: 10, y: 0, z: 0, deviation: 1.5, resolution: 32 };
-                let params = manualParams || {
-                    x: parseFloat(document.getElementById(`arc${index}_x-input`).value),
-                    deviation: parseFloat(document.getElementById(`arc${index}_dev-input`).value),
-                    resolution: parseInt(document.getElementById(`arc${index}_res-input`).value),
-                };
-                const finalParams = { ...defaults, ...params, tubeRadius: 0.1 };
-                if (arcs[index]) Core.ThreeManager.getScene().remove(arcs[index]);
-                const points = [];
-                for (let i = 0; i <= finalParams.resolution; i++) {
-                    const t = i / finalParams.resolution;
-                    const y = (t * finalParams.y) + Math.sin(3 * t) * finalParams.deviation;
-                    points.push(new THREE.Vector3(t * finalParams.x, y, t * finalParams.z));
-                }
-                const path = new THREE.CatmullRomCurve3(points);
-                const geo = new THREE.TubeGeometry(path, finalParams.resolution, finalParams.tubeRadius, 8, false);
-                const mat = new THREE.MeshStandardMaterial({ color: 0x0095ff, metalness: 0.2, roughness: 0.6 });
-                const mesh = new THREE.Mesh(geo, mat);
-                mesh.name = `Arc ${index}`;
-                mesh.userData = { isSelectable: true, module: 'ArcGenerator', arcParams: finalParams };
-                mesh.castShadow = true;
-                arcs[index] = mesh;
-                Core.ThreeManager.getScene().add(mesh);
-            }
-            return { init, createOrUpdateArc };
-        })();
-        
-        // --- modules/arcMeasure.js ---
-        Modules.ArcMeasure = (function() {
-            function init() {
-                const html = `<h3>Measure Tools</h3><fieldset><legend>Arc Length</legend><div><span class="result-label">Selected Arc Length: </span><span class="result-value" id="arc-length-result">N/A</span></div></fieldset>`;
-                Core.UIManager.registerControls('ArcMeasure', html);
-                Core.SelectionManager.addSelectionChangeListener(updateMeasurement);
-            }
-            function updateMeasurement(selectedObject) {
-                const resultEl = document.getElementById('arc-length-result');
-                if (selectedObject && selectedObject.userData.module === 'ArcGenerator') {
-                    const length = Core.MathUtils.calculateArcPathLength(selectedObject.userData.arcParams);
-                    resultEl.textContent = length.toFixed(4) + ' units';
-                } else { resultEl.textContent = 'N/A'; }
-            }
-            return { init, updateMeasurement };
-        })();
-        
-        // --- modules/primitiveCreator.js (UPDATED for non-indexed geometry) ---
-        Modules.PrimitiveCreator = (function() {
-            let primitives = [];
-            function init() {
-                const controlsHtml = `<h3>Primitives</h3><div class="action-buttons-row">${Core.UIManager.createButton('createCubeBtn', 'Cube')} ${Core.UIManager.createButton('createCylinderBtn', 'Cylinder')}</div>`;
-                Core.UIManager.registerControls('PrimitiveCreator', controlsHtml);
-                document.getElementById('createCubeBtn').addEventListener('click', () => createPrimitive('Cube', { position: { x: (Math.random() - 0.5) * 40, y: 4, z: (Math.random() - 0.5) * 40 } }));
-                document.getElementById('createCylinderBtn').addEventListener('click', () => createPrimitive('Cylinder', { position: { x: (Math.random() - 0.5) * 40, y: 6, z: (Math.random() - 0.5) * 40 } }));
-            }
-            function createPrimitive(type, params) {
-                const defaults = { Cube: { size: 8, color: 0x9b59b6 }, Cylinder: { radiusTop: 4, height: 12, color: 0xe74c3c } };
-                const finalParams = { ...defaults[type], ...params };
-                let geometry;
-                if (type === 'Cube') { geometry = new THREE.BoxGeometry(finalParams.size, finalParams.size, finalParams.size); } 
-                else { geometry = new THREE.CylinderGeometry(finalParams.radiusTop, finalParams.radiusTop, finalParams.height, 32); }
-                const nonIndexedGeometry = geometry.toNonIndexed(); // Make faces individually selectable
-                geometry.dispose();
-                const mat = new THREE.MeshStandardMaterial({ color: finalParams.color, metalness: 0.2, roughness: 0.6 });
-                const mesh = new THREE.Mesh(nonIndexedGeometry, mat);
-                mesh.name = `${type} ${primitives.length + 1}`;
-                mesh.position.set(finalParams.position.x, finalParams.position.y, finalParams.position.z);
-                mesh.userData = { isSelectable: true, module: 'PrimitiveCreator' };
-                mesh.castShadow = true; mesh.receiveShadow = true;
-                primitives.push(mesh);
-                Core.ThreeManager.getScene().add(mesh);
-            }
-            return { init, createPrimitive };
-        })();
-        
-        // --- modules/transformControls.js (UPDATED to be passed to SelectionManager) ---
-        Modules.TransformControls = (function() {
-            let transformControls;
-            function init() {
-                transformControls = new TransformControls(Core.ThreeManager.getCamera(), Core.ThreeManager.getRenderer().domElement);
-                transformControls.addEventListener('dragging-changed', (event) => { Core.ThreeManager.getOrbitControls().enabled = !event.value; });
-                Core.ThreeManager.getScene().add(transformControls);
-                const controlsHtml = `<h3>Transform Tool</h3>` + Core.UIManager.createRadioGroup('transformMode', [
-                    { label: 'Translate', value: 'translate' }, { label: 'Rotate', value: 'rotate' }, { label: 'Scale', value: 'scale' }
-                ], 'translate');
-                Core.UIManager.registerControls('TransformControls', controlsHtml);
-                document.querySelectorAll('input[name="transformMode"]').forEach(radio => {
-                    radio.addEventListener('change', (e) => transformControls.setMode(e.target.value));
-                });
-                Core.SelectionManager.addSelectionChangeListener((selectedObject) => {
-                    if (selectedObject) { transformControls.attach(selectedObject); } 
-                    else { transformControls.detach(); }
-                });
-            }
-            return { init, getGizmo: () => transformControls };
-        })();
+        }
+        btnCollapse.addEventListener('click', (e) => {
+            e.stopPropagation(); 
+            panel.classList.toggle('collapsed');
+            btnCollapse.innerText = panel.classList.contains('collapsed') ? '◀' : '▼';
+        });
 
-        // --- app.js (Main Logic - UPDATED INITIALIZATION ORDER) ---
-        document.addEventListener('DOMContentLoaded', () => {
-            Core.MathUtils.init();
-            Core.ThreeManager.init();
-            Core.UIManager.init();
-            Core.GestureManager.init();
-            Core.SplitterManager.init();
-            Modules.TransformControls.init();
+        // --- DOM Elements ---
+        const ui = {
+            res: document.getElementById('input-res'), valRes: document.getElementById('val-res'),
+            bevelSize: document.getElementById('input-bevel-size'), valBevelSize: document.getElementById('val-bevel-size'),
+            bevelSeg: document.getElementById('input-bevel-seg'), valBevelSeg: document.getElementById('val-bevel-seg'),
+            x: document.getElementById('input-x'), valX: document.getElementById('val-x'),
+            y: document.getElementById('input-y'), valY: document.getElementById('val-y'),
+            z: document.getElementById('input-z'), valZ: document.getElementById('val-z'),
+            opacity: document.getElementById('input-opacity'), valOpacity: document.getElementById('val-opacity'),
+            rc: document.getElementById('rad-circ'), ra: document.getElementById('rad-area'),
+            rv: document.getElementById('rad-vol'), rsa: document.getElementById('rad-sa'),
+            btnWire: document.getElementById('btn-wire'), btnQuads: document.getElementById('btn-quads'),
+            btnSmoothShade: document.getElementById('btn-smooth-shade'), btnSmoothTan: document.getElementById('btn-smooth-tan'),
+            btnLockOrbit: document.getElementById('btn-lock-orbit'), btnSnap: document.getElementById('btn-snap'),
+            btnBevelType: document.getElementById('btn-bevel-type'),
+            btnGridXZ: document.getElementById('btn-grid-xz'), btnGridXY: document.getElementById('btn-grid-xy'), btnGridYZ: document.getElementById('btn-grid-yz'),
+            btnPng: document.getElementById('btn-export-png'), btnGlb: document.getElementById('btn-export-glb')
+        };
+
+        const updateToggle = (btn, active, label, on="ON", off="OFF") => { btn.innerText = `${label}: ${active?on:off}`; btn.classList.toggle('active', active); };
+
+        ui.res.addEventListener('input', e => { state.res = parseInt(e.target.value); ui.valRes.innerText = state.res; updateMesh(true); });
+        ui.bevelSize.addEventListener('input', e => { 
+            state.bevelSize = parseFloat(e.target.value); ui.valBevelSize.innerText = state.bevelSize.toFixed(2);
+            if(state.bevelSize > 0) { ui.bevelSeg.disabled = false; ui.valBevelSeg.classList.remove('disabled'); ui.valBevelSeg.innerText = state.bevelSeg; }
+            else { ui.bevelSeg.disabled = true; ui.valBevelSeg.classList.add('disabled'); ui.valBevelSeg.innerText = "N/A"; }
+            updateMesh(true);
+        });
+        ui.bevelSeg.addEventListener('input', e => { state.bevelSeg = parseInt(e.target.value); ui.valBevelSeg.innerText = state.bevelSeg; updateMesh(true); });
+
+        const updateDims = () => {
+            const oldX = state.x, oldY = state.y, oldZ = state.z;
+            state.x = parseFloat(ui.x.value); ui.valX.innerText = state.x.toFixed(2);
+            state.y = parseFloat(ui.y.value); ui.valY.innerText = state.y.toFixed(2);
+            state.z = parseFloat(ui.z.value); ui.valZ.innerText = state.z.toFixed(2);
             
-            // Pass the gizmo to SelectionManager now that it's created
-            Core.SelectionManager.init(Modules.TransformControls.getGizmo());
+            // Proportional Scale handles and corners based on dimension sliders
+            const sx = state.x / oldX, sy = state.y / oldY, sz = state.z / oldZ;
             
-            // Initialize UI-dependent modules
-            Modules.ArcGenerator.init();
-            Modules.ArcMeasure.init();
-            Modules.PrimitiveCreator.init();
+            corners.forEach(c => { c.x *= sx; c.y *= sy; c.z *= sz; });
+            cornerHandles.forEach(ch => { ch.position.x *= sx; ch.position.y *= sy; ch.position.z *= sz; });
+            handles.forEach(h => { h.mesh.position.x *= sx; h.mesh.position.y *= sy; h.mesh.position.z *= sz; });
             
-            // --- Initial Scene ---
-            Modules.PrimitiveCreator.createPrimitive('Cube', { size: 8, position: { x: -15, y: 4, z: 0 } });
-            Modules.PrimitiveCreator.createPrimitive('Cylinder', { radiusTop: 4, height: 12, position: { x: 15, y: 6, z: 0 } });
-            Modules.ArcGenerator.createOrUpdateArc(1);
+            updateMesh(false); 
+        };
+        ui.x.addEventListener('input', updateDims); ui.y.addEventListener('input', updateDims); ui.z.addEventListener('input', updateDims);
+
+        // --- Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(20, 15, 20);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const dl = new THREE.DirectionalLight(0xffffff, 1); dl.position.set(10,20,10); scene.add(dl);
+        const bl = new THREE.DirectionalLight(0x42a5f5, 0.5); bl.position.set(-5,0,-10); scene.add(bl);
+
+        const gridXZ = new THREE.GridHelper(30, 30, 0x555555, 0x222222); scene.add(gridXZ);
+        const gridXY = new THREE.GridHelper(30, 30, 0x42a5f5, 0x111820); gridXY.rotation.x=Math.PI/2; gridXY.visible=false; scene.add(gridXY);
+        const gridYZ = new THREE.GridHelper(30, 30, 0xffca28, 0x181105); gridYZ.rotation.z=Math.PI/2; gridYZ.visible=false; scene.add(gridYZ);
+        scene.add(new THREE.AxesHelper(5));
+
+        ui.btnGridXZ.addEventListener('click', ()=>{gridXZ.visible=!gridXZ.visible; ui.btnGridXZ.classList.toggle('active')});
+        ui.btnGridXY.addEventListener('click', ()=>{gridXY.visible=!gridXY.visible; ui.btnGridXY.classList.toggle('active')});
+        ui.btnGridYZ.addEventListener('click', ()=>{gridYZ.visible=!gridYZ.visible; ui.btnGridYZ.classList.toggle('active')});
+
+        const geometryGroup = new THREE.Group(); scene.add(geometryGroup);
+        const mats = {
+            solid: new THREE.MeshStandardMaterial({ color: 0x4caf50, side: THREE.DoubleSide, metalness: 0.1, roughness: 0.5, polygonOffset: true, polygonOffsetFactor: 1 }),
+            wire: new THREE.LineBasicMaterial({ color: 0x88ff88, transparent: true, opacity: 0.3 }),
+            quad: new THREE.LineBasicMaterial({ color: 0xaaffaa, transparent: true, opacity: 0.6 }),
+            handle: new THREE.MeshBasicMaterial({ color: 0xffca28 }),
+            pole: new THREE.MeshBasicMaterial({ color: 0x4caf50 }),
+            handleActive: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+            tanLine: new THREE.LineDashedMaterial({ color: 0x8b9bb4, dashSize: 0.2, gapSize: 0.1 }),
+            sphere: new THREE.MeshPhongMaterial({ color: 0xffffff, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false })
+        };
+
+        const mainMesh = new THREE.Mesh(new THREE.BufferGeometry(), mats.solid); geometryGroup.add(mainMesh);
+        const wireMesh = new THREE.LineSegments(new THREE.BufferGeometry(), mats.wire); geometryGroup.add(wireMesh);
+        const quadMesh = new THREE.LineSegments(new THREE.BufferGeometry(), mats.quad); geometryGroup.add(quadMesh);
+        const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 64), mats.sphere); scene.add(sphereMesh);
+
+        // --- Topology ---
+        const corners = Array(8).fill().map(() => new THREE.Vector3());
+        const edgeDefs = [ {s:0, e:1}, {s:1, e:2}, {s:2, e:3}, {s:3, e:0}, {s:4, e:5}, {s:5, e:6}, {s:6, e:7}, {s:7, e:4}, {s:0, e:4}, {s:1, e:5}, {s:2, e:6}, {s:3, e:7} ];
+        const handles = []; 
+        const cornerHandles = [];
+
+        function initHandles() {
+            // Bezier Tension Handles
+            const geo = new THREE.BoxGeometry(config.handleSize, config.handleSize, config.handleSize);
+            edgeDefs.forEach((def, idx) => {
+                const createH = (type) => {
+                    const m = new THREE.Mesh(geo, mats.handle);
+                    m.userData = { isHandle: true, edgeIdx: idx, type: type };
+                    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), mats.tanLine);
+                    l.computeLineDistances();
+                    geometryGroup.add(m, l);
+                    return { mesh: m, line: l };
+                };
+                const h1 = createH('start'); const h2 = createH('end');
+                handles.push({ ...h1, edgeIdx: idx, type: 'start' }, { ...h2, edgeIdx: idx, type: 'end' });
+            });
+
+            // Corner Pole Handles
+            const poleGeo = new THREE.BoxGeometry(config.poleSize, config.poleSize, config.poleSize);
+            for(let i=0; i<8; i++) {
+                const pole = new THREE.Mesh(poleGeo, mats.pole);
+                pole.userData = { isPole: true, cornerIdx: i };
+                geometryGroup.add(pole);
+                cornerHandles.push(pole);
+            }
+        }
+        initHandles();
+
+        function resetToSampleScene() {
+            // Origin at (0,0,0), Box extending to X, Y, Z
+            corners[0].set(0,0,0); corners[1].set(state.x,0,0); corners[2].set(state.x,state.y,0); corners[3].set(0,state.y,0);
+            corners[4].set(0,0,state.z); corners[5].set(state.x,0,state.z); corners[6].set(state.x,state.y,state.z); corners[7].set(0,state.y,state.z);
             
-            Core.ThreeManager.animate();
+            cornerHandles.forEach((ch, idx) => ch.position.copy(corners[idx]));
+
+            handles.forEach(h => {
+                const s = corners[edgeDefs[h.edgeIdx].s]; const e = corners[edgeDefs[h.edgeIdx].e];
+                h.mesh.position.lerpVectors(s, e, h.type === 'start' ? 0.33 : 0.66);
+            });
+        }
+        resetToSampleScene();
+
+        // --- Core Algorithm: Coons Warp ---
+        function getCoonsVolumePoint(u, v, w, curves) {
+            const lerp = (a, b, t) => new THREE.Vector3().lerpVectors(a, b, t);
+            const c0 = curves[0].getPoint(u), c1 = curves[1].getPoint(v), c2 = curves[2].getPoint(1-u), c3 = curves[3].getPoint(1-v);
+            const c4 = curves[4].getPoint(u), c5 = curves[5].getPoint(v), c6 = curves[6].getPoint(1-u), c7 = curves[7].getPoint(1-v);
+            const c8 = curves[8].getPoint(w), c9 = curves[9].getPoint(w), c10 = curves[10].getPoint(w), c11 = curves[11].getPoint(w);
+            
+            const pBack = new THREE.Vector3().addVectors(lerp(c0, c2, v), lerp(c3, c1, u)).sub(lerp(lerp(corners[0], corners[3], v), lerp(corners[1], corners[2], v), u));
+            const pFront = new THREE.Vector3().addVectors(lerp(c4, c6, v), lerp(c7, c5, u)).sub(lerp(lerp(corners[4], corners[7], v), lerp(corners[5], corners[6], v), u));
+            const pLoft = lerp(pBack, pFront, w);
+            
+            const d00 = new THREE.Vector3().subVectors(c8, lerp(corners[0], corners[4], w)).multiplyScalar((1-u)*(1-v));
+            const d10 = new THREE.Vector3().subVectors(c9, lerp(corners[1], corners[5], w)).multiplyScalar(u*(1-v));
+            const d11 = new THREE.Vector3().subVectors(c10, lerp(corners[2], corners[6], w)).multiplyScalar(u*v);
+            const d01 = new THREE.Vector3().subVectors(c11, lerp(corners[3], corners[7], w)).multiplyScalar((1-u)*v);
+            
+            return pLoft.add(d00).add(d10).add(d11).add(d01);
+        }
+
+        function applyBevel(u, v, w) {
+            if(state.bevelSize <= 0) return {u,v,w};
+            let x = u - 0.5, y = v - 0.5, z = w - 0.5;
+            const r = state.bevelSize * 0.5; 
+            const limit = 0.5 - r;
+            const cx = Math.max(Math.min(x, limit), -limit);
+            const cy = Math.max(Math.min(y, limit), -limit);
+            const cz = Math.max(Math.min(z, limit), -limit);
+            let dx = x - cx, dy = y - cy, dz = z - cz;
+            const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            if (dist > 0) {
+                if (state.bevelType === 'ROUND') {
+                    const scale = r / dist;
+                    dx *= scale; dy *= scale; dz *= scale;
+                } else {
+                    const scale = Math.min(1, r / (Math.abs(dx)+Math.abs(dy)+Math.abs(dz)));
+                    dx *= scale; dy *= scale; dz *= scale;
+                }
+            }
+            return { u: (cx + dx) + 0.5, v: (cy + dy) + 0.5, w: (cz + dz) + 0.5 };
+        }
+
+        function updateMesh(rebuildTopology) {
+            const curves = edgeDefs.map((def, i) => {
+                const hStart = handles.find(h => h.edgeIdx === i && h.type === 'start').mesh.position;
+                const hEnd = handles.find(h => h.edgeIdx === i && h.type === 'end').mesh.position;
+                return new THREE.CubicBezierCurve3(corners[def.s], hStart, hEnd, corners[def.e]);
+            });
+
+            if (rebuildTopology || !mainMesh.geometry.attributes.uvw) {
+                const segs = state.res + (state.bevelSize > 0 ? state.bevelSeg * 2 : 0);
+                const baseGeo = new THREE.BoxGeometry(1, 1, 1, segs, segs, segs);
+                const count = baseGeo.attributes.position.count;
+                const uvw = new Float32Array(count * 3);
+                const pos = baseGeo.attributes.position.array;
+                for(let i=0; i<count; i++) {
+                    let u = pos[i*3] + 0.5; let v = pos[i*3+1] + 0.5; let w = pos[i*3+2] + 0.5;
+                    if(state.bevelSize > 0) { const m = applyBevel(u, v, w); u = m.u; v = m.v; w = m.w; }
+                    uvw[i*3] = u; uvw[i*3+1] = v; uvw[i*3+2] = w;
+                }
+                baseGeo.setAttribute('uvw', new THREE.BufferAttribute(uvw, 3));
+                mainMesh.geometry.dispose(); mainMesh.geometry = baseGeo;
+            }
+
+            const geo = mainMesh.geometry;
+            const positions = geo.attributes.position.array;
+            const uvw = geo.attributes.uvw.array;
+            const count = geo.attributes.position.count;
+
+            for(let i=0; i<count; i++) {
+                const u = uvw[i*3], v = uvw[i*3+1], w = uvw[i*3+2];
+                const p = getCoonsVolumePoint(u, v, w, curves);
+                positions[i*3] = p.x; positions[i*3+1] = p.y; positions[i*3+2] = p.z;
+            }
+            geo.attributes.position.needsUpdate = true;
+            geo.computeVertexNormals();
+            
+            if(state.wire) { wireMesh.geometry.dispose(); wireMesh.geometry = new THREE.WireframeGeometry(geo); }
+            mats.solid.flatShading = !state.smoothShade; mats.solid.needsUpdate = true;
+
+            handles.forEach(h => {
+                const corner = corners[h.type === 'start' ? edgeDefs[h.edgeIdx].s : edgeDefs[h.edgeIdx].e];
+                const pos = h.mesh.position;
+                h.line.geometry.setAttribute('position', new THREE.Float32BufferAttribute([corner.x,corner.y,corner.z, pos.x,pos.y,pos.z], 3));
+                h.line.computeLineDistances();
+            });
+
+            const m = calculateMetrics();
+            ui.rc.innerText=m.C.toFixed(2); ui.ra.innerText=m.A.toExponential(2); 
+            ui.rv.innerText=m.V.toExponential(2); ui.rsa.innerText=m.SA.toExponential(2);
+            sphereMesh.scale.set(m.r, m.r, m.r);
+        }
+
+        function calculateMetrics() {
+            // Sphere radius = Hypotenuse from Origin to the tracked corner (state.x, state.y, state.z)
+            // As per user provided diagram: r = sqrt(x^2 + y^2 + z^2)
+            const r = Math.sqrt(Math.pow(state.x, 2) + Math.pow(state.y, 2) + Math.pow(state.z, 2));
+            const d = r * 2;
+            const C = Math.sqrt(Math.pow(d * 3, 2)); // √((d*3)²) formula provided by author
+            const A = Math.pow(C, 2); 
+            const V = Math.pow(A, 3); 
+            const SA = V * 0.25;
+            return { r, C, A, V, SA };
+        }
+
+        const raycaster = new THREE.Raycaster(); const pointer = new THREE.Vector2(); const dragPlane = new THREE.Plane();
+        window.addEventListener('pointerdown', e => {
+            pointer.x = (e.clientX/window.innerWidth)*2-1; pointer.y = -(e.clientY/window.innerHeight)*2+1;
+            raycaster.setFromCamera(pointer, camera);
+            const hitPool = [...handles.map(h=>h.mesh), ...cornerHandles];
+            const intersects = raycaster.intersectObjects(hitPool);
+            if(intersects.length > 0) {
+                const targetObj = intersects[0].object;
+                state.dragging = true;
+                if (targetObj.userData.isPole) { state.selectedHandle = { isPole: true, mesh: targetObj, idx: targetObj.userData.cornerIdx }; }
+                else { state.selectedHandle = handles.find(h=>h.mesh === targetObj); }
+                state.selectedHandle.mesh.material = mats.handleActive;
+                if(!state.lockOrbit) controls.enabled = false;
+                const normal = new THREE.Vector3(); camera.getWorldDirection(normal);
+                dragPlane.setFromNormalAndCoplanarPoint(normal, state.selectedHandle.mesh.position);
+            }
+        });
+
+        window.addEventListener('pointermove', e => {
+            if(state.dragging && state.selectedHandle) {
+                pointer.x = (e.clientX/window.innerWidth)*2-1; pointer.y = -(e.clientY/window.innerHeight)*2+1;
+                raycaster.setFromCamera(pointer, camera);
+                const targetPos = new THREE.Vector3();
+                raycaster.ray.intersectPlane(dragPlane, targetPos);
+                if(targetPos) {
+                    if(state.snap) { 
+                        targetPos.x = Math.round(targetPos.x/config.snapStep)*config.snapStep; 
+                        targetPos.y = Math.round(targetPos.y/config.snapStep)*config.snapStep; 
+                        targetPos.z = Math.round(targetPos.z/config.snapStep)*config.snapStep; 
+                    }
+                    if (state.selectedHandle.isPole) {
+                        const idx = state.selectedHandle.idx;
+                        const delta = new THREE.Vector3().subVectors(targetPos, corners[idx]);
+                        corners[idx].copy(targetPos);
+                        state.selectedHandle.mesh.position.copy(targetPos);
+                        handles.forEach(h => {
+                            const def = edgeDefs[h.edgeIdx];
+                            if ((h.type === 'start' && def.s === idx) || (h.type === 'end' && def.e === idx)) { h.mesh.position.add(delta); }
+                        });
+                    } else {
+                        const h = state.selectedHandle; h.mesh.position.copy(targetPos);
+                        if(state.smoothTan) {
+                            const def = edgeDefs[h.edgeIdx]; const cornerIdx = h.type === 'start' ? def.s : def.e;
+                            const corner = corners[cornerIdx]; const vec = new THREE.Vector3().subVectors(h.mesh.position, corner);
+                            handles.forEach(oh => {
+                                if(oh === h) return;
+                                const oDef = edgeDefs[oh.edgeIdx]; const oCornerIdx = oh.type === 'start' ? oDef.s : oDef.e;
+                                if(oCornerIdx === cornerIdx) oh.mesh.position.subVectors(corner, vec);
+                            });
+                        }
+                    }
+                    updateMesh(false);
+                }
+            }
+        });
+
+        window.addEventListener('pointerup', () => {
+            if(state.dragging) {
+                state.selectedHandle.mesh.material = state.selectedHandle.isPole ? mats.pole : mats.handle;
+                state.dragging = false; state.selectedHandle = null;
+                if(!state.lockOrbit) controls.enabled = true;
+            }
+        });
+
+        ui.btnWire.addEventListener('click', () => { state.wire = !state.wire; updateToggle(ui.btnWire, state.wire, 'Wireframe'); wireMesh.visible = state.wire; });
+        ui.btnQuads.addEventListener('click', () => { state.quads = !state.quads; updateToggle(ui.btnQuads, state.quads, 'Quads'); quadMesh.visible = state.quads; });
+        ui.btnSmoothShade.addEventListener('click', () => { state.smoothShade = !state.smoothShade; updateToggle(ui.btnSmoothShade, state.smoothShade, 'Smooth Shade'); updateMesh(false); });
+        ui.btnSmoothTan.addEventListener('click', () => { state.smoothTan = !state.smoothTan; updateToggle(ui.btnSmoothTan, state.smoothTan, 'Tangent', 'SMOOTH', 'SHARP'); });
+        ui.btnSnap.addEventListener('click', () => { state.snap = !state.snap; updateToggle(ui.btnSnap, state.snap, 'Grid Snap'); });
+        ui.btnLockOrbit.addEventListener('click', () => { state.lockOrbit = !state.lockOrbit; updateToggle(ui.btnLockOrbit, state.lockOrbit, 'Lock Cam'); controls.enabled = !state.lockOrbit; });
+        ui.btnBevelType.addEventListener('click', () => { state.bevelType = state.bevelType === 'SHARP' ? 'ROUND' : 'SHARP'; updateToggle(ui.btnBevelType, state.bevelType === 'ROUND', 'Type', 'ROUND', 'SHARP'); updateMesh(true); });
+        ui.opacity.addEventListener('input', e => { state.sphereOpacity = e.target.value/100; ui.valOpacity.innerText = e.target.value+'%'; sphereMesh.material.opacity = state.sphereOpacity; sphereMesh.visible = state.sphereOpacity > 0; });
+
+        window.addEventListener('resize', () => { camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); updateMesh(false); });
+        function animate() { requestAnimationFrame(animate); if(controls.enabled) controls.update(); renderer.render(scene, camera); }
+        updateMesh(true); animate();
+
+        ui.btnPng.addEventListener('click', ()=>{ renderer.render(scene, camera); const a=document.createElement('a'); a.download='view.png'; a.href=renderer.domElement.toDataURL('image/png'); a.click(); });
+        ui.btnGlb.addEventListener('click', ()=>{ 
+            gridXZ.visible=false; handles.forEach(h=>h.mesh.visible=false); cornerHandles.forEach(ch=>ch.visible=false);
+            new GLTFExporter().parse(scene, (g)=>{
+                const a=document.createElement('a'); a.download='scene.glb'; a.href=URL.createObjectURL(new Blob([g],{type:'application/octet-stream'})); a.click();
+                if(ui.btnGridXZ.classList.contains('active')) gridXZ.visible=true; handles.forEach(h=>h.mesh.visible=true); cornerHandles.forEach(ch=>ch.visible=true);
+            }, e=>console.error(e), {binary:true});
         });
     </script>
 </body>
