@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radical Deepscale: Algebraic Maze Solver</title>
+    <title>Radical Deepscale: Hybrid Algebraic Solver</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Courier New', Courier, monospace; }
         
@@ -11,7 +11,6 @@
             position: absolute;
             top: 10px;
             left: 10px;
-            /* Changed from #00ffcc to Sky Blue */
             color: #00d9ff;
             background: rgba(0, 0, 0, 0.8);
             padding: 10px;
@@ -32,18 +31,28 @@
             display: flex;
             flex-direction: column;
             gap: 12px;
-            width: 220px;
+            width: 240px;
             z-index: 10;
             max-height: 90vh;
             overflow-y: auto;
         }
 
         .control-group { display: flex; justify-content: space-between; align-items: center; }
-        label { margin-right: 10px; font-size: 11px; text-transform: uppercase; }
-        input[type=range] { width: 100px; }
+        label { margin-right: 10px; font-size: 11px; text-transform: uppercase; color: #aaa; }
+        
+        /* Updated Input Styling for Number Inputs */
+        input[type=number] { 
+            width: 70px; 
+            background: #111; 
+            color: #00d9ff; 
+            border: 1px solid #00d9ff; 
+            padding: 4px; 
+            font-family: 'Courier New';
+            font-size: 12px;
+        }
+        
         input[type=checkbox] { transform: scale(1.5); accent-color: #ff0055; }
         
-        /* Changed Select colors to Sky Blue */
         select { 
             background: #111; 
             color: #00d9ff; 
@@ -52,6 +61,8 @@
             cursor: pointer; 
             font-family: 'Courier New'; 
             font-size: 11px; 
+            width: 100%;
+            margin-top: 4px;
         }
 
         button {
@@ -61,10 +72,10 @@
             transition: background 0.2s;
             font-size: 11px;
         }
-        button:hover { background: #ff4477; }
+        button:hover { background: #ff4477; box-shadow: 0 0 10px rgba(255, 0, 85, 0.5); }
         
         .divider { border-bottom: 1px solid #444; margin: 5px 0; }
-        .status { font-size: 11px; color: #aaa; margin-top: 5px; }
+        .status { font-size: 11px; color: #00d9ff; margin-top: 5px; text-transform: uppercase; }
   
         #bgvid {
             position: fixed;
@@ -94,33 +105,40 @@
         <h3>Lead Edge Maze Ash</h3>
         <p>Method: <strong>Algebraic Byproduct</strong></p>
         <p id="logicText">Logic: (Maze Perimeter) - (Dead Ends) = Solution Path</p>
-        <div class="status" id="statusText">Initializing...</div>
+        <div class="status" id="statusText">Initializing Logic Core...</div>
     </div>
 
     <div id="controls">
         <label>Structure Mode</label>
         <select id="modeSelect">
             <option value="planar">Planar (2D Grid)</option>
-            <option value="cubic">Cubic (3D Voxel)</option>
+            <option value="cubic" selected>Cubic (3D Voxel)</option>
+        </select>
+
+        <label>Rendering Engine</label>
+        <select id="renderEngine">
+            <option value="reflective">Reflective Red (Default)</option>
+            <option value="dither">Bayer Dithered</option>
         </select>
 
         <div class="divider"></div>
 
+        <!-- Inputs swapped from Sliders to Numeric Fields -->
         <div class="control-group">
             <label>Width (X)</label>
-            <input type="range" id="widthSlider" min="5" max="4096" value="20">
+            <input type="number" id="widthInput" value="20" min="1" step="1">
         </div>
         <div class="control-group">
             <label>Height (Y)</label>
-            <input type="range" id="heightSlider" min="5" max="4096" value="20">
+            <input type="number" id="heightInput" value="20" min="1" step="1">
         </div>
-        <div class="control-group" id="depthWrapper" style="display:none;">
+        <div class="control-group" id="depthWrapper">
             <label>Depth (Z)</label>
-            <input type="range" id="depthSlider" min="3" max="4096" value="20">
+            <input type="number" id="depthInput" value="20" min="1" step="1">
         </div>
         <div class="control-group">
             <label>Unit Size</label>
-            <input type="range" id="scaleSlider" min="0.5" max="3.0" step="0.1" value="1.0">
+            <input type="number" id="scaleInput" value="1.0" min="0.01" max="50" step="0.1">
         </div>
         
         <button id="btnGenerate">Generate Structure</button>
@@ -135,7 +153,7 @@
         
         <div class="divider"></div>
 
-        <button id="btnExportGLB">Export Scene (.GLB)</button>
+        <button id="btnExportGLB">Export Grouped .GLB</button>
         <button id="btnExportPNG">Export 4K Transparent</button>
         
         <div class="divider"></div>
@@ -157,10 +175,11 @@
         let animationSpeed = 2; 
 
         let MAZE_STATE = {
-            mode: 'planar',
+            mode: 'cubic',
+            engine: 'reflective',
             width: 20,
             height: 20,
-            depth: 8,
+            depth: 20,
             unitSize: 1.0,
             wallHeight: 1.5,
             grid: [],
@@ -176,8 +195,8 @@
             scene.background = null;
             scene.fog = new THREE.FogExp2(0x050505, 0.002); 
 
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 10000);
-            camera.position.set(30, 30, 30);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10000);
+            camera.position.set(40, 40, 40);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -188,26 +207,44 @@
             document.body.appendChild(renderer.domElement);
 
             controls = new OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = false;
+            controls.enableDamping = true;
 
-            const ambient = new THREE.AmbientLight(0x404040);
+            // --- HIGH QUALITY 4-LIGHT SYSTEM ---
+            const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+            keyLight.position.set(-30, 50, 60); 
+            keyLight.castShadow = true;
+            scene.add(keyLight);
+
+            const fillLight = new THREE.DirectionalLight(0x00d9ff, 2.5);
+            fillLight.position.set(50, -30, 50);
+            scene.add(fillLight);
+
+            const backLight = new THREE.DirectionalLight(0xffd4a3, 4.0);
+            backLight.position.set(-50, 30, -50);
+            scene.add(backLight);
+
+            const ambient = new THREE.AmbientLight(0x404040, 1.0); 
             scene.add(ambient);
 
-            const dirLight = new THREE.DirectionalLight(0xffffff, 3);
-            dirLight.position.set(50, 200, 100); 
-            dirLight.castShadow = true; 
-            scene.add(dirLight);
-
+            // Group Initialization
             mazeGroup = new THREE.Group();
+            mazeGroup.name = "MAZE_PERIMETER_WALLS";
+            
             solutionGroup = new THREE.Group();
+            solutionGroup.name = "SOLUTION_PATH";
+            
             markersGroup = new THREE.Group();
+            markersGroup.name = "START_END_MARKERS";
+            
             masterGroup = new THREE.Group();
+            masterGroup.name = "LEAD_EDGE_ROOT";
             masterGroup.add(mazeGroup, solutionGroup, markersGroup);
             scene.add(masterGroup);
 
+            // UI Callbacks
             document.getElementById('btnGenerate').addEventListener('click', generate);
             document.getElementById('btnSolve').addEventListener('click', solve);
-            document.getElementById('btnExportGLB').addEventListener('click', exportGLB_Baked);
+            document.getElementById('btnExportGLB').addEventListener('click', exportGLB_Grouped);
             document.getElementById('btnExportPNG').addEventListener('click', export4KTransparent);
             document.getElementById('btnInfoCard').addEventListener('click', downloadMasterInfoCard);
             
@@ -217,14 +254,19 @@
                 generate();
             });
 
+            document.getElementById('renderEngine').addEventListener('change', (e) => {
+                MAZE_STATE.engine = e.target.value;
+                generate();
+            });
+
             generate();
         }
 
         function updateSettings() {
-            MAZE_STATE.width = parseInt(document.getElementById('widthSlider').value);
-            MAZE_STATE.height = parseInt(document.getElementById('heightSlider').value);
-            MAZE_STATE.depth = parseInt(document.getElementById('depthSlider').value);
-            MAZE_STATE.unitSize = parseFloat(document.getElementById('scaleSlider').value);
+            MAZE_STATE.width = parseInt(document.getElementById('widthInput').value);
+            MAZE_STATE.height = parseInt(document.getElementById('heightInput').value);
+            MAZE_STATE.depth = parseInt(document.getElementById('depthInput').value);
+            MAZE_STATE.unitSize = parseFloat(document.getElementById('scaleInput').value);
         }
 
         function clearGroups() {
@@ -243,6 +285,65 @@
             animationQueue = [];
         }
 
+        function getWallMaterial() {
+            if (MAZE_STATE.engine === 'reflective') {
+                return new THREE.MeshStandardMaterial({ 
+                    color: 0xff0000, 
+                    transparent: true, 
+                    opacity: 0.5, 
+                    metalness: 0.9,
+                    roughness: 0.1,
+                    side: THREE.DoubleSide 
+                });
+            } else {
+                const ditherMat = new THREE.MeshStandardMaterial({ 
+                    color: 0xc33c2d, 
+                    emissive: 0x551005,
+                    emissiveIntensity: 0.6,
+                    metalness: 0.6,
+                    roughness: 0.4,
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 1.0
+                });
+
+                ditherMat.onBeforeCompile = (shader) => {
+                    shader.fragmentShader = `
+                        float dither4x4(vec2 position, float brightness) {
+                            int x = int(mod(position.x, 4.0));
+                            int y = int(mod(position.y, 4.0));
+                            int index = x + y * 4;
+                            float limit = 0.0;
+                            if (index == 0) limit = 0.0625; else if (index == 1) limit = 0.5625;
+                            else if (index == 2) limit = 0.1875; else if (index == 3) limit = 0.6875;
+                            else if (index == 4) limit = 0.8125; else if (index == 5) limit = 0.3125;
+                            else if (index == 6) limit = 0.9375; else if (index == 7) limit = 0.4375;
+                            else if (index == 8) limit = 0.25; else if (index == 9) limit = 0.75;
+                            else if (index == 10) limit = 0.125; else if (index == 11) limit = 0.625;
+                            else if (index == 12) limit = 1.0; else if (index == 13) limit = 0.5;
+                            else if (index == 14) limit = 0.875; else if (index == 15) limit = 0.375;
+                            return brightness < limit ? 0.0 : 1.0;
+                        }
+                    ` + shader.fragmentShader;
+
+                    shader.fragmentShader = shader.fragmentShader.replace(
+                        '#include <dithering_fragment>',
+                        `
+                        #include <dithering_fragment>
+                        vec3 viewDir = normalize(vViewPosition);
+                        float fresnel = 1.0 - dot(vNormal, viewDir);
+                        float dither = dither4x4(gl_FragCoord.xy, 0.4 + (pow(fresnel, 2.0) * 0.4));
+                        if (dither < 0.1) discard;
+                        if (dot(vNormal, vec3(0.0, 1.0, 0.0)) > 0.9 && mod(gl_FragCoord.x, 10.0) < 1.0) {
+                             gl_FragColor.rgb += vec3(0.8, 0.4, 0.1);
+                        }
+                        `
+                    );
+                };
+                return ditherMat;
+            }
+        }
+
         function generate() {
             updateSettings();
             clearGroups();
@@ -257,8 +358,7 @@
             grid[0][0].visited = true;
 
             while(stack.length > 0) {
-                let curr = stack[stack.length - 1];
-                let ns = [];
+                let curr = stack[stack.length - 1], ns = [];
                 if(curr.y > 0 && !grid[curr.y-1][curr.x].visited) ns.push({x:curr.x, y:curr.y-1, d1:'top', d2:'bottom'});
                 if(curr.y < h-1 && !grid[curr.y+1][curr.x].visited) ns.push({x:curr.x, y:curr.y+1, d1:'bottom', d2:'top'});
                 if(curr.x > 0 && !grid[curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y, d1:'left', d2:'right'});
@@ -299,11 +399,9 @@
         function drawPlanarGeometry() {
             const u = MAZE_STATE.unitSize, w = MAZE_STATE.width, h = MAZE_STATE.height;
             const wallGeo = new THREE.BoxGeometry(u, MAZE_STATE.wallHeight, u * 0.1);
-            /* Planar Walls remain White */
             const wallMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
             const inst = new THREE.InstancedMesh(wallGeo, wallMat, w * h * 4);
-            const dummy = new THREE.Object3D();
-            const ox = (w * u) / 2, oz = (h * u) / 2;
+            const dummy = new THREE.Object3D(), ox = (w * u) / 2, oz = (h * u) / 2;
             let i = 0;
 
             for(let y=0; y<h; y++) {
@@ -324,13 +422,11 @@
             let grid = Array(d).fill().map(() => Array(h).fill().map(() => Array(w).fill().map(() => ({
                 top:true, bottom:true, left:true, right:true, front:true, back:true, visited:false
             }))));
-
             let stack = [{x:0, y:0, z:0}];
             grid[0][0][0].visited = true;
 
             while(stack.length > 0) {
-                let curr = stack[stack.length-1];
-                let ns = [];
+                let curr = stack[stack.length-1], ns = [];
                 if(curr.x > 0 && !grid[curr.z][curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y, z:curr.z, d1:'left', d2:'right'});
                 if(curr.x < w-1 && !grid[curr.z][curr.y][curr.x+1].visited) ns.push({x:curr.x+1, y:curr.y, z:curr.z, d1:'right', d2:'left'});
                 if(curr.y > 0 && !grid[curr.z][curr.y-1][curr.x].visited) ns.push({x:curr.x, y:curr.y-1, z:curr.z, d1:'bottom', d2:'top'});
@@ -375,16 +471,9 @@
         function drawCubicGeometry() {
             const u = MAZE_STATE.unitSize, w = MAZE_STATE.width, h = MAZE_STATE.height, d = MAZE_STATE.depth;
             const wallGeo = new THREE.PlaneGeometry(u, u);
-            /* Cubic walls updated to Transparent Sky Blue */
-            const wallMat = new THREE.MeshStandardMaterial({ 
-                color: 0x00d9ff, 
-                transparent: true, 
-                opacity: 0.2, 
-                side: THREE.DoubleSide 
-            });
+            const wallMat = getWallMaterial();
             const inst = new THREE.InstancedMesh(wallGeo, wallMat, w*h*d*6);
-            const dummy = new THREE.Object3D();
-            const ox = (w*u)/2, oy = (h*u)/2, oz = (d*u)/2;
+            const dummy = new THREE.Object3D(), ox = (w*u)/2, oy = (h*u)/2, oz = (d*u)/2;
             let i = 0;
 
             for(let z=0; z<d; z++) {
@@ -407,21 +496,8 @@
         function drawMarkers() {
             const u = MAZE_STATE.unitSize;
             const markerGeo = new THREE.SphereGeometry(u*0.35);
-            
-            /* Start: Vibrant Glowing Sky Blue */
-            const sM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({
-                color: 0x00d9ff, 
-                emissive: 0x00d9ff, 
-                emissiveIntensity: 2
-            }));
-            
-            /* End: Glowing Red */
-            const eM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({
-                color: 0xff0000, 
-                emissive: 0xff0000, 
-                emissiveIntensity: 2
-            }));
-
+            const sM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00d9ff, emissiveIntensity: 2 }));
+            const eM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 2 }));
             const ox = (MAZE_STATE.width*u)/2, oy = (MAZE_STATE.height*u)/2, oz = (MAZE_STATE.mode === 'cubic' ? (MAZE_STATE.depth*u)/2 : (MAZE_STATE.height*u)/2);
 
             function setPos(mesh, term) {
@@ -438,20 +514,14 @@
                 }
                 mesh.position.set(px, py, pz);
             }
-
-            setPos(sM, MAZE_STATE.start);
-            setPos(eM, MAZE_STATE.end);
+            setPos(sM, MAZE_STATE.start); setPos(eM, MAZE_STATE.end);
             markersGroup.add(sM, eM);
         }
 
         function solve() {
             while(solutionGroup.children.length > 0) solutionGroup.remove(solutionGroup.children[0]);
-            
-            const is3D = MAZE_STATE.mode === 'cubic';
-            const grid = MAZE_STATE.grid;
-            let degreeMap = new Map();
-            let allCells = [];
-
+            const is3D = MAZE_STATE.mode === 'cubic', grid = MAZE_STATE.grid;
+            let degreeMap = new Map(), allCells = [];
             if(!is3D) {
                 for(let y=0; y<MAZE_STATE.height; y++) for(let x=0; x<MAZE_STATE.width; x++){
                     let d = 0, c = grid[y][x];
@@ -465,13 +535,10 @@
                     degreeMap.set(`${x},${y},${z}`, d); allCells.push({x,y,z});
                 }
             }
-
             const sK = is3D ? `${MAZE_STATE.start.x},${MAZE_STATE.start.y},${MAZE_STATE.start.z}` : `${MAZE_STATE.start.x},${MAZE_STATE.start.y}`;
             const eK = is3D ? `${MAZE_STATE.end.x},${MAZE_STATE.end.y},${MAZE_STATE.end.z}` : `${MAZE_STATE.end.x},${MAZE_STATE.end.y}`;
             degreeMap.set(sK, 10); degreeMap.set(eK, 10);
-
-            let changed = true;
-            let pruned = new Set();
+            let changed = true, pruned = new Set();
             while(changed) {
                 changed = false;
                 allCells.forEach(cell => {
@@ -485,12 +552,10 @@
                     }
                 });
             }
-
             let path = allCells.filter(c => !pruned.has(is3D ? `${c.x},${c.y},${c.z}` : `${c.x},${c.y}`));
             let ordered = [], current = {x: MAZE_STATE.start.x, y: MAZE_STATE.start.y, z: MAZE_STATE.start.z};
             let pathSet = new Set(path.map(p => is3D ? `${p.x},${p.y},${p.z}` : `${p.x},${p.y}`));
             let visited = new Set(), stack = [current];
-
             while(stack.length > 0) {
                 let p = stack.pop();
                 let key = is3D ? `${p.x},${p.y},${p.z}` : `${p.x},${p.y}`;
@@ -498,7 +563,6 @@
                 visited.add(key); ordered.push(p);
                 getNeighbors(p, is3D).forEach(n => { if(pathSet.has(is3D ? `${n.x},${n.y},${n.z}` : `${n.x},${n.y}`)) stack.push(n); });
             }
-
             if(document.getElementById('chkInstant').checked) drawPath(ordered);
             else { animationQueue = ordered; isAnimating = true; }
         }
@@ -526,14 +590,8 @@
         function drawPath(list) {
             const u = MAZE_STATE.unitSize;
             const geo = new THREE.BoxGeometry(u*0.5, u*0.5, u*0.5);
-            /* Path Updated to Glowing Sky Blue */
-            const mat = new THREE.MeshStandardMaterial({
-                color: 0x00d9ff, 
-                emissive: 0x00d9ff,
-                emissiveIntensity: 1.5
-            });
+            const mat = new THREE.MeshStandardMaterial({ color: 0x00d9ff, emissive: 0x00d9ff, emissiveIntensity: 1.5 });
             const ox = (MAZE_STATE.width*u)/2, oy = (MAZE_STATE.height*u)/2, oz = (MAZE_STATE.mode === 'cubic' ? (MAZE_STATE.depth*u)/2 : (MAZE_STATE.height*u)/2);
-
             list.forEach(p => {
                 const mesh = new THREE.Mesh(geo, mat);
                 const py = MAZE_STATE.mode === 'cubic' ? p.y*u - oy + u/2 : 0;
@@ -544,93 +602,127 @@
         }
 
         function export4KTransparent() {
-            document.getElementById('statusText').innerText = "Exporting Transparent PNG...";
-            const w = 4096, h = 4096;
-            const originalBG = scene.background;
-            scene.background = null;
+    document.getElementById('statusText').innerText = "Exporting Transparent PNG...";
+    const w = 4096,
+        h = 4096;
+    const originalBG = scene.background;
+    scene.background = null;
+    
+    const offscreenRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    offscreenRenderer.setSize(w, h);
+    offscreenRenderer.setPixelRatio(1);
+    
+    const originalAspect = camera.aspect;
+    camera.aspect = 1.0;
+    camera.updateProjectionMatrix();
+    
+    offscreenRenderer.render(scene, camera);
+    const dataURL = offscreenRenderer.domElement.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = 'LeadEdge_Transparent.png';
+    link.href = dataURL;
+    link.click();
+    
+    scene.background = originalBG;
+    camera.aspect = originalAspect;
+    camera.updateProjectionMatrix();
+    offscreenRenderer.dispose();
+    document.getElementById('statusText').innerText = "PNG Exported.";
+}
 
-            const offscreenRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-            offscreenRenderer.setSize(w, h);
-            offscreenRenderer.setPixelRatio(1);
-            
-            const originalAspect = camera.aspect;
-            camera.aspect = 1.0;
-            camera.updateProjectionMatrix();
-
-            offscreenRenderer.render(scene, camera);
-            const dataURL = offscreenRenderer.domElement.toDataURL('image/png');
+function exportGLB_Grouped() {
+    document.getElementById('statusText').innerText = "Baking Scene for GLB...";
+    
+    const exportScene = new THREE.Scene();
+    
+    // 1. Create named groups for the export hierarchy to maintain organization in Blender/Unity
+    const mazeWallsExport = new THREE.Group();
+    mazeWallsExport.name = "Maze_Wall_Perimeters";
+    
+    const pathsExport = new THREE.Group();
+    pathsExport.name = "Path_Objects";
+    
+    const markersExport = new THREE.Group();
+    markersExport.name = "Marker_Objects";
+    
+    exportScene.add(mazeWallsExport, pathsExport, markersExport);
+    
+    // 2. Map original groups to our export groups
+    const groupsMap = [
+        { original: mazeGroup, target: mazeWallsExport },
+        { original: solutionGroup, target: pathsExport },
+        { original: markersGroup, target: markersExport }
+    ];
+    
+    groupsMap.forEach(({ original, target }) => {
+        if (!original) return;
+        
+        original.traverse(obj => {
+            if (obj.isInstancedMesh) {
+                // Bake InstancedMesh into a single merged Mesh for better compatibility
+                const count = obj.count;
+                const dummy = new THREE.Object3D();
+                const geos = [];
+                
+                for (let i = 0; i < count; i++) {
+                    obj.getMatrixAt(i, dummy.matrix);
+                    const cloneGeo = obj.geometry.clone();
+                    cloneGeo.applyMatrix4(dummy.matrix);
+                    geos.push(cloneGeo);
+                }
+                
+                if (geos.length > 0) {
+                    // Corrected usage of imported BufferGeometryUtils
+                    const merged = BufferGeometryUtils.mergeGeometries(geos);
+                    const bakedMesh = new THREE.Mesh(merged, obj.material.clone());
+                    bakedMesh.name = obj.name || "Baked_Structure";
+                    target.add(bakedMesh);
+                }
+            } else if (obj.isMesh) {
+                // Clone standard meshes directly
+                const clonedMesh = obj.clone();
+                target.add(clonedMesh);
+            }
+        });
+    });
+    
+    // 3. Export to GLB
+    const exporter = new GLTFExporter();
+    
+    exporter.parse(
+        exportScene, 
+        (result) => {
+            const blob = new Blob([result], { type: 'application/octet-stream' });
             const link = document.createElement('a');
-            link.download = 'LeadEdge_Transparent.png';
-            link.href = dataURL;
+            link.href = URL.createObjectURL(blob);
+            link.download = 'LeadEdge_Maze_Grouped.glb';
             link.click();
-
-            scene.background = originalBG;
-            camera.aspect = originalAspect;
-            camera.updateProjectionMatrix();
-            offscreenRenderer.dispose();
-            document.getElementById('statusText').innerText = "PNG Exported.";
-        }
-
-        function exportGLB_Baked() {
-            document.getElementById('statusText').innerText = "Baking Scene...";
-            const exportScene = new THREE.Scene();
-            [mazeGroup, solutionGroup, markersGroup].forEach(g => {
-                g.traverse(obj => {
-                    if (obj.isInstancedMesh) {
-                        const count = obj.count, dummy = new THREE.Object3D(), geos = [];
-                        for(let i=0; i<count; i++) {
-                            obj.getMatrixAt(i, dummy.matrix);
-                            const cloneGeo = obj.geometry.clone();
-                            cloneGeo.applyMatrix4(dummy.matrix);
-                            geos.push(cloneGeo);
-                        }
-                        const merged = BufferGeometryUtils.mergeGeometries(geos);
-                        exportScene.add(new THREE.Mesh(merged, obj.material.clone()));
-                    } else if (obj.isMesh) exportScene.add(obj.clone());
-                });
-            });
-
-            const exporter = new GLTFExporter();
-            exporter.parse(exportScene, (result) => {
-                const blob = new Blob([JSON.stringify(result)], { type: 'application/octet-stream' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = 'LeadEdge_Maze.glb';
-                link.click();
-            }, { binary: false });
-        }
+            document.getElementById('statusText').innerText = "GLB Export Complete.";
+        },
+        (error) => {
+            console.error("Export Error:", error);
+            document.getElementById('statusText').innerText = "Export Failed.";
+        },
+        { binary: true } // This ensures a .glb file instead of .gltf
+    );
+}
 
         function downloadMasterInfoCard() {
             const canvas = document.createElement('canvas');
             canvas.width = 1920; canvas.height = 1080;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = "#111"; ctx.fillRect(0,0,1920,1080);
-            
-            /* Changed context to Sky Blue */
             ctx.strokeStyle = "#00d9ff"; ctx.lineWidth = 6; ctx.strokeRect(40,40,1840,1000);
             ctx.strokeStyle = "#ff0055"; ctx.lineWidth = 2; ctx.strokeRect(50,50,1820,980);
-
             const mono = "Courier New, monospace";
             ctx.fillStyle = "#00d9ff"; ctx.font = "bold 60px "+mono; ctx.fillText("LEAD EDGE MAZE MASTER LOGIC", 100, 150);
-            
-            ctx.fillStyle = "#ccc"; ctx.font = "36px "+mono;
-            ctx.fillText("ALGORITHM: DEAD END DIVISION (ALGEBRAIC BYPRODUCT)", 100, 240);
-
+            ctx.fillStyle = "#ccc"; ctx.font = "36px "+mono; ctx.fillText("ALGORITHM: DEAD END DIVISION (ALGEBRAIC BYPRODUCT)", 100, 240);
             ctx.fillStyle = "#ff0055"; ctx.font = "bold 44px "+mono; ctx.fillText("PLANAR LOGIC:", 100, 340);
-            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono;
-            ctx.fillText("P = Ω - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 410);
-
+            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono; ctx.fillText("P = Ω - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 410);
             ctx.fillStyle = "#00d9ff"; ctx.font = "bold 44px "+mono; ctx.fillText("CUBIC VOLUMETRIC LOGIC:", 100, 540);
-            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono;
-            ctx.fillText("P(3D) = Ω(V) - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 610);
-
-            ctx.fillStyle = "#888"; ctx.font = "30px "+mono;
-            ctx.fillText("LEGEND: P=Path, Ω=Grid, Φ=Pruning Op, deg=Exits, {S,E}=Terminals", 100, 750);
-
+            ctx.fillStyle = "#fff"; ctx.font = "40px "+mono; ctx.fillText("P(3D) = Ω(V) - Σ { v ∈ Φ(Ω) | deg(v) = 1 ∧ v ∉ {S,E} }", 100, 610);
             const link = document.createElement('a');
-            link.download = 'LeadEdge_MasterCard.png';
-            link.href = canvas.toDataURL();
-            link.click();
+            link.download = 'LeadEdge_MasterCard.png'; link.href = canvas.toDataURL(); link.click();
         }
 
         function animate() {
