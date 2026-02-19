@@ -21,6 +21,7 @@
     --weld:      #ff6ef7;
     --save:      #00e5cc;
     --load:      #a78bfa;
+    --layer-bg:  #0f1117;
   }
 
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -153,6 +154,13 @@
   }
   .btn.load:hover,
   .btn.load:active              { background: var(--load);      color: #000; }
+  .btn.layer-btn {
+    border-color: var(--accent3);
+    color: var(--accent3);
+    box-shadow: 0 0 8px rgba(123, 92, 250, 0.2);
+  }
+  .btn.layer-btn:hover,
+  .btn.layer-btn:active         { background: var(--accent3);   color: #fff; }
 
   #topbar-btns {
     display: flex;
@@ -168,6 +176,7 @@
     min-height: 0;
     display: flex;
     overflow: hidden;
+    position: relative;
   }
 
   /* ───────── SIDEBAR ───────── */
@@ -182,7 +191,6 @@
     overflow: hidden;
   }
 
-  /* Sidebar top controls — fixed, never scrolls */
   #sidebar-controls {
     flex-shrink: 0;
     padding: 8px 10px;
@@ -201,7 +209,6 @@
     padding: 6px 6px;
   }
 
-  /* Scrollable arc-card list */
   #arc-list {
     flex: 1;
     overflow-y: auto;
@@ -254,7 +261,7 @@
     padding: 0;
     overflow: hidden;
     transition: max-height 0.2s ease;
-    max-height: 2000px; /* open by default, will be toggled via JS */
+    max-height: 2000px;
   }
   .arc-card-body.collapsed { max-height: 0; }
 
@@ -318,14 +325,12 @@
   }
   .dev-item:hover              { border-color: var(--accent1); }
   .dev-item.selected           { border-color: var(--deviation); color: var(--deviation); }
-  /* Top row: dot + label + delete */
   .dev-item-row {
     display: flex; align-items: center; gap: 5px;
     padding: 3px 6px;
   }
   .dev-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--deviation); flex-shrink: 0; }
   .dev-del { margin-left: auto; color: var(--red); cursor: pointer; font-size: 0.72rem; padding: 0 2px; flex-shrink: 0; }
-  /* Bottom row: FREE / SMOOTH toggle pill */
   .dev-mode-row {
     display: flex;
     border-top: 1px solid #1e2028;
@@ -352,7 +357,6 @@
   .dev-mode-btn.active-half   { background: #001e2a; color: var(--accent1); }
   .dev-mode-btn.active-right  { background: #2a001a; color: var(--weld); }
 
-  /* Weld endpoint selector items */
   .weld-item {
     display: flex; align-items: center; gap: 5px;
     background: #0d0f12; border: 1px solid #2a2d35;
@@ -364,7 +368,6 @@
   .weld-item.weld-selected { border-color: var(--weld); color: var(--weld); }
   .weld-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 
-  /* Sidebar footer — method + blender link */
   #sidebar-footer {
     flex-shrink: 0;
     padding: 9px 10px;
@@ -383,6 +386,12 @@
     position: relative;
     overflow: hidden;
     background: #0d0f12;
+  }
+  #bg-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    display: block;
+    pointer-events: none;
   }
   #arc-canvas {
     position: absolute;
@@ -439,6 +448,250 @@
     display: none;
     white-space: nowrap;
   }
+
+  /* ─────────────────────────────────────────────
+     LAYER PANEL — floating collapsible from right
+  ───────────────────────────────────────────── */
+  #layer-panel-container {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    z-index: 50;
+    display: flex;
+    align-items: stretch;
+    pointer-events: none;
+  }
+
+  /* The tab that sticks out */
+  #layer-tab {
+    pointer-events: all;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 26px;
+    min-height: 110px;
+    height: auto;
+    align-self: center;
+    background: var(--accent3);
+    color: #fff;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.48rem;
+    letter-spacing: 2px;
+    cursor: pointer;
+    border-left: 2px solid rgba(255,255,255,0.2);
+    border-top: 2px solid rgba(255,255,255,0.2);
+    border-bottom: 2px solid rgba(255,255,255,0.2);
+    border-radius: 4px 0 0 4px;
+    transition: background 0.15s;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    padding: 10px 0;
+  }
+  #layer-tab:hover { background: #6042e0; }
+  #layer-tab-icon { font-size: 0.9rem; }
+
+  /* The drawer */
+  #layer-panel {
+    pointer-events: all;
+    width: 0;
+    overflow: hidden;
+    transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    background: rgba(18, 20, 26, 0.97);
+    border-left: 2px solid var(--accent3);
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  #layer-panel.open { width: 260px; }
+
+  #layer-panel-inner {
+    width: 260px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #layer-panel-header {
+    flex-shrink: 0;
+    padding: 10px 12px 8px;
+    border-bottom: 2px solid var(--accent3);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #layer-panel-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.6rem;
+    color: var(--accent3);
+    letter-spacing: 2px;
+    flex: 1;
+  }
+  #layer-close-btn {
+    background: transparent;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 2px 6px;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #layer-close-btn:hover { border-color: var(--red); color: var(--red); }
+
+  #layer-toolbar {
+    flex-shrink: 0;
+    padding: 7px 10px;
+    display: flex;
+    gap: 5px;
+    border-bottom: 1px solid #2a2d35;
+    flex-wrap: wrap;
+  }
+  #layer-toolbar .btn {
+    font-size: 0.42rem;
+    padding: 5px 8px;
+    flex: 1;
+  }
+
+  #layer-list {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px 0;
+  }
+
+  .layer-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #1e2028;
+    cursor: pointer;
+    transition: background 0.1s;
+    user-select: none;
+    position: relative;
+  }
+  .layer-item:hover { background: #1a1d26; }
+  .layer-item.active-layer {
+    background: #1a1730;
+    border-left: 3px solid var(--accent3);
+  }
+  .layer-item.bg-layer { border-left: 3px solid #444; }
+  .layer-item.bg-layer.active-layer { border-left: 3px solid var(--accent3); }
+
+  .layer-vis-btn {
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0 2px;
+    opacity: 0.6;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .layer-vis-btn:hover { opacity: 1; }
+  .layer-vis-btn.hidden { opacity: 0.25; }
+
+  .layer-color-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.3);
+    flex-shrink: 0;
+  }
+
+  .layer-name {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.46rem;
+    color: var(--text);
+    letter-spacing: 1px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .layer-arc-count {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.52rem;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .layer-del-btn {
+    color: var(--red);
+    cursor: pointer;
+    font-size: 0.72rem;
+    padding: 0 2px;
+    flex-shrink: 0;
+    opacity: 0.5;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .layer-del-btn:hover { opacity: 1; }
+
+  /* Background layer options */
+  #bg-layer-options {
+    flex-shrink: 0;
+    padding: 8px 10px;
+    border-top: 1px solid #2a2d35;
+    background: #0d0f14;
+  }
+  .bg-opt-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.46rem;
+    color: var(--border);
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+  }
+  .bg-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+  .bg-row-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.56rem;
+    color: var(--muted);
+    min-width: 38px;
+  }
+  #bg-color-input {
+    width: 32px;
+    height: 22px;
+    border: 1px solid var(--accent3);
+    background: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  #bg-color-hex {
+    background: #0d0f12;
+    border: 1px solid var(--accent3);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.6rem;
+    padding: 2px 5px;
+    flex: 1;
+  }
+  #bg-color-hex:focus { outline: none; border-color: var(--accent1); }
+
+  #bg-img-name {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.52rem;
+    color: var(--accent2);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bg-img-clear {
+    color: var(--red);
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0 2px;
+  }
+  .bg-img-clear:hover { color: #fff; }
 
   /* ───────── FOOTER (status bar) ───────── */
   #footer {
@@ -534,9 +787,179 @@
   .tooltip-btn.act             { border-color: var(--accent1); color: var(--accent1); }
   .tooltip-btn.act:hover       { background: var(--accent1);  color: #000; }
 
+  /* ─────────────────────────────────────────────
+     EXPORT MODAL
+  ───────────────────────────────────────────── */
+  #export-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    z-index: 200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  #export-modal-overlay.open { display: flex; }
+
+  #export-modal {
+    background: #181a1e;
+    border: 2px solid var(--accent3);
+    width: min(480px, 94vw);
+    max-height: 90vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 40px rgba(123, 92, 250, 0.3);
+  }
+
+  #export-modal-header {
+    padding: 12px 16px;
+    border-bottom: 2px solid var(--accent3);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #export-modal-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.7rem;
+    color: var(--accent3);
+    letter-spacing: 2px;
+    flex: 1;
+  }
+  #export-modal-close {
+    background: transparent;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    cursor: pointer;
+    padding: 3px 8px;
+    font-size: 0.8rem;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #export-modal-close:hover { border-color: var(--red); color: var(--red); }
+
+  #export-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  .exp-section-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.52rem;
+    color: var(--border);
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+  }
+
+  .exp-option-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .exp-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid #2a2d35;
+    cursor: pointer;
+    transition: border-color 0.1s;
+    background: #0d0f12;
+  }
+  .exp-option:hover { border-color: var(--accent3); }
+  .exp-option.selected { border-color: var(--accent3); background: #16102a; }
+  .exp-option input[type="radio"] { flex-shrink: 0; margin-top: 2px; accent-color: var(--accent3); }
+  .exp-option-label {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.48rem;
+    color: var(--accent2);
+    letter-spacing: 1px;
+    display: block;
+    margin-bottom: 2px;
+  }
+  .exp-option-desc {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.56rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .exp-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid #1e2028;
+  }
+  .exp-toggle-row:last-child { border-bottom: none; }
+  .exp-toggle-row label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.6rem;
+    color: var(--text);
+    flex: 1;
+    cursor: pointer;
+  }
+  .exp-toggle-row input[type="checkbox"] {
+    width: 14px; height: 14px;
+    accent-color: var(--accent3);
+    cursor: pointer;
+  }
+
+  .exp-format-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .exp-format-btn {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.48rem;
+    letter-spacing: 1px;
+    padding: 7px 14px;
+    border: 1.5px solid var(--muted);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.12s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .exp-format-btn:hover { border-color: var(--accent3); color: var(--accent3); }
+  .exp-format-btn.exp-png  { border-color: var(--accent2); color: var(--accent2); }
+  .exp-format-btn.exp-png:hover  { background: var(--accent2); color: #000; }
+  .exp-format-btn.exp-svg  { border-color: var(--save); color: var(--save); }
+  .exp-format-btn.exp-svg:hover  { background: var(--save); color: #000; }
+  .exp-format-btn.exp-mp4  { border-color: var(--weld); color: var(--weld); }
+  .exp-format-btn.exp-mp4:hover  { background: var(--weld); color: #000; }
+
+  .exp-note {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.54rem;
+    color: var(--muted);
+    line-height: 1.6;
+    padding: 6px 8px;
+    background: #0d0f12;
+    border-left: 2px solid var(--accent3);
+  }
+
   ::-webkit-scrollbar       { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: #0d0f12; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Layer inactive notice on canvas */
+  #layer-inactive-notice {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 25;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.5rem;
+    padding: 6px 14px;
+    background: rgba(123, 92, 250, 0.18);
+    border: 1px solid var(--accent3);
+    color: var(--accent3);
+    letter-spacing: 1px;
+    pointer-events: none;
+    display: none;
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -556,13 +979,17 @@
       <span class="tb-label">ARCS</span>
       <div class="tb-val" id="arc-count-display" style="min-width:36px;">1</div>
     </div>
+    <div class="tb-group">
+      <span class="tb-label">LAYER</span>
+      <div class="tb-val" id="active-layer-display" style="min-width:72px;border-color:var(--accent3);color:var(--accent3);">Layer 1</div>
+    </div>
 
     <div id="topbar-btns">
       <button class="btn accent"  onclick="addDeviation()">+ DEV</button>
       <button class="btn accent"  onclick="measureArc()">MEASURE</button>
       <button class="btn accent2" onclick="reframeView(true)">⌖ REFRAME</button>
       <button class="btn weld"    id="btn-weld-mode" onclick="toggleWeldMode()">⚡ WELD</button>
-      <button class="btn"         onclick="exportPNG()">PNG</button>
+      <button class="btn layer-btn" onclick="openExportModal()">⬇ EXPORT</button>
       <button class="btn save"    onclick="saveSVG()">⬇ SAVE</button>
       <button class="btn load"    onclick="loadSVG()">⬆ LOAD</button>
       <button class="btn danger"  onclick="clearAll()">CLEAR</button>
@@ -575,13 +1002,11 @@
     <!-- ─── Sidebar ─── -->
     <div id="sidebar">
 
-      <!-- Fixed top controls -->
       <div id="sidebar-controls">
         <div class="ctrl-row">
           <button class="btn accent" style="font-size:0.52rem;" onclick="addNewArc()">+ ADD ARC</button>
           <button class="btn weld"   style="font-size:0.52rem;" id="sb-weld-btn" onclick="toggleWeldMode()">⚡ WELD</button>
         </div>
-        <!-- Weld panel — hidden until weld mode active -->
         <div id="weld-panel" style="display:none;">
           <div class="section-title" style="margin-bottom:4px;">SELECT 2 ENDPOINTS TO WELD</div>
           <div id="weld-endpoint-list"></div>
@@ -590,10 +1015,8 @@
         </div>
       </div>
 
-      <!-- Scrollable list of arc cards -->
       <div id="arc-list"></div>
 
-      <!-- Method info always at bottom -->
       <div id="sidebar-footer">
         C = √(d×3)²&nbsp; A = C²&nbsp; V = A³&nbsp; SSA = V×0.25<br>
         <span style="color:var(--accent2);">J.C. Venable — Arc Edge</span><br>
@@ -606,13 +1029,61 @@
 
     <!-- ─── Canvas area ─── -->
     <div id="canvas-wrap">
+      <canvas id="bg-canvas"></canvas>
       <canvas id="arc-canvas"></canvas>
 
       <div id="weld-hint">⚡ WELD MODE — Select two endpoints from sidebar, then Execute Weld</div>
+      <div id="layer-inactive-notice">⚠ BACKGROUND LAYER ACTIVE — Switch to an arc layer to draw</div>
 
       <button id="btn-reframe" onclick="reframeView(true)" title="Fit all arc points into view">
         ⌖ REFRAME VIEW
       </button>
+
+      <!-- ─── Floating Layer Panel ─── -->
+      <div id="layer-panel-container">
+        <!-- Tab sticking out -->
+        <div id="layer-tab" onclick="toggleLayerPanel()">
+          <span id="layer-tab-icon">⧉</span>
+          <span>LAYERS</span>
+        </div>
+        <!-- Drawer -->
+        <div id="layer-panel">
+          <div id="layer-panel-inner">
+            <div id="layer-panel-header">
+              <span id="layer-panel-title">⧉ LAYER STACK</span>
+              <button id="layer-close-btn" onclick="toggleLayerPanel()">✕</button>
+            </div>
+            <div id="layer-toolbar">
+              <button class="btn accent" onclick="addLayer()" title="Add new arc layer">+ LAYER</button>
+              <button class="btn accent2" onclick="duplicateActiveLayer()" title="Duplicate active layer">DUP</button>
+              <button class="btn danger" onclick="deleteActiveLayer()" title="Delete active layer">DEL</button>
+            </div>
+            <!-- Layer list — rendered by JS -->
+            <div id="layer-list"></div>
+            <!-- Background layer options — always visible -->
+            <div id="bg-layer-options">
+              <div class="bg-opt-title">▣ BACKGROUND LAYER</div>
+              <div class="bg-row">
+                <span class="bg-row-label">Color</span>
+                <input type="color" id="bg-color-input" value="#0d0f12" oninput="onBgColorChange(this.value)">
+                <input type="text" id="bg-color-hex" value="#0d0f12" maxlength="7"
+                       oninput="onBgColorHexInput(this.value)"
+                       onblur="syncBgColorHex()">
+              </div>
+              <div class="bg-row">
+                <span class="bg-row-label">Image</span>
+                <span id="bg-img-name" style="color:var(--muted);">none</span>
+                <span class="bg-img-clear" onclick="clearBgImage()" title="Clear image">✕</span>
+              </div>
+              <div class="bg-row" style="gap:4px;">
+                <button class="btn" style="flex:1;font-size:0.42rem;padding:5px 4px;" onclick="importBgImage()">IMG / GIF</button>
+                <button class="btn" style="flex:1;font-size:0.42rem;padding:5px 4px;" onclick="importBgVideo()">MP4</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
   </div><!-- /main -->
@@ -643,6 +1114,10 @@
       <span class="status-label">HANDLE</span>
       <span class="status-val" id="handle-mode-display">FREE</span>
     </div>
+    <div class="status-item">
+      <span class="status-label">LAYER</span>
+      <span class="status-val" id="footer-layer-display" style="color:var(--accent3);">BG+L1</span>
+    </div>
     <button id="footer-reframe-btn" onclick="reframeView(true)">⌖ REFRAME</button>
     <div id="footer-author">Justin Craig Venable · ArcEdge · dartedge.com/radicaledge</div>
   </div>
@@ -659,10 +1134,104 @@
   <button class="tooltip-btn" id="tp-right"  onclick="setHandleMode('RIGHT')">RIGHT ANGLE</button>
 </div>
 
+<!-- ══════════════════════ EXPORT MODAL ══════════════════════ -->
+<div id="export-modal-overlay">
+  <div id="export-modal">
+    <div id="export-modal-header">
+      <span id="export-modal-title">⬇ EXPORT / RENDER</span>
+      <button id="export-modal-close" onclick="closeExportModal()">✕ CLOSE</button>
+    </div>
+    <div id="export-modal-body">
+
+      <!-- Content mode -->
+      <div>
+        <div class="exp-section-title">CONTENT MODE</div>
+        <div class="exp-option-group">
+          <label class="exp-option selected" id="exp-opt-full">
+            <input type="radio" name="exp-content" value="full" checked onchange="selectExpOption('full')">
+            <div>
+              <span class="exp-option-label">FULL CANVAS</span>
+              <span class="exp-option-desc">Exports everything as displayed — grid, handles, labels, background</span>
+            </div>
+          </label>
+          <label class="exp-option" id="exp-opt-arcs">
+            <input type="radio" name="exp-content" value="arcs" onchange="selectExpOption('arcs')">
+            <div>
+              <span class="exp-option-label">ARCS + MEASUREMENTS</span>
+              <span class="exp-option-desc">Arc paths with measurement overlays, no grid or handles</span>
+            </div>
+          </label>
+          <label class="exp-option" id="exp-opt-clean">
+            <input type="radio" name="exp-content" value="clean" onchange="selectExpOption('clean')">
+            <div>
+              <span class="exp-option-label">CLEAN ARC LINES ONLY</span>
+              <span class="exp-option-desc">Only arc curves — no points, handles, labels, or grid</span>
+            </div>
+          </label>
+          <label class="exp-option" id="exp-opt-transparent">
+            <input type="radio" name="exp-content" value="transparent" onchange="selectExpOption('transparent')">
+            <div>
+              <span class="exp-option-label">TRANSPARENT BACKGROUND (PNG only)</span>
+              <span class="exp-option-desc">Arc linework on a transparent background — PNG only</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Visibility toggles -->
+      <div>
+        <div class="exp-section-title">VISIBILITY OPTIONS</div>
+        <div>
+          <div class="exp-toggle-row">
+            <label for="exp-grid">Show grid</label>
+            <input type="checkbox" id="exp-grid" checked>
+          </div>
+          <div class="exp-toggle-row">
+            <label for="exp-handles">Show tangent handles</label>
+            <input type="checkbox" id="exp-handles" checked>
+          </div>
+          <div class="exp-toggle-row">
+            <label for="exp-labels">Show arc labels (S/O/d markers)</label>
+            <input type="checkbox" id="exp-labels" checked>
+          </div>
+          <div class="exp-toggle-row">
+            <label for="exp-measurements">Show measurement data overlay</label>
+            <input type="checkbox" id="exp-measurements">
+          </div>
+          <div class="exp-toggle-row">
+            <label for="exp-bg">Include background layer</label>
+            <input type="checkbox" id="exp-bg" checked>
+          </div>
+          <div class="exp-toggle-row">
+            <label for="exp-all-layers">Export all layers (unchecked = active layer only)</label>
+            <input type="checkbox" id="exp-all-layers" checked>
+          </div>
+        </div>
+      </div>
+
+      <!-- Format -->
+      <div>
+        <div class="exp-section-title">EXPORT FORMAT</div>
+        <div class="exp-format-group">
+          <button class="exp-format-btn exp-png" onclick="doExport('png')">PNG</button>
+          <button class="exp-format-btn exp-svg" onclick="doExport('svg')">SVG + SCENE</button>
+          <button class="exp-format-btn exp-mp4" onclick="doExport('mp4')" id="exp-mp4-btn">MP4 VIDEO</button>
+        </div>
+        <div class="exp-note" style="margin-top:8px;" id="exp-format-note">
+          PNG: raster image at canvas resolution.<br>
+          SVG + SCENE: vector arcs with embedded scene data for full reload. Rasterized BG images packed as base64 data-URI.<br>
+          MP4: animated export — requires an imported animated GIF or MP4 video in the background layer. Uses Canvas recording API.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════════════════
 //  ARC EDGE — Justin Craig Venable
-//  Multi-Arc Edition
+//  Multi-Arc + Layer Edition v4
 //  Circumference: C = √(d*3)² = d*3
 //  Area: C²   Volume: A³   Sphere Surface Area: V*0.25
 //  dartedge.com/radicaledge
@@ -670,6 +1239,8 @@
 
 const canvas = document.getElementById('arc-canvas');
 const ctx    = canvas.getContext('2d');
+const bgCanvas = document.getElementById('bg-canvas');
+const bgCtx    = bgCanvas.getContext('2d');
 const wrap   = document.getElementById('canvas-wrap');
 
 // ── Viewport ──
@@ -683,16 +1254,49 @@ function worldToScreen(wx, wy) {
 }
 
 // ══════════════════════════════════════════════
+//  LAYER SYSTEM
+//  layers[] — array of layer objects
+//  activeLayerIdx — which layer is active
+//  layers[0] is always the background layer
+//  layers[1+] are arc layers
+// ══════════════════════════════════════════════
+
+let layerIdCounter = 1;
+const MAX_LAYERS = 100;
+
+function makeLayer(name, isBg) {
+  return {
+    id:       layerIdCounter++,
+    name:     name || `Layer ${layerIdCounter - 1}`,
+    isBg:     isBg || false,
+    visible:  true,
+    arcs:     [],
+    // bg-only
+    bgColor:  '#0d0f12',
+    bgImage:  null,       // { src, img, name, type:'img'|'gif'|'video', element }
+  };
+}
+
+let layers = [
+  makeLayer('Background', true),
+  makeLayer('Layer 1', false),
+];
+// Background starts at idx 0, but the FIRST arc layer is idx 1
+let activeLayerIdx = 1;
+
+function activeLayer() { return layers[activeLayerIdx]; }
+function bgLayer()     { return layers[0]; }
+// Arcs drawn to the active layer
+function getArcsForLayer(idx) { return layers[idx].arcs; }
+
+// ══════════════════════════════════════════════
 //  ARC DATA MODEL
-//  arcs[] — array of arc objects
-//  activeArcIdx — which arc receives pointer events
 // ══════════════════════════════════════════════
 
 let arcIdCounter   = 1;
 let devIdCounter   = 1;
 let activeArcIdx   = 0;
 
-// Arc colors so multiple arcs are visually distinct
 const ARC_COLORS = [
   '#ffffff', '#00e5cc', '#c8f400', '#f5a623', '#ff6ef7',
   '#7b5cfa', '#ff4466', '#4fc3f7', '#aed581', '#ffb74d'
@@ -714,10 +1318,17 @@ function makeArc() {
   };
 }
 
-let arcs = [ makeArc() ];
+// We redirect all arc access to the active layer's arcs array
+Object.defineProperty(window, 'arcs', {
+  get: () => activeLayer().arcs,
+  set: (v) => { activeLayer().arcs = v; }
+});
 
-function getArc(idx) { return arcs[idx]; }
-function activeArc() { return arcs[activeArcIdx]; }
+// Initialize first arc layer with one arc
+layers[1].arcs = [ makeArc() ];
+
+function getArc(idx) { return activeLayer().arcs[idx]; }
+function activeArc() { return activeLayer().arcs[activeArcIdx] || activeLayer().arcs[0]; }
 
 // ══════════════════════════════════════════════
 //  VENABLE MATH
@@ -825,19 +1436,24 @@ function measureArcObj(arc) {
 }
 
 function measureArc() {
-  arcs.forEach(arc => { arc.measureResult = measureArcObj(arc); });
+  activeLayer().arcs.forEach(arc => { arc.measureResult = measureArcObj(arc); });
   updateAllCards();
   updateTotalLength();
 }
 
 function updateTotalLength() {
   let total = 0;
-  arcs.forEach(arc => {
-    if (arc.measureResult) total += parseFloat(arc.measureResult.totalLen);
+  // Count all arcs across all layers
+  layers.forEach(layer => {
+    if (layer.isBg) return;
+    layer.arcs.forEach(arc => {
+      if (arc.measureResult) total += parseFloat(arc.measureResult.totalLen);
+    });
   });
+  const allArcCount = layers.reduce((s, l) => s + (l.isBg ? 0 : l.arcs.length), 0);
   document.getElementById('total-length-display').textContent =
     total > 0 ? total.toFixed(2) + ' px' : '—';
-  document.getElementById('arc-count-display').textContent = arcs.length;
+  document.getElementById('arc-count-display').textContent = allArcCount;
 }
 
 // ══════════════════════════════════════════════
@@ -846,10 +1462,12 @@ function updateTotalLength() {
 function updateAllCards() {
   const list = document.getElementById('arc-list');
   list.innerHTML = '';
-  arcs.forEach((arc, idx) => {
+  const layerArcs = activeLayer().arcs;
+  layerArcs.forEach((arc, idx) => {
     list.appendChild(buildArcCard(arc, idx));
   });
-  document.getElementById('active-arc-display').textContent = 'A' + (activeArcIdx + 1);
+  const dispIdx = activeArcIdx < layerArcs.length ? activeArcIdx : 0;
+  document.getElementById('active-arc-display').textContent = 'A' + (dispIdx + 1);
 }
 
 function buildArcCard(arc, idx) {
@@ -860,7 +1478,6 @@ function buildArcCard(arc, idx) {
   const r    = arc.measureResult;
   const lenTxt = r ? r.totalLen + ' px' : '—';
 
-  // Header
   const hdr = document.createElement('div');
   hdr.className = 'arc-card-header';
   hdr.innerHTML = `
@@ -876,11 +1493,9 @@ function buildArcCard(arc, idx) {
   });
   card.appendChild(hdr);
 
-  // Body
   const body = document.createElement('div');
   body.className = 'arc-card-body' + (arc.collapsed ? ' collapsed' : '');
 
-  // — Arc Builder —
   body.appendChild(makeSectionEl('Arc Builder', `
     <div class="field-row">
       <span class="field-label">Start X</span>
@@ -908,7 +1523,6 @@ function buildArcCard(arc, idx) {
     </div>
   `));
 
-  // — Deviations —
   const devSection = makeSectionEl('Deviations', `
     <div class="dev-list" id="a${arc.id}-dev-list"></div>
     <div style="margin-top:7px;">
@@ -922,7 +1536,6 @@ function buildArcCard(arc, idx) {
   `);
   body.appendChild(devSection);
 
-  // — Circumference Calc —
   body.appendChild(makeSectionEl('Circumference', `
     <div class="circle-preview">
       <canvas id="a${arc.id}-small-circle" class="circle-canvas" width="70" height="70"></canvas>
@@ -944,14 +1557,12 @@ function buildArcCard(arc, idx) {
     </div>
   `));
 
-  // — Segment Lengths —
   body.appendChild(makeSectionEl('Segment Lengths', `
     <div id="a${arc.id}-segment-list" style="display:flex;flex-direction:column;gap:3px;max-height:110px;overflow-y:auto;"></div>
   `));
 
   card.appendChild(body);
 
-  // Fill in dynamic content after DOM append
   setTimeout(() => {
     updateCardData(arc);
     updateDevListInCard(arc, idx);
@@ -1018,7 +1629,6 @@ function updateCardData(arc) {
       });
     }
 
-    // Update header length
     const hdr = document.querySelector(`#arc-card-${arc.id} .arc-card-len`);
     if (hdr) hdr.textContent = r.totalLen + ' px';
   }
@@ -1032,7 +1642,6 @@ function updateDevListInCard(arc, arcIdx) {
     const div = document.createElement('div');
     div.className = 'dev-item' + (arc.selectedDev === idx ? ' selected' : '');
 
-    // Top row: dot + label + del
     const topRow = document.createElement('div');
     topRow.className = 'dev-item-row';
     topRow.innerHTML =
@@ -1047,7 +1656,6 @@ function updateDevListInCard(arc, arcIdx) {
     });
     div.appendChild(topRow);
 
-    // Bottom row: mode toggle buttons
     const modeRow = document.createElement('div');
     modeRow.className = 'dev-mode-row';
     const modes = [
@@ -1092,18 +1700,304 @@ function drawCirclePreview(id, diameter, color) {
 }
 
 // ══════════════════════════════════════════════
+//  LAYER MANAGEMENT
+// ══════════════════════════════════════════════
+
+let layerPanelOpen = false;
+
+function toggleLayerPanel() {
+  layerPanelOpen = !layerPanelOpen;
+  const panel = document.getElementById('layer-panel');
+  panel.classList.toggle('open', layerPanelOpen);
+  document.getElementById('layer-tab-icon').textContent = layerPanelOpen ? '⧉' : '⧉';
+  renderLayerPanel();
+}
+
+function renderLayerPanel() {
+  const list = document.getElementById('layer-list');
+  list.innerHTML = '';
+
+  // Render in reverse order (top layer last in array = top of visual stack)
+  // But show BG at bottom, and higher layers at top
+  const displayLayers = [...layers].reverse();
+
+  displayLayers.forEach(layer => {
+    const realIdx = layers.indexOf(layer);
+    const isActive = realIdx === activeLayerIdx;
+    const item = document.createElement('div');
+    item.className = 'layer-item' + (layer.isBg ? ' bg-layer' : '') + (isActive ? ' active-layer' : '');
+
+    const arcCount = layer.isBg ? '—' : layer.arcs.length;
+    const colorDot = layer.isBg ? bgLayer().bgColor : (layer.arcs[0] ? layer.arcs[0].color : '#555');
+
+    item.innerHTML = `
+      <span class="layer-vis-btn ${layer.visible ? '' : 'hidden'}" onclick="toggleLayerVisible(${realIdx}, event)" title="${layer.visible ? 'Hide' : 'Show'}">${layer.visible ? '👁' : '○'}</span>
+      <span class="layer-color-swatch" style="background:${colorDot};"></span>
+      <span class="layer-name">${layer.name}${layer.isBg ? ' [BG]' : ''}</span>
+      <span class="layer-arc-count">${layer.isBg ? '' : arcCount + ' arc' + (arcCount !== 1 ? 's' : '')}</span>
+      ${!layer.isBg ? `<span class="layer-del-btn" onclick="deleteLayerAt(${realIdx}, event)">✕</span>` : ''}
+    `;
+    item.addEventListener('click', (e) => {
+      if (e.target.classList.contains('layer-vis-btn') || e.target.classList.contains('layer-del-btn')) return;
+      setActiveLayer(realIdx);
+    });
+    list.appendChild(item);
+  });
+
+  // Update bg layer options UI
+  document.getElementById('bg-color-input').value = bgLayer().bgColor;
+  document.getElementById('bg-color-hex').value = bgLayer().bgColor;
+  const bgImg = bgLayer().bgImage;
+  document.getElementById('bg-img-name').textContent = bgImg ? bgImg.name : 'none';
+  document.getElementById('bg-img-name').style.color = bgImg ? 'var(--accent2)' : 'var(--muted)';
+
+  // Update footer/header layer display
+  const layerName = activeLayer().name + (activeLayer().isBg ? ' [BG]' : '');
+  document.getElementById('active-layer-display').textContent = layerName;
+  document.getElementById('footer-layer-display').textContent =
+    `BG+${layers.filter(l => !l.isBg).length}L`;
+}
+
+function setActiveLayer(idx) {
+  activeLayerIdx = idx;
+  activeArcIdx = 0;
+  // Show notice if user activates BG layer
+  const notice = document.getElementById('layer-inactive-notice');
+  if (layers[idx].isBg) {
+    notice.style.display = 'block';
+    notice.textContent = '⚠ BACKGROUND LAYER ACTIVE — switch to an arc layer to draw arcs';
+  } else {
+    notice.style.display = 'none';
+  }
+  updateAllCards();
+  updateModeDisplay();
+  renderLayerPanel();
+  render();
+}
+
+function addLayer() {
+  if (layers.length >= MAX_LAYERS + 1) { // +1 for bg
+    alert(`Maximum of ${MAX_LAYERS} arc layers reached.`);
+    return;
+  }
+  const newLayer = makeLayer(`Layer ${layers.length}`, false);
+  newLayer.arcs = [ makeArc() ];
+  layers.push(newLayer);
+  activeLayerIdx = layers.length - 1;
+  activeArcIdx = 0;
+  updateAllCards();
+  updateModeDisplay();
+  renderLayerPanel();
+  render();
+}
+
+function duplicateActiveLayer() {
+  if (activeLayer().isBg) { alert('Cannot duplicate background layer.'); return; }
+  if (layers.length >= MAX_LAYERS + 1) { alert(`Max ${MAX_LAYERS} arc layers reached.`); return; }
+  const src = activeLayer();
+  const dup = makeLayer(src.name + ' Copy', false);
+  dup.arcs = src.arcs.map(arc => ({
+    ...arc,
+    id: arcIdCounter++,
+    deviations: arc.deviations.map(d => ({
+      ...d, id: devIdCounter++,
+      pos: { ...d.pos }, cp1: { ...d.cp1 }, cp2: { ...d.cp2 }
+    }))
+  }));
+  dup.visible = src.visible;
+  layers.push(dup);
+  activeLayerIdx = layers.length - 1;
+  renderLayerPanel();
+  render();
+}
+
+function deleteActiveLayer() {
+  if (activeLayer().isBg) { alert('Cannot delete the background layer.'); return; }
+  if (layers.filter(l => !l.isBg).length <= 1) { alert('Cannot delete the last arc layer.'); return; }
+  layers.splice(activeLayerIdx, 1);
+  activeLayerIdx = Math.min(activeLayerIdx, layers.length - 1);
+  if (activeLayer().isBg) activeLayerIdx = 1; // fallback to first arc layer
+  activeArcIdx = 0;
+  updateAllCards();
+  updateModeDisplay();
+  renderLayerPanel();
+  render();
+}
+
+function deleteLayerAt(idx, e) {
+  e.stopPropagation();
+  if (layers[idx].isBg) { alert('Cannot delete the background layer.'); return; }
+  if (layers.filter(l => !l.isBg).length <= 1) { alert('Cannot delete the last arc layer.'); return; }
+  layers.splice(idx, 1);
+  if (activeLayerIdx >= layers.length) activeLayerIdx = layers.length - 1;
+  if (layers[activeLayerIdx].isBg) activeLayerIdx = 1;
+  activeArcIdx = 0;
+  updateAllCards();
+  renderLayerPanel();
+  render();
+}
+
+function toggleLayerVisible(idx, e) {
+  e.stopPropagation();
+  layers[idx].visible = !layers[idx].visible;
+  renderLayerPanel();
+  render();
+}
+
+// ── Background color / image ──
+function onBgColorChange(val) {
+  bgLayer().bgColor = val;
+  document.getElementById('bg-color-hex').value = val;
+  renderBackground();
+}
+
+function onBgColorHexInput(val) {
+  if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+    bgLayer().bgColor = val;
+    document.getElementById('bg-color-input').value = val;
+    renderBackground();
+  }
+}
+
+function syncBgColorHex() {
+  document.getElementById('bg-color-hex').value = bgLayer().bgColor;
+}
+
+function importBgImage() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/jpeg,image/png,image/webp,image/gif,image/bmp,image/svg+xml';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isGif = file.type === 'image/gif';
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const src = ev.target.result;
+      if (isGif) {
+        // For animated GIF we use an <img> element to leverage browser animation
+        const img = new Image();
+        img.onload = () => {
+          bgLayer().bgImage = { src, name: file.name, type: 'gif', element: img };
+          renderLayerPanel();
+          startBgAnimation();
+        };
+        img.src = src;
+      } else {
+        const img = new Image();
+        img.onload = () => {
+          bgLayer().bgImage = { src, name: file.name, type: 'img', element: img };
+          renderLayerPanel();
+          renderBackground();
+        };
+        img.src = src;
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
+}
+
+function importBgVideo() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'video/mp4,video/webm,video/ogg';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.src = url;
+    video.loop = true;
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.onloadeddata = () => {
+      bgLayer().bgImage = { src: url, name: file.name, type: 'video', element: video };
+      video.play();
+      renderLayerPanel();
+      startBgAnimation();
+    };
+  };
+  input.click();
+}
+
+function clearBgImage() {
+  const bi = bgLayer().bgImage;
+  if (bi && bi.type === 'video') {
+    bi.element.pause();
+    URL.revokeObjectURL(bi.src);
+  }
+  bgLayer().bgImage = null;
+  stopBgAnimation();
+  renderLayerPanel();
+  renderBackground();
+}
+
+// BG animation loop for GIF and video
+let bgAnimFrame = null;
+function startBgAnimation() {
+  stopBgAnimation();
+  function loop() {
+    renderBackground();
+    render();
+    bgAnimFrame = requestAnimationFrame(loop);
+  }
+  bgAnimFrame = requestAnimationFrame(loop);
+}
+
+function stopBgAnimation() {
+  if (bgAnimFrame !== null) {
+    cancelAnimationFrame(bgAnimFrame);
+    bgAnimFrame = null;
+  }
+}
+
+function renderBackground() {
+  const W = bgCanvas.width, H = bgCanvas.height;
+  const bg = bgLayer();
+  bgCtx.clearRect(0, 0, W, H);
+
+  if (!bg.visible) return;
+
+  // Fill background color
+  bgCtx.fillStyle = bg.bgColor || '#0d0f12';
+  bgCtx.fillRect(0, 0, W, H);
+
+  // Draw background image/gif/video if any
+  if (bg.bgImage) {
+    const el = bg.bgImage.element;
+    bgCtx.save();
+    bgCtx.globalAlpha = 1;
+    // Scale to cover the canvas
+    const iw = (bg.bgImage.type === 'video') ? el.videoWidth  : el.naturalWidth  || el.width;
+    const ih = (bg.bgImage.type === 'video') ? el.videoHeight : el.naturalHeight || el.height;
+    if (iw && ih) {
+      const scale = Math.max(W / iw, H / ih);
+      const dw = iw * scale, dh = ih * scale;
+      const dx = (W - dw) / 2, dy = (H - dh) / 2;
+      bgCtx.drawImage(el, dx, dy, dw, dh);
+    }
+    bgCtx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════
 //  ARC MANAGEMENT
 // ══════════════════════════════════════════════
 function addNewArc() {
-  arcs.push(makeArc());
-  activeArcIdx = arcs.length - 1;
+  if (activeLayer().isBg) { alert('Switch to an arc layer to add arcs.'); return; }
+  activeLayer().arcs.push(makeArc());
+  activeArcIdx = activeLayer().arcs.length - 1;
   updateAllCards();
   updateModeDisplay();
+  renderLayerPanel();
   render();
 }
 
 function deleteArc(idx, e) {
   e.stopPropagation();
+  const arcs = activeLayer().arcs;
   if (arcs.length === 1) { clearSingleArc(0); return; }
   arcs.splice(idx, 1);
   if (activeArcIdx >= arcs.length) activeArcIdx = arcs.length - 1;
@@ -1114,7 +2008,7 @@ function deleteArc(idx, e) {
 
 function setActiveArc(idx) {
   activeArcIdx = idx;
-  arcs[idx].collapsed = false;
+  activeLayer().arcs[idx].collapsed = false;
   updateAllCards();
   updateModeDisplay();
   document.getElementById('active-arc-display').textContent = 'A' + (idx + 1);
@@ -1122,11 +2016,11 @@ function setActiveArc(idx) {
 }
 
 function clearSingleArc(idx) {
-  const id = arcs[idx].id;
-  const color = arcs[idx].color;
-  arcs[idx] = makeArc();
-  arcs[idx].id = id;
-  arcs[idx].color = color;
+  const id    = activeLayer().arcs[idx].id;
+  const color = activeLayer().arcs[idx].color;
+  activeLayer().arcs[idx] = makeArc();
+  activeLayer().arcs[idx].id = id;
+  activeLayer().arcs[idx].color = color;
   updateAllCards();
   updateTotalLength();
   render();
@@ -1144,8 +2038,8 @@ function defaultHandles(pos, prev, next) {
 function addDeviation() { addDeviationToArc(activeArcIdx); }
 
 function addDeviationToArc(arcIdx) {
-  const arc = arcs[arcIdx];
-  if (!arc.startPt || !arc.endPt) { alert('Place START and END points first.'); return; }
+  const arc = activeLayer().arcs[arcIdx];
+  if (!arc || !arc.startPt || !arc.endPt) { alert('Place START and END points first.'); return; }
   const pts = [arc.startPt, ...arc.deviations.map(d => d.pos), arc.endPt];
   const n   = pts.length - 1;
   const prev = pts[n - 1], next = pts[n];
@@ -1165,7 +2059,7 @@ function addDeviationToArc(arcIdx) {
 
 function removeDeviationFromArc(arcIdx, devIdx, e) {
   e.stopPropagation();
-  const arc = arcs[arcIdx];
+  const arc = activeLayer().arcs[arcIdx];
   arc.deviations.splice(devIdx, 1);
   if (arc.selectedDev >= arc.deviations.length) arc.selectedDev = null;
   updateDevListInCard(arc, arcIdx);
@@ -1176,7 +2070,7 @@ function removeDeviationFromArc(arcIdx, devIdx, e) {
 //  WELD SYSTEM
 // ══════════════════════════════════════════════
 let weldMode       = false;
-let weldSelections = []; // [{arcIdx, endpoint: 'start'|'end'}]
+let weldSelections = [];
 
 function toggleWeldMode() {
   weldMode = !weldMode;
@@ -1212,7 +2106,7 @@ function cancelWeld() {
 function buildWeldEndpointList() {
   const list = document.getElementById('weld-endpoint-list');
   list.innerHTML = '';
-  arcs.forEach((arc, arcIdx) => {
+  activeLayer().arcs.forEach((arc, arcIdx) => {
     ['start', 'end'].forEach(ep => {
       const pt = ep === 'start' ? arc.startPt : arc.endPt;
       if (!pt) return;
@@ -1239,7 +2133,6 @@ function toggleWeldSelection(arcIdx, endpoint) {
     weldSelections.push({ arcIdx, endpoint });
   }
   buildWeldEndpointList();
-  // Highlight selected
   weldSelections.forEach(s => {
     const el = document.getElementById(`weld-ep-${s.arcIdx}-${s.endpoint}`);
     if (el) el.classList.add('weld-selected');
@@ -1252,8 +2145,8 @@ function executeWeld() {
     alert('Select exactly 2 endpoints to weld.'); return;
   }
   const [selA, selB] = weldSelections;
+  const arcs = activeLayer().arcs;
 
-  // Cannot weld same arc to itself (same endpoint)
   if (selA.arcIdx === selB.arcIdx && selA.endpoint === selB.endpoint) {
     alert('Cannot weld an endpoint to itself.'); return;
   }
@@ -1263,13 +2156,10 @@ function executeWeld() {
   const ptA    = selA.endpoint === 'start' ? arcA.startPt : arcA.endPt;
   const ptB    = selB.endpoint === 'start' ? arcB.startPt : arcB.endPt;
 
-  // Midpoint weld position
   const weldPt = { x: (ptA.x + ptB.x) / 2, y: (ptA.y + ptB.y) / 2 };
 
   if (selA.arcIdx === selB.arcIdx) {
-    // Same arc: weld start to end → close the loop via a smooth blend deviation
     const arc = arcA;
-    // Move selected endpoint to midpoint
     if (selA.endpoint === 'start') arc.startPt = { ...weldPt };
     else arc.endPt = { ...weldPt };
     if (selB.endpoint === 'start') arc.startPt = { ...weldPt };
@@ -1281,42 +2171,31 @@ function executeWeld() {
     return;
   }
 
-  // DIFFERENT ARCS — merge arcB into arcA with a smooth weld deviation at junction
-
-  // Step 1: Orient both arcs so the weld endpoints face each other
-  // We want arcA's weld endpoint to be its END, arcB's weld endpoint to be its START
   let ptsA = getArcPointList(arcA);
   let ptsB = getArcPointList(arcB);
 
-  if (selA.endpoint === 'start') ptsA = ptsA.reverse();   // flip A so weld end is last
-  if (selB.endpoint === 'end')   ptsB = ptsB.reverse();   // flip B so weld end is first
+  if (selA.endpoint === 'start') ptsA = ptsA.reverse();
+  if (selB.endpoint === 'end')   ptsB = ptsB.reverse();
 
-  // ptsA: [..., weldA], ptsB: [weldB, ...]
-  // Compute a smooth blend: insert a cubic deviation at the junction with G1 tangent handles
   const lastA   = ptsA[ptsA.length - 1];
   const firstB  = ptsB[0];
   const prevA   = ptsA.length > 1 ? ptsA[ptsA.length - 2] : lastA;
   const nextB   = ptsB.length > 1 ? ptsB[1] : firstB;
 
-  // Incoming tangent direction at lastA
   const tInX  = lastA.x - prevA.x;
   const tInY  = lastA.y - prevA.y;
   const tInL  = Math.hypot(tInX, tInY) || 1;
 
-  // Outgoing tangent direction from firstB
   const tOutX = nextB.x - firstB.x;
   const tOutY = nextB.y - firstB.y;
   const tOutL = Math.hypot(tOutX, tOutY) || 1;
 
-  // Blend handle length — one-quarter the distance between weld points
   const dist = Math.hypot(lastA.x - firstB.x, lastA.y - firstB.y);
   const hLen = dist * 0.4;
 
-  // Move both endpoints to the weld midpoint
   lastA.x  = weldPt.x; lastA.y  = weldPt.y;
   firstB.x = weldPt.x; firstB.y = weldPt.y;
 
-  // Create a smooth weld deviation between them
   const weldDev = {
     id:         devIdCounter++,
     pos:        { x: weldPt.x, y: weldPt.y },
@@ -1325,26 +2204,17 @@ function executeWeld() {
     handleMode: 'LOCK'
   };
 
-  // Build merged arc using arcA as the base
   const mergedArc = { ...arcA };
   mergedArc.deviations = [...arcA.deviations];
-
-  // Append weld deviation, then arcB's deviations
   mergedArc.deviations.push(weldDev);
-
-  // Set merged endpoints
   mergedArc.startPt = ptsA[0];
   mergedArc.endPt   = ptsB[ptsB.length - 1];
 
-  // Merge arcB's deviations (skip its first/last which are its endpoints)
   const bDevs = selB.endpoint === 'end' ? [...arcB.deviations].reverse() : [...arcB.deviations];
   bDevs.forEach(d => {
     mergedArc.deviations.push({
-      ...d,
-      id: devIdCounter++,
-      pos: { ...d.pos },
-      cp1: { ...d.cp1 },
-      cp2: { ...d.cp2 }
+      ...d, id: devIdCounter++,
+      pos: { ...d.pos }, cp1: { ...d.cp1 }, cp2: { ...d.cp2 }
     });
   });
 
@@ -1352,14 +2222,12 @@ function executeWeld() {
   mergedArc.measureResult = null;
   mergedArc.mode          = 'IDLE';
 
-  // Replace arcA in the array, remove arcB
   const idxA = selA.arcIdx;
   const idxB = selB.arcIdx;
   arcs[idxA] = mergedArc;
   arcs.splice(idxB > idxA ? idxB : idxB, 1);
   if (activeArcIdx >= arcs.length) activeArcIdx = arcs.length - 1;
 
-  // Measure the merged arc
   arcs[idxA > idxB ? idxA - 1 : idxA].measureResult =
     measureArcObj(arcs[idxA > idxB ? idxA - 1 : idxA]);
 
@@ -1369,14 +2237,13 @@ function executeWeld() {
   render();
 }
 
-// Returns flat list of points [startPt, ...dev.pos, endPt]
 function getArcPointList(arc) {
   if (!arc.startPt || !arc.endPt) return [];
   return [{ ...arc.startPt }, ...arc.deviations.map(d => ({ ...d.pos })), { ...arc.endPt }];
 }
 
 // ══════════════════════════════════════════════
-//  RENDER — all arcs
+//  RENDER — all layers and arcs
 // ══════════════════════════════════════════════
 function render() {
   const W = canvas.width, H = canvas.height;
@@ -1398,8 +2265,14 @@ function render() {
     ctx.beginPath(); ctx.moveTo(x0, gy); ctx.lineTo(x1, gy); ctx.stroke();
   }
 
-  arcs.forEach((arc, arcIdx) => {
-    renderArc(arc, arcIdx, invS);
+  // Render all visible arc layers (bottom to top)
+  layers.forEach((layer, layerIdx) => {
+    if (layer.isBg || !layer.visible) return;
+    const isActiveLayer = layerIdx === activeLayerIdx;
+    layer.arcs.forEach((arc, arcIdx) => {
+      const isActiveArc = isActiveLayer && arcIdx === activeArcIdx;
+      renderArcOnCtx(ctx, arc, arcIdx, invS, isActiveLayer, isActiveArc, layerIdx);
+    });
   });
 
   ctx.restore();
@@ -1409,74 +2282,74 @@ function render() {
   document.getElementById('pan-display').textContent  = `${Math.round(-vp.x / vp.scale)}, ${Math.round(-vp.y / vp.scale)}`;
 
   // Auto-measure active arc on render when both endpoints exist
-  const arc = activeArc();
-  if (arc.startPt && arc.endPt) {
-    arc.measureResult = measureArcObj(arc);
-    updateCardData(arc);
-    updateTotalLength();
+  if (!activeLayer().isBg) {
+    const arc = activeArc();
+    if (arc && arc.startPt && arc.endPt) {
+      arc.measureResult = measureArcObj(arc);
+      updateCardData(arc);
+      updateTotalLength();
+    }
   }
 }
 
-function renderArc(arc, arcIdx, invS) {
-  const isActive = arcIdx === activeArcIdx;
-  const color    = arc.color;
-
+function renderArcOnCtx(c, arc, arcIdx, invS, isActiveLayer, isActive, layerIdx) {
+  const color = arc.color;
   if (!arc.startPt) return;
-
   const segs = buildArcSegments(arc);
 
-  // Arc path
+  // Dim non-active layers
+  const layerAlpha = isActiveLayer ? 1 : 0.35;
+
   if (segs.length > 0) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth   = (isActive ? 2.5 : 1.5) * invS;
-    ctx.globalAlpha = isActive ? 1 : 0.55;
-    ctx.shadowBlur  = isActive ? 8 : 0;
-    ctx.shadowColor = color;
-    ctx.beginPath();
-    ctx.moveTo(segs[0].p0.x, segs[0].p0.y);
-    segs.forEach(s => ctx.bezierCurveTo(s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.p3.x, s.p3.y));
-    ctx.stroke();
-    ctx.shadowBlur  = 0;
-    ctx.globalAlpha = 1;
+    c.strokeStyle = color;
+    c.lineWidth   = (isActive ? 2.5 : 1.5) * invS;
+    c.globalAlpha = (isActive ? 1 : 0.55) * layerAlpha;
+    c.shadowBlur  = isActive ? 8 : 0;
+    c.shadowColor = color;
+    c.beginPath();
+    c.moveTo(segs[0].p0.x, segs[0].p0.y);
+    segs.forEach(s => c.bezierCurveTo(s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.p3.x, s.p3.y));
+    c.stroke();
+    c.shadowBlur  = 0;
+    c.globalAlpha = 1;
   }
 
-  // Deviation handles & points
+  c.globalAlpha = layerAlpha;
+
   arc.deviations.forEach((dev, idx) => {
     const sel = arc.selectedDev === idx && isActive;
-    ctx.strokeStyle = '#2a3a4a'; ctx.lineWidth = invS;
-    ctx.setLineDash([4 * invS, 4 * invS]);
-    ctx.beginPath(); ctx.moveTo(dev.cp1.x, dev.cp1.y); ctx.lineTo(dev.pos.x, dev.pos.y); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(dev.pos.x, dev.pos.y); ctx.lineTo(dev.cp2.x, dev.cp2.y); ctx.stroke();
-    ctx.setLineDash([]);
+    c.strokeStyle = '#2a3a4a'; c.lineWidth = invS;
+    c.setLineDash([4 * invS, 4 * invS]);
+    c.beginPath(); c.moveTo(dev.cp1.x, dev.cp1.y); c.lineTo(dev.pos.x, dev.pos.y); c.stroke();
+    c.beginPath(); c.moveTo(dev.pos.x, dev.pos.y); c.lineTo(dev.cp2.x, dev.cp2.y); c.stroke();
+    c.setLineDash([]);
 
-    if (isActive) {
+    if (isActiveLayer) {
       [dev.cp1, dev.cp2].forEach(cp => {
-        // Color handle dots by mode: SMOOTH=purple, LOCK=orange, FREE/others=cyan
         const hColor = dev.handleMode === 'SMOOTH' ? '#a78bfa'
                      : dev.handleMode === 'LOCK'   ? '#f5a623'
                      : '#00e5cc';
-        ctx.fillStyle   = sel ? hColor : '#003344';
-        ctx.strokeStyle = hColor; ctx.lineWidth = 1.5 * invS;
-        ctx.beginPath(); ctx.arc(cp.x, cp.y, 5 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        c.fillStyle   = sel ? hColor : '#003344';
+        c.strokeStyle = hColor; c.lineWidth = 1.5 * invS;
+        c.beginPath(); c.arc(cp.x, cp.y, 5 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
       });
     }
 
-    ctx.fillStyle   = '#f5a623';
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
-    ctx.beginPath(); ctx.arc(dev.pos.x, dev.pos.y, 7 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#00e5cc';
-    ctx.font = `bold ${13 * invS}px 'Orbitron', monospace`;
-    ctx.fillText(`d${idx + 1}`, dev.pos.x + 10 * invS, dev.pos.y - 8 * invS);
+    c.fillStyle   = '#f5a623';
+    c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+    c.beginPath(); c.arc(dev.pos.x, dev.pos.y, 7 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.fillStyle = '#00e5cc';
+    c.font = `bold ${13 * invS}px 'Orbitron', monospace`;
+    c.fillText(`d${idx + 1}`, dev.pos.x + 10 * invS, dev.pos.y - 8 * invS);
   });
 
-  // Start point
   const isWeldedStart = weldMode && weldSelections.some(s => s.arcIdx === arcIdx && s.endpoint === 'start');
-  ctx.fillStyle   = isWeldedStart ? '#ff6ef7' : '#c8f400';
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
-  ctx.beginPath(); ctx.arc(arc.startPt.x, arc.startPt.y, 8 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = isWeldedStart ? '#ff6ef7' : '#c8f400';
-  ctx.font = `bold ${14 * invS}px 'Orbitron', monospace`;
-  ctx.fillText('S' + (arcIdx + 1), arc.startPt.x - 24 * invS, arc.startPt.y + 5 * invS);
+  c.fillStyle   = isWeldedStart ? '#ff6ef7' : '#c8f400';
+  c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+  c.beginPath(); c.arc(arc.startPt.x, arc.startPt.y, 8 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+  c.fillStyle = isWeldedStart ? '#ff6ef7' : '#c8f400';
+  c.font = `bold ${14 * invS}px 'Orbitron', monospace`;
+  c.fillText('S' + (arcIdx + 1), arc.startPt.x - 24 * invS, arc.startPt.y + 5 * invS);
   if (isActive) {
     const sx = document.getElementById(`a${arc.id}-start-x`);
     const sy = document.getElementById(`a${arc.id}-start-y`);
@@ -1484,15 +2357,14 @@ function renderArc(arc, arcIdx, invS) {
     if (sy) sy.value = Math.round(arc.startPt.y);
   }
 
-  // End point
   if (arc.endPt) {
     const isWeldedEnd = weldMode && weldSelections.some(s => s.arcIdx === arcIdx && s.endpoint === 'end');
-    ctx.fillStyle   = isWeldedEnd ? '#ff6ef7' : '#f5a623';
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
-    ctx.beginPath(); ctx.arc(arc.endPt.x, arc.endPt.y, 8 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = isWeldedEnd ? '#ff6ef7' : '#f5a623';
-    ctx.font = `bold ${14 * invS}px 'Orbitron', monospace`;
-    ctx.fillText('O' + (arcIdx + 1), arc.endPt.x + 10 * invS, arc.endPt.y + 5 * invS);
+    c.fillStyle   = isWeldedEnd ? '#ff6ef7' : '#f5a623';
+    c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+    c.beginPath(); c.arc(arc.endPt.x, arc.endPt.y, 8 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.fillStyle = isWeldedEnd ? '#ff6ef7' : '#f5a623';
+    c.font = `bold ${14 * invS}px 'Orbitron', monospace`;
+    c.fillText('O' + (arcIdx + 1), arc.endPt.x + 10 * invS, arc.endPt.y + 5 * invS);
     if (isActive) {
       const ex = document.getElementById(`a${arc.id}-end-x`);
       const ey = document.getElementById(`a${arc.id}-end-y`);
@@ -1501,10 +2373,11 @@ function renderArc(arc, arcIdx, invS) {
     }
   }
 
-  // Arc number badge near start
-  ctx.fillStyle = color;
-  ctx.font = `bold ${11 * invS}px 'Orbitron', monospace`;
-  ctx.fillText(`A${arcIdx + 1}`, arc.startPt.x + 14 * invS, arc.startPt.y - 14 * invS);
+  c.fillStyle = color;
+  c.font = `bold ${11 * invS}px 'Orbitron', monospace`;
+  c.fillText(`A${arcIdx + 1}`, arc.startPt.x + 14 * invS, arc.startPt.y - 14 * invS);
+
+  c.globalAlpha = 1;
 }
 
 // ══════════════════════════════════════════════
@@ -1512,10 +2385,13 @@ function renderArc(arc, arcIdx, invS) {
 // ══════════════════════════════════════════════
 function reframeView(flash = false) {
   const allPts = [];
-  arcs.forEach(arc => {
-    if (arc.startPt) allPts.push(arc.startPt);
-    if (arc.endPt)   allPts.push(arc.endPt);
-    arc.deviations.forEach(d => { allPts.push(d.pos); allPts.push(d.cp1); allPts.push(d.cp2); });
+  layers.forEach(layer => {
+    if (layer.isBg) return;
+    layer.arcs.forEach(arc => {
+      if (arc.startPt) allPts.push(arc.startPt);
+      if (arc.endPt)   allPts.push(arc.endPt);
+      arc.deviations.forEach(d => { allPts.push(d.pos); allPts.push(d.cp1); allPts.push(d.cp2); });
+    });
   });
 
   if (allPts.length === 0) { vp = { x: 0, y: 0, scale: 1 }; render(); return; }
@@ -1551,7 +2427,12 @@ function reframeView(flash = false) {
 //  MODE DISPLAY
 // ══════════════════════════════════════════════
 function updateModeDisplay() {
+  if (activeLayer().isBg) {
+    document.getElementById('mode-display').textContent = 'MODE: BACKGROUND LAYER';
+    return;
+  }
   const arc = activeArc();
+  if (!arc) return;
   const labels = {
     PLACE_START: `A${activeArcIdx + 1} — PLACE START POINT`,
     PLACE_END:   `A${activeArcIdx + 1} — PLACE END POINT`,
@@ -1562,11 +2443,13 @@ function updateModeDisplay() {
 }
 
 // ══════════════════════════════════════════════
-//  HIT TEST — active arc only
+//  HIT TEST — active arc only (active layer only)
 // ══════════════════════════════════════════════
 function hitTest(sx, sy) {
+  if (activeLayer().isBg) return null;
   const R   = 14;
   const arc = activeArc();
+  if (!arc) return null;
   function sd2(wx, wy) {
     const s = worldToScreen(wx, wy);
     return (sx - s.x) ** 2 + (sy - s.y) ** 2;
@@ -1598,9 +2481,11 @@ canvas.addEventListener('pointerdown', e => {
   const { sx, sy } = getScreenXY(e);
   e.preventDefault();
 
-  if (weldMode) return; // Weld mode: no canvas interaction
+  if (weldMode) return;
+  if (activeLayer().isBg) return;
 
   const arc = activeArc();
+  if (!arc) return;
 
   if (arc.mode === 'PLACE_START') {
     const w = screenToWorld(sx, sy);
@@ -1643,8 +2528,9 @@ canvas.addEventListener('pointermove', e => {
     render(); return;
   }
 
+  if (activeLayer().isBg) return;
   const arc = activeArc();
-  if (!arc.dragging) return;
+  if (!arc || !arc.dragging) return;
   clearTimeout(longPressTimer);
   e.preventDefault();
 
@@ -1668,7 +2554,6 @@ canvas.addEventListener('pointermove', e => {
         dev.cp2.x = dev.pos.x + (dev.pos.x - wPos.x);
         dev.cp2.y = dev.pos.y + (dev.pos.y - wPos.y);
       } else if (dev.handleMode === 'SMOOTH') {
-        // Mirror angle only — cp2 keeps its own length, just flips direction
         const len2 = Math.hypot(dev.cp2.x - dev.pos.x, dev.cp2.y - dev.pos.y);
         const ang  = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI;
         dev.cp2.x = dev.pos.x + Math.cos(ang) * len2;
@@ -1685,7 +2570,6 @@ canvas.addEventListener('pointermove', e => {
         dev.cp1.x = dev.pos.x + (dev.pos.x - wPos.x);
         dev.cp1.y = dev.pos.y + (dev.pos.y - wPos.y);
       } else if (dev.handleMode === 'SMOOTH') {
-        // Mirror angle only — cp1 keeps its own length, just flips direction
         const len1 = Math.hypot(dev.cp1.x - dev.pos.x, dev.cp1.y - dev.pos.y);
         const ang  = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI;
         dev.cp1.x = dev.pos.x + Math.cos(ang) * len1;
@@ -1704,25 +2588,26 @@ canvas.addEventListener('pointermove', e => {
 
 canvas.addEventListener('pointerup', () => {
   clearTimeout(longPressTimer);
-  activeArc().dragging = null;
+  if (!activeLayer().isBg && activeArc()) activeArc().dragging = null;
   isPanning = false;
   panStart  = null;
 });
 
-// Cursor feedback
 canvas.addEventListener('pointermove', e => {
   if (weldMode) { canvas.style.cursor = 'not-allowed'; return; }
+  if (activeLayer().isBg) { canvas.style.cursor = 'default'; return; }
   const { sx, sy } = getScreenXY(e);
   const hit = hitTest(sx, sy);
   const arc = activeArc();
-  if (hit)                        canvas.style.cursor = 'grab';
-  else if (arc.mode !== 'IDLE')   canvas.style.cursor = 'crosshair';
-  else                            canvas.style.cursor = 'move';
+  if (hit)                              canvas.style.cursor = 'grab';
+  else if (arc && arc.mode !== 'IDLE') canvas.style.cursor = 'crosshair';
+  else                                  canvas.style.cursor = 'move';
 });
 
-// Selected info ticker
 setInterval(() => {
+  if (activeLayer().isBg) return;
   const arc = activeArc();
+  if (!arc) return;
   if (arc.selectedDev !== null && arc.deviations[arc.selectedDev]) {
     const d = arc.deviations[arc.selectedDev];
     document.getElementById('selected-info').textContent = `d${arc.selectedDev + 1} [${d.handleMode}]`;
@@ -1752,7 +2637,8 @@ canvas.addEventListener('touchstart', e => {
     pinchScale0 = vp.scale;
     pinchMid0   = getPinchMid(e, rect);
     pinchVP0    = { x: vp.x, y: vp.y };
-    activeArc().dragging = null; isPanning = false;
+    if (!activeLayer().isBg && activeArc()) activeArc().dragging = null;
+    isPanning = false;
   }
 }, { passive: false });
 
@@ -1776,7 +2662,6 @@ canvas.addEventListener('touchend', e => {
   if (e.touches.length < 2) pinchDist0 = null;
 }, { passive: false });
 
-// Mouse wheel zoom
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const { sx, sy } = getScreenXY(e);
@@ -1795,6 +2680,7 @@ canvas.addEventListener('wheel', e => {
 // ══════════════════════════════════════════════
 function setHandleMode(mode) {
   const arc = activeArc();
+  if (!arc) return;
   arc.handleMode = mode;
   if (arc.selectedDev !== null) {
     arc.deviations[arc.selectedDev].handleMode = mode;
@@ -1818,8 +2704,11 @@ function showTooltip(clientX, clientY, devIdx) {
   tt.style.left = Math.min(clientX, vW - ttW - 8) + 'px';
   tt.style.top  = Math.min(clientY - 10, vH - ttH - 8) + 'px';
   tooltipTarget = devIdx;
-  activeArc().selectedDev = devIdx;
-  updateDevListInCard(activeArc(), activeArcIdx);
+  const arc = activeArc();
+  if (arc) {
+    arc.selectedDev = devIdx;
+    updateDevListInCard(arc, activeArcIdx);
+  }
 }
 function hideTooltip() {
   document.getElementById('tooltip').style.display = 'none';
@@ -1834,94 +2723,343 @@ document.addEventListener('click', e => {
 // ══════════════════════════════════════════════
 function clearAll() {
   arcIdCounter = 1; devIdCounter = 1; activeArcIdx = 0;
-  arcs = [ makeArc() ];
-  vp   = { x: 0, y: 0, scale: 1 };
+  layerIdCounter = 1;
+  layers = [
+    makeLayer('Background', true),
+    makeLayer('Layer 1', false),
+  ];
+  layers[1].arcs = [ makeArc() ];
+  activeLayerIdx = 1;
+  vp = { x: 0, y: 0, scale: 1 };
+  stopBgAnimation();
   cancelWeld();
   updateAllCards();
   updateModeDisplay();
   updateTotalLength();
+  renderLayerPanel();
+  renderBackground();
   render();
 }
 
 // ══════════════════════════════════════════════
-//  EXPORT PNG
+//  EXPORT MODAL
 // ══════════════════════════════════════════════
-function exportPNG() {
-  const link = document.createElement('a');
-  link.download = 'arcedge.png';
-  link.href = canvas.toDataURL();
-  link.click();
+function openExportModal() {
+  document.getElementById('export-modal-overlay').classList.add('open');
+  // Disable MP4 btn if no video/gif BG
+  const bg = bgLayer().bgImage;
+  const hasAnim = bg && (bg.type === 'gif' || bg.type === 'video');
+  document.getElementById('exp-mp4-btn').style.opacity = hasAnim ? '1' : '0.3';
+  document.getElementById('exp-mp4-btn').title = hasAnim ? '' : 'Import an animated GIF or MP4 first';
 }
 
-// ══════════════════════════════════════════════
-//  SAVE — SVG with embedded scene data
-//  Scene state is stored in a <metadata> element
-//  as base64-encoded JSON so the .svg is both a
-//  valid vector image AND a fully reloadable scene.
-// ══════════════════════════════════════════════
-function saveSVG() {
+function closeExportModal() {
+  document.getElementById('export-modal-overlay').classList.remove('open');
+}
+
+function selectExpOption(val) {
+  ['full','arcs','clean','transparent'].forEach(v => {
+    document.getElementById(`exp-opt-${v}`).classList.toggle('selected', v === val);
+  });
+  // Transparent can only be PNG
+  if (val === 'transparent') {
+    document.getElementById('exp-bg').checked = false;
+  }
+}
+
+function getExportSettings() {
+  const content = document.querySelector('input[name="exp-content"]:checked').value;
+  return {
+    content,
+    showGrid:         document.getElementById('exp-grid').checked,
+    showHandles:      document.getElementById('exp-handles').checked,
+    showLabels:       document.getElementById('exp-labels').checked,
+    showMeasurements: document.getElementById('exp-measurements').checked,
+    showBg:           document.getElementById('exp-bg').checked,
+    allLayers:        document.getElementById('exp-all-layers').checked,
+    transparent:      content === 'transparent',
+  };
+}
+
+// Build a composite off-screen canvas for export with the given settings
+function buildExportCanvas(settings) {
   const W = canvas.width, H = canvas.height;
-  let arcPaths = '';
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const c = off.getContext('2d');
 
-  arcs.forEach((arc, arcIdx) => {
-    const segs = buildArcSegments(arc);
-    if (segs.length === 0) return;
-    let pathD = `M ${segs[0].p0.x.toFixed(3)} ${segs[0].p0.y.toFixed(3)}`;
-    segs.forEach(s => {
-      pathD += ` C ${s.cp1.x.toFixed(3)} ${s.cp1.y.toFixed(3)},`
-             + ` ${s.cp2.x.toFixed(3)} ${s.cp2.y.toFixed(3)},`
-             + ` ${s.p3.x.toFixed(3)} ${s.p3.y.toFixed(3)}`;
-    });
-    arcPaths += `  <path d="${pathD}" stroke="${arc.color}" stroke-width="2.5" fill="none"/>\n`;
+  // Background
+  if (!settings.transparent) {
+    if (settings.showBg) {
+      // Draw BG color
+      c.fillStyle = bgLayer().bgColor || '#0d0f12';
+      c.fillRect(0, 0, W, H);
+      // Draw BG image if any
+      const bi = bgLayer().bgImage;
+      if (bi && bgLayer().visible) {
+        const el = bi.element;
+        const iw = bi.type === 'video' ? el.videoWidth  : (el.naturalWidth  || el.width);
+        const ih = bi.type === 'video' ? el.videoHeight : (el.naturalHeight || el.height);
+        if (iw && ih) {
+          const scale = Math.max(W / iw, H / ih);
+          const dw = iw * scale, dh = ih * scale;
+          c.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        }
+      }
+    } else {
+      c.fillStyle = '#0d0f12';
+      c.fillRect(0, 0, W, H);
+    }
+  }
+  // else transparent: no fill
 
-    if (arc.startPt) {
-      arcPaths += `  <circle cx="${arc.startPt.x.toFixed(2)}" cy="${arc.startPt.y.toFixed(2)}" r="8" fill="#c8f400"/>\n`;
-      arcPaths += `  <text x="${(arc.startPt.x+10).toFixed(1)}" y="${(arc.startPt.y-8).toFixed(1)}" fill="#c8f400" font-family="monospace" font-size="13">S${arcIdx+1}</text>\n`;
+  c.save();
+  c.translate(vp.x, vp.y);
+  c.scale(vp.scale, vp.scale);
+  const invS = 1 / vp.scale;
+  const x0 = -vp.x * invS, y0 = -vp.y * invS;
+  const x1 = x0 + W * invS, y1 = y0 + H * invS;
+
+  // Grid
+  if (settings.showGrid && settings.content === 'full') {
+    const gs = 40;
+    c.strokeStyle = '#1a1d24'; c.lineWidth = invS;
+    for (let gx = Math.floor(x0 / 40) * 40; gx <= x1; gx += 40) {
+      c.beginPath(); c.moveTo(gx, y0); c.lineTo(gx, y1); c.stroke();
     }
-    if (arc.endPt) {
-      arcPaths += `  <circle cx="${arc.endPt.x.toFixed(2)}" cy="${arc.endPt.y.toFixed(2)}" r="8" fill="#f5a623"/>\n`;
-      arcPaths += `  <text x="${(arc.endPt.x+10).toFixed(1)}" y="${(arc.endPt.y-8).toFixed(1)}" fill="#f5a623" font-family="monospace" font-size="13">O${arcIdx+1}</text>\n`;
+    for (let gy = Math.floor(y0 / 40) * 40; gy <= y1; gy += 40) {
+      c.beginPath(); c.moveTo(x0, gy); c.lineTo(x1, gy); c.stroke();
     }
-    arc.deviations.forEach((d, i) => {
-      // Weld deviations (handleMode LOCK with a weld id) render in weld color
-      const devColor = d.handleMode === 'LOCK' ? '#ff6ef7' : '#f5a623';
-      arcPaths += `  <circle cx="${d.pos.x.toFixed(2)}" cy="${d.pos.y.toFixed(2)}" r="7" fill="${devColor}"/>\n`;
-      arcPaths += `  <text x="${(d.pos.x+10).toFixed(1)}" y="${(d.pos.y-8).toFixed(1)}" fill="#00e5cc" font-family="monospace" font-size="13">d${i+1}</text>\n`;
+  }
+
+  const layersToRender = settings.allLayers
+    ? layers.filter(l => !l.isBg && l.visible)
+    : [activeLayer()].filter(l => !l.isBg && l.visible);
+
+  layersToRender.forEach((layer, li) => {
+    layer.arcs.forEach((arc, arcIdx) => {
+      if (!arc.startPt) return;
+      const segs = buildArcSegments(arc);
+
+      // Arc path always drawn
+      if (segs.length > 0) {
+        c.strokeStyle = arc.color;
+        c.lineWidth = 2.5 * invS;
+        c.shadowBlur = 6; c.shadowColor = arc.color;
+        c.beginPath();
+        c.moveTo(segs[0].p0.x, segs[0].p0.y);
+        segs.forEach(s => c.bezierCurveTo(s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.p3.x, s.p3.y));
+        c.stroke();
+        c.shadowBlur = 0;
+      }
+
+      if (settings.content === 'clean') return; // arcs only
+
+      // Deviation handles
+      if (settings.showHandles && (settings.content === 'full')) {
+        arc.deviations.forEach(dev => {
+          c.strokeStyle = '#2a3a4a'; c.lineWidth = invS;
+          c.setLineDash([4 * invS, 4 * invS]);
+          c.beginPath(); c.moveTo(dev.cp1.x, dev.cp1.y); c.lineTo(dev.pos.x, dev.pos.y); c.stroke();
+          c.beginPath(); c.moveTo(dev.pos.x, dev.pos.y); c.lineTo(dev.cp2.x, dev.cp2.y); c.stroke();
+          c.setLineDash([]);
+          [dev.cp1, dev.cp2].forEach(cp => {
+            c.fillStyle = '#003344'; c.strokeStyle = '#00e5cc'; c.lineWidth = 1.5 * invS;
+            c.beginPath(); c.arc(cp.x, cp.y, 5 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+          });
+        });
+      }
+
+      if (settings.showLabels || settings.content === 'arcs') {
+        arc.deviations.forEach((dev, i) => {
+          c.fillStyle = '#f5a623';
+          c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+          c.beginPath(); c.arc(dev.pos.x, dev.pos.y, 7 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+          c.fillStyle = '#00e5cc';
+          c.font = `bold ${13 * invS}px monospace`;
+          c.fillText(`d${i+1}`, dev.pos.x + 10 * invS, dev.pos.y - 8 * invS);
+        });
+
+        c.fillStyle = '#c8f400'; c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+        c.beginPath(); c.arc(arc.startPt.x, arc.startPt.y, 8 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+        c.fillStyle = '#c8f400';
+        c.font = `bold ${14 * invS}px monospace`;
+        c.fillText('S' + (arcIdx+1), arc.startPt.x - 24 * invS, arc.startPt.y + 5 * invS);
+
+        if (arc.endPt) {
+          c.fillStyle = '#f5a623'; c.strokeStyle = '#fff'; c.lineWidth = 2 * invS;
+          c.beginPath(); c.arc(arc.endPt.x, arc.endPt.y, 8 * invS, 0, Math.PI * 2); c.fill(); c.stroke();
+          c.fillStyle = '#f5a623';
+          c.font = `bold ${14 * invS}px monospace`;
+          c.fillText('O' + (arcIdx+1), arc.endPt.x + 10 * invS, arc.endPt.y + 5 * invS);
+        }
+
+        c.fillStyle = arc.color;
+        c.font = `bold ${11 * invS}px monospace`;
+        c.fillText(`A${arcIdx+1}`, arc.startPt.x + 14 * invS, arc.startPt.y - 14 * invS);
+      }
+
+      // Measurement overlay
+      if (settings.showMeasurements && arc.measureResult) {
+        const r = arc.measureResult;
+        const mid = arc.endPt
+          ? { x: (arc.startPt.x + arc.endPt.x) / 2, y: (arc.startPt.y + arc.endPt.y) / 2 }
+          : arc.startPt;
+        c.fillStyle = 'rgba(0,0,0,0.6)';
+        c.fillRect(mid.x * vp.scale + vp.x - 60, mid.y * vp.scale + vp.y - 40, 130, 36);
+        c.fillStyle = '#c8f400';
+        c.font = `bold 11px monospace`;
+        c.save(); c.resetTransform();
+        const ms = worldToScreen(mid.x, mid.y);
+        c.fillStyle = 'rgba(0,0,0,0.65)';
+        c.fillRect(ms.x - 55, ms.y - 28, 120, 30);
+        c.fillStyle = '#c8f400';
+        c.font = '10px monospace';
+        c.fillText(`Len: ${r.totalLen}px`, ms.x - 50, ms.y - 14);
+        c.fillText(`d${r.smallD}–${r.largeD}`, ms.x - 50, ms.y - 2);
+        c.restore();
+      }
     });
   });
 
-  // Build scene payload — all arc data for full round-trip reload
+  c.restore();
+  return off;
+}
+
+function doExport(format) {
+  const settings = getExportSettings();
+  closeExportModal();
+
+  if (format === 'png') {
+    const off = buildExportCanvas(settings);
+    const link = document.createElement('a');
+    link.download = 'arcedge.png';
+    link.href = off.toDataURL('image/png');
+    link.click();
+    return;
+  }
+
+  if (format === 'svg') {
+    exportSVGWithLayers(settings);
+    return;
+  }
+
+  if (format === 'mp4') {
+    exportMP4(settings);
+    return;
+  }
+}
+
+// ══════════════════════════════════════════════
+//  EXPORT PNG (legacy shortcut kept)
+// ══════════════════════════════════════════════
+function exportPNG() {
+  openExportModal();
+}
+
+// ══════════════════════════════════════════════
+//  SVG EXPORT with layers + embedded images
+// ══════════════════════════════════════════════
+function exportSVGWithLayers(settings) {
+  const W = canvas.width, H = canvas.height;
+  let svgContent = '';
+
+  // Background rect + embedded image
+  const bg = bgLayer();
+  if (settings.showBg && bg.visible) {
+    svgContent += `  <rect width="${W}" height="${H}" fill="${bg.bgColor || '#0d0f12'}"/>\n`;
+    if (bg.bgImage && (bg.bgImage.type === 'img' || bg.bgImage.type === 'gif')) {
+      // Embed as base64 data-uri
+      svgContent += `  <image href="${bg.bgImage.src}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>\n`;
+    } else if (bg.bgImage && bg.bgImage.type === 'video') {
+      svgContent += `  <!-- Video background: ${bg.bgImage.name} — must be reimported -->\n`;
+    }
+  } else {
+    svgContent += `  <rect width="${W}" height="${H}" fill="#0d0f12"/>\n`;
+  }
+
+  // Build arc paths per layer
+  const layersToExport = settings.allLayers
+    ? layers.filter(l => !l.isBg)
+    : [activeLayer()].filter(l => !l.isBg);
+
+  layersToExport.forEach((layer, li) => {
+    if (!layer.visible && settings.allLayers) return;
+    svgContent += `  <g id="layer-${layer.id}" inkscape:label="${layer.name}">\n`;
+    layer.arcs.forEach((arc, arcIdx) => {
+      const segs = buildArcSegments(arc);
+      if (segs.length === 0) return;
+      let pathD = `M ${segs[0].p0.x.toFixed(3)} ${segs[0].p0.y.toFixed(3)}`;
+      segs.forEach(s => {
+        pathD += ` C ${s.cp1.x.toFixed(3)} ${s.cp1.y.toFixed(3)},`
+               + ` ${s.cp2.x.toFixed(3)} ${s.cp2.y.toFixed(3)},`
+               + ` ${s.p3.x.toFixed(3)} ${s.p3.y.toFixed(3)}`;
+      });
+      svgContent += `    <path d="${pathD}" stroke="${arc.color}" stroke-width="2.5" fill="none"/>\n`;
+
+      if (settings.showLabels) {
+        if (arc.startPt) {
+          svgContent += `    <circle cx="${arc.startPt.x.toFixed(2)}" cy="${arc.startPt.y.toFixed(2)}" r="8" fill="#c8f400"/>\n`;
+          svgContent += `    <text x="${(arc.startPt.x+10).toFixed(1)}" y="${(arc.startPt.y-8).toFixed(1)}" fill="#c8f400" font-family="monospace" font-size="13">S${arcIdx+1}</text>\n`;
+        }
+        if (arc.endPt) {
+          svgContent += `    <circle cx="${arc.endPt.x.toFixed(2)}" cy="${arc.endPt.y.toFixed(2)}" r="8" fill="#f5a623"/>\n`;
+          svgContent += `    <text x="${(arc.endPt.x+10).toFixed(1)}" y="${(arc.endPt.y-8).toFixed(1)}" fill="#f5a623" font-family="monospace" font-size="13">O${arcIdx+1}</text>\n`;
+        }
+        arc.deviations.forEach((d, i) => {
+          const devColor = d.handleMode === 'LOCK' ? '#ff6ef7' : '#f5a623';
+          svgContent += `    <circle cx="${d.pos.x.toFixed(2)}" cy="${d.pos.y.toFixed(2)}" r="7" fill="${devColor}"/>\n`;
+          svgContent += `    <text x="${(d.pos.x+10).toFixed(1)}" y="${(d.pos.y-8).toFixed(1)}" fill="#00e5cc" font-family="monospace" font-size="13">d${i+1}</text>\n`;
+        });
+      }
+    });
+    svgContent += `  </g>\n`;
+  });
+
+  // Build full scene payload with layer data
   const scenePayload = {
-    version: 3,
+    version: 4,
     vp: { x: vp.x, y: vp.y, scale: vp.scale },
-    arcs: arcs.map(arc => ({
-      id:         arc.id,
-      color:      arc.color,
-      mode:       arc.mode,
-      startPt:    arc.startPt ? { x: arc.startPt.x, y: arc.startPt.y } : null,
-      endPt:      arc.endPt   ? { x: arc.endPt.x,   y: arc.endPt.y   } : null,
-      deviations: arc.deviations.map(d => ({
-        id:         d.id,
-        pos:        { x: d.pos.x, y: d.pos.y },
-        cp1:        { x: d.cp1.x, y: d.cp1.y },
-        cp2:        { x: d.cp2.x, y: d.cp2.y },
-        handleMode: d.handleMode
-      })),
-      collapsed: arc.collapsed
+    layers: layers.map(layer => ({
+      id:      layer.id,
+      name:    layer.name,
+      isBg:    layer.isBg,
+      visible: layer.visible,
+      bgColor: layer.bgColor,
+      // Don't embed video in scene data — too large; note for reimport
+      bgImageType: layer.bgImage ? layer.bgImage.type : null,
+      bgImageName: layer.bgImage ? layer.bgImage.name : null,
+      // Embed static images as base64 (skip video)
+      bgImageData: layer.bgImage && layer.bgImage.type !== 'video' ? layer.bgImage.src : null,
+      arcs: (layer.isBg ? [] : layer.arcs).map(arc => ({
+        id:         arc.id,
+        color:      arc.color,
+        mode:       arc.mode,
+        startPt:    arc.startPt ? { x: arc.startPt.x, y: arc.startPt.y } : null,
+        endPt:      arc.endPt   ? { x: arc.endPt.x,   y: arc.endPt.y   } : null,
+        deviations: arc.deviations.map(d => ({
+          id:         d.id,
+          pos:        { x: d.pos.x, y: d.pos.y },
+          cp1:        { x: d.cp1.x, y: d.cp1.y },
+          cp2:        { x: d.cp2.x, y: d.cp2.y },
+          handleMode: d.handleMode
+        })),
+        collapsed: arc.collapsed
+      }))
     }))
   };
 
-  // Encode scene as base64 so it embeds cleanly in XML without escaping issues
   const sceneB64 = btoa(unescape(encodeURIComponent(JSON.stringify(scenePayload))));
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:arcedge="https://dartedge.com/radicaledge"
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     xmlns:arcedge="https://dartedge.com/radicaledge"
      width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <metadata>
     <arcedge:scene>${sceneB64}</arcedge:scene>
   </metadata>
-  <rect width="${W}" height="${H}" fill="#0d0f12"/>
-${arcPaths}  <!-- ArcEdge by Justin Craig Venable — dartedge.com/radicaledge -->
+${svgContent}  <!-- ArcEdge v4 by Justin Craig Venable — dartedge.com/radicaledge -->
 </svg>`;
 
   const blob = new Blob([svg], { type: 'image/svg+xml' });
@@ -1932,7 +3070,6 @@ ${arcPaths}  <!-- ArcEdge by Justin Craig Venable — dartedge.com/radicaledge -
   link.click();
   URL.revokeObjectURL(url);
 
-  // Flash save button to confirm
   const btn = document.querySelector('.btn.save');
   if (btn) {
     btn.style.background = 'var(--save)'; btn.style.color = '#000';
@@ -1941,9 +3078,99 @@ ${arcPaths}  <!-- ArcEdge by Justin Craig Venable — dartedge.com/radicaledge -
 }
 
 // ══════════════════════════════════════════════
+//  MP4 EXPORT via MediaRecorder
+// ══════════════════════════════════════════════
+function exportMP4(settings) {
+  const bg = bgLayer().bgImage;
+  if (!bg || (bg.type !== 'gif' && bg.type !== 'video')) {
+    alert('MP4 export requires an animated GIF or MP4 video in the Background layer.\nImport one via the Layers panel → Background Layer → MP4 or IMG/GIF.');
+    return;
+  }
+
+  // Use a composite canvas
+  const compCanvas = document.createElement('canvas');
+  compCanvas.width  = canvas.width;
+  compCanvas.height = canvas.height;
+  const compCtx = compCanvas.getContext('2d');
+
+  let duration = 5000; // default 5s for gif; get from video if available
+  if (bg.type === 'video') {
+    duration = Math.min(bg.element.duration * 1000 || 5000, 60000);
+    bg.element.currentTime = 0;
+    bg.element.play();
+  }
+
+  const stream = compCanvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, {
+    mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+              ? 'video/webm;codecs=vp9'
+              : 'video/webm',
+    videoBitsPerSecond: 8000000
+  });
+
+  const chunks = [];
+  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = 'arcedge-export.webm';
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    if (bg.type === 'video') bg.element.pause();
+  };
+
+  recorder.start();
+
+  let startTime = null;
+  function frame(ts) {
+    if (!startTime) startTime = ts;
+    const elapsed = ts - startTime;
+
+    // Composite: background
+    const W = compCanvas.width, H = compCanvas.height;
+    compCtx.clearRect(0, 0, W, H);
+    compCtx.fillStyle = bgLayer().bgColor || '#0d0f12';
+    compCtx.fillRect(0, 0, W, H);
+
+    const el = bg.element;
+    const iw = bg.type === 'video' ? el.videoWidth  : el.naturalWidth;
+    const ih = bg.type === 'video' ? el.videoHeight : el.naturalHeight;
+    if (iw && ih) {
+      const scale = Math.max(W / iw, H / ih);
+      const dw = iw * scale, dh = ih * scale;
+      compCtx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+
+    // Draw arc canvas on top
+    compCtx.drawImage(canvas, 0, 0);
+
+    if (elapsed < duration) {
+      requestAnimationFrame(frame);
+    } else {
+      recorder.stop();
+    }
+  }
+  requestAnimationFrame(frame);
+
+  alert(`Recording ${(duration / 1000).toFixed(1)}s of animation. File will download when complete.`);
+}
+
+// ══════════════════════════════════════════════
+//  SAVE — SVG with embedded scene data (legacy quick-save)
+// ══════════════════════════════════════════════
+function saveSVG() {
+  exportSVGWithLayers({
+    showBg: true, showLabels: true, showHandles: true,
+    showGrid: false, showMeasurements: false,
+    allLayers: true, transparent: false, content: 'full'
+  });
+}
+
+// ══════════════════════════════════════════════
 //  LOAD — read .svg file, extract scene data
-//  Supports: v3 SVG scenes, v2 JSON scenes (legacy),
-//  and v1 single-arc JSON (legacy)
+//  Supports: v4 layer scenes, v3 SVG, v2/v1 JSON (legacy)
 // ══════════════════════════════════════════════
 function loadSVG() {
   const input = document.createElement('input');
@@ -1955,12 +3182,10 @@ function loadSVG() {
     const reader = new FileReader();
     reader.onload = ev => {
       const text = ev.target.result;
-      // Try SVG with embedded arcedge scene
       if (text.trim().startsWith('<') || text.trim().startsWith('<?xml')) {
         try {
           const parser  = new DOMParser();
           const svgDoc  = parser.parseFromString(text, 'image/svg+xml');
-          // Look for <arcedge:scene> inside <metadata>
           const sceneEl = svgDoc.querySelector('metadata scene') ||
                           svgDoc.getElementsByTagNameNS('https://dartedge.com/radicaledge', 'scene')[0];
           if (!sceneEl) {
@@ -1974,7 +3199,6 @@ function loadSVG() {
           alert('Could not read ArcEdge scene from SVG.\n' + err.message);
         }
       } else {
-        // Try plain JSON (legacy v1/v2)
         try {
           loadSceneData(JSON.parse(text));
         } catch(err) {
@@ -1986,7 +3210,6 @@ function loadSVG() {
   };
   input.click();
 
-  // Flash load button to confirm
   const btn = document.querySelector('.btn.load');
   if (btn) {
     btn.style.background = 'var(--load)'; btn.style.color = '#000';
@@ -1995,52 +3218,111 @@ function loadSVG() {
 }
 
 function loadSceneData(data) {
-  // v3 SVG-embedded scene  OR  v2 JSON scene
-  if ((data.version === 3 || data.version === 2) && Array.isArray(data.arcs)) {
-    arcs = data.arcs.map(a => ({
+  stopBgAnimation();
+
+  // v4 — layer-aware format
+  if (data.version === 4 && Array.isArray(data.layers)) {
+    layerIdCounter = 1;
+    arcIdCounter   = 1;
+    devIdCounter   = 1;
+    layers = data.layers.map(l => {
+      const layer = makeLayer(l.name || 'Layer', l.isBg || false);
+      layer.id      = l.id || layerIdCounter - 1;
+      layer.visible = l.visible !== false;
+      layer.bgColor = l.bgColor || '#0d0f12';
+      // Restore embedded image if present
+      if (l.bgImageData && l.bgImageType !== 'video') {
+        const img = new Image();
+        const src = l.bgImageData;
+        img.onload = () => {
+          layer.bgImage = { src, name: l.bgImageName || 'image', type: l.bgImageType || 'img', element: img };
+          if (l.bgImageType === 'gif') startBgAnimation();
+          else renderBackground();
+        };
+        img.src = src;
+      } else if (l.bgImageType === 'video') {
+        layer.bgImage = null; // video must be reimported
+      }
+      layer.arcs = (l.arcs || []).map(a => ({
+        id:            a.id || arcIdCounter++,
+        color:         a.color || '#ffffff',
+        mode:          a.mode  || 'IDLE',
+        startPt:       a.startPt ? { ...a.startPt } : null,
+        endPt:         a.endPt   ? { ...a.endPt   } : null,
+        deviations:    (a.deviations || []).map(d => ({
+          id:         d.id || devIdCounter++,
+          pos:        { ...d.pos }, cp1: { ...d.cp1 }, cp2: { ...d.cp2 },
+          handleMode: d.handleMode || 'FREE'
+        })),
+        selectedDev: null, dragging: null,
+        handleMode: 'FREE', measureResult: null,
+        collapsed: a.collapsed || false
+      }));
+      return layer;
+    });
+    // Ensure at least 1 arc layer
+    if (!layers.find(l => !l.isBg)) {
+      const nl = makeLayer('Layer 1', false);
+      nl.arcs = [ makeArc() ];
+      layers.push(nl);
+    }
+    if (data.vp) vp = { ...data.vp };
+    activeLayerIdx = layers.findIndex(l => !l.isBg);
+    if (activeLayerIdx < 0) activeLayerIdx = 1;
+    activeArcIdx = 0;
+  }
+  // v3/v2 — multi-arc, single layer
+  else if ((data.version === 3 || data.version === 2) && Array.isArray(data.arcs)) {
+    layerIdCounter = 1; arcIdCounter = 1; devIdCounter = 1;
+    layers = [ makeLayer('Background', true), makeLayer('Layer 1', false) ];
+    layers[1].arcs = data.arcs.map(a => ({
       id:            a.id || arcIdCounter++,
       color:         a.color || '#ffffff',
       mode:          a.mode  || 'IDLE',
-      startPt:       a.startPt ? { x: a.startPt.x, y: a.startPt.y } : null,
-      endPt:         a.endPt   ? { x: a.endPt.x,   y: a.endPt.y   } : null,
+      startPt:       a.startPt ? { ...a.startPt } : null,
+      endPt:         a.endPt   ? { ...a.endPt   } : null,
       deviations:    (a.deviations || []).map(d => ({
-        id:         d.id || devIdCounter++,
-        pos:        { x: d.pos.x, y: d.pos.y },
-        cp1:        { x: d.cp1.x, y: d.cp1.y },
-        cp2:        { x: d.cp2.x, y: d.cp2.y },
+        id: d.id || devIdCounter++,
+        pos: { ...d.pos }, cp1: { ...d.cp1 }, cp2: { ...d.cp2 },
         handleMode: d.handleMode || 'FREE'
       })),
-      selectedDev:   null,
-      dragging:      null,
-      handleMode:    'FREE',
-      measureResult: null,
-      collapsed:     a.collapsed || false
+      selectedDev: null, dragging: null,
+      handleMode: 'FREE', measureResult: null,
+      collapsed: a.collapsed || false
     }));
-    if (data.vp) vp = { x: data.vp.x, y: data.vp.y, scale: data.vp.scale };
-    if (arcs.length) arcIdCounter = Math.max(arcIdCounter, ...arcs.map(a => a.id)) + 1;
-  } else if (data.startPt !== undefined) {
-    // Legacy v1 single-arc JSON
-    const arc    = makeArc();
-    arc.startPt  = data.startPt;
-    arc.endPt    = data.endPt;
+    if (data.vp) vp = { ...data.vp };
+    activeLayerIdx = 1;
+    activeArcIdx = 0;
+  }
+  // Legacy v1 single-arc JSON
+  else if (data.startPt !== undefined) {
+    layerIdCounter = 1; arcIdCounter = 1; devIdCounter = 1;
+    layers = [ makeLayer('Background', true), makeLayer('Layer 1', false) ];
+    const arc = makeArc();
+    arc.startPt = data.startPt;
+    arc.endPt   = data.endPt;
     arc.deviations = (data.deviations || []).map(d => ({
       id: devIdCounter++,
       pos: { ...d.pos }, cp1: { ...d.cp1 }, cp2: { ...d.cp2 },
       handleMode: d.handleMode || 'FREE'
     }));
     arc.mode = (data.startPt && data.endPt) ? 'IDLE' : 'PLACE_START';
-    arcs = [arc];
-    if (data.vp) vp = { x: data.vp.x, y: data.vp.y, scale: data.vp.scale };
+    layers[1].arcs = [arc];
+    if (data.vp) vp = { ...data.vp };
+    activeLayerIdx = 1;
+    activeArcIdx = 0;
   } else {
     alert('Unknown ArcEdge file format.'); return;
   }
 
-  activeArcIdx = 0;
   cancelWeld();
   updateAllCards();
-  arcs.forEach(arc => { arc.measureResult = measureArcObj(arc); updateCardData(arc); });
+  const al = activeLayer();
+  al.arcs.forEach(arc => { arc.measureResult = measureArcObj(arc); updateCardData(arc); });
   updateTotalLength();
   updateModeDisplay();
+  renderLayerPanel();
+  renderBackground();
   render();
 }
 
@@ -2050,8 +3332,11 @@ function loadSceneData(data) {
 function resize() {
   const r = wrap.getBoundingClientRect();
   if (r.width > 0 && r.height > 0) {
-    canvas.width  = Math.floor(r.width);
-    canvas.height = Math.floor(r.height);
+    canvas.width   = Math.floor(r.width);
+    canvas.height  = Math.floor(r.height);
+    bgCanvas.width  = Math.floor(r.width);
+    bgCanvas.height = Math.floor(r.height);
+    renderBackground();
     render();
   }
 }
@@ -2063,7 +3348,8 @@ ro.observe(wrap);
 // ══════════════════════════════════════════════
 updateAllCards();
 updateModeDisplay();
-// ResizeObserver fires immediately once observed → first render
+renderLayerPanel();
+// ResizeObserver fires immediately once observed → first render + background
 </script>
 </body>
 </html>
