@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Arc Edge — Justin Venable</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
+
+  :root {
+    --bg:        #111214;
+    --panel:     #181a1e;
+    --border:    #f5a623;
+    --accent1:   #00e5cc;
+    --accent2:   #c8f400;
+    --accent3:   #7b5cfa;
+    --text:      #e8eaf0;
+    --muted:     #6b7280;
+    --red:       #ff4466;
+    --deviation: #f5a623;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  /* ── ROOT: lock entire page to exactly the visible viewport ── */
+  html {
+    height: -webkit-fill-available; /* Safari iOS fallback */
+    height: 100dvh;                 /* modern dynamic viewport */
+    overflow: hidden;
+  }
+  body {
+    height: -webkit-fill-available;
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Exo 2', sans-serif;
+    /* honour notch / home-bar on iOS & Android */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left:   env(safe-area-inset-left,   0px);
+    padding-right:  env(safe-area-inset-right,  0px);
+  }
+
+  /* ═══════════════════════════════════════════════
+     APP SHELL
+     Three rows stacked: topbar | middle | footer
+     Middle row fills remaining space via flex:1
+     Nothing ever bleeds past the bottom of the screen
+  ═══════════════════════════════════════════════ */
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;       /* fills body which is 100dvh */
+    overflow: hidden;
+  }
+
+  /* ───────── TOP BAR ───────── */
+  #topbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    height: 46px;
+    min-height: 46px;
+    background: var(--panel);
+    border-bottom: 2px solid var(--border);
+    gap: 8px;
+    /* scroll sideways on narrow phones instead of wrapping to 2+ rows */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  #topbar::-webkit-scrollbar { display: none; }
+
+  #topbar h1 {
+    font-family: 'Orbitron', monospace;
+    font-size: 1.05rem;
+    font-weight: 900;
+    color: var(--accent1);
+    letter-spacing: 2px;
+    text-shadow: 0 0 14px var(--accent1);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  #mode-display {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.52rem;
+    padding: 4px 9px;
+    background: var(--accent3);
+    color: #fff;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .tb-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .tb-label {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.48rem;
+    color: var(--border);
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .tb-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--accent2);
+    background: #0d0f12;
+    border: 1px solid var(--accent2);
+    padding: 2px 7px;
+    min-width: 72px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  /* ── Shared button style ── */
+  .btn {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.5rem;
+    letter-spacing: 1px;
+    padding: 6px 11px;
+    border: 1.5px solid var(--border);
+    background: transparent;
+    color: var(--border);
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .btn:hover, .btn:active       { background: var(--border);   color: #000; }
+  .btn.accent                   { border-color: var(--accent1); color: var(--accent1); }
+  .btn.accent:hover,
+  .btn.accent:active            { background: var(--accent1);  color: #000; }
+  .btn.accent2                  { border-color: var(--accent2); color: var(--accent2); }
+  .btn.accent2:hover,
+  .btn.accent2:active           { background: var(--accent2);  color: #000; }
+  .btn.danger                   { border-color: var(--red);     color: var(--red); }
+  .btn.danger:hover,
+  .btn.danger:active            { background: var(--red);       color: #fff; }
+
+  #topbar-btns {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* ───────── MIDDLE ROW ───────── */
+  #main {
+    flex: 1;
+    min-height: 0;      /* CRITICAL — allow flex child to shrink below content size */
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ───────── SIDEBAR ───────── */
+  #sidebar {
+    width: 196px;
+    min-width: 180px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-right: 2px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .panel-section {
+    border-bottom: 1px solid #2a2d35;
+    padding: 9px 10px;
+    flex-shrink: 0;
+  }
+  .section-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.5rem;
+    color: var(--border);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+  .field-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.62rem;
+    color: var(--accent1);
+    min-width: 44px;
+  }
+  .field-input {
+    background: #0d0f12;
+    border: 1px solid var(--accent3);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.66rem;
+    padding: 3px 6px;
+    width: 100%;
+  }
+  .field-input:focus { outline: none; border-color: var(--accent1); }
+  .readout {
+    background: #0d0f12;
+    border: 1px solid var(--accent2);
+    color: var(--accent2);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.66rem;
+    padding: 3px 6px;
+    width: 100%;
+    min-height: 23px;
+  }
+
+  .circle-preview { display: flex; flex-direction: column; align-items: center; gap: 3px; margin-bottom: 7px; }
+  .circle-canvas  { border: 1px solid #2a2d35; background: #0d0f12; display: block; }
+  .circle-label   { font-family: 'Share Tech Mono', monospace; font-size: 0.57rem; color: var(--muted); text-align: center; }
+
+  #dev-list { display: flex; flex-direction: column; gap: 3px; max-height: 100px; overflow-y: auto; }
+  .dev-item {
+    display: flex; align-items: center; gap: 5px;
+    background: #0d0f12; border: 1px solid #2a2d35;
+    padding: 3px 6px;
+    font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--accent1);
+    cursor: pointer; transition: border-color 0.12s;
+  }
+  .dev-item:hover              { border-color: var(--accent1); }
+  .dev-item.selected           { border-color: var(--deviation); color: var(--deviation); }
+  .dev-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--deviation); flex-shrink: 0; }
+  .dev-del { margin-left: auto; color: var(--red); cursor: pointer; font-size: 0.72rem; padding: 0 2px; }
+
+  /* ───────── CANVAS AREA ───────── */
+  #canvas-wrap {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;       /* CRITICAL — must not overflow footer */
+    position: relative;
+    overflow: hidden;    /* clips the canvas — never grows past parent */
+    background: #0d0f12;
+  }
+  #arc-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  /* ── REFRAME FAB ──
+     Floats inside #canvas-wrap (position: absolute relative to it)
+     so it is always above the canvas but can never overlap the footer
+  ── */
+  #btn-reframe {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    z-index: 20;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.5rem;
+    letter-spacing: 1px;
+    padding: 10px 18px;
+    border: 1.5px solid var(--accent2);
+    background: rgba(13, 15, 18, 0.88);
+    color: var(--accent2);
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.14s, color 0.14s, transform 0.1s;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    box-shadow: 0 0 14px rgba(200, 244, 0, 0.18);
+  }
+  #btn-reframe:hover,
+  #btn-reframe:active {
+    background: var(--accent2);
+    color: #000;
+    transform: scale(0.95);
+  }
+
+  /* ───────── FOOTER (status bar) ───────── */
+  #footer {
+    flex-shrink: 0;
+    /* Fixed height + extra padding for home-indicator on notched iOS/Android */
+    height: calc(36px + env(safe-area-inset-bottom, 0px));
+    min-height: calc(36px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 10px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--panel);
+    border-top: 2px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  #footer::-webkit-scrollbar { display: none; }
+
+  .status-item { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .status-label {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.44rem;
+    color: var(--muted);
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .status-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.66rem;
+    color: var(--accent2);
+    white-space: nowrap;
+  }
+
+  /* Secondary reframe button inside footer */
+  #footer-reframe-btn {
+    font-family: 'Orbitron', monospace;
+    font-size: 0.44rem;
+    letter-spacing: 1px;
+    padding: 5px 11px;
+    border: 1px solid var(--accent2);
+    background: transparent;
+    color: var(--accent2);
+    cursor: pointer;
+    text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.12s, color 0.12s;
+  }
+  #footer-reframe-btn:hover,
+  #footer-reframe-btn:active { background: var(--accent2); color: #000; }
+
+  #footer-author {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.42rem;
+    color: var(--accent3);
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+
+  /* ── TANGENT POPUP ── */
+  #tooltip {
+    position: fixed;
+    background: #1a1d24;
+    border: 1px solid var(--accent1);
+    padding: 8px 12px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text);
+    pointer-events: none;
+    z-index: 1000;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 162px;
+  }
+  .tooltip-title { color: var(--accent1); font-size: 0.6rem; letter-spacing: 1px; margin-bottom: 2px; }
+  .tooltip-btn {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--border);
+    cursor: pointer;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.62rem;
+    pointer-events: all;
+    text-align: left;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tooltip-btn:hover           { background: var(--border);   color: #000; }
+  .tooltip-btn.act             { border-color: var(--accent1); color: var(--accent1); }
+  .tooltip-btn.act:hover       { background: var(--accent1);  color: #000; }
+
+  /* scrollbars (sidebar, dev-list, etc.) */
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: #0d0f12; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══════════════════════ TOP BAR ══════════════════════ -->
+  <div id="topbar">
+    <h1>Arc Edge</h1>
+    <div id="mode-display">MODE: PLACE START</div>
+
+    <div class="tb-group">
+      <span class="tb-label">ARC LEN</span>
+      <div class="tb-val" id="arc-length-display">—</div>
+    </div>
+    <div class="tb-group">
+      <span class="tb-label">CURVES</span>
+      <div class="tb-val" id="curve-count-display" style="min-width:36px;">0</div>
+    </div>
+
+    <div id="topbar-btns">
+      <button class="btn"         onclick="addDeviation()">+ DEV</button>
+      <button class="btn accent"  onclick="measureArc()">MEASURE</button>
+      <button class="btn accent2" onclick="reframeView(true)">⌖ REFRAME</button>
+      <button class="btn"         onclick="exportPNG()">PNG</button>
+      <button class="btn"         onclick="exportSVG()">SVG</button>
+      <button class="btn danger"  onclick="clearAll()">CLEAR</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ MIDDLE ROW ══════════════════════ -->
+  <div id="main">
+
+    <!-- ─── Sidebar ─── -->
+    <div id="sidebar">
+
+      <div class="panel-section">
+        <div class="section-title">Arc Builder</div>
+        <div class="field-row">
+          <span class="field-label">Start X</span>
+          <input class="field-input" id="start-x" type="number" placeholder="—" readonly>
+        </div>
+        <div class="field-row">
+          <span class="field-label">Start Y</span>
+          <input class="field-input" id="start-y" type="number" placeholder="—" readonly>
+        </div>
+        <div class="field-row">
+          <span class="field-label">End X</span>
+          <input class="field-input" id="end-x" type="number" placeholder="—" readonly>
+        </div>
+        <div class="field-row">
+          <span class="field-label">End Y</span>
+          <input class="field-input" id="end-y" type="number" placeholder="—" readonly>
+        </div>
+        <div class="field-row">
+          <span class="field-label">Formula</span>
+          <div class="readout" id="formula-readout">—</div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Deviations</div>
+        <div id="dev-list"></div>
+        <div style="margin-top:7px;">
+          <div class="field-row">
+            <span class="field-label">Factor</span>
+            <input class="field-input" id="dev-factor" type="number" step="0.1" value="1" placeholder="±">
+          </div>
+          <button class="btn accent" style="width:100%;margin-top:4px;" onclick="addDeviation()">ADD DEVIATION</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Circumference Calc</div>
+        <div class="circle-preview">
+          <canvas id="small-circle" class="circle-canvas" width="70" height="70"></canvas>
+          <div class="circle-label">−1 Smallest Circle</div>
+          <div class="readout" id="small-circ" style="font-size:0.56rem;">—</div>
+        </div>
+        <div class="circle-preview">
+          <canvas id="large-circle" class="circle-canvas" width="70" height="70"></canvas>
+          <div class="circle-label">+1 Largest Circle</div>
+          <div class="readout" id="large-circ" style="font-size:0.56rem;">—</div>
+        </div>
+        <div class="field-row" style="margin-top:4px;">
+          <span class="field-label">Circles</span>
+          <div class="readout" id="circles-used">—</div>
+        </div>
+        <div class="field-row">
+          <span class="field-label">Iters</span>
+          <div class="readout" id="iterations-used">—</div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Segment Lengths</div>
+        <div id="segment-list" style="display:flex;flex-direction:column;gap:3px;max-height:110px;overflow-y:auto;"></div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Method</div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:0.54rem;color:var(--muted);line-height:1.8;">
+          C = √(d×3)²<br>
+          A = C²<br>
+          V = A³<br>
+          SSA = V×0.25<br><br>
+          <span style="color:var(--accent2);">J.C. Venable — Arc Edge</span><br>
+          <a href="https://extensions.blender.org/add-ons/arc-edge/"
+             style="color:var(--accent1);font-size:0.49rem;text-decoration:none;">
+            Arc Edge | Blender Extension
+          </a>
+        </div>
+      </div>
+
+    </div><!-- /sidebar -->
+
+    <!-- ─── Canvas area ─── -->
+    <div id="canvas-wrap">
+      <canvas id="arc-canvas"></canvas>
+
+      <!-- Floating Reframe FAB
+           Lives inside #canvas-wrap (position:absolute relative to it)
+           so it can never push content below the footer strip -->
+      <button id="btn-reframe" onclick="reframeView(true)" title="Fit all arc points into view">
+        ⌖ REFRAME VIEW
+      </button>
+    </div>
+
+  </div><!-- /main -->
+
+  <!-- ══════════════════════ FOOTER ══════════════════════ -->
+  <div id="footer">
+    <div class="status-item">
+      <span class="status-label">XY</span>
+      <span class="status-val" id="mouse-pos">—</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">ZOOM</span>
+      <span class="status-val" id="zoom-display">100%</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">PAN</span>
+      <span class="status-val" id="pan-display">0, 0</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">SEL</span>
+      <span class="status-val" id="selected-info">none</span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">HANDLE</span>
+      <span class="status-val" id="handle-mode-display">FREE</span>
+    </div>
+    <!-- Second reframe trigger in footer — handy when FAB is hard to reach -->
+    <button id="footer-reframe-btn" onclick="reframeView(true)">⌖ REFRAME</button>
+    <div id="footer-author">Justin Craig Venable · ArcEdge · dartedge.com/radicaledge</div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- ── Tangent popup (long-press on deviation centre point) ── -->
+<div id="tooltip">
+  <div class="tooltip-title">TANGENT OPTIONS</div>
+  <button class="tooltip-btn" id="tp-free"  onclick="setHandleMode('FREE')">FREE — Independent</button>
+  <button class="tooltip-btn" id="tp-half"  onclick="setHandleMode('HALF')">HALF — One side</button>
+  <button class="tooltip-btn" id="tp-lock"  onclick="setHandleMode('LOCK')">LOCK — Mirror both</button>
+  <button class="tooltip-btn" id="tp-right" onclick="setHandleMode('RIGHT')">RIGHT ANGLE</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  ARC EDGE — Justin Craig Venable
+//  Circumference: C = √(d*3)² = d*3
+//  Area: C²   Volume: A³   Sphere Surface Area: V*0.25
+//  dartedge.com/radicaledge
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('arc-canvas');
+const ctx    = canvas.getContext('2d');
+const wrap   = document.getElementById('canvas-wrap');
+
+// ── Viewport transform (pan + zoom) ──
+let vp = { x: 0, y: 0, scale: 1 };
+
+function screenToWorld(sx, sy) {
+  return { x: (sx - vp.x) / vp.scale, y: (sy - vp.y) / vp.scale };
+}
+function worldToScreen(wx, wy) {
+  return { x: wx * vp.scale + vp.x, y: wy * vp.scale + vp.y };
+}
+
+// ── App state ──
+let state = {
+  mode: 'PLACE_START',
+  startPt: null,
+  endPt: null,
+  deviations: [],
+  selectedDev: null,
+  dragging: null,
+  isPanning: false,
+  panStart: null,
+  handleMode: 'FREE',
+  measureResult: null,
+  devIdCounter: 1
+};
+
+// ══════════════════════════════════════════════
+//  VENABLE CIRCUMFERENCE  C = √(d*3)²  (= d*3)
+// ══════════════════════════════════════════════
+function venableCircumference(d) { return Math.sqrt(Math.pow(d * 3, 2)); }
+function venableArea(d)          { return Math.pow(venableCircumference(d), 2); }
+function venableVolume(d)        { return Math.pow(venableArea(d), 3); }
+function venableSSA(d)           { return venableVolume(d) * 0.25; }
+
+// Arc Section 1 — Builder formula   y = ((x*2)+1)/x   z = x+y+y
+function arcBuilderFormula(x) {
+  if (x === 0) return { y: Infinity, z: Infinity };
+  const y = ((x * 2) + 1) / x;
+  const z = x + y + ((x * 2) + 1) / x;
+  return { y, z };
+}
+
+// ── Bezier utilities ──
+function bezierPoint(p0, p1, p2, p3, t) {
+  const mt = 1 - t;
+  return {
+    x: mt*mt*mt*p0.x + 3*mt*mt*t*p1.x + 3*mt*t*t*p2.x + t*t*t*p3.x,
+    y: mt*mt*mt*p0.y + 3*mt*mt*t*p1.y + 3*mt*t*t*p2.y + t*t*t*p3.y
+  };
+}
+
+function segmentLength(p0, p1, p2, p3, steps = 120) {
+  let len = 0, prev = bezierPoint(p0, p1, p2, p3, 0);
+  for (let i = 1; i <= steps; i++) {
+    const cur = bezierPoint(p0, p1, p2, p3, i / steps);
+    const dx = cur.x - prev.x, dy = cur.y - prev.y;
+    len += Math.sqrt(dx * dx + dy * dy);
+    prev = cur;
+  }
+  return len;
+}
+
+// Build cubic bezier segment list from state
+function buildArcSegments() {
+  if (!state.startPt || !state.endPt) return [];
+  const pts = [state.startPt, ...state.deviations.map(d => d.pos), state.endPt];
+  const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i], p3 = pts[i + 1];
+    let cp1, cp2;
+    if (i === 0) {
+      cp1 = p0.cp2 || { x: p0.x + (p3.x - p0.x) * 0.33, y: p0.y + (p3.y - p0.y) * 0.1 };
+    } else {
+      const dev = state.deviations[i - 1];
+      cp1 = dev.cp2 || { x: dev.pos.x + (p3.x - pts[i - 1].x) * 0.1, y: dev.pos.y };
+    }
+    if (i === pts.length - 2) {
+      cp2 = p3.cp1 || { x: p0.x + (p3.x - p0.x) * 0.67, y: p3.y - (p3.y - p0.y) * 0.1 };
+    } else {
+      const dev = state.deviations[i];
+      cp2 = dev.cp1 || { x: dev.pos.x - (p3.x - p0.x) * 0.1, y: dev.pos.y };
+    }
+    segs.push({ p0, cp1, cp2, p3 });
+  }
+  return segs;
+}
+
+// ══════════════════════════════════════════════
+//  ARC MEASURE — Venable Circle Iteration
+// ══════════════════════════════════════════════
+function measureArc() {
+  const segs = buildArcSegments();
+  if (segs.length === 0) return;
+
+  const segLengths = segs.map(s => segmentLength(s.p0, s.cp1, s.cp2, s.p3));
+  const minSeg = Math.min(...segLengths);
+  const maxSeg = Math.max(...segLengths);
+
+  let smallD = 1, largeD = 1;
+  // Smallest circle: 1/8 circumference just less than minSeg
+  for (let d = 1; d <= 10000; d++) {
+    if (venableCircumference(d) / 8 >= minSeg) { smallD = Math.max(1, d - 1); break; }
+    smallD = d;
+  }
+  // Largest circle: 1/8 circumference just greater than maxSeg
+  for (let d = 1; d <= 10000; d++) {
+    if (venableCircumference(d) / 8 > maxSeg) { largeD = d; break; }
+  }
+
+  let arcLengthPx = 0, totalIters = 0;
+  const segResults = [];
+
+  for (let si = 0; si < segs.length; si++) {
+    const segLen = segLengths[si];
+    let lo = smallD, hi = largeD, best = lo, iters = 0;
+    while (lo <= hi && iters < 64) {
+      const mid    = Math.floor((lo + hi) / 2);
+      const eighth = venableCircumference(mid) / 8;
+      if (Math.abs(eighth - segLen) < 0.5) { best = mid; break; }
+      if (eighth < segLen) lo = mid + 1; else hi = mid - 1;
+      best = mid; iters++;
+    }
+    totalIters  += iters;
+    arcLengthPx += segLen;
+    segResults.push({
+      idx: si,
+      len: segLen.toFixed(2),
+      matchD: best,
+      circ:   venableCircumference(best).toFixed(2),
+      eighth: (venableCircumference(best) / 8).toFixed(2)
+    });
+  }
+
+  state.measureResult = { totalLen: arcLengthPx.toFixed(2), smallD, largeD, segResults, totalIters };
+  updateMeasureUI();
+}
+
+function updateMeasureUI() {
+  const r = state.measureResult;
+  if (!r) return;
+  document.getElementById('arc-length-display').textContent = r.totalLen + ' px';
+  document.getElementById('small-circ').textContent = `d=${r.smallD} C=${venableCircumference(r.smallD).toFixed(1)}`;
+  document.getElementById('large-circ').textContent = `d=${r.largeD} C=${venableCircumference(r.largeD).toFixed(1)}`;
+  document.getElementById('circles-used').textContent    = r.segResults.length + ' segs';
+  document.getElementById('iterations-used').textContent = r.totalIters;
+  drawCirclePreview('small-circle', r.smallD, '#00e5cc');
+  drawCirclePreview('large-circle', r.largeD, '#f5a623');
+
+  const sl = document.getElementById('segment-list');
+  sl.innerHTML = '';
+  r.segResults.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.style.cssText = 'font-family:Share Tech Mono,monospace;font-size:0.57rem;color:#6b7280;padding:2px 0;border-bottom:1px solid #1e2028;';
+    div.innerHTML = `<span style="color:var(--accent1)">Seg${i + 1}</span>: ${s.len}px · d=${s.matchD}`;
+    sl.appendChild(div);
+  });
+
+  if (state.startPt && state.endPt) {
+    const dx = state.endPt.x - state.startPt.x;
+    const f = arcBuilderFormula(Math.abs(dx) || 1);
+    document.getElementById('formula-readout').textContent = `y=${f.y.toFixed(2)} z=${f.z.toFixed(2)}`;
+  }
+}
+
+function drawCirclePreview(id, diameter, color) {
+  const c    = document.getElementById(id);
+  const ctx2 = c.getContext('2d');
+  ctx2.clearRect(0, 0, 70, 70);
+  const r = Math.min(30, diameter / 2);
+  ctx2.strokeStyle = color; ctx2.lineWidth = 1.5;
+  ctx2.beginPath(); ctx2.arc(35, 35, Math.max(2, r), 0, Math.PI * 2); ctx2.stroke();
+  // 1/8 arc highlight
+  ctx2.strokeStyle = '#c8f400'; ctx2.lineWidth = 2.5;
+  ctx2.beginPath(); ctx2.arc(35, 35, Math.max(2, r), -Math.PI / 8, Math.PI / 8); ctx2.stroke();
+}
+
+// ══════════════════════════════════════════════
+//  RENDER
+// ══════════════════════════════════════════════
+function render() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(vp.x, vp.y);
+  ctx.scale(vp.scale, vp.scale);
+
+  // Grid — computed in world space so it fills the canvas regardless of pan/zoom
+  const gs   = 40;
+  const invS = 1 / vp.scale;
+  const x0   = -vp.x * invS, y0 = -vp.y * invS;
+  const x1   = x0 + W * invS, y1 = y0 + H * invS;
+  ctx.strokeStyle = '#1a1d24'; ctx.lineWidth = invS;
+  for (let gx = Math.floor(x0 / gs) * gs; gx <= x1; gx += gs) {
+    ctx.beginPath(); ctx.moveTo(gx, y0); ctx.lineTo(gx, y1); ctx.stroke();
+  }
+  for (let gy = Math.floor(y0 / gs) * gs; gy <= y1; gy += gs) {
+    ctx.beginPath(); ctx.moveTo(x0, gy); ctx.lineTo(x1, gy); ctx.stroke();
+  }
+
+  if (!state.startPt) { ctx.restore(); return; }
+
+  const segs = buildArcSegments();
+
+  // Arc path
+  if (segs.length > 0) {
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5 * invS;
+    ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(255,255,255,0.3)';
+    ctx.beginPath();
+    ctx.moveTo(segs[0].p0.x, segs[0].p0.y);
+    segs.forEach(s => ctx.bezierCurveTo(s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.p3.x, s.p3.y));
+    ctx.stroke(); ctx.shadowBlur = 0;
+  }
+
+  // Deviation handles & points
+  state.deviations.forEach((dev, idx) => {
+    const sel = state.selectedDev === idx;
+
+    // Dashed handle lines
+    ctx.strokeStyle = '#2a3a4a'; ctx.lineWidth = invS;
+    ctx.setLineDash([4 * invS, 4 * invS]);
+    ctx.beginPath(); ctx.moveTo(dev.cp1.x, dev.cp1.y); ctx.lineTo(dev.pos.x, dev.pos.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(dev.pos.x, dev.pos.y); ctx.lineTo(dev.cp2.x, dev.cp2.y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Handle endpoints
+    [dev.cp1, dev.cp2].forEach(cp => {
+      ctx.fillStyle   = sel ? '#00e5cc' : '#005566';
+      ctx.strokeStyle = '#00e5cc'; ctx.lineWidth = 1.5 * invS;
+      ctx.beginPath(); ctx.arc(cp.x, cp.y, 5 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    });
+
+    // Deviation centre point
+    ctx.fillStyle   = '#f5a623';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
+    ctx.beginPath(); ctx.arc(dev.pos.x, dev.pos.y, 7 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    // Label
+    ctx.fillStyle = '#00e5cc';
+    ctx.font = `bold ${13 * invS}px 'Orbitron', monospace`;
+    ctx.fillText(`d${idx + 1}`, dev.pos.x + 10 * invS, dev.pos.y - 8 * invS);
+  });
+
+  // Start point (S)
+  ctx.fillStyle = '#c8f400'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
+  ctx.beginPath(); ctx.arc(state.startPt.x, state.startPt.y, 8 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#c8f400';
+  ctx.font = `bold ${14 * invS}px 'Orbitron', monospace`;
+  ctx.fillText('S', state.startPt.x - 20 * invS, state.startPt.y + 5 * invS);
+  document.getElementById('start-x').value = Math.round(state.startPt.x);
+  document.getElementById('start-y').value = Math.round(state.startPt.y);
+
+  // End point (O)
+  if (state.endPt) {
+    ctx.fillStyle   = '#f5a623'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * invS;
+    ctx.beginPath(); ctx.arc(state.endPt.x, state.endPt.y, 8 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f5a623';
+    ctx.font = `bold ${14 * invS}px 'Orbitron', monospace`;
+    ctx.fillText('O', state.endPt.x + 10 * invS, state.endPt.y + 5 * invS);
+    document.getElementById('end-x').value = Math.round(state.endPt.x);
+    document.getElementById('end-y').value = Math.round(state.endPt.y);
+  }
+
+  ctx.restore();
+
+  // Update footer readouts
+  document.getElementById('curve-count-display').textContent = segs.length;
+  document.getElementById('zoom-display').textContent =
+    Math.round(vp.scale * 100) + '%';
+  document.getElementById('pan-display').textContent =
+    `${Math.round(-vp.x / vp.scale)}, ${Math.round(-vp.y / vp.scale)}`;
+
+  // Auto-measure whenever both endpoints exist
+  if (state.startPt && state.endPt) measureArc();
+}
+
+// ══════════════════════════════════════════════
+//  REFRAME VIEW — fit all arc points in canvas
+// ══════════════════════════════════════════════
+function reframeView(flash = false) {
+  const allPts = [];
+  if (state.startPt) allPts.push(state.startPt);
+  if (state.endPt)   allPts.push(state.endPt);
+  state.deviations.forEach(d => {
+    allPts.push(d.pos); allPts.push(d.cp1); allPts.push(d.cp2);
+  });
+
+  if (allPts.length === 0) { vp = { x: 0, y: 0, scale: 1 }; render(); return; }
+
+  let minX =  Infinity, maxX = -Infinity;
+  let minY =  Infinity, maxY = -Infinity;
+  allPts.forEach(p => {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  });
+
+  const cW  = canvas.width, cH = canvas.height;
+  const pad = 0.13;
+  const bW  = maxX - minX || 100;
+  const bH  = maxY - minY || 100;
+  const newScale = Math.max(0.04, Math.min(8,
+    Math.min((cW * (1 - 2 * pad)) / bW, (cH * (1 - 2 * pad)) / bH)
+  ));
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  vp.scale = newScale;
+  vp.x = cW / 2 - cx * newScale;
+  vp.y = cH / 2 - cy * newScale;
+  render();
+
+  // Flash both reframe buttons to confirm
+  if (flash) {
+    [document.getElementById('btn-reframe'), document.getElementById('footer-reframe-btn')]
+      .forEach(el => {
+        el.style.background = 'var(--accent2)';
+        el.style.color = '#000';
+        setTimeout(() => { el.style.background = ''; el.style.color = ''; }, 300);
+      });
+  }
+}
+
+// ── Default bezier handles for a new deviation ──
+function defaultHandles(pos, prev, next) {
+  const dx = (next.x - prev.x) * 0.25;
+  const dy = (next.y - prev.y) * 0.25;
+  return { cp1: { x: pos.x - dx, y: pos.y - dy }, cp2: { x: pos.x + dx, y: pos.y + dy } };
+}
+
+// ── Add deviation point ──
+function addDeviation() {
+  if (!state.startPt || !state.endPt) { alert('Place START and END points first.'); return; }
+  const pts = [state.startPt, ...state.deviations.map(d => d.pos), state.endPt];
+  const n   = pts.length - 1;
+  const prev = pts[n - 1], next = pts[n];
+  const pos = {
+    x: (prev.x + next.x) / 2 + (Math.random() - 0.5) * 60,
+    y: (prev.y + next.y) / 2 + (Math.random() - 0.5) * 60
+  };
+  const handles = defaultHandles(pos, prev, next);
+  state.deviations.push({
+    id: state.devIdCounter++, pos,
+    cp1: handles.cp1, cp2: handles.cp2,
+    handleMode: 'FREE'
+  });
+  updateDevList(); render();
+}
+
+function updateDevList() {
+  const list = document.getElementById('dev-list');
+  list.innerHTML = '';
+  state.deviations.forEach((dev, idx) => {
+    const div = document.createElement('div');
+    div.className = 'dev-item' + (state.selectedDev === idx ? ' selected' : '');
+    div.innerHTML =
+      `<div class="dev-dot"></div>` +
+      `<span>d${idx + 1} (${Math.round(dev.pos.x)}, ${Math.round(dev.pos.y)})</span>` +
+      `<span class="dev-del" onclick="removeDeviation(${idx},event)">✕</span>`;
+    div.onclick = () => { state.selectedDev = idx; updateDevList(); render(); };
+    list.appendChild(div);
+  });
+}
+
+function removeDeviation(idx, e) {
+  e.stopPropagation();
+  state.deviations.splice(idx, 1);
+  if (state.selectedDev >= state.deviations.length) state.selectedDev = null;
+  updateDevList(); render();
+}
+
+// ── Handle mode ──
+function setHandleMode(mode) {
+  state.handleMode = mode;
+  if (state.selectedDev !== null) state.deviations[state.selectedDev].handleMode = mode;
+  document.getElementById('handle-mode-display').textContent = mode;
+  hideTooltip();
+  ['free', 'half', 'lock', 'right'].forEach(m => {
+    document.getElementById('tp-' + m).className =
+      'tooltip-btn' + (m.toUpperCase() === mode ? ' act' : '');
+  });
+  render();
+}
+
+// ── Tooltip ──
+let tooltipTarget = null;
+function showTooltip(clientX, clientY, devIdx) {
+  const tt = document.getElementById('tooltip');
+  tt.style.display = 'flex';
+  // Keep popup on screen
+  const ttW = 172, ttH = 130;
+  const vW = window.innerWidth, vH = window.innerHeight;
+  tt.style.left = Math.min(clientX, vW - ttW - 8) + 'px';
+  tt.style.top  = Math.min(clientY - 10, vH - ttH - 8) + 'px';
+  tooltipTarget = devIdx;
+  state.selectedDev = devIdx;
+  updateDevList();
+}
+function hideTooltip() {
+  document.getElementById('tooltip').style.display = 'none';
+  tooltipTarget = null;
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#tooltip')) hideTooltip();
+});
+
+// ── Mode label ──
+function updateModeDisplay() {
+  const labels = {
+    PLACE_START: 'PLACE START POINT',
+    PLACE_END:   'PLACE END POINT',
+    IDLE:        'DRAG POINTS / PAN / PINCH-ZOOM'
+  };
+  document.getElementById('mode-display').textContent =
+    'MODE: ' + (labels[state.mode] || state.mode);
+}
+
+// ── Hit test (screen space — consistent across zoom levels) ──
+function hitTest(sx, sy) {
+  const R = 14;
+  function sd2(wx, wy) {
+    const s = worldToScreen(wx, wy);
+    return (sx - s.x) ** 2 + (sy - s.y) ** 2;
+  }
+  if (state.startPt && sd2(state.startPt.x, state.startPt.y) < R * R)
+    return { type: 'start' };
+  if (state.endPt && sd2(state.endPt.x, state.endPt.y) < R * R)
+    return { type: 'end' };
+  for (let i = 0; i < state.deviations.length; i++) {
+    const dev = state.deviations[i];
+    if (sd2(dev.pos.x, dev.pos.y) < R * R)
+      return { type: 'dev', devIdx: i, which: 'pos' };
+    if (sd2(dev.cp1.x, dev.cp1.y) < (R * 0.85) ** 2)
+      return { type: 'dev', devIdx: i, which: 'cp1' };
+    if (sd2(dev.cp2.x, dev.cp2.y) < (R * 0.85) ** 2)
+      return { type: 'dev', devIdx: i, which: 'cp2' };
+  }
+  return null;
+}
+
+// ── Pointer coordinate helper ──
+function getScreenXY(e) {
+  const rect = canvas.getBoundingClientRect();
+  const src  = e.touches ? e.touches[0] : e;
+  return { sx: src.clientX - rect.left, sy: src.clientY - rect.top };
+}
+
+// ── Pinch-zoom state ──
+let pinchDist0 = null, pinchScale0 = null, pinchMid0 = null, pinchVP0 = null;
+function getPinchDist(e) {
+  const t = e.touches;
+  return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+}
+function getPinchMid(e, rect) {
+  const t = e.touches;
+  return {
+    x: (t[0].clientX + t[1].clientX) / 2 - rect.left,
+    y: (t[0].clientY + t[1].clientY) / 2 - rect.top
+  };
+}
+
+let longPressTimer = null;
+
+// ── Pointer down ──
+canvas.addEventListener('pointerdown', e => {
+  const { sx, sy } = getScreenXY(e);
+  e.preventDefault();
+
+  if (state.mode === 'PLACE_START') {
+    const w = screenToWorld(sx, sy);
+    state.startPt = { x: w.x, y: w.y };
+    state.mode = 'PLACE_END';
+    updateModeDisplay(); render(); return;
+  }
+  if (state.mode === 'PLACE_END') {
+    const w = screenToWorld(sx, sy);
+    state.endPt = { x: w.x, y: w.y };
+    state.mode = 'IDLE';
+    updateModeDisplay(); render(); return;
+  }
+
+  const hit = hitTest(sx, sy);
+  if (hit) {
+    state.dragging = hit;
+    if (hit.type === 'dev') { state.selectedDev = hit.devIdx; updateDevList(); }
+    // Long-press on deviation centre → tangent popup
+    if (hit.type === 'dev' && hit.which === 'pos') {
+      longPressTimer = setTimeout(() => {
+        const rect = canvas.getBoundingClientRect();
+        showTooltip(sx + rect.left, sy + rect.top, hit.devIdx);
+        state.dragging = null;
+      }, 500);
+    }
+  } else {
+    // No point hit → start panning
+    state.isPanning = true;
+    state.panStart  = { sx, sy, vpx: vp.x, vpy: vp.y };
+  }
+}, { passive: false });
+
+// ── Pointer move ──
+canvas.addEventListener('pointermove', e => {
+  const { sx, sy } = getScreenXY(e);
+  const w = screenToWorld(sx, sy);
+  document.getElementById('mouse-pos').textContent = `${Math.round(w.x)}, ${Math.round(w.y)}`;
+
+  if (state.isPanning && state.panStart) {
+    vp.x = state.panStart.vpx + (sx - state.panStart.sx);
+    vp.y = state.panStart.vpy + (sy - state.panStart.sy);
+    render(); return;
+  }
+
+  if (!state.dragging) return;
+  clearTimeout(longPressTimer);
+  e.preventDefault();
+
+  const wPos = screenToWorld(sx, sy);
+  const drag = state.dragging;
+
+  if (drag.type === 'start') {
+    state.startPt.x = wPos.x; state.startPt.y = wPos.y;
+  } else if (drag.type === 'end') {
+    state.endPt.x = wPos.x; state.endPt.y = wPos.y;
+  } else if (drag.type === 'dev') {
+    const dev = state.deviations[drag.devIdx];
+    if (drag.which === 'pos') {
+      const dx = wPos.x - dev.pos.x, dy = wPos.y - dev.pos.y;
+      dev.pos.x = wPos.x; dev.pos.y = wPos.y;
+      dev.cp1.x += dx; dev.cp1.y += dy;
+      dev.cp2.x += dx; dev.cp2.y += dy;
+    } else if (drag.which === 'cp1') {
+      dev.cp1.x = wPos.x; dev.cp1.y = wPos.y;
+      if (dev.handleMode === 'LOCK') {
+        dev.cp2.x = dev.pos.x + (dev.pos.x - wPos.x);
+        dev.cp2.y = dev.pos.y + (dev.pos.y - wPos.y);
+      } else if (dev.handleMode === 'RIGHT') {
+        const ang = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI / 2;
+        const len = Math.hypot(dev.cp2.x - dev.pos.x, dev.cp2.y - dev.pos.y);
+        dev.cp2.x = dev.pos.x + Math.cos(ang) * len;
+        dev.cp2.y = dev.pos.y + Math.sin(ang) * len;
+      }
+    } else if (drag.which === 'cp2') {
+      dev.cp2.x = wPos.x; dev.cp2.y = wPos.y;
+      if (dev.handleMode === 'LOCK') {
+        dev.cp1.x = dev.pos.x + (dev.pos.x - wPos.x);
+        dev.cp1.y = dev.pos.y + (dev.pos.y - wPos.y);
+      } else if (dev.handleMode === 'RIGHT') {
+        const ang = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI / 2;
+        const len = Math.hypot(dev.cp1.x - dev.pos.x, dev.cp1.y - dev.pos.y);
+        dev.cp1.x = dev.pos.x + Math.cos(ang) * len;
+        dev.cp1.y = dev.pos.y + Math.sin(ang) * len;
+      }
+    }
+    updateDevList();
+  }
+  render();
+});
+
+// ── Pointer up ──
+canvas.addEventListener('pointerup', () => {
+  clearTimeout(longPressTimer);
+  state.dragging  = null;
+  state.isPanning = false;
+  state.panStart  = null;
+});
+
+// ── Touch: pinch-zoom (2 fingers) ──
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    const rect  = canvas.getBoundingClientRect();
+    pinchDist0  = getPinchDist(e);
+    pinchScale0 = vp.scale;
+    pinchMid0   = getPinchMid(e, rect);
+    pinchVP0    = { x: vp.x, y: vp.y };
+    state.dragging = null; state.isPanning = false;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinchDist0 !== null) {
+    e.preventDefault();
+    const rect     = canvas.getBoundingClientRect();
+    const factor   = getPinchDist(e) / pinchDist0;
+    const newScale = Math.max(0.04, Math.min(8, pinchScale0 * factor));
+    const mid      = getPinchMid(e, rect);
+    const wx = (pinchMid0.x - pinchVP0.x) / pinchScale0;
+    const wy = (pinchMid0.y - pinchVP0.y) / pinchScale0;
+    vp.scale = newScale;
+    vp.x = mid.x - wx * newScale;
+    vp.y = mid.y - wy * newScale;
+    render();
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length < 2) pinchDist0 = null;
+}, { passive: false });
+
+// ── Mouse wheel zoom (desktop) ──
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const { sx, sy } = getScreenXY(e);
+  const factor   = e.deltaY < 0 ? 1.1 : 0.909;
+  const newScale = Math.max(0.04, Math.min(8, vp.scale * factor));
+  const wx = (sx - vp.x) / vp.scale;
+  const wy = (sy - vp.y) / vp.scale;
+  vp.scale = newScale;
+  vp.x = sx - wx * newScale;
+  vp.y = sy - wy * newScale;
+  render();
+}, { passive: false });
+
+// ── Cursor feedback ──
+canvas.addEventListener('pointermove', e => {
+  const { sx, sy } = getScreenXY(e);
+  const hit = hitTest(sx, sy);
+  if (hit)                        canvas.style.cursor = 'grab';
+  else if (state.mode !== 'IDLE') canvas.style.cursor = 'crosshair';
+  else                            canvas.style.cursor = 'move';
+});
+
+// ── Selected-info ticker ──
+setInterval(() => {
+  if (state.selectedDev !== null && state.deviations[state.selectedDev]) {
+    const d = state.deviations[state.selectedDev];
+    document.getElementById('selected-info').textContent = `d${state.selectedDev + 1} [${d.handleMode}]`;
+  } else {
+    document.getElementById('selected-info').textContent = 'none';
+  }
+}, 200);
+
+// ── Resize ──
+// Uses ResizeObserver so it reacts immediately to orientation changes,
+// browser-chrome collapse on mobile, and any other layout reflow.
+function resize() {
+  const r = wrap.getBoundingClientRect();
+  if (r.width > 0 && r.height > 0) {
+    canvas.width  = Math.floor(r.width);
+    canvas.height = Math.floor(r.height);
+    render();
+  }
+}
+const ro = new ResizeObserver(resize);
+ro.observe(wrap);
+
+// ── Clear all ──
+function clearAll() {
+  state = {
+    mode: 'PLACE_START', startPt: null, endPt: null,
+    deviations: [], selectedDev: null,
+    dragging: null, isPanning: false, panStart: null,
+    handleMode: 'FREE', measureResult: null, devIdCounter: 1
+  };
+  vp = { x: 0, y: 0, scale: 1 };
+  ['start-x', 'start-y', 'end-x', 'end-y']
+    .forEach(id => { document.getElementById(id).value = ''; });
+  ['formula-readout', 'small-circ', 'large-circ', 'circles-used',
+   'iterations-used', 'arc-length-display']
+    .forEach(id => { document.getElementById(id).textContent = '—'; });
+  document.getElementById('segment-list').innerHTML = '';
+  document.getElementById('dev-list').innerHTML = '';
+  document.getElementById('curve-count-display').textContent = '0';
+  ['small-circle', 'large-circle'].forEach(id => {
+    document.getElementById(id).getContext('2d').clearRect(0, 0, 70, 70);
+  });
+  updateModeDisplay(); render();
+}
+
+// ── Export PNG ──
+function exportPNG() {
+  const link = document.createElement('a');
+  link.download = 'arcedge.png';
+  link.href = canvas.toDataURL();
+  link.click();
+}
+
+// ── Export SVG (world coordinates) ──
+function exportSVG() {
+  const segs = buildArcSegments();
+  if (segs.length === 0) { alert('No arc to export.'); return; }
+  let pathD = `M ${segs[0].p0.x} ${segs[0].p0.y}`;
+  segs.forEach(s => {
+    pathD += ` C ${s.cp1.x} ${s.cp1.y}, ${s.cp2.x} ${s.cp2.y}, ${s.p3.x} ${s.p3.y}`;
+  });
+  const W = canvas.width, H = canvas.height;
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect width="${W}" height="${H}" fill="#0d0f12"/>
+  <path d="${pathD}" stroke="white" stroke-width="2.5" fill="none"/>
+  ${state.startPt ? `<circle cx="${state.startPt.x}" cy="${state.startPt.y}" r="8" fill="#c8f400"/>` : ''}
+  ${state.endPt   ? `<circle cx="${state.endPt.x}"   cy="${state.endPt.y}"   r="8" fill="#f5a623"/>` : ''}
+  ${state.deviations.map((d, i) =>
+    `<circle cx="${d.pos.x}" cy="${d.pos.y}" r="7" fill="#f5a623"/>` +
+    `<text x="${d.pos.x + 10}" y="${d.pos.y - 8}" fill="#00e5cc" font-family="monospace" font-size="13">d${i + 1}</text>`
+  ).join('\n  ')}
+  <!-- ArcEdge by Justin Craig Venable — dartedge.com/radicaledge -->
+</svg>`;
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = 'arcedge.svg'; link.href = url; link.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Init ──
+updateModeDisplay();
+// ResizeObserver fires immediately once observed → first resize + render
+</script>
+</body>
+</html>
