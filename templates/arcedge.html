@@ -308,18 +308,49 @@
   .circle-canvas  { border: 1px solid #2a2d35; background: #0d0f12; display: block; }
   .circle-label   { font-family: 'Share Tech Mono', monospace; font-size: 0.57rem; color: var(--muted); text-align: center; }
 
-  .dev-list { display: flex; flex-direction: column; gap: 3px; max-height: 100px; overflow-y: auto; }
+  .dev-list { display: flex; flex-direction: column; gap: 3px; max-height: 140px; overflow-y: auto; }
   .dev-item {
-    display: flex; align-items: center; gap: 5px;
+    display: flex; flex-direction: column;
     background: #0d0f12; border: 1px solid #2a2d35;
-    padding: 3px 6px;
     font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--accent1);
     cursor: pointer; transition: border-color 0.12s;
+    overflow: hidden;
   }
   .dev-item:hover              { border-color: var(--accent1); }
   .dev-item.selected           { border-color: var(--deviation); color: var(--deviation); }
+  /* Top row: dot + label + delete */
+  .dev-item-row {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 6px;
+  }
   .dev-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--deviation); flex-shrink: 0; }
-  .dev-del { margin-left: auto; color: var(--red); cursor: pointer; font-size: 0.72rem; padding: 0 2px; }
+  .dev-del { margin-left: auto; color: var(--red); cursor: pointer; font-size: 0.72rem; padding: 0 2px; flex-shrink: 0; }
+  /* Bottom row: FREE / SMOOTH toggle pill */
+  .dev-mode-row {
+    display: flex;
+    border-top: 1px solid #1e2028;
+  }
+  .dev-mode-btn {
+    flex: 1;
+    padding: 3px 0;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.4rem;
+    letter-spacing: 1px;
+    text-align: center;
+    cursor: pointer;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    transition: background 0.1s, color 0.1s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .dev-mode-btn + .dev-mode-btn { border-left: 1px solid #1e2028; }
+  .dev-mode-btn.active-free   { background: #0d2a1e; color: var(--accent2); }
+  .dev-mode-btn.active-smooth { background: #1a1030; color: #a78bfa; }
+  .dev-mode-btn.active-lock   { background: #2a1a00; color: var(--border); }
+  .dev-mode-btn.active-half   { background: #001e2a; color: var(--accent1); }
+  .dev-mode-btn.active-right  { background: #2a001a; color: var(--weld); }
 
   /* Weld endpoint selector items */
   .weld-item {
@@ -621,10 +652,11 @@
 <!-- ── Tangent popup (long-press on deviation centre point) ── -->
 <div id="tooltip">
   <div class="tooltip-title">TANGENT OPTIONS</div>
-  <button class="tooltip-btn" id="tp-free"  onclick="setHandleMode('FREE')">FREE — Independent</button>
-  <button class="tooltip-btn" id="tp-half"  onclick="setHandleMode('HALF')">HALF — One side</button>
-  <button class="tooltip-btn" id="tp-lock"  onclick="setHandleMode('LOCK')">LOCK — Mirror both</button>
-  <button class="tooltip-btn" id="tp-right" onclick="setHandleMode('RIGHT')">RIGHT ANGLE</button>
+  <button class="tooltip-btn" id="tp-free"   onclick="setHandleMode('FREE')">FREE — Independent</button>
+  <button class="tooltip-btn" id="tp-smooth" onclick="setHandleMode('SMOOTH')">SMOOTH — Mirror angle</button>
+  <button class="tooltip-btn" id="tp-half"   onclick="setHandleMode('HALF')">HALF — One side</button>
+  <button class="tooltip-btn" id="tp-lock"   onclick="setHandleMode('LOCK')">LOCK — Mirror both</button>
+  <button class="tooltip-btn" id="tp-right"  onclick="setHandleMode('RIGHT')">RIGHT ANGLE</button>
 </div>
 
 <script>
@@ -999,15 +1031,50 @@ function updateDevListInCard(arc, arcIdx) {
   arc.deviations.forEach((dev, idx) => {
     const div = document.createElement('div');
     div.className = 'dev-item' + (arc.selectedDev === idx ? ' selected' : '');
-    div.innerHTML =
+
+    // Top row: dot + label + del
+    const topRow = document.createElement('div');
+    topRow.className = 'dev-item-row';
+    topRow.innerHTML =
       `<div class="dev-dot"></div>` +
       `<span>d${idx + 1} (${Math.round(dev.pos.x)}, ${Math.round(dev.pos.y)})</span>` +
       `<span class="dev-del" onclick="removeDeviationFromArc(${arcIdx},${idx},event)">✕</span>`;
-    div.onclick = () => {
+    topRow.addEventListener('click', (e) => {
+      if (e.target.classList.contains('dev-del')) return;
       arc.selectedDev = idx;
       updateDevListInCard(arc, arcIdx);
       render();
-    };
+    });
+    div.appendChild(topRow);
+
+    // Bottom row: mode toggle buttons
+    const modeRow = document.createElement('div');
+    modeRow.className = 'dev-mode-row';
+    const modes = [
+      { key: 'FREE',   label: 'FREE',   cls: 'active-free'   },
+      { key: 'SMOOTH', label: 'SMOOTH', cls: 'active-smooth' },
+      { key: 'LOCK',   label: 'LOCK',   cls: 'active-lock'   },
+      { key: 'HALF',   label: 'HALF',   cls: 'active-half'   },
+      { key: 'RIGHT',  label: '90°',    cls: 'active-right'  },
+    ];
+    modes.forEach(m => {
+      const btn = document.createElement('button');
+      btn.className = 'dev-mode-btn' + (dev.handleMode === m.key ? ' ' + m.cls : '');
+      btn.textContent = m.label;
+      btn.title = m.key;
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        arc.selectedDev = idx;
+        dev.handleMode  = m.key;
+        arc.handleMode  = m.key;
+        document.getElementById('handle-mode-display').textContent = m.key;
+        updateDevListInCard(arc, arcIdx);
+        render();
+      });
+      modeRow.appendChild(btn);
+    });
+    div.appendChild(modeRow);
+
     list.appendChild(div);
   });
 }
@@ -1384,8 +1451,12 @@ function renderArc(arc, arcIdx, invS) {
 
     if (isActive) {
       [dev.cp1, dev.cp2].forEach(cp => {
-        ctx.fillStyle   = sel ? '#00e5cc' : '#005566';
-        ctx.strokeStyle = '#00e5cc'; ctx.lineWidth = 1.5 * invS;
+        // Color handle dots by mode: SMOOTH=purple, LOCK=orange, FREE/others=cyan
+        const hColor = dev.handleMode === 'SMOOTH' ? '#a78bfa'
+                     : dev.handleMode === 'LOCK'   ? '#f5a623'
+                     : '#00e5cc';
+        ctx.fillStyle   = sel ? hColor : '#003344';
+        ctx.strokeStyle = hColor; ctx.lineWidth = 1.5 * invS;
         ctx.beginPath(); ctx.arc(cp.x, cp.y, 5 * invS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       });
     }
@@ -1596,6 +1667,12 @@ canvas.addEventListener('pointermove', e => {
       if (dev.handleMode === 'LOCK') {
         dev.cp2.x = dev.pos.x + (dev.pos.x - wPos.x);
         dev.cp2.y = dev.pos.y + (dev.pos.y - wPos.y);
+      } else if (dev.handleMode === 'SMOOTH') {
+        // Mirror angle only — cp2 keeps its own length, just flips direction
+        const len2 = Math.hypot(dev.cp2.x - dev.pos.x, dev.cp2.y - dev.pos.y);
+        const ang  = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI;
+        dev.cp2.x = dev.pos.x + Math.cos(ang) * len2;
+        dev.cp2.y = dev.pos.y + Math.sin(ang) * len2;
       } else if (dev.handleMode === 'RIGHT') {
         const ang = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI / 2;
         const len = Math.hypot(dev.cp2.x - dev.pos.x, dev.cp2.y - dev.pos.y);
@@ -1607,6 +1684,12 @@ canvas.addEventListener('pointermove', e => {
       if (dev.handleMode === 'LOCK') {
         dev.cp1.x = dev.pos.x + (dev.pos.x - wPos.x);
         dev.cp1.y = dev.pos.y + (dev.pos.y - wPos.y);
+      } else if (dev.handleMode === 'SMOOTH') {
+        // Mirror angle only — cp1 keeps its own length, just flips direction
+        const len1 = Math.hypot(dev.cp1.x - dev.pos.x, dev.cp1.y - dev.pos.y);
+        const ang  = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI;
+        dev.cp1.x = dev.pos.x + Math.cos(ang) * len1;
+        dev.cp1.y = dev.pos.y + Math.sin(ang) * len1;
       } else if (dev.handleMode === 'RIGHT') {
         const ang = Math.atan2(wPos.y - dev.pos.y, wPos.x - dev.pos.x) + Math.PI / 2;
         const len = Math.hypot(dev.cp1.x - dev.pos.x, dev.cp1.y - dev.pos.y);
@@ -1643,10 +1726,11 @@ setInterval(() => {
   if (arc.selectedDev !== null && arc.deviations[arc.selectedDev]) {
     const d = arc.deviations[arc.selectedDev];
     document.getElementById('selected-info').textContent = `d${arc.selectedDev + 1} [${d.handleMode}]`;
+    document.getElementById('handle-mode-display').textContent = d.handleMode;
   } else {
     document.getElementById('selected-info').textContent = 'none';
+    document.getElementById('handle-mode-display').textContent = arc.handleMode || 'FREE';
   }
-  document.getElementById('handle-mode-display').textContent = arc.handleMode || 'FREE';
 }, 200);
 
 // Pinch-zoom
@@ -1712,10 +1796,13 @@ canvas.addEventListener('wheel', e => {
 function setHandleMode(mode) {
   const arc = activeArc();
   arc.handleMode = mode;
-  if (arc.selectedDev !== null) arc.deviations[arc.selectedDev].handleMode = mode;
+  if (arc.selectedDev !== null) {
+    arc.deviations[arc.selectedDev].handleMode = mode;
+    updateDevListInCard(arc, activeArcIdx);
+  }
   document.getElementById('handle-mode-display').textContent = mode;
   hideTooltip();
-  ['free', 'half', 'lock', 'right'].forEach(m => {
+  ['free', 'smooth', 'half', 'lock', 'right'].forEach(m => {
     const el = document.getElementById('tp-' + m);
     if (el) el.className = 'tooltip-btn' + (m.toUpperCase() === mode ? ' act' : '');
   });
