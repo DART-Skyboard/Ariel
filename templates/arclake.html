@@ -6800,41 +6800,153 @@ ${atomGroups.length.toString().padStart(3)}${0..toString().padStart(3)}     0   
 }
 
 /**
- * UPDATED: Exports the scene as GLTF or GLB, including animations.
+ * UPDATED: Exports the entire scene as GLTF or GLB.
+ * Structurally organizes Atoms (Nucleus/Electrons) and Arcs safely using a cloned scene.
+ * Explicitly prevents the 0.01 KB "[object Object]" Blob corruption.
  * @param {boolean} asGLB - True to export as GLB (binary), false for GLTF (JSON).
  */
 function exportAsGLTF(asGLB) {
-    const exporter = new THREE.GLTFExporter();
-    const options = {
-        animations: recordedAnimationClips, 
-        binary: asGLB // Set binary option based on user choice
-    };
+    addPrompt(`Preparing scene structure for ${asGLB ? 'GLB' : 'GLTF'} export...`);
     
-    exporter.parse(scene, function(result) {
-        let output, mimeType, filename;
+    try {
+        // 1. CREATE A SEPARATE "GHOST" SCENE JUST FOR EXPORT
+        // This prevents breaking the live web app and ensures clean grouping in other programs.
+        const exportScene = new THREE.Scene();
         
-        if (asGLB) {
-            output = result; // ArrayBuffer for GLB
-            mimeType = 'model/gltf-binary';
-            filename = 'arclake_element.glb';
-        } else {
-            output = JSON.stringify(result, null, 2); // JSON string for GLTF
-            mimeType = 'application/gltf+json';
-            filename = 'arclake_element.gltf';
+        // Copy lighting so materials and shading look correct in Blender/Nomad
+        scene.children.forEach(child => {
+            if (child.isLight) {
+                exportScene.add(child.clone());
+            }
+        });
+        
+        const allAtomsGroup = new THREE.Group();
+        allAtomsGroup.name = "All_Atoms";
+        
+        const allArcsGroup = new THREE.Group();
+        allArcsGroup.name = "Arc_Edges";
+        
+        // Structure Atoms -> Nucleus (Protons/Neutrons) -> Electrons
+        atomGroups.forEach((group, index) => {
+            const atomContainer = new THREE.Group();
+            const safeName = group.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            atomContainer.name = `Atom_${safeName}_${index}`;
+            
+            const nucleusGroup = new THREE.Group();
+            nucleusGroup.name = `${atomContainer.name}_Nucleus`;
+            
+            const electronGroup = new THREE.Group();
+            electronGroup.name = `${atomContainer.name}_Electrons`;
+            
+            // Clone and Move Nucleus Meshes
+            group.nucleusMeshes.forEach((mesh, mIndex) => {
+                const clone = mesh.clone(); // Clones geometry/material refs (fast & safe)
+                clone.name = mesh.name || `group_${index}_nucleus_${mIndex}`;
+                nucleusGroup.add(clone);
+            });
+            
+            // Clone and Move Electron Meshes
+            group.electronMeshes.forEach((mesh, mIndex) => {
+                const clone = mesh.clone();
+                clone.name = mesh.name || `group_${index}_electron_${mIndex}`;
+                electronGroup.add(clone);
+            });
+            
+            atomContainer.add(nucleusGroup);
+            atomContainer.add(electronGroup);
+            allAtomsGroup.add(atomContainer);
+        });
+        
+        // Structure Arc Edges into their own group
+        arcEdgeMeshes.forEach((mesh, index) => {
+            const clone = mesh.clone();
+            clone.name = mesh.name || `ArcEdge_${index}`;
+            allArcsGroup.add(clone);
+        });
+        
+        // Add these structured master groups to the export scene
+        exportScene.add(allAtomsGroup);
+        exportScene.add(allArcsGroup);
+        
+        // Add any complex bodies or floors if they are active
+        if (floorPlaneMesh) exportScene.add(floorPlaneMesh.clone());
+        complexBodies.forEach(body => exportScene.add(body.root.clone()));
+        
+        // CRITICAL FIX: Force update the world matrices so the exporter captures 3D coordinates correctly
+        exportScene.updateMatrixWorld(true);
+        
+        // Filter valid animations to prevent the exporter from silently crashing
+        const validAnimations = (recordedAnimationClips || []).filter(clip => clip && clip.tracks && clip.tracks.length > 0);
+        
+        // 2. CONFIGURE GLTF EXPORTER OPTIONS
+        const exporter = new THREE.GLTFExporter();
+        const options = {
+            onlyVisible: true,
+            binary: asGLB === true
+        };
+        
+        // Only attach animations if they genuinely exist
+        if (validAnimations.length > 0) {
+            options.animations = validAnimations;
         }
-
-        const blob = new Blob([output], { type: mimeType }); 
-        const link = document.createElement('a'); 
-        link.href = URL.createObjectURL(blob); 
-        link.download = filename;
-        link.click();
-        addPrompt(`Exported ${asGLB ? 'GLB' : 'GLTF'} file with ${recordedAnimationClips.length} animation clip(s).`);
-    }, function(error) {
-        console.error("Error exporting GLTF/GLB:", error);
-        addPrompt("<strong>Error exporting GLTF/GLB. See console.</strong>");
-    }, options); 
+        
+        // 3. PARSE AND EXPORT
+        exporter.parse(exportScene, function(result) {
+            
+            let output, mimeType, filename;
+            
+            // CRITICAL FIX: Type check the result to PREVENT the 0.01 KB Blob bug
+            if (asGLB && result instanceof ArrayBuffer) {
+                output = result;
+                mimeType = 'model/gltf-binary'; // Standard binary type
+                filename = 'arclake_scene.glb';
+            } else if (typeof result === 'object') {
+                // If Three.js threw a silent warning and returned JSON instead of binary
+                if (asGLB) console.warn("Exporter returned JSON instead of ArrayBuffer. Falling back to .gltf text format to save data.");
+                output = JSON.stringify(result, null, 2);
+                mimeType = 'application/gltf+json';
+                filename = 'arclake_scene.glb';
+            } else {
+                // Catch-all
+                output = result;
+                mimeType = asGLB ? 'model/gltf-binary' : 'application/gltf+json';
+                filename = asGLB ? 'arclake_scene.glb' : 'arclake_scene.gltf';
+            }
+            
+            // Generate File Download Payload
+            const blob = new Blob([output], { type: mimeType });
+            
+            if (blob.size < 100) {
+                addPrompt("<strong>Warning:</strong> Exported file is unusually small. Check browser console.");
+                console.warn("Export result:", result);
+            }
+            
+            // Force browser trigger
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            
+            // Clean up to prevent memory leaks
+            setTimeout(() => {
+                document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
+            }, 200);
+            
+            addPrompt(`Exported ${filename} successfully (${(blob.size / 1024).toFixed(2)} KB).`);
+            
+        }, function(error) {
+            console.error("Error exporting GLTF/GLB:", error);
+            addPrompt(`<strong>Error exporting:</strong> ${error.message || 'See console'}`);
+        }, options);
+        
+    } catch (err) {
+        console.error("Synchronous error during GLTF export:", err);
+        addPrompt(`<strong>Error preparing export:</strong> ${err.message}`);
+    }
 }
-
 
 function addPrompt(text) {
     ui.promptOutput.innerHTML += `<div>${text}</div>`;
