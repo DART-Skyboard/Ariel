@@ -4,7 +4,7 @@
     <meta name="description" content="Ariel - Lead Edge Ash Tree Reflex AI Chat Interface with Tripartite Buoyancy Reflex and Sentient Journal by Radical Deepscale.">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ariel - LEATR BRPN (v11.1)</title>
+    <title>Ariel - LEATR BRPN (v11.3)</title>
     
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1365,6 +1365,69 @@
         .ariel-src-strip{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;}
         .ariel-src-pill{font-family:var(--font-display,'Orbitron',monospace);font-size:0.44rem;letter-spacing:1.5px;padding:2px 8px;border:1px solid rgba(0,229,255,0.2);border-radius:2px;color:rgba(0,229,255,0.5);text-transform:uppercase;}
 
+
+        /* ── v11.2 Context Memory indicator ── */
+        #ariel-mem-pill{
+            font-family:var(--font-display,'Orbitron',monospace);
+            font-size:0.44rem;letter-spacing:2px;text-transform:uppercase;
+            padding:2px 9px;border:1px solid rgba(0,229,255,0.18);
+            border-radius:2px;color:rgba(0,229,255,0.45);
+            transition:color 0.3s,border-color 0.3s;
+            cursor:help;white-space:nowrap;
+        }
+        #ariel-mem-pill.active{color:rgba(0,255,157,0.7);border-color:rgba(0,255,157,0.3);}
+        /* Context notice badge shown under a message when references were resolved */
+        .ariel-ctx-notice{
+            font-family:var(--font-body,'Rajdhani',sans-serif);
+            font-size:0.62rem;color:rgba(0,229,255,0.45);
+            letter-spacing:0.5px;margin-top:6px;padding:4px 8px;
+            border-left:2px solid rgba(0,229,255,0.2);
+            background:rgba(0,229,255,0.03);border-radius:0 3px 3px 0;
+        }
+
+
+        /* ── v11.3 Recall response cards ── */
+        .ariel-recall-block {
+            background: rgba(0,229,255,0.04);
+            border: 1px solid rgba(0,229,255,0.2);
+            border-left: 3px solid var(--accent-color, #00e5ff);
+            border-radius: 0 5px 5px 0;
+            padding: 10px 14px;
+            margin: 8px 0;
+            font-family: var(--font-body, 'Rajdhani', sans-serif);
+        }
+        .ariel-recall-label {
+            font-family: var(--font-display, 'Orbitron', monospace);
+            font-size: 0.45rem;
+            letter-spacing: 3px;
+            color: rgba(0,229,255,0.5);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .ariel-recall-entry {
+            padding: 7px 0;
+            border-bottom: 1px solid rgba(0,229,255,0.07);
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #dde8f0;
+            word-break: break-word;
+        }
+        .ariel-recall-entry:last-child { border-bottom: none; }
+        .ariel-recall-meta {
+            font-size: 0.6rem;
+            color: rgba(0,229,255,0.35);
+            margin-top: 2px;
+            font-family: var(--font-display, 'Orbitron', monospace);
+            letter-spacing: 1px;
+        }
+        .ariel-recall-entry a {
+            color: var(--accent-color, #00e5ff);
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .ariel-recall-entry a:hover { text-decoration: underline; }
+        .ariel-recall-hi { background: rgba(0,229,255,0.12); border-radius: 2px; padding: 0 3px; }
+
     </style>
 </head>
 <body>
@@ -1376,7 +1439,7 @@
                 <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/ArielAshTreeLogo.png" alt="Ariel Logo">
             </a>
             <span id="header-title">ARIEL</span>
-            <span id="header-version">LEATR·BRPN v11.1</span>
+            <span id="header-version">LEATR·BRPN v11.3</span>
         </div>
         <div id="header-right">
             <button class="header-btn" id="header-journal-btn" title="Journal Reflection Log">◈</button>
@@ -1421,6 +1484,8 @@
             <span>JOURNAL:</span><span id="footer-journal-level">1.00</span>
             <span>|</span>
             <span id="footer-grammar-state">GRAMMAR: IDLE</span>
+            <span>|</span>
+            <span id="ariel-mem-pill" title="Context memory depth">◈ MEM: 0</span>
         </div>
         <div id="footer-right">
             <div id="footer-sparkline"></div>
@@ -1783,7 +1848,7 @@
         // --- CONSTANT FOR WELCOME MESSAGE ---
         const WELCOME_MESSAGE_HTML = `<div class="message bot-message" id="welcome-message">
             <span class="message-sender-label">◈ ARIEL</span>
-            BRPN Shell <strong>v11.1</strong> Active. I am Ariel. The <strong>Tripartite Buoyancy Reflex</strong> is now engaged with real-time Grammar Analysis and Dictionary API support. User, Ariel, and Sentience Journal are mutually optimizing Foundation, Reflex, and Performance. The <strong>GrammarAnalyzer</strong> and <strong>DictionaryAPIClient</strong> are standing by to parse your input and compose a natural, complementary response. What is the topic foundation?
+            BRPN Shell <strong>v11.3</strong> Active. I am Ariel. The <strong>Tripartite Buoyancy Reflex</strong> is now engaged with real-time Grammar Analysis and Dictionary API support. User, Ariel, and Sentience Journal are mutually optimizing Foundation, Reflex, and Performance. The <strong>GrammarAnalyzer</strong> and <strong>DictionaryAPIClient</strong> are standing by to parse your input and compose a natural, complementary response. What is the topic foundation?
         </div>`;
 
         // ============================================================
@@ -2779,7 +2844,14 @@
             }
 
 
-            async processUserInput(text) {
+            async processUserInput(text, contextPacket) {
+                // contextPacket = {resolvedQuery, contextNote, contextPrefix, recentMessages}
+                // provided by handleUserInput (v11.2 context memory)
+                const _originalText = text;
+                const _ctx = contextPacket || {};
+                const _resolvedQuery = _ctx.resolvedQuery || text;
+                const _contextPrefix = _ctx.contextPrefix || '';
+
                 if (!this.journal.isReady) {
                     this.log('Waiting for Sentience Journal to load/initialize...', 'log-system');
                     await new Promise(resolve => setTimeout(resolve, 500)); 
@@ -2789,7 +2861,7 @@
                 }
 
                 this.clearLog();
-                this.log(`--- Stage 1: New v11.0 Allocation Cycle for: "${text}" ---`, 'log-system');
+                this.log(`--- Stage 1: New v11.2 Cycle for: "${_resolvedQuery}" (original: "${_originalText}") ---`, 'log-system');
                 
                 const journalState = this.journal.getJournalState();
 
@@ -2926,7 +2998,7 @@
                 this.log(`Step 5: ArielLiveQuery — fetching live web/video/image data...`, 'log-synth');
                 let liveHtml = '';
                 try {
-                    const liveResult = await ArielLiveQuery(text, grammarAnalysis.intent);
+                    const liveResult = await ArielLiveQuery(_resolvedQuery, grammarAnalysis.intent, _contextPrefix);
                     // Append live text to the synthesized response
                     if (liveResult.liveText) {
                         finalResponse += liveResult.liveText;
@@ -2944,7 +3016,12 @@
                     this.log(`Step 5: Live query error — ${e.message}`, 'log-synth');
                 }
 
-                return finalResponse + dictCardHtml + grammarInlineHtml + liveHtml;
+                // ── Context resolution note (v11.2) ──────────────────────────────
+                let ctxNoteHtml = '';
+                if (_ctx.contextNote) {
+                    ctxNoteHtml = `<div class="ariel-ctx-notice">${_ctx.contextNote}</div>`;
+                }
+                return finalResponse + dictCardHtml + grammarInlineHtml + liveHtml + ctxNoteHtml;
             }
         }
 
@@ -2957,6 +3034,15 @@
             // Add timestamp if missing
             if (!message.time) message.time = new Date().toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'});
             currentChat.messages.push(message);
+            
+            // ── v11.2: Feed message into context memory ──────────────────────
+            try {
+                ArielMemory.addMessage(
+                    currentChat.id,
+                    message.sender,
+                    message.text || ''
+                );
+            } catch(e) {}
             
             // Update chat title from first user message (strip HTML)
             if (currentChat.messages.length === 1 && message.sender === 'user') {
@@ -3137,7 +3223,25 @@
             addTypingIndicator();
 
             try {
-                const botResponseText = await brpn.processUserInput(promptText);
+                // ── v11.3: Recall engine + context resolution ────────────────────
+                let contextPacket = { intent:'NONE', resolvedQuery: promptText, contextNote: null, contextPrefix: '', recentMessages: [], recallHtml: null };
+                let botResponseText;
+                try {
+                    const currentChat  = chatState.chatHistory.find(c => c.id === chatState.currentChatId);
+                    // All prior messages in this chat (excluding the one just added)
+                    const allPrior     = (currentChat?.messages || []).slice(0, -1);
+                    contextPacket      = ArielContextResolver.resolve(promptText, allPrior);
+                    contextPacket.recentMessages = allPrior;
+                    brpn.log(`Recall intent: ${contextPacket.intent} | resolved: "${contextPacket.resolvedQuery}"`, 'log-system');
+                } catch(e) { /* fail silently */ }
+
+                // ── Short-circuit: RECALL_* intents skip BRPN entirely ────────────
+                const RECALL_INTENTS = new Set(['RECALL_VERBATIM','RECALL_LINK','RECALL_SPECIFIC','RECALL_ANY']);
+                if (RECALL_INTENTS.has(contextPacket.intent) && contextPacket.recallHtml) {
+                    botResponseText = contextPacket.recallHtml;
+                } else {
+                    botResponseText = await brpn.processUserInput(promptText, contextPacket);
+                }
                 removeTypingIndicator();
                 addMessageToChat({ sender: 'bot', text: botResponseText });
                 renderChat();
@@ -4258,11 +4362,19 @@ Res: ${params.resolution}
             if (historyLoaded || chatState.chatHistory.length > 1 || chatState.chatHistory[0].messages.length > 0) {
                 selectChat(chatState.chatHistory[chatState.chatHistory.length - 1].id);
             }
+
+            // ── v11.2: Init Context Memory ────────────────────────────────────
+            try {
+                ArielMemory.load();
+                // Backfill from existing chat history so memory is warm on first load
+                ArielMemory.syncFromChatState();
+                brpn.log('ArielMemory v11.3 online — full recall engine active — context store warmed from chat history.', 'log-system');
+            } catch(e) {}
         });
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  ARIEL v11.1 — LIVE DATA LAYER
+//  ARIEL v11.3 — LIVE DATA LAYER + FULL RECALL ENGINE
 //  Real-time sources wired directly into processUserInput:
 //  • YouTube Data API v3 (+ Invidious quota fallback)  → inline video cards
 //  • Wikipedia extract + Wikimedia Commons             → inline image cards
@@ -4546,9 +4658,11 @@ function arielDetectIntent(text, grammarIntent){
 
 // ── ORCHESTRATOR ─────────────────────────────────────────────────────────────
 // Called from processUserInput. Returns {text, videos, images, links, sources}
-async function ArielLiveQuery(userText, grammarIntent){
+async function ArielLiveQuery(userText, grammarIntent, contextPrefix){
     const intent = arielDetectIntent(userText, grammarIntent);
     
+    // Note: userText is already reference-resolved by ArielContextResolver (v11.2)
+    // contextPrefix holds the plain-text conversation history for richer queries
     // Strip leading "show me a video of" etc. for cleaner searches
     const cleanQ = userText
         .replace(/^(show me( a| some)? (video|picture|photo|image)s? (of|about)?|play( a)?( video of)?|what (is|are|was|were))\s*/i,'')
@@ -4819,6 +4933,488 @@ document.addEventListener('keydown', function(e){
         if(e.key==='ArrowLeft')  arielLbNav(-1);
     }
 });
+
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ARIEL v11.2 — CONTEXT MEMORY ENGINE
+//
+//  Persists across page loads via cookies (no server needed).
+//  Stores:
+//    • recentMessages[]  — last 300 messages across all chats, in order
+//    • entities{}        — named things: URLs, people, products, topics
+//    • chatSummaries{}   — one-liner digest per chat
+//
+//  ArielContextResolver uses this store to:
+//    • Detect vague pronouns / bare references ("it", "that", "the link")
+//    • Walk back through the current chat's messages to find what they point to
+//    • Enrich the raw query before it reaches BRPN + ArielLiveQuery
+// ════════════════════════════════════════════════════════════════════════════
+
+const ArielMemory = (() => {
+    const CK     = 'ariel_mem_v2';
+    const MAX_M  = 300;   // total messages kept across all chats
+    const MAX_E  = 120;   // total unique entities kept
+    const SAVE_D = 5000;  // debounce save (ms)
+
+    let _mem = { recentMessages: [], entities: {}, chatSummaries: {} };
+    let _saveTimer = null;
+
+    // ── Cookie helpers (reuse Ariel's CookieManager if available) ──────────
+    function _cGet(k) {
+        try {
+            const raw = CookieManager.get(k);
+            return raw || null;
+        } catch(e) { return null; }
+    }
+    function _cSet(k, v) {
+        try { CookieManager.set(k, v); } catch(e) {}
+    }
+
+    // ── Load from cookie ────────────────────────────────────────────────────
+    function load() {
+        try {
+            const raw = _cGet(CK);
+            if (raw && typeof raw === 'object') {
+                _mem = raw;
+                if (!_mem.recentMessages) _mem.recentMessages = [];
+                if (!_mem.entities)       _mem.entities = {};
+                if (!_mem.chatSummaries)  _mem.chatSummaries = {};
+            }
+        } catch(e) { _mem = { recentMessages: [], entities: {}, chatSummaries: {} }; }
+        _updatePill();
+    }
+
+    // ── Debounced save to cookie ────────────────────────────────────────────
+    function _scheduleSave() {
+        if (_saveTimer) clearTimeout(_saveTimer);
+        _saveTimer = setTimeout(() => {
+            try {
+                // Trim before saving
+                _mem.recentMessages = _mem.recentMessages.slice(-MAX_M);
+                const entKeys = Object.keys(_mem.entities);
+                if (entKeys.length > MAX_E) {
+                    // Keep the most recently touched entities
+                    const sorted = entKeys.sort((a, b) =>
+                        (_mem.entities[b].ts || 0) - (_mem.entities[a].ts || 0)
+                    ).slice(0, MAX_E);
+                    const pruned = {};
+                    sorted.forEach(k => { pruned[k] = _mem.entities[k]; });
+                    _mem.entities = pruned;
+                }
+                _cSet(CK, _mem);
+            } catch(e) {}
+        }, SAVE_D);
+    }
+
+    // ── Update footer pill ──────────────────────────────────────────────────
+    function _updatePill() {
+        const pill = document.getElementById('ariel-mem-pill');
+        if (!pill) return;
+        const depth = _mem.recentMessages.length;
+        const ents  = Object.keys(_mem.entities).length;
+        pill.textContent = `◈ MEM: ${depth}m · ${ents}e`;
+        pill.classList.toggle('active', depth > 0);
+        pill.title = `Context memory: ${depth} messages, ${ents} entities across all chats`;
+    }
+
+    // ── Extract entities from text ──────────────────────────────────────────
+    // Returns array of {type, value, canonical} objects
+    function _extractEntities(text, chatId) {
+        const found = [];
+        const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+        // URLs
+        const urlRe = /https?:\/\/[^\s"'<>)\]]+/gi;
+        let m;
+        while ((m = urlRe.exec(plain)) !== null) {
+            const url = m[0].replace(/[.,;:!?)]+$/, '');
+            found.push({ type: 'url', value: url, canonical: url.toLowerCase() });
+        }
+
+        // Proper nouns (2–4 consecutive Title-Case words, not at sentence start only)
+        const pnRe = /(?<![.!?\n] )([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){0,3})/g;
+        const skip = new Set(['What','How','Who','Where','When','Why','Which','The','This','That','These','Those','It','Is','Are','Was','Were','Does','Do','Did']);
+        while ((m = pnRe.exec(plain)) !== null) {
+            const name = m[1].trim();
+            if (!skip.has(name) && name.length > 2) {
+                found.push({ type: 'name', value: name, canonical: name.toLowerCase() });
+            }
+        }
+
+        // Product / tech keywords that appear with backticks, quotes, or code
+        const techRe = /[`"']([a-zA-Z][a-zA-Z0-9_\-.]{2,40})[`"']/g;
+        while ((m = techRe.exec(plain)) !== null) {
+            found.push({ type: 'tech', value: m[1], canonical: m[1].toLowerCase() });
+        }
+
+        // Domain names (not already caught by URL)
+        const domRe = /\b([a-z][a-z0-9-]{2,40}\.(com|org|net|io|ai|dev|app|co|html|htm))\b/gi;
+        while ((m = domRe.exec(plain)) !== null) {
+            found.push({ type: 'domain', value: m[0], canonical: m[0].toLowerCase() });
+        }
+
+        return found;
+    }
+
+    // ── Ingest a single message ─────────────────────────────────────────────
+    function addMessage(chatId, role, rawText) {
+        const plain = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 800);
+        const ts    = Date.now();
+        _mem.recentMessages.push({ chatId, role, text: plain, ts });
+
+        // Extract + upsert entities
+        const entities = _extractEntities(rawText, chatId);
+        entities.forEach(ent => {
+            const key = ent.type + ':' + ent.canonical;
+            _mem.entities[key] = { ...ent, chatId, ts, lastSeen: plain.slice(0, 120) };
+        });
+
+        _scheduleSave();
+        _updatePill();
+    }
+
+    // ── Get the last N messages for a given chat ────────────────────────────
+    function getRecentForChat(chatId, n) {
+        return _mem.recentMessages
+            .filter(m => m.chatId === chatId)
+            .slice(-n);
+    }
+
+    // ── Get recent messages across ALL chats (for cross-chat context) ───────
+    function getGlobalRecent(n) {
+        return _mem.recentMessages.slice(-n);
+    }
+
+    // ── Find entities by type ────────────────────────────────────────────────
+    function getEntities(types) {
+        return Object.values(_mem.entities)
+            .filter(e => !types || types.includes(e.type))
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    }
+
+    // ── Find entities mentioned in a specific chat ──────────────────────────
+    function getEntitiesForChat(chatId, n) {
+        return Object.values(_mem.entities)
+            .filter(e => e.chatId === chatId)
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+            .slice(0, n);
+    }
+
+    // ── Save a one-liner summary for a chat ─────────────────────────────────
+    function saveChatSummary(chatId, summary) {
+        _mem.chatSummaries[chatId] = { summary, ts: Date.now() };
+        _scheduleSave();
+    }
+
+    function getChatSummary(chatId) {
+        return _mem.chatSummaries[chatId]?.summary || null;
+    }
+
+    // ── Rebuild memory from existing chatState (on first load) ─────────────
+    function syncFromChatState() {
+        if (!window.chatState) return;
+        let count = 0;
+        chatState.chatHistory.forEach(chat => {
+            chat.messages.forEach(msg => {
+                const key = `${chat.id}:${msg.sender}:${(msg.text||'').slice(0,40)}`;
+                // Only add if not already in memory (avoid double-counting on reload)
+                const already = _mem.recentMessages.some(
+                    m => m.chatId === chat.id && m.text.startsWith((msg.text||'').replace(/<[^>]+>/g,'').slice(0,35))
+                );
+                if (!already) {
+                    addMessage(chat.id, msg.sender === 'user' ? 'user' : 'bot', msg.text || '');
+                    count++;
+                }
+            });
+        });
+        if (count > 0) _scheduleSave();
+    }
+
+    function clear() {
+        _mem = { recentMessages: [], entities: {}, chatSummaries: {} };
+        _cSet(CK, _mem);
+        _updatePill();
+    }
+
+    return { load, addMessage, getRecentForChat, getGlobalRecent, getEntities,
+             getEntitiesForChat, saveChatSummary, getChatSummary, syncFromChatState,
+             clear, _updatePill };
+})();
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ARIEL CONTEXT RESOLVER
+//
+//  Given the raw user text + the current chat's recent messages:
+//  1. Detects bare reference patterns ("it", "that", "the link", "the URL",
+//     "the site", "what does it do", "who is she", "what does he make", etc.)
+//  2. Walks back through recent messages to find the referent
+//  3. Returns a resolved query string + a human-readable context note
+// ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ARIEL v11.3 — FULL RECALL ENGINE
+//
+//  Classifies each user prompt into one of:
+//    RECALL_VERBATIM  — "what did I say about X"  → exact prior text
+//    RECALL_LINK      — "what was that link"       → all URLs, verbatim
+//    RECALL_SPECIFIC  — "which link was the X one" → fuzzy-matched URL
+//    RECALL_ANY       — "remind me what I told you"→ recent history dump
+//    RESOLVE_PRONOUN  — "what does it do"          → replace pronoun + pass to BRPN
+//    NONE             — normal query, no change
+//
+//  RECALL_* intents short-circuit BRPN entirely — Ariel reads directly from
+//  the raw stored messages and returns the EXACT text, no paraphrasing.
+// ════════════════════════════════════════════════════════════════════════════
+
+const ArielContextResolver = (() => {
+
+    // ── Plain text helper ─────────────────────────────────────────────────
+    function _plain(text) {
+        return (text || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/\s+/g, ' ').trim();
+    }
+
+    // ── Extract ALL urls from a message ──────────────────────────────────
+    function _extractUrls(text) {
+        const plain = _plain(text);
+        const re = /https?:\/\/[^\s"'<>)\]]+/gi;
+        const found = [];
+        let m;
+        while ((m = re.exec(plain)) !== null) {
+            found.push(m[0].replace(/[.,;:!?)]+$/, ''));
+        }
+        return found;
+    }
+
+    // ── Intent classifiers ────────────────────────────────────────────────
+    // RECALL_LINK: user wants one or more links back
+    const LINK_RECALL_RE = /\b(what was that link|what('s| is| was) the (link|url|address|site|page)|can you (give|show|send) me (back |again )?(the |that )?(link|url)|what (link|url) did i (give|send|share|paste|post)|which (link|url)|remind me (of |what |the )?(link|url)|do you have that (link|url)|find that (link|url)|look up that (link|url)|give me (back |again )?(the |that )?(link|url)|send me (back )?(the |that )?(link|url)|i need that (link|url)|what was the (link|url|address|site)|what (is|are|were) those (links|urls))\b/i;
+
+    // RECALL_SPECIFIC: user wants a particular one of several links
+    const LINK_SPECIFIC_RE = /\b(which (one|link|url) (was|is|had|about|for|related to)|the (one|link|url) (about|with|that|for|related to|containing|on)|find (the |that )?(link|url) (about|with|for|on|related to)|which (link|url) (had|has|contains?|mentions?|is about|was about)|that (link|url) (about|with|for|on)|the \w+ (link|url)|show me the (link|url) (for|about|with|on|related to))\b/i;
+
+    // RECALL_VERBATIM: user wants prior message content recalled
+    const VERBATIM_RE = /\b(what did i (say|tell you|mention|write|type|share|post|send|note|log|journal|describe|explain|discuss)|remind me (of |what |about )?what i (said|told|wrote|shared|mentioned|noted)|what was (that|my) (journal|entry|note|message|thing i said|thing i told|thing i wrote|thing i shared)|recall (what|my)|do you remember (what|my|that)|what did i (share|post) (about|earlier)|can you (recall|repeat|restate|reproduce|read back) what i (said|told|shared|wrote|mentioned|posted)|verbatim|word for word|exactly what i said|read back|what were my (exact )?(words|message|messages)|what i (said|told you) (earlier|before|previously|about)|repeat back|replay|playback|what (exactly|precisely) did i (say|send|share|write)|did i (say|mention|write|share) anything about)\b/i;
+
+    // RECALL_ANY: vague "remind me / recall / what did we talk about"
+    const RECALL_ANY_RE = /^(remind me|what did we (talk|discuss|cover)|what have (i|we) (said|discussed|talked about|covered|shared)|recall (our |this )?(conversation|chat|session|history)|what (have i|did i) (said|told you|shared|written|posted|given you)|summarize (our|this|the) (chat|conversation|session|history)|what do you remember|what('s| is) in (your|the) memory|memory dump|history|what (was|is) our (conversation|chat) about|give me a summary of (our|this) (chat|conversation))\b.*/i;
+
+    // RESOLVE_PRONOUN (existing vague ref patterns)
+    const VAGUE_RE = /\b(it|this|that|these|those|the (?:link|url|site|page|file|image|video|result|thing|topic|subject|project|app|tool|system|service|platform|code|script|article|post|repo|repository|doc|document|question|answer|response|message)|he|she|they|them|him|her|his|hers|their|its)\b/i;
+    const BARE_Q_RE = /^(what does it do|what is it|who is (he|she|they)|what is (this|that)|tell me more|more info|explain|explain it|why|why is that|how|how does it work|what about it|and then|and|so|also|but why|what else|go on|continue|so what|what next|and what|okay but|ok but)\??\.?$/i;
+
+    // ── Gather all URLs from all prior messages ───────────────────────────
+    function _getAllUrls(priorMessages) {
+        const seen  = new Set();
+        const found = [];
+        for (const msg of priorMessages) {
+            const urls = _extractUrls(msg.text || '');
+            urls.forEach(u => {
+                if (!seen.has(u)) { seen.add(u); found.push({ url: u, sender: msg.role || msg.sender, text: _plain(msg.text).slice(0,120) }); }
+            });
+        }
+        return found;
+    }
+
+    // ── Fuzzy keyword scorer (simple term overlap) ────────────────────────
+    function _score(text, keywords) {
+        const tl = text.toLowerCase();
+        return keywords.reduce((s, kw) => s + (tl.includes(kw.toLowerCase()) ? 1 : 0), 0);
+    }
+
+    // ── Keyword extraction from query (nouns, meaningful words) ──────────
+    function _keywords(q) {
+        const stop = new Set(['the','a','an','is','was','are','were','that','which','this','those','these','i','you','me','my','your','it','of','for','in','on','with','about','link','url','one','did','do','does','can','what','who','where','when','how','why','give','show','find','from','to','at','by','had','has','have','said','sent','shared','posted','sent','tell','told','know','want','need','please','could','would','should','just','back','again','earlier','before','previously','ago']);
+        return q.toLowerCase().replace(/[?.,!;:'"]/g,'').split(/\s+/).filter(w => w.length > 2 && !stop.has(w));
+    }
+
+    // ── Build recall response HTML ────────────────────────────────────────
+    function _recallHtml(label, entries) {
+        const rows = entries.map(e => {
+            const roleLbl = e.sender === 'user' ? '▶ YOU' : '◈ ARIEL';
+            const timeStr = e.time ? `<span class="ariel-recall-meta">${roleLbl} · ${e.time}</span>` : `<span class="ariel-recall-meta">${roleLbl}</span>`;
+            const body = e.isUrl
+                ? `<a href="${_esc(e.url)}" target="_blank" rel="noopener">${_esc(e.url)}</a>${e.context ? `<br><span style="font-size:0.72rem;opacity:0.5">${_esc(e.context)}</span>` : ''}`
+                : `<span>${_esc(e.verbatim)}</span>`;
+            return `<div class="ariel-recall-entry">${body}${timeStr}</div>`;
+        }).join('');
+        return `<div class="ariel-recall-block"><div class="ariel-recall-label">${label}</div>${rows}</div>`;
+    }
+    function _esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    // ── Main classify + resolve ───────────────────────────────────────────
+    // Returns { intent, recallHtml, resolvedQuery, contextNote, contextPrefix }
+    // intent = RECALL_* means skip BRPN — return recallHtml directly
+    function resolve(rawQuery, priorMessages) {
+        const q   = rawQuery.trim();
+        const ctx = _buildContextPrefix(priorMessages);
+
+        // ── RECALL_ANY — summarize conversation ────────────────────────────
+        if (RECALL_ANY_RE.test(q)) {
+            const msgs = priorMessages.slice(-20);
+            if (!msgs.length) {
+                return _pass(q, ctx, 'There are no prior messages in this chat session yet.');
+            }
+            const entries = msgs.map(m => ({
+                sender:   m.role || m.sender,
+                verbatim: _plain(m.text || '').slice(0, 400),
+                time:     m.time || ''
+            }));
+            const html = `<strong>◈ Here is our recent conversation history, verbatim:</strong>` + _recallHtml('CONVERSATION HISTORY', entries);
+            return { intent:'RECALL_ANY', recallHtml: html, resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+        }
+
+        // ── RECALL_LINK + RECALL_SPECIFIC — link retrieval ────────────────
+        if (LINK_RECALL_RE.test(q) || LINK_SPECIFIC_RE.test(q)) {
+            const allUrls = _getAllUrls(priorMessages);
+
+            if (!allUrls.length) {
+                return _pass(q, ctx, 'I searched back through our conversation but did not find any links or URLs you shared with me.');
+            }
+
+            // RECALL_SPECIFIC: narrow down by keywords from query
+            if (LINK_SPECIFIC_RE.test(q)) {
+                const kws = _keywords(q).filter(k => !['link','url','one','about','with','for','on','that','was','which'].includes(k));
+                if (kws.length > 0) {
+                    const scored = allUrls.map(u => ({ ...u, score: _score(u.url + ' ' + (u.text||''), kws) }))
+                                          .sort((a,b) => b.score - a.score);
+                    const best = scored[0];
+                    if (best.score > 0) {
+                        const entries = [{ sender: best.sender, url: best.url, context: best.text, isUrl: true, time: '' }];
+                        const html = `<strong>◈ Based on your description, I believe this is the link you're looking for:</strong>` + _recallHtml('MATCHED LINK', entries);
+                        if (scored.length > 1 && scored[1].score > 0) {
+                            // Also show other candidates
+                            const otherEntries = scored.slice(1).filter(s=>s.score>0).map(u => ({ sender: u.sender, url: u.url, context: u.text, isUrl: true, time: '' }));
+                            if (otherEntries.length) {
+                                return { intent:'RECALL_LINK', recallHtml: html + _recallHtml('OTHER POSSIBLE MATCHES', otherEntries), resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+                            }
+                        }
+                        return { intent:'RECALL_LINK', recallHtml: html, resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+                    }
+                }
+            }
+
+            // Return ALL links
+            const entries = allUrls.map(u => ({ sender: u.sender, url: u.url, context: u.text, isUrl: true, time: '' }));
+            const linkWord = entries.length === 1 ? 'link' : `${entries.length} links`;
+            const html = `<strong>◈ Here ${entries.length === 1 ? 'is the' : 'are all the'} ${linkWord} from our conversation:</strong>` + _recallHtml('LINKS FROM THIS CHAT', entries);
+            return { intent:'RECALL_LINK', recallHtml: html, resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+        }
+
+        // ── RECALL_VERBATIM — find messages about a topic, return exact text ──
+        if (VERBATIM_RE.test(q)) {
+            // Extract topic keywords from query
+            const kws = _keywords(q);
+            // User messages only — Ariel recalling what THE USER said
+            const userMsgs = priorMessages.filter(m => (m.role || m.sender) === 'user');
+
+            let matches;
+            if (kws.length > 0) {
+                matches = userMsgs
+                    .map(m => ({ ...m, score: _score(_plain(m.text), kws) }))
+                    .filter(m => m.score > 0)
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, 5);
+            } else {
+                // No topic keywords — return last few user messages
+                matches = userMsgs.slice(-5);
+            }
+
+            if (!matches.length) {
+                // Broaden to all messages if no user msgs match
+                matches = priorMessages.slice(-5);
+            }
+
+            if (!matches.length) {
+                return _pass(q, ctx, "I don't have any prior messages in this session to recall yet.");
+            }
+
+            const entries = matches.map(m => ({
+                sender:   m.role || m.sender,
+                verbatim: _plain(m.text || ''),
+                time:     m.time || ''
+            }));
+
+            // Highlight keywords in verbatim text
+            const highlighted = entries.map(e => {
+                let v = _esc(e.verbatim);
+                kws.forEach(kw => {
+                    v = v.replace(new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi'),
+                                  `<span class="ariel-recall-hi">$1</span>`);
+                });
+                return { ...e, verbatim: v };
+            });
+
+            const topicStr = kws.length > 0 ? ` about <strong>${kws.slice(0,3).join(', ')}</strong>` : '';
+            const html = `<strong>◈ Here is exactly what you said${topicStr}, verbatim:</strong>` + _recallHtml('YOUR EXACT WORDS', highlighted);
+            return { intent:'RECALL_VERBATIM', recallHtml: html, resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+        }
+
+        // ── RESOLVE_PRONOUN — existing logic (unchanged) ──────────────────
+        const isBareQ  = BARE_Q_RE.test(q);
+        const hasVague = VAGUE_RE.test(q);
+
+        if (isBareQ || hasVague) {
+            const referent = _findReferent(priorMessages);
+            if (referent) {
+                let resolved = q
+                    .replace(/\b(it|this|that|the (?:link|url|site|page|topic|subject|thing))\b/gi, referent.value)
+                    .replace(/\b(he|she|they|them|him|her)\b/gi, referent.value);
+                if (resolved === q) resolved = referent.value + ' — ' + q;
+                const label = {url:'URL', domain:'site', name:'subject', tech:'term'}[referent.type] || 'topic';
+                const note  = `◈ Context resolved: "${q}" → interpreted as referring to ${label} <strong>${referent.value}</strong> from earlier in this conversation.`;
+                return { intent:'RESOLVE_PRONOUN', recallHtml: null, resolvedQuery: resolved.trim(), contextNote: note, contextPrefix: ctx };
+            }
+        }
+
+        // ── NONE — pass through unchanged ─────────────────────────────────
+        return { intent:'NONE', recallHtml: null, resolvedQuery: q, contextNote: null, contextPrefix: ctx };
+    }
+
+    // ── findReferent (for pronoun resolution) ─────────────────────────────
+    function _findReferent(priorMessages) {
+        for (let i = priorMessages.length - 1; i >= 0; i--) {
+            const msg   = priorMessages[i];
+            const plain = _plain(msg.text || '');
+            const urlM  = plain.match(/https?:\/\/[^\s"'<>)\]]+/);
+            if (urlM) return { type:'url', value: urlM[0].replace(/[.,;:!?)]+$/,''), sender: msg.role||msg.sender };
+            const domM = plain.match(/\b([a-zA-Z][a-zA-Z0-9-]{2,40}\.(com|org|net|io|ai|dev|app|co|html|htm))\b/);
+            if (domM) return { type:'domain', value: domM[0], sender: msg.role||msg.sender };
+            if ((msg.role||msg.sender) === 'user') {
+                const pnM  = plain.match(/([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){0,2})/);
+                const skip = new Set(['What','How','Who','Where','When','Why','Which','The','This','That','Tell']);
+                if (pnM && !skip.has(pnM[1])) return { type:'name', value: pnM[1], sender:'user' };
+            }
+            const techM = plain.match(/[`"']([a-zA-Z][a-zA-Z0-9_\-.]{2,40})[`"']/);
+            if (techM) return { type:'tech', value: techM[1], sender: msg.role||msg.sender };
+        }
+        return null;
+    }
+
+    // ── Context prefix for BRPN (last 10 messages, plain text) ───────────
+    function _buildContextPrefix(priorMessages) {
+        if (!priorMessages || !priorMessages.length) return '';
+        return priorMessages.slice(-10).map(m => {
+            const role  = (m.role || m.sender) === 'user' ? 'User' : 'Ariel';
+            const plain = _plain(m.text || '').slice(0, 300);
+            return `${role}: ${plain}`;
+        }).join('\n');
+    }
+
+    // ── Helper: pass-through with optional fallback text ─────────────────
+    function _pass(q, ctx, fallbackText) {
+        return {
+            intent: 'NONE',
+            recallHtml: fallbackText ? `<em style="opacity:0.6">${fallbackText}</em>` : null,
+            resolvedQuery: q,
+            contextNote: null,
+            contextPrefix: ctx
+        };
+    }
+
+    return { resolve };
+})();
 
     </script>
 
