@@ -8,17 +8,16 @@
     <title>ArcLake Chemistry / Research Lab (Radical Deepscale)</title>
     <script>
     /* ── PWA Viewport Height Fix ─────────────────────────────────────────
-       In Chrome Android PWA standalone mode, 100dvh/100vh are calculated
-       before system chrome settles → value is too tall → content overflows.
-       visualViewport.height is always the true usable height.
-       We set --app-h on :root before first paint, and re-apply on resize. */
+       Sets --app-h using window.innerHeight (not visualViewport which fires
+       during pinch-zoom). Only updates on true window/orientation resize. */
     (function(){
         function setH(){
-            var h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            // Use innerHeight — does NOT change during pinch-zoom on Android
+            // (visualViewport.height does change during zoom, causing layout flash)
+            var h = window.innerHeight;
             document.documentElement.style.setProperty('--app-h', h + 'px');
         }
-        setH(); // run before body renders
-        if (window.visualViewport) window.visualViewport.addEventListener('resize', setH);
+        setH();
         window.addEventListener('resize', setH);
         window.addEventListener('load', function(){ setH(); setTimeout(setH,300); setTimeout(setH,1000); });
         document.addEventListener('visibilitychange', function(){ if(!document.hidden) setTimeout(setH,200); });
@@ -3653,6 +3652,13 @@
         }, { passive: true });
 
         wrapper.addEventListener('touchmove', (e) => {
+            // If two fingers — it's a pinch zoom, cancel drag and let it through
+            if (e.touches.length > 1) {
+                clearTimeout(touchTimer);
+                touchLongPressActive = false;
+                if (touchDragClone) { touchDragClone.remove(); touchDragClone = null; }
+                return;
+            }
             const dx = e.touches[0].clientX - touchStartX;
             const dy = e.touches[0].clientY - touchStartY;
             if (!touchLongPressActive && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
@@ -4416,13 +4422,14 @@ function makeDraggable(element, handle) {
     const startDrag = (e) => {
         // Prevent drag if click target is an interactive element inside the container
         if (e.target.closest('button, input, select, textarea, fieldset') || (e.target.tagName === 'CANVAS' && handle.id !== 'mol-canvas-container')) { 
-             // Special case: check if the click is on the canvas area and not just the canvas element itself (for draggable handle)
              if (e.target.id === 'molecule-canvas' || e.target.closest('#molecule-canvas')) {
-                 // Do nothing, let the canvas handle the drag (for atoms/lasso)
+                 // Do nothing, let the canvas handle the drag
              } else {
                  return;
              }
         }
+        // Don't start drag on multi-touch (pinch-zoom)
+        if (e.touches && e.touches.length > 1) return;
 
         isDragging = true;
         const rect = element.getBoundingClientRect();
@@ -4440,7 +4447,14 @@ function makeDraggable(element, handle) {
         if(e.preventDefault && e.cancelable) e.preventDefault(); 
     };
     const doDrag = (e) => {
-        if (!isDragging) return;
+        // Cancel drag if a second finger appears (pinch-zoom started)
+        if (e.touches && e.touches.length > 1) {
+            isDragging = false;
+            handle.style.cursor = 'default';
+            document.body.style.userSelect = 'auto';
+            return;
+        }
+        if (!isDragging) return;  // Only preventDefault when actually dragging
         const clientX = e.clientX ?? e.touches[0].clientX;
         const clientY = e.clientY ?? e.touches[0].clientY;
         let newLeft = clientX - offsetX;
@@ -4461,8 +4475,10 @@ function makeDraggable(element, handle) {
     document.addEventListener('mousemove', doDrag);
     document.addEventListener('mouseup', stopDrag);
     handle.addEventListener('touchstart', startDrag, { passive: false });
-    document.addEventListener('touchmove', doDrag, { passive: false });
+    // passive:true here so pinch-zoom is never blocked by this handler
+    document.addEventListener('touchmove', doDrag, { passive: true });
     document.addEventListener('touchend', stopDrag);
+    document.addEventListener('touchcancel', stopDrag);
 }
 // REPLACE the old window.onload (at line 602) WITH THIS:
 window.onload = () => {
