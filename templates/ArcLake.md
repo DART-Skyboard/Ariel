@@ -5,7 +5,7 @@
 # Release Notes
 
 ## Current Release: Web App Beta v1.1.b
-* **Three.js Element Scene Build Reworked**
+* **Three.js Element Scene Build Reworked.**
     * New Element Build with intermittent Animation and Custom Color Palette.
 * **Drag and Drop Functionality:**
     * Seamless Element List drag and drop between the Tab Scene and Mol Canvas.
