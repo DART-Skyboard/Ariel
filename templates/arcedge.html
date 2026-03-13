@@ -30,17 +30,15 @@
 
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-  html {
+  html, body {
     height: 100%;
     overflow: hidden;
+    margin: 0; padding: 0;
   }
   body {
-    height: 100%;
-    overflow: hidden;
     background: var(--bg);
     color: var(--text);
     font-family: 'Exo 2', sans-serif;
-    /* safe-area left/right for notch devices — bottom handled by #footer directly */
     padding-left:  env(safe-area-inset-left,  0px);
     padding-right: env(safe-area-inset-right, 0px);
   }
@@ -48,7 +46,9 @@
   #app {
     display: flex;
     flex-direction: column;
-    height: 100dvh;
+    /* JS sets --app-h on load + every resize to fix Android PWA viewport bug */
+    height: var(--app-h, 100vh);
+    max-height: var(--app-h, 100vh);
     overflow: hidden;
   }
 
@@ -406,7 +406,7 @@
   /* REFRAME FAB */
   #btn-reframe {
     position: absolute;
-    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    bottom: 12px;
     right: 12px;
     z-index: 20;
     font-family: 'Orbitron', monospace;
@@ -698,18 +698,14 @@
   /* ───────── FOOTER (status bar) ───────── */
   #footer {
     flex-shrink: 0;
-    height: 36px;
-    min-height: 36px;
-    /* Grow footer to cover Android nav bar in PWA / standalone mode */
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    height: calc(36px + env(safe-area-inset-bottom, 0px));
-    min-height: calc(36px + env(safe-area-inset-bottom, 0px));
     display: flex;
     align-items: center;
     gap: 10px;
-    padding-top: 0;
-    padding-left: 10px;
-    padding-right: 10px;
+    padding: 0 10px;
+    /* Base 36px content + bottom safe area for Android nav bar */
+    height: calc(36px + env(safe-area-inset-bottom, 0px));
+    min-height: calc(36px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     background: var(--panel);
     border-top: 2px solid var(--border);
     overflow-x: auto;
@@ -3357,6 +3353,52 @@ updateAllCards();
 updateModeDisplay();
 renderLayerPanel();
 // ResizeObserver fires immediately once observed → first render + background
+</script>
+<!-- ══════════════════════════════════════════════════════
+     ANDROID PWA VIEWPORT FIX
+     Chrome on Android PWA reports wrong innerHeight on first
+     paint. We drive --app-h from window.innerHeight and re-set
+     it on every resize / orientation change so the footer is
+     always visible without needing to rotate the device.
+══════════════════════════════════════════════════════ -->
+<script>
+(function() {
+  function setAppHeight() {
+    // window.innerHeight is the real visible height in Android PWA
+    // (excludes OS nav bar / gesture strip even before CSS resolves)
+    const h = window.innerHeight;
+    document.documentElement.style.setProperty('--app-h', h + 'px');
+  }
+
+  // Run immediately (before first paint)
+  setAppHeight();
+
+  // Re-run after short delay to catch Android's deferred nav-bar calc
+  setTimeout(setAppHeight, 50);
+  setTimeout(setAppHeight, 300);
+
+  // Re-run on every resize (rotation, keyboard, nav-bar show/hide)
+  window.addEventListener('resize', setAppHeight);
+
+  // visualViewport API — most accurate on modern Android Chrome
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', setAppHeight);
+    window.visualViewport.addEventListener('scroll', setAppHeight);
+  }
+
+  // Orientation change — fire after the browser settles
+  window.addEventListener('orientationchange', function() {
+    setTimeout(setAppHeight, 100);
+    setTimeout(setAppHeight, 400);
+  });
+
+  // Also re-run once DOM + all resources are ready
+  window.addEventListener('DOMContentLoaded', setAppHeight);
+  window.addEventListener('load', function() {
+    setAppHeight();
+    setTimeout(setAppHeight, 200);
+  });
+})();
 </script>
 </body>
 </html>
