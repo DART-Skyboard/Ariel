@@ -9,9 +9,6 @@
 <meta name="theme-color" content="#111214">
 <title>Arc Edge — Justin Venable</title>
 <script>
-/* ── PWA Viewport Height Fix ─────────────────────────────────────────
-   Sets --app-h using window.innerHeight (not visualViewport which fires
-   during pinch-zoom). Only updates on true window/orientation resize. */
 (function(){
     function setH(){
         var h = window.innerHeight;
@@ -3094,8 +3091,265 @@ ${svgContent}  <!-- ArcEdge v4 by Justin Craig Venable — dartedge.com/radicale
 }
 
 // ══════════════════════════════════════════════
-//  MP4 EXPORT via MediaRecorder
+//  MP4 EXPORT — true H.264 MP4 via WebCodecs + mp4-muxer
+//  Export dimensions = imported video/GIF native dimensions,
+//  proportionally scaled down if either axis exceeds 4096px.
+//  AVC level is chosen automatically based on pixel count so
+//  any resolution up to 4096×4096 works without encoder errors.
+//  Falls back to WebM (MediaRecorder) if WebCodecs unavailable.
 // ══════════════════════════════════════════════
+
+const EXPORT_MAX = 4096;
+
+// ── AVC codec string selection ────────────────────────────────────
+// H.264 codec string: avc1.PPLLCC
+//   PP = profile idc (64 = High Profile — best quality)
+//   LL = level in decimal encoded as hex
+//   CC = constraint flags (00)
+//
+// Level coded-area limits (W×H pixel budget):
+//   3.1  →    921,600  (≤ 1280×720)
+//   4.0  →  2,097,152  (≤ 1920×1080)
+//   4.1  →  2,097,152  (same area, higher fps)
+//   5.0  →  5,652,480  (≤ ~2560×2048)
+//   5.1  →  9,437,184  (≤ 3840×2160 / 4K UHD)
+//   5.2  →  9,437,184  (same, higher fps)
+//   6.0  → 35,651,584  (≤ 7680×4320 / 8K — covers 4096×4096)
+//   6.2  → 35,651,584  (same, highest fps — use as final fallback)
+function _avcCodecString(W, H) {
+  const pixels = W * H;
+  // High Profile (0x64) for all levels — better quality than Baseline
+  if (pixels <=   921600) return 'avc1.64001f'; // Level 3.1
+  if (pixels <= 2097152)  return 'avc1.640028'; // Level 4.0
+  if (pixels <= 5652480)  return 'avc1.640032'; // Level 5.0
+  if (pixels <= 9437184)  return 'avc1.640033'; // Level 5.1  (4K UHD)
+                          return 'avc1.64003c'; // Level 6.0  (up to 4096×4096)
+}
+
+// Target bitrate scaled to resolution (Mbps)
+function _exportBitrate(W, H) {
+  const pixels = W * H;
+  if (pixels <= 921600)  return  4_000_000; // ≤720p
+  if (pixels <= 2097152) return  8_000_000; // ≤1080p
+  if (pixels <= 5652480) return 16_000_000; // ≤2K
+  if (pixels <= 9437184) return 24_000_000; // ≤4K UHD
+                         return 40_000_000; // 4096×4096 and up
+}
+
+// Return export {W, H} from source media, capped at 4096, always even
+function _getExportDims(bg) {
+  const el = bg.element;
+  let srcW = bg.type === 'video' ? el.videoWidth  : el.naturalWidth;
+  let srcH = bg.type === 'video' ? el.videoHeight : el.naturalHeight;
+  if (!srcW || !srcH) { srcW = 1920; srcH = 1080; }
+  if (srcW > EXPORT_MAX || srcH > EXPORT_MAX) {
+    const ratio = Math.min(EXPORT_MAX / srcW, EXPORT_MAX / srcH);
+    srcW = srcW * ratio;
+    srcH = srcH * ratio;
+  }
+  const W = Math.max(2, Math.floor(srcW / 2) * 2);
+  const H = Math.max(2, Math.floor(srcH / 2) * 2);
+  return { W, H };
+}
+
+// Shared: composite canvas sized to video native dims + status banner
+function _prepExportComposite(bg) {
+  const { W, H } = _getExportDims(bg);
+
+  const compCanvas = document.createElement('canvas');
+  compCanvas.width  = W;
+  compCanvas.height = H;
+  compCanvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;';
+  document.body.appendChild(compCanvas);
+  const compCtx = compCanvas.getContext('2d');
+
+  const banner = document.createElement('div');
+  banner.id = 'export-banner';
+  banner.style.cssText = [
+    'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:9999;',
+    'background:rgba(13,15,18,0.96);border:1.5px solid #c8f400;color:#c8f400;',
+    'font-family:Orbitron,monospace;font-size:0.55rem;letter-spacing:1px;',
+    'padding:10px 22px;white-space:nowrap;pointer-events:none;',
+    'box-shadow:0 0 18px rgba(200,244,0,0.25);'
+  ].join('');
+  document.body.appendChild(banner);
+
+  function drawFrame() {
+    const el = bg.element;
+    const iw = bg.type === 'video' ? el.videoWidth  : el.naturalWidth;
+    const ih = bg.type === 'video' ? el.videoHeight : el.naturalHeight;
+
+    compCtx.clearRect(0, 0, W, H);
+    compCtx.fillStyle = bgLayer().bgColor || '#0d0f12';
+    compCtx.fillRect(0, 0, W, H);
+
+    // Draw video/GIF cover-fit to export canvas
+    if (iw && ih) {
+      const scale = Math.max(W / iw, H / ih);
+      const dw = iw * scale, dh = ih * scale;
+      compCtx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+
+    // Project arc overlay from screen viewport → video pixel space
+    const cW = canvas.width, cH = canvas.height;
+    const vpScale = vp.scale || 1;
+    const vpX     = vp.x    || 0;
+    const vpY     = vp.y    || 0;
+    let vSrcScale = iw && ih ? Math.max(cW / iw, cH / ih) * vpScale : vpScale;
+    const vdw = (iw || cW) * vSrcScale;
+    const vdh = (ih || cH) * vSrcScale;
+    const vx  = (cW - vdw) / 2 + vpX;
+    const vy  = (cH - vdh) / 2 + vpY;
+    const clipX = Math.max(0, vx), clipY = Math.max(0, vy);
+    const clipW = Math.min(cW, vx + vdw) - clipX;
+    const clipH = Math.min(cH, vy + vdh) - clipY;
+    if (clipW > 0 && clipH > 0) {
+      const dstX = ((clipX - vx) / vdw) * W;
+      const dstY = ((clipY - vy) / vdh) * H;
+      const dstW = (clipW / vdw) * W;
+      const dstH = (clipH / vdh) * H;
+      compCtx.drawImage(canvas, clipX, clipY, clipW, clipH, dstX, dstY, dstW, dstH);
+    }
+  }
+
+  function teardown() {
+    if (compCanvas.parentNode) document.body.removeChild(compCanvas);
+    if (banner.parentNode)     document.body.removeChild(banner);
+  }
+
+  return { compCanvas, W, H, banner, drawFrame, teardown };
+}
+
+// ── Path A: WebCodecs → true H.264 MP4 (Chrome 94+) ──────────────
+async function _exportMP4_WebCodecs(bg, duration) {
+  const { compCanvas, W, H, banner, drawFrame, teardown } = _prepExportComposite(bg);
+  const FPS         = 30;
+  const totalFrames = Math.ceil((duration / 1000) * FPS);
+  const codec       = _avcCodecString(W, H);
+  const bitrate     = _exportBitrate(W, H);
+
+  banner.textContent = '⏺ ENCODING MP4 — 0%  (' + W + '×' + H + ')';
+
+  if (typeof Mp4Muxer === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  const { Muxer, ArrayBufferTarget } = Mp4Muxer;
+  const target = new ArrayBufferTarget();
+  const muxer  = new Muxer({
+    target,
+    video: { codec: 'avc', width: W, height: H },
+    fastStart: 'in-memory'
+  });
+
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error:  (e) => { teardown(); alert('Encoder error: ' + e.message); }
+  });
+  encoder.configure({ codec, width: W, height: H, bitrate, framerate: FPS });
+
+  if (bg.type === 'video') {
+    await new Promise(res => {
+      const onSeeked = () => { bg.element.removeEventListener('seeked', onSeeked); res(); };
+      bg.element.addEventListener('seeked', onSeeked);
+      bg.element.currentTime = 0;
+    });
+    await bg.element.play();
+    await new Promise(res => setTimeout(res, 150));
+  }
+
+  await new Promise(resolve => {
+    let frameIdx = 0;
+    function nextFrame() {
+      if (frameIdx >= totalFrames) { resolve(); return; }
+      drawFrame();
+      const timestampUs = Math.round((frameIdx / FPS) * 1_000_000);
+      const vf = new VideoFrame(compCanvas, { timestamp: timestampUs });
+      encoder.encode(vf, { keyFrame: frameIdx % (FPS * 2) === 0 });
+      vf.close();
+      frameIdx++;
+      if (frameIdx % 10 === 0) {
+        const pct = Math.round((frameIdx / totalFrames) * 100);
+        banner.textContent = '⏺ ENCODING MP4 — ' + pct + '%  (' + W + '×' + H + ')';
+      }
+      requestAnimationFrame(nextFrame);
+    }
+    requestAnimationFrame(nextFrame);
+  });
+
+  await encoder.flush();
+  muxer.finalize();
+  if (bg.type === 'video') bg.element.pause();
+
+  const blob = new Blob([target.buffer], { type: 'video/mp4' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = 'arcedge-export.mp4';
+  link.href = url;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  teardown();
+}
+
+// ── Path B: MediaRecorder → WebM fallback ────────────────────────
+function _exportMP4_WebM(bg, duration) {
+  const { compCanvas, banner, drawFrame, teardown } = _prepExportComposite(bg);
+  const { W, H } = _getExportDims(bg);
+
+  banner.textContent = '⏺ RECORDING WEBM — ' + (duration / 1000).toFixed(1) + 's  (' + W + '×' + H + ')';
+
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+                 ? 'video/webm;codecs=vp9' : 'video/webm';
+  const stream   = compCanvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: _exportBitrate(W, H) });
+  const chunks   = [];
+
+  recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+  recorder.onstop = () => {
+    teardown();
+    if (bg.type === 'video') bg.element.pause();
+    if (!chunks.length) { alert('Export failed — no video data captured.'); return; }
+    const blob = new Blob(chunks, { type: mimeType });
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = 'arcedge-export.webm';
+    link.href = url; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  function startRec() {
+    drawFrame();
+    recorder.start(200);
+    let startTime = null;
+    function loop(ts) {
+      if (!startTime) startTime = ts;
+      drawFrame();
+      if (ts - startTime < duration) requestAnimationFrame(loop);
+      else recorder.stop();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  if (bg.type === 'video') {
+    const onSeeked = () => {
+      bg.element.removeEventListener('seeked', onSeeked);
+      bg.element.play()
+        .then(() => setTimeout(startRec, 150))
+        .catch(e => { teardown(); alert('Could not play video: ' + e.message); });
+    };
+    bg.element.addEventListener('seeked', onSeeked);
+    bg.element.currentTime = 0;
+  } else {
+    startRec();
+  }
+}
+
+// ── Main entry point ──────────────────────────────────────────────
 function exportMP4(settings) {
   const bg = bgLayer().bgImage;
   if (!bg || (bg.type !== 'gif' && bg.type !== 'video')) {
@@ -3103,74 +3357,18 @@ function exportMP4(settings) {
     return;
   }
 
-  // Use a composite canvas
-  const compCanvas = document.createElement('canvas');
-  compCanvas.width  = canvas.width;
-  compCanvas.height = canvas.height;
-  const compCtx = compCanvas.getContext('2d');
+  const duration = bg.type === 'video'
+    ? Math.min((bg.element.duration || 5) * 1000, 60000)
+    : 5000;
 
-  let duration = 5000; // default 5s for gif; get from video if available
-  if (bg.type === 'video') {
-    duration = Math.min(bg.element.duration * 1000 || 5000, 60000);
-    bg.element.currentTime = 0;
-    bg.element.play();
+  if (typeof VideoEncoder !== 'undefined') {
+    _exportMP4_WebCodecs(bg, duration).catch(err => {
+      console.warn('WebCodecs MP4 failed, falling back to WebM:', err);
+      _exportMP4_WebM(bg, duration);
+    });
+  } else {
+    _exportMP4_WebM(bg, duration);
   }
-
-  const stream = compCanvas.captureStream(30);
-  const recorder = new MediaRecorder(stream, {
-    mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-              ? 'video/webm;codecs=vp9'
-              : 'video/webm',
-    videoBitsPerSecond: 8000000
-  });
-
-  const chunks = [];
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, { type: 'video/webm' });
-    const url  = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = 'arcedge-export.webm';
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
-    if (bg.type === 'video') bg.element.pause();
-  };
-
-  recorder.start();
-
-  let startTime = null;
-  function frame(ts) {
-    if (!startTime) startTime = ts;
-    const elapsed = ts - startTime;
-
-    // Composite: background
-    const W = compCanvas.width, H = compCanvas.height;
-    compCtx.clearRect(0, 0, W, H);
-    compCtx.fillStyle = bgLayer().bgColor || '#0d0f12';
-    compCtx.fillRect(0, 0, W, H);
-
-    const el = bg.element;
-    const iw = bg.type === 'video' ? el.videoWidth  : el.naturalWidth;
-    const ih = bg.type === 'video' ? el.videoHeight : el.naturalHeight;
-    if (iw && ih) {
-      const scale = Math.max(W / iw, H / ih);
-      const dw = iw * scale, dh = ih * scale;
-      compCtx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    }
-
-    // Draw arc canvas on top
-    compCtx.drawImage(canvas, 0, 0);
-
-    if (elapsed < duration) {
-      requestAnimationFrame(frame);
-    } else {
-      recorder.stop();
-    }
-  }
-  requestAnimationFrame(frame);
-
-  alert(`Recording ${(duration / 1000).toFixed(1)}s of animation. File will download when complete.`);
 }
 
 // ══════════════════════════════════════════════
