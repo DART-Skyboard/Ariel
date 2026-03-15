@@ -197,6 +197,32 @@ body.sb-collapsed #viewport-area{margin-left:0;width:100vw;}
 .ld-prog{height:100%;background:var(--accent2);border-radius:2px;animation:ld-a 1.1s ease-in-out forwards;}
 @keyframes ld-a{from{width:0%}to{width:100%}}
 
+/* KF Context menu */
+#kf-ctx-menu{
+  position:fixed;display:none;flex-direction:column;gap:1px;
+  background:rgba(3,7,18,0.97);border:1px solid var(--border-accent);
+  border-radius:var(--radius);box-shadow:0 8px 28px rgba(0,0,0,0.85);
+  z-index:9000;min-width:148px;overflow:hidden;
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+}
+#kf-ctx-menu.vis{display:flex;}
+.kf-ctx-item{
+  padding:8px 13px;font-family:var(--font-ui);font-size:0.78em;font-weight:600;
+  color:var(--text);cursor:pointer;transition:background 0.1s;
+  display:flex;align-items:center;gap:7px;white-space:nowrap;
+}
+.kf-ctx-item:hover{background:var(--bg-hover);}
+.kf-ctx-item.danger{color:var(--danger);}
+.kf-ctx-item.accent{color:var(--accent);}
+.kf-ctx-item.success{color:var(--success);}
+.kf-ctx-item .ctx-key{
+  font-family:var(--font-hud);font-size:0.58em;color:var(--text-dim);
+  margin-left:auto;letter-spacing:0.04em;
+}
+.kf-ctx-sep{height:1px;background:var(--border);margin:2px 0;}
+/* Timeline zoom HUD */
+#tl-zoom-hud{position:absolute;bottom:3px;right:6px;font-family:var(--font-hud);font-size:0.52em;color:rgba(0,229,255,0.45);pointer-events:none;z-index:2;letter-spacing:0.05em;}
+
 /* Trajectory tab in timeline */
 #tl-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:rgba(0,0,0,0.18);}
 .tl-tab{flex:1;padding:4px 2px;background:none;border:none;cursor:pointer;color:var(--text-dim);font-family:var(--font-ui);font-size:0.6em;font-weight:700;text-align:center;letter-spacing:0.04em;border-bottom:2px solid transparent;transition:var(--trans);}
@@ -506,7 +532,12 @@ body.sb-collapsed #viewport-area{margin-left:0;width:100vw;}
             <option value="60">60 fps</option>
           </select>
         </div>
-        <div class="cr"><label>Max Frames</label><input type="range" id="sl-mf" min="30" max="600" value="150" step="30" oninput="setMaxFrames(+this.value)"><span class="v" id="v-mf">150</span></div>
+        <div class="cr"><label>Total Frames</label>
+          <input type="number" id="inp-maxf" value="150" min="1" max="200000"
+            style="flex:2;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--font-hud);font-size:0.72em;padding:3px 6px;outline:none"
+            onchange="setMaxFrames(Math.max(1,Math.min(200000,+this.value)))">
+        </div>
+        <div style="font-size:0.62em;color:var(--text-dim);margin:-2px 0 4px">Pinch/scroll timeline to zoom · drag to pan</div>
         <div class="cr"><label>Loop</label><label class="ts"><input type="checkbox" id="chk-loop" checked><span class="ts-t"></span></label></div>
         <div class="cr"><label>Interpolation</label>
           <select id="sel-interp" style="flex:2">
@@ -583,25 +614,55 @@ body.sb-collapsed #viewport-area{margin-left:0;width:100vw;}
       </div>
       <div class="sl" style="margin-top:5px" onclick="toggleSection(this)">VIDEO EXPORT<i class="sa">&#9660;</i></div>
       <div class="sb">
+        <div class="cr"><label>Orientation</label>
+          <select id="sel-vorient" style="flex:2" onchange="updateVideoResOptions()">
+            <option value="landscape" selected>Landscape</option>
+            <option value="portrait">Portrait</option>
+          </select>
+        </div>
         <div class="cr"><label>Resolution</label>
-          <select id="sel-vres" style="flex:2">
-            <option value="1280x720">720p</option>
-            <option value="1920x1080" selected>1080p</option>
-            <option value="3840x2160">4K</option>
+          <select id="sel-vres" style="flex:2" onchange="updateVideoResOptions()">
+            <option value="1280x720" selected>720p (1280×720)</option>
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="2560x1440">1440p / 2K</option>
+            <option value="3840x2160">4K (3840×2160)</option>
           </select>
         </div>
         <div class="cr"><label>FPS</label>
-          <select id="sel-vfps" style="flex:2">
+          <select id="sel-vfps" style="flex:2" onchange="updateVideoResOptions()">
+            <option value="24">24 fps</option>
             <option value="30" selected>30 fps</option>
             <option value="60">60 fps</option>
           </select>
         </div>
-        <button class="btn s full" onclick="exportVideo()">Render + Export Video</button>
-        <div id="vid-wrap" style="display:none;margin-top:5px">
-          <div class="prog-bar"><div class="prog-fill" id="vid-prog"></div></div>
-          <div style="font-size:0.68em;color:var(--text-dim);margin-bottom:4px" id="vid-status">Rendering...</div>
-          <button class="btn sm d" onclick="cancelVideo()">Cancel</button>
+        <div class="cr"><label>Quality</label>
+          <select id="sel-vqual" style="flex:2">
+            <option value="4000000">Low (4 Mbps)</option>
+            <option value="8000000" selected>Medium (8 Mbps)</option>
+            <option value="16000000">High (16 Mbps)</option>
+            <option value="24000000">Ultra (24 Mbps)</option>
+          </select>
         </div>
+        <div id="vid-res-preview" style="font-family:var(--font-hud);font-size:0.6em;color:var(--text-dim);margin-bottom:6px;text-align:center">1280 × 720 px  ·  30 fps</div>
+        <div class="cr"><label>Frame In</label>
+          <input type="number" id="vid-in" value="0" min="0"
+            style="flex:2;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--accent);font-family:var(--font-hud);font-size:0.72em;padding:3px 6px;outline:none"
+            onchange="setExportRange()">
+        </div>
+        <div class="cr"><label>Frame Out</label>
+          <input type="number" id="vid-out" value="150" min="1"
+            style="flex:2;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--accent);font-family:var(--font-hud);font-size:0.72em;padding:3px 6px;outline:none"
+            onchange="setExportRange()">
+        </div>
+        <div id="vid-range-info" style="font-family:var(--font-hud);font-size:0.58em;color:var(--text-dim);text-align:center;margin:2px 0 6px">150 frames · 5.0 s @ 30fps</div>
+        <button class="btn s full" onclick="exportVideo()">&#9654; Render + Export Video</button>
+        <div id="vid-wrap" style="display:none;margin-top:6px">
+          <div class="prog-bar" style="margin-bottom:4px"><div class="prog-fill" id="vid-prog"></div></div>
+          <div style="font-size:0.68em;color:var(--text-dim);margin-bottom:4px" id="vid-status">Initialising…</div>
+          <div style="font-size:0.62em;color:var(--text-dim);margin-bottom:5px" id="vid-eta"></div>
+          <button class="btn sm d" onclick="cancelVideo()">&#9724; Cancel</button>
+        </div>
+        <div style="font-size:0.62em;color:var(--text-dim);margin-top:5px;line-height:1.4">Renders offscreen — live viewport stays stable. Saves as .mp4.</div>
       </div>
     </div><!-- /export -->
 
@@ -680,12 +741,28 @@ body.sb-collapsed #viewport-area{margin-left:0;width:100vw;}
     <div id="tl-wrap" style="position:relative;flex:1;overflow:hidden;">
       <canvas id="tl-canvas" style="position:absolute;inset:0;width:100%;height:100%;display:block;cursor:pointer;touch-action:none;"></canvas>
       <canvas id="traj-canvas" style="display:none;position:absolute;inset:0;width:100%;height:100%;"></canvas>
+      <div id="tl-zoom-hud">VIEW: <span id="tl-zoom-txt">0 – 150</span></div>
     </div>
   </div>
 </div><!-- /viewport-area -->
 </div><!-- /app-shell -->
 
 <div id="toast"></div>
+
+<!-- KF Context Menu -->
+<div id="kf-ctx-menu">
+  <div class="kf-ctx-item accent"  id="ctx-copy"      onclick="_ctxAction('copy')">   <span>⧉</span> Copy KF <span class="ctx-key">C</span></div>
+  <div class="kf-ctx-item"         id="ctx-cut"       onclick="_ctxAction('cut')">    <span>✂</span> Cut KF  <span class="ctx-key">X</span></div>
+  <div class="kf-ctx-item success"  id="ctx-paste"     onclick="_ctxAction('paste')">  <span>⎘</span> Paste KF <span class="ctx-key">V</span></div>
+  <div class="kf-ctx-item"         id="ctx-paste-pose" onclick="_ctxAction('paste-pose')"><span>⎘</span> Paste Pose Only</div>
+  <div class="kf-ctx-sep"></div>
+  <div class="kf-ctx-item"         id="ctx-copy-slopes" onclick="_ctxAction('copy-slopes')"><span>∿</span> Copy Slopes</div>
+  <div class="kf-ctx-item"         id="ctx-paste-slopes" onclick="_ctxAction('paste-slopes')"><span>∿</span> Paste Slopes</div>
+  <div class="kf-ctx-sep"></div>
+  <div class="kf-ctx-item success"  id="ctx-loop-close" onclick="_ctxAction('loop-close')"><span>↺</span> Auto Loop-Close</div>
+  <div class="kf-ctx-sep"></div>
+  <div class="kf-ctx-item danger"  id="ctx-delete"    onclick="_ctxAction('delete')"> <span>✕</span> Delete KF</div>
+</div>
 
 <!-- Macro modal -->
 <div class="mo" id="mac-modal">
@@ -760,11 +837,22 @@ let _gPid=null,_gHK=null,_gPlane=null;
 const _lastTap={t:0,idx:-1};
 // Timeline
 const TL={fps:30,maxF:150,cur:0,playing:false,rec:false,loop:true,kfs:[],macs:[]};
+// Timeline viewport window — which frame range is currently visible
+const TLV={start:0,end:150};   // TLV.end - TLV.start = visible frame span
+// Export range
+const TLE={in:0,out:150};       // in/out markers
+// Pinch/zoom state
+let _tlPinch={active:false,dist:0,midF:0};
+let _tlPan={active:false,pid:null,startX:0,startViewStart:0,startViewEnd:0};
 let tlPlStart=0,tlPlFrame=0,tlDrag=false,selKF=-1;
 let vidCancel=false,videoRec=null;
-let _curTLTab='timeline'; // 'timeline' | 'trajectory'
-let _trajSelProp='rootX'; // which property to display in trajectory view
-let _trajDragKF=-1;       // index of KF being dragged in trajectory view
+let _curTLTab='timeline';
+let _trajSelProp='rootX';
+let _trajDragKF=-1;
+// KF clipboard
+let _kfClipboard=null;  // {kf: deep-copy of KF object, sourceFrame: number}
+let _ctxTargetKF=-1;    // which KF index the context menu is targeting
+let _ctxTargetFrame=-1; // frame under cursor when long-pressing empty space
 const RC=new THREE.Raycaster();
 let _toastT;
 
@@ -827,6 +915,8 @@ window.addEventListener('load',()=>{
   buildBoneList();
   buildWPBoneList();
   resizeTL(); renderTL(); renderTraj(); updateKFList();
+  _initTLGestures();
+  _updateExportRangeUI();
   clk=new THREE.Clock();
   requestAnimationFrame(loop);
   setTimeout(()=>{
@@ -1394,11 +1484,7 @@ function initPointerEvents(){
 
   cvs.addEventListener('pointermove',e=>{if(wpOn&&e.buttons>0) wpPaint(e);});
 
-  // Timeline
-  const tlc=document.getElementById('tl-canvas');
-  tlc.addEventListener('pointerdown',e=>{tlDrag=true;seekTL(e);});
-  tlc.addEventListener('pointermove',e=>{if(tlDrag)seekTL(e);});
-  tlc.addEventListener('pointerup',()=>tlDrag=false);
+  // Timeline — pinch/zoom/pan/seek handled by _initTLGestures() called after init
 
   // Trajectory canvas: seek on drag, select KF on click, prop button click
   const trc=document.getElementById('traj-canvas');
@@ -1788,7 +1874,19 @@ function loop(){
     if(nf>=TL.maxF){
       if(TL.loop){tlPlStart=el;tlPlFrame=0;setFrame(0);}
       else{TL.playing=false;const b=document.getElementById('btn-play');b.textContent='Play';b.classList.remove('play');}
-    } else setFrame(nf);
+    } else {
+      setFrame(nf);
+      // Auto-scroll: if playhead passes the right edge, page the view forward
+      if(nf>TLV.end){
+        const span=TLV.end-TLV.start;
+        TLV.start=nf; TLV.end=nf+span;
+        _clampView();
+      } else if(nf<TLV.start){
+        const span=TLV.end-TLV.start;
+        TLV.end=nf+span; TLV.start=nf;
+        _clampView();
+      }
+    }
   }
 
   // Shader time + particle skinning
@@ -1976,6 +2074,158 @@ function updateKFList(){
 }
 function updateTLInfo(){document.getElementById('tl-kf-count').textContent=TL.kfs.length+' kf';}
 
+// ── KF CLIPBOARD & CONTEXT MENU ──────────────────────────
+function _deepCloneKF(kf){
+  return JSON.parse(JSON.stringify(kf));
+}
+
+function _showCtxMenu(screenX,screenY,kfIndex,frameAtCursor){
+  _ctxTargetKF=kfIndex;
+  _ctxTargetFrame=frameAtCursor;
+  const hasKF=(kfIndex>=0&&kfIndex<TL.kfs.length);
+  const hasClip=!!_kfClipboard;
+  const clipFromFrame0=hasClip&&_kfClipboard.sourceFrame===0;
+  const isLastKF=hasKF&&kfIndex===TL.kfs.length-1;
+  _ctxShow('ctx-copy',hasKF);
+  _ctxShow('ctx-cut',hasKF);
+  _ctxShow('ctx-paste',hasClip);
+  _ctxShow('ctx-paste-pose',hasClip&&hasKF);
+  _ctxShow('ctx-copy-slopes',hasKF);
+  _ctxShow('ctx-paste-slopes',hasClip&&hasKF&&_kfClipboard.slopes);
+  _ctxShow('ctx-loop-close',clipFromFrame0&&(isLastKF||(!hasKF&&TL.kfs.length>0)));
+  _ctxShow('ctx-delete',hasKF);
+  document.querySelectorAll('.kf-ctx-sep').forEach(s=>{
+    const prev=s.previousElementSibling,next=s.nextElementSibling;
+    s.style.display=(prev&&prev.style.display!=='none'&&next&&next.style.display!=='none')?'block':'none';
+  });
+  const menu=document.getElementById('kf-ctx-menu');
+  menu.classList.add('vis');
+  const mw=menu.offsetWidth||160,mh=menu.offsetHeight||200;
+  menu.style.left=Math.min(screenX,window.innerWidth-mw-6)+'px';
+  menu.style.top=Math.min(screenY,window.innerHeight-mh-6)+'px';
+}
+function _ctxShow(id,show){const el=document.getElementById(id);if(el)el.style.display=show?'flex':'none';}
+function _hideCtxMenu(){document.getElementById('kf-ctx-menu').classList.remove('vis');_ctxTargetKF=-1;_ctxTargetFrame=-1;}
+
+document.addEventListener('pointerdown',e=>{
+  const menu=document.getElementById('kf-ctx-menu');
+  if(menu&&menu.classList.contains('vis')&&!menu.contains(e.target))_hideCtxMenu();
+},{capture:true});
+
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') return;
+  if(e.ctrlKey||e.metaKey){
+    if(e.key==='c'){if(selKF>=0){_ctxTargetKF=selKF;_ctxAction('copy');}}
+    if(e.key==='x'){if(selKF>=0){_ctxTargetKF=selKF;_ctxAction('cut');}}
+    if(e.key==='v'){_ctxTargetFrame=TL.cur;_ctxTargetKF=-1;_ctxAction('paste');}
+  }
+});
+
+function _ctxAction(action){
+  _hideCtxMenu();
+  const ki=_ctxTargetKF;
+  const hasKF=(ki>=0&&ki<TL.kfs.length);
+
+  if(action==='copy'){
+    if(!hasKF) return;
+    _kfClipboard={kf:_deepCloneKF(TL.kfs[ki]),sourceFrame:TL.kfs[ki].f};
+    toast('KF F:'+TL.kfs[ki].f+' copied');
+    return;
+  }
+  if(action==='cut'){
+    if(!hasKF) return;
+    _kfClipboard={kf:_deepCloneKF(TL.kfs[ki]),sourceFrame:TL.kfs[ki].f};
+    const f=TL.kfs[ki].f;
+    TL.kfs.splice(ki,1); selKF=-1;
+    updateKFList();updateTLInfo();renderTL();renderTraj();
+    toast('KF F:'+f+' cut');
+    return;
+  }
+  if(action==='paste'||action==='paste-pose'){
+    if(!_kfClipboard) return;
+    const targetF=_ctxTargetFrame>=0?_ctxTargetFrame:TL.cur;
+    const clone=_deepCloneKF(_kfClipboard.kf);
+    if(action==='paste-pose'){
+      const existing=TL.kfs.findIndex(k=>k.f===targetF);
+      if(existing>=0){
+        TL.kfs[existing].state.boneStates=clone.state.boneStates;
+        TL.kfs[existing].state.expr=clone.state.expr;
+        TL.kfs[existing].mode='full';
+        toast('Pose pasted into KF F:'+targetF);
+      } else { toast('No KF at F:'+targetF+' — use Paste KF first'); return; }
+    } else {
+      clone.f=targetF;
+      const existing=TL.kfs.findIndex(k=>k.f===targetF);
+      if(existing>=0){
+        clone.state.rootX=TL.kfs[existing].state.rootX||0;
+        clone.state.rootY=TL.kfs[existing].state.rootY||0;
+        clone.state.rootZ=TL.kfs[existing].state.rootZ||0;
+        TL.kfs[existing]=clone;
+      } else {
+        TL.kfs.push(clone);
+        TL.kfs.sort((a,b)=>a.f-b.f);
+      }
+      selKF=TL.kfs.findIndex(k=>k.f===targetF);
+      toast('KF pasted at F:'+targetF);
+    }
+    updateKFList();updateTLInfo();renderTL();renderTraj();
+    return;
+  }
+  if(action==='copy-slopes'){
+    if(!hasKF) return;
+    const kf=TL.kfs[ki];
+    if(!_kfClipboard) _kfClipboard={kf:_deepCloneKF(kf),sourceFrame:kf.f};
+    _kfClipboard.slopes={in:kf.slopeIn||0,out:kf.slopeOut||0};
+    toast('Slopes copied from F:'+kf.f);
+    return;
+  }
+  if(action==='paste-slopes'){
+    if(!hasKF||!_kfClipboard||!_kfClipboard.slopes) return;
+    TL.kfs[ki].slopeIn=_kfClipboard.slopes.in;
+    TL.kfs[ki].slopeOut=_kfClipboard.slopes.out;
+    _refreshSlopeUI(ki);
+    renderTL();renderTraj();
+    toast('Slopes pasted to F:'+TL.kfs[ki].f);
+    return;
+  }
+  if(action==='loop-close'){
+    if(!_kfClipboard) return;
+    const targetF=_ctxTargetFrame>=0?_ctxTargetFrame:(TL.kfs.length?TL.kfs[TL.kfs.length-1].f:TL.maxF);
+    const clone=_deepCloneKF(_kfClipboard.kf);
+    clone.f=targetF;
+    const srcKF=TL.kfs.find(k=>k.f===(_kfClipboard.sourceFrame||0));
+    if(srcKF){clone.slopeIn=-(srcKF.slopeOut||0);clone.slopeOut=-(srcKF.slopeIn||0);}
+    const existing=TL.kfs.findIndex(k=>k.f===targetF);
+    if(existing>=0){
+      clone.state.rootX=TL.kfs[existing].state.rootX||0;
+      clone.state.rootY=TL.kfs[existing].state.rootY||0;
+      clone.state.rootZ=TL.kfs[existing].state.rootZ||0;
+      TL.kfs[existing]=clone;
+    } else {TL.kfs.push(clone);TL.kfs.sort((a,b)=>a.f-b.f);}
+    selKF=TL.kfs.findIndex(k=>k.f===targetF);
+    updateKFList();updateTLInfo();renderTL();renderTraj();
+    toast('Loop-close KF at F:'+targetF+' — slopes mirrored');
+    return;
+  }
+  if(action==='delete'){
+    if(!hasKF) return;
+    const f=TL.kfs[ki].f;
+    TL.kfs.splice(ki,1); selKF=-1;
+    updateKFList();updateTLInfo();renderTL();renderTraj();
+    toast('KF F:'+f+' deleted');
+    return;
+  }
+}
+
+function _makeLongPress(onLongPress){
+  let timer=null,startX=0,startY=0;
+  const cancel=()=>{clearTimeout(timer);timer=null;};
+  const start=(e,x,y)=>{startX=x;startY=y;cancel();timer=setTimeout(()=>{onLongPress(e);timer=null;},480);};
+  const move=(x,y)=>{if(timer&&(Math.abs(x-startX)>9||Math.abs(y-startY)>9))cancel();};
+  return{start,move,cancel};
+}
+
+
 // ── TIMELINE TAB SWITCHER ─────────────────────────────────
 function switchTLTab(name){
   _curTLTab=name;
@@ -2158,6 +2408,24 @@ function renderTraj(){
 }
 
 // ── TIMELINE ──────────────────────────────────────────────
+// Convert frame ↔ pixel using TLV view window
+function _tlFrameToX(f,LW,PW){ return LW+(f-TLV.start)/(TLV.end-TLV.start)*PW; }
+function _tlXToFrame(x,LW,PW){ return (x-LW)/(PW)*(TLV.end-TLV.start)+TLV.start; }
+
+function _updateZoomHUD(){
+  const el=document.getElementById('tl-zoom-txt');
+  if(el) el.textContent=Math.round(TLV.start)+' – '+Math.round(TLV.end);
+}
+
+function _clampView(){
+  const span=TLV.end-TLV.start;
+  const minSpan=2, maxSpan=TL.maxF;
+  const clampedSpan=Math.max(minSpan,Math.min(maxSpan,span));
+  TLV.start=Math.max(0,Math.min(TL.maxF-clampedSpan,TLV.start));
+  TLV.end=TLV.start+clampedSpan;
+  _updateZoomHUD();
+}
+
 function resizeTL(){
   const w=document.getElementById('tl-wrap');
   const c=document.getElementById('tl-canvas');
@@ -2165,29 +2433,347 @@ function resizeTL(){
   if(w&&c){c.width=w.clientWidth;c.height=w.clientHeight;}
   if(w&&tc){tc.width=w.clientWidth;tc.height=w.clientHeight;}
 }
+
 function renderTL(){
   const c=document.getElementById('tl-canvas');if(!c||c.width===0)return;
   const p=document.getElementById('timeline-panel');if(p.classList.contains('collapsed'))return;
   if(c.style.display==='none') return;
   const ctx=c.getContext('2d'),W=c.width,H=c.height;
-  ctx.clearRect(0,0,W,H);ctx.fillStyle='rgba(3,6,14,0.98)';ctx.fillRect(0,0,W,H);
-  const LW=50,RHR=18,TH=Math.max(10,(H-RHR)/10),PW=W-LW,mF=TL.maxF;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='rgba(3,6,14,0.98)';ctx.fillRect(0,0,W,H);
+
+  const LW=50,RHR=20,PW=W-LW;
+  const TH=Math.max(10,(H-RHR)/10);
+  const vStart=TLV.start,vEnd=TLV.end,vSpan=vEnd-vStart;
+
+  // Helper
+  const fToX=f=>_tlFrameToX(f,LW,PW);
+
+  // ── Ruler ──
   ctx.fillStyle='rgba(0,229,255,0.04)';ctx.fillRect(LW,0,PW,RHR);
-  const tk=mF<=60?5:mF<=150?10:30;
-  for(let f=0;f<=mF;f+=tk){const x=LW+(f/mF)*PW;ctx.fillStyle='#5a6080';ctx.fillRect(x,RHR-4,1,4);if(f%(tk*2)===0){ctx.fillStyle='#7a8090';ctx.font='7px Orbitron,monospace';ctx.textAlign='center';ctx.fillText(f,x,8);}}
-  for(let i=0;i<9;i++){const y=RHR+i*TH;ctx.fillStyle=i%2===0?'rgba(255,255,255,0.012)':'rgba(0,0,0,0.08)';ctx.fillRect(0,y,W,TH);ctx.textAlign='right';ctx.font='6px Exo 2,sans-serif';ctx.fillStyle=i<8?TC[i]:'#aaa';ctx.fillText(i<8?'T'+(i+1):'Root',LW-3,y+TH/2+3);ctx.fillStyle='rgba(255,255,255,0.03)';ctx.fillRect(LW,y+TH-1,PW,1);}
-  TL.macs.forEach((m,mi)=>{const col=MC[mi%MC.length];const x1=LW+(m.s/mF)*PW,x2=LW+((m.s+m.d)/mF)*PW;ctx.fillStyle=col+'20';ctx.fillRect(x1,RHR,x2-x1,TH*9);ctx.strokeStyle=col+'60';ctx.lineWidth=1;ctx.strokeRect(x1,RHR,x2-x1,TH*9);ctx.fillStyle=col;ctx.font='6px Orbitron,monospace';ctx.textAlign='left';ctx.fillText(m.n,x1+2,RHR+8);});
-  TL.kfs.forEach((k,ki)=>{const x=LW+(k.f/mF)*PW;for(let ti=0;ti<9;ti++){const y=RHR+ti*TH+TH/2,col=ti<8?TC[ti]:'#aaa',sel=ki===selKF;ctx.save();ctx.translate(x,y);ctx.rotate(Math.PI/4);const s=sel?5:3.5;ctx.fillStyle=col;ctx.fillRect(-s/2,-s/2,s,s);if(sel){ctx.strokeStyle='#fff';ctx.lineWidth=0.8;ctx.strokeRect(-s/2,-s/2,s,s);}ctx.restore();}});
-  const px=LW+(TL.cur/mF)*PW;
-  ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,H);ctx.stroke();
-  ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(px-5,0);ctx.lineTo(px+5,0);ctx.lineTo(px,7);ctx.closePath();ctx.fill();
-  ctx.fillStyle='#fff';ctx.font='bold 7px Orbitron,monospace';ctx.textAlign=px>W-34?'right':'left';ctx.fillText(TL.cur,px+(px>W-34?-3:3),7);
+
+  // Adaptive tick spacing based on visible span
+  const pixPerFrame=PW/vSpan;
+  let majorTk,minorTk;
+  if(pixPerFrame>=12){majorTk=5;minorTk=1;}
+  else if(pixPerFrame>=4){majorTk=10;minorTk=5;}
+  else if(pixPerFrame>=1.5){majorTk=30;minorTk=10;}
+  else if(pixPerFrame>=0.5){majorTk=100;minorTk=50;}
+  else if(pixPerFrame>=0.1){majorTk=500;minorTk=100;}
+  else{majorTk=2000;minorTk=500;}
+
+  // Only draw ticks that are in view
+  const tickStart=Math.floor(vStart/minorTk)*minorTk;
+  const tickEnd=Math.ceil(vEnd/minorTk)*minorTk;
+  for(let f=tickStart;f<=Math.min(tickEnd,TL.maxF);f+=minorTk){
+    if(f<0) continue;
+    const x=fToX(f);
+    if(x<LW||x>W) continue;
+    const isMajor=f%majorTk===0;
+    ctx.fillStyle=isMajor?'#6a7090':'#363850';
+    ctx.fillRect(x,isMajor?RHR-6:RHR-3,1,isMajor?6:3);
+    if(isMajor){
+      ctx.fillStyle='#7a8090';ctx.font='7px Orbitron,monospace';ctx.textAlign='center';
+      // Show timecode if zoomed in enough
+      let label;
+      if(pixPerFrame>=8){
+        const secs=(f/TL.fps);
+        label=f+'  ('+secs.toFixed(2)+'s)';
+      } else {
+        label=String(f);
+      }
+      ctx.fillText(label,x,9);
+    }
+  }
+
+  // ── Export In/Out shading ──
+  const inX=fToX(TLE.in),outX=fToX(TLE.out);
+  // Dim areas outside export range
+  ctx.fillStyle='rgba(0,0,0,0.38)';
+  if(inX>LW) ctx.fillRect(LW,RHR,inX-LW,TH*9);
+  if(outX<W) ctx.fillRect(outX,RHR,W-outX,TH*9);
+  // Bright highlight inside range
+  ctx.fillStyle='rgba(0,229,255,0.025)';
+  const rx1=Math.max(LW,inX),rx2=Math.min(W,outX);
+  if(rx2>rx1) ctx.fillRect(rx1,RHR,rx2-rx1,TH*9);
+
+  // In marker
+  if(inX>=LW&&inX<=W){
+    ctx.strokeStyle='rgba(0,229,255,0.7)';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(inX,RHR);ctx.lineTo(inX,RHR+TH*9);ctx.stroke();
+    ctx.fillStyle='rgba(0,229,255,0.85)';
+    ctx.beginPath();ctx.moveTo(inX,RHR);ctx.lineTo(inX+8,RHR);ctx.lineTo(inX,RHR+8);ctx.closePath();ctx.fill();
+    ctx.fillStyle='rgba(0,229,255,0.6)';ctx.font='bold 6px Orbitron,monospace';ctx.textAlign='left';
+    ctx.fillText('IN',inX+2,RHR-2);
+  }
+  // Out marker
+  if(outX>=LW&&outX<=W){
+    ctx.strokeStyle='rgba(255,165,0,0.7)';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(outX,RHR);ctx.lineTo(outX,RHR+TH*9);ctx.stroke();
+    ctx.fillStyle='rgba(255,165,0,0.85)';
+    ctx.beginPath();ctx.moveTo(outX,RHR);ctx.lineTo(outX-8,RHR);ctx.lineTo(outX,RHR+8);ctx.closePath();ctx.fill();
+    ctx.fillStyle='rgba(255,165,0,0.6)';ctx.font='bold 6px Orbitron,monospace';ctx.textAlign='right';
+    ctx.fillText('OUT',outX-2,RHR-2);
+  }
+
+  // ── Track rows ──
+  for(let i=0;i<9;i++){
+    const y=RHR+i*TH;
+    ctx.fillStyle=i%2===0?'rgba(255,255,255,0.012)':'rgba(0,0,0,0.08)';
+    ctx.fillRect(0,y,W,TH);
+    ctx.textAlign='right';ctx.font='6px Exo 2,sans-serif';
+    ctx.fillStyle=i<8?TC[i]:'#aaa';
+    ctx.fillText(i<8?'T'+(i+1):'Root',LW-3,y+TH/2+3);
+    ctx.fillStyle='rgba(255,255,255,0.03)';ctx.fillRect(LW,y+TH-1,PW,1);
+  }
+
+  // ── Macro blocks ──
+  TL.macs.forEach((m,mi)=>{
+    const col=MC[mi%MC.length];
+    const x1=Math.max(LW,fToX(m.s)),x2=Math.min(W,fToX(m.s+m.d));
+    if(x2<=LW||x1>=W) return;
+    ctx.fillStyle=col+'20';ctx.fillRect(x1,RHR,x2-x1,TH*9);
+    ctx.strokeStyle=col+'60';ctx.lineWidth=1;ctx.strokeRect(x1,RHR,x2-x1,TH*9);
+    if(x2-x1>20){ctx.fillStyle=col;ctx.font='6px Orbitron,monospace';ctx.textAlign='left';ctx.fillText(m.n,x1+2,RHR+8);}
+  });
+
+  // ── Keyframe diamonds ──
+  TL.kfs.forEach((k,ki)=>{
+    const x=fToX(k.f);if(x<LW||x>W) return;
+    for(let ti=0;ti<9;ti++){
+      const y=RHR+ti*TH+TH/2,col=ti<8?TC[ti]:'#aaa',sel=ki===selKF;
+      ctx.save();ctx.translate(x,y);ctx.rotate(Math.PI/4);
+      const s=sel?5:3.5;
+      ctx.fillStyle=col;ctx.fillRect(-s/2,-s/2,s,s);
+      if(sel){ctx.strokeStyle='#fff';ctx.lineWidth=0.8;ctx.strokeRect(-s/2,-s/2,s,s);}
+      ctx.restore();
+    }
+    // Frame label at top if zoomed in enough
+    if(pixPerFrame>=2){
+      ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='5px Orbitron,monospace';ctx.textAlign='center';
+      ctx.fillText(k.f,x,RHR-1);
+    }
+  });
+
+  // ── Playhead ──
+  const px=fToX(TL.cur);
+  if(px>=LW&&px<=W){
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,H);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.beginPath();
+    ctx.moveTo(px-5,0);ctx.lineTo(px+5,0);ctx.lineTo(px,7);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold 7px Orbitron,monospace';
+    ctx.textAlign=px>W-40?'right':'left';
+    ctx.fillText(TL.cur,px+(px>W-40?-3:3),7);
+  }
+
+  // Store for pointer hit testing
+  c._LW=LW; c._PW=PW; c._RHR=RHR; c._TH=TH;
 }
+
 function seekTL(e){
   const c=document.getElementById('tl-canvas'),rect=c.getBoundingClientRect();
   const x=e.clientX-rect.left;
-  const f=Math.round(((x-50)/(c.width-50))*TL.maxF);
+  const f=Math.round(_tlXToFrame(x,c._LW||50,c._PW||(c.width-50)));
   setFrame(Math.max(0,Math.min(f,TL.maxF-1)));
+}
+
+// ── TIMELINE PINCH/PAN POINTER EVENTS ─────────────────────
+function _initTLGestures(){
+  const tlc=document.getElementById('tl-canvas');
+  let activePointers={};
+
+  function getSpanAndMid(pts){
+    const arr=Object.values(pts);
+    if(arr.length<2) return null;
+    const dist=Math.abs(arr[1].x-arr[0].x);
+    const midX=(arr[0].x+arr[1].x)/2;
+    return{dist,midX};
+  }
+  function xToFrame(x){return _tlXToFrame(x,tlc._LW||50,tlc._PW||(tlc.width-50));}
+
+  // Find closest KF to pixel x (within hit radius), returns index or -1
+  function hitTestKF(px){
+    const LW=tlc._LW||50,PW=tlc._PW||(tlc.width-50);
+    let closest=-1,closestD=10;
+    TL.kfs.forEach((k,ki)=>{
+      const kx=_tlFrameToX(k.f,LW,PW);
+      const d=Math.abs(px-kx);
+      if(d<closestD){closestD=d;closest=ki;}
+    });
+    return closest;
+  }
+
+  // Long-press handler for the timeline canvas
+  const lp=_makeLongPress((e)=>{
+    const rect=tlc.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    const ki=hitTestKF(px);
+    const f=Math.round(xToFrame(px));
+    _ctxTargetKF=ki; _ctxTargetFrame=f;
+    if(ki>=0) selKF=ki;
+    _showCtxMenu(e.clientX, e.clientY, ki, f);
+    tlc.dataset.dragging='ctx'; // suppress seek on long-press release
+  });
+
+  // Right-click (desktop context menu)
+  tlc.addEventListener('contextmenu',e=>{
+    e.preventDefault();
+    const rect=tlc.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    const ki=hitTestKF(px);
+    const f=Math.round(xToFrame(px));
+    if(ki>=0) selKF=ki;
+    _showCtxMenu(e.clientX,e.clientY,ki,f);
+  });
+
+  tlc.addEventListener('pointerdown',e=>{
+    activePointers[e.pointerId]={x:e.clientX-tlc.getBoundingClientRect().left,y:e.clientY};
+    tlc.setPointerCapture(e.pointerId);
+
+    const rect=tlc.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    const LW=tlc._LW||50,PW=tlc._PW||(tlc.width-50);
+
+    // Check In/Out marker hit (within 8px)
+    const inX=_tlFrameToX(TLE.in,LW,PW);
+    const outX=_tlFrameToX(TLE.out,LW,PW);
+    if(Math.abs(px-inX)<8){tlc.dataset.dragging='in';lp.cancel();return;}
+    if(Math.abs(px-outX)<8){tlc.dataset.dragging='out';lp.cancel();return;}
+
+    if(Object.keys(activePointers).length===1){
+      tlc.dataset.dragging='seek';
+      lp.start(e,px,e.clientY);
+      seekTL(e);
+    }
+  },{passive:true});
+
+  tlc.addEventListener('pointermove',e=>{
+    const rect=tlc.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    activePointers[e.pointerId]={x:px,y:e.clientY};
+    lp.move(px,e.clientY);
+
+    if(tlc.dataset.dragging==='in'){
+      const f=Math.round(Math.max(0,Math.min(TLE.out-1,_tlXToFrame(px,tlc._LW||50,tlc._PW||(tlc.width-50)))));
+      TLE.in=f;_updateExportRangeUI();renderTL();return;
+    }
+    if(tlc.dataset.dragging==='out'){
+      const f=Math.round(Math.max(TLE.in+1,Math.min(TL.maxF,_tlXToFrame(px,tlc._LW||50,tlc._PW||(tlc.width-50)))));
+      TLE.out=f;_updateExportRangeUI();renderTL();return;
+    }
+    if(tlc.dataset.dragging==='ctx') return;
+
+    const pids=Object.keys(activePointers);
+    if(pids.length>=2){
+      const sm=getSpanAndMid(activePointers);
+      if(!sm) return;
+      lp.cancel();
+      if(!_tlPinch.active){
+        _tlPinch.active=true;_tlPinch.dist=sm.dist;
+        _tlPinch.midF=xToFrame(sm.midX);
+      } else {
+        const scale=_tlPinch.dist/Math.max(1,sm.dist);
+        const newSpan=Math.max(2,Math.min(TL.maxF,(TLV.end-TLV.start)*scale));
+        const midFrac=(sm.midX-(tlc._LW||50))/(tlc._PW||(tlc.width-50));
+        TLV.start=_tlPinch.midF-midFrac*newSpan;
+        TLV.end=TLV.start+newSpan;
+        _clampView();renderTL();
+      }
+    } else if(tlc.dataset.dragging==='seek'){
+      seekTL(e);
+    }
+  },{passive:true});
+
+  tlc.addEventListener('pointerup',e=>{
+    lp.cancel();
+    delete activePointers[e.pointerId];
+    if(Object.keys(activePointers).length<2) _tlPinch.active=false;
+    if(Object.keys(activePointers).length===0) tlc.dataset.dragging='';
+  });
+  tlc.addEventListener('pointercancel',e=>{
+    lp.cancel();
+    delete activePointers[e.pointerId];
+    if(Object.keys(activePointers).length<2) _tlPinch.active=false;
+    if(Object.keys(activePointers).length===0) tlc.dataset.dragging='';
+  });
+
+  // ── Mouse wheel zoom (desktop) ──
+  tlc.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const rect=tlc.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    const LW=tlc._LW||50,PW=tlc._PW||(tlc.width-50);
+    const pivotF=_tlXToFrame(px,LW,PW);
+    const span=TLV.end-TLV.start;
+    const factor=e.deltaY>0?1.15:0.87;
+    const newSpan=Math.max(2,Math.min(TL.maxF,span*factor));
+    const frac=(px-LW)/PW;
+    TLV.start=pivotF-frac*newSpan;
+    TLV.end=TLV.start+newSpan;
+    _clampView();renderTL();
+  },{passive:false});
+
+  // ── Trajectory canvas: right-click / long-press for slope copy/paste ──
+  const trc=document.getElementById('traj-canvas');
+  const lpTraj=_makeLongPress((e)=>{
+    const rect=trc.getBoundingClientRect();
+    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    let closest=-1,closestD=14;
+    if(trc._toX&&trc._toY){
+      TL.kfs.forEach((kf,ki)=>{
+        const v=_kfPropVal(kf,_trajSelProp);
+        const kx=trc._toX(kf.f),ky=trc._toY(v);
+        const d=Math.sqrt((mx-kx)*(mx-kx)+(my-ky)*(my-ky));
+        if(d<closestD){closestD=d;closest=ki;}
+      });
+    }
+    const f=trc._LW&&trc._PW?Math.round(((mx-trc._LW)/trc._PW)*trc._mF):TL.cur;
+    if(closest>=0) selKF=closest;
+    _showCtxMenu(e.clientX,e.clientY,closest,f);
+  });
+  trc.addEventListener('contextmenu',e=>{
+    e.preventDefault();
+    const rect=trc.getBoundingClientRect();
+    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    let closest=-1,closestD=14;
+    if(trc._toX&&trc._toY){
+      TL.kfs.forEach((kf,ki)=>{
+        const v=_kfPropVal(kf,_trajSelProp);
+        const kx=trc._toX(kf.f),ky=trc._toY(v);
+        const d=Math.sqrt((mx-kx)*(mx-kx)+(my-ky)*(my-ky));
+        if(d<closestD){closestD=d;closest=ki;}
+      });
+    }
+    const f=trc._LW&&trc._PW?Math.round(((mx-trc._LW)/trc._PW)*trc._mF):TL.cur;
+    if(closest>=0) selKF=closest;
+    _showCtxMenu(e.clientX,e.clientY,closest,f);
+  });
+  trc.addEventListener('pointerdown',e=>{lpTraj.start(e,e.clientX-trc.getBoundingClientRect().left,e.clientY);},{passive:true});
+  trc.addEventListener('pointermove',e=>{lpTraj.move(e.clientX-trc.getBoundingClientRect().left,e.clientY);},{passive:true});
+  trc.addEventListener('pointerup',()=>lpTraj.cancel());
+  trc.addEventListener('pointercancel',()=>lpTraj.cancel());
+}
+
+// ── EXPORT RANGE HELPERS ──────────────────────────────────
+function _updateExportRangeUI(){
+  const fps=TL.fps||30;
+  const frames=Math.max(0,TLE.out-TLE.in);
+  const secs=(frames/fps).toFixed(1);
+  const el=document.getElementById('vid-range-info');
+  if(el) el.textContent=frames+' frames · '+secs+'s @ '+fps+' fps';
+  const inEl=document.getElementById('vid-in');
+  const outEl=document.getElementById('vid-out');
+  if(inEl) inEl.value=TLE.in;
+  if(outEl) outEl.value=TLE.out;
+}
+function setExportRange(){
+  const inV=+(document.getElementById('vid-in').value||0);
+  const outV=+(document.getElementById('vid-out').value||TL.maxF);
+  TLE.in=Math.max(0,Math.min(TL.maxF-1,Math.round(inV)));
+  TLE.out=Math.max(TLE.in+1,Math.min(TL.maxF,Math.round(outV)));
+  _updateExportRangeUI();
+  renderTL();
 }
 
 // ── PLAYBACK ──────────────────────────────────────────────
@@ -2206,8 +2792,21 @@ function toggleRec(){
   if(TL.rec) toast('REC ON — manipulate rig to record live');
   else toast('REC OFF');
 }
-function seekStart(){setFrame(0);if(TL.playing){tlPlStart=clk.getElapsedTime();tlPlFrame=0;}}
-function seekEnd(){setFrame(TL.maxF-1);}
+function seekStart(){
+  setFrame(0);
+  if(TL.playing){tlPlStart=clk.getElapsedTime();tlPlFrame=0;}
+  // Scroll view to beginning
+  const span=TLV.end-TLV.start;
+  TLV.start=0; TLV.end=span;
+  _clampView(); renderTL();
+}
+function seekEnd(){
+  setFrame(TL.maxF-1);
+  // Scroll view to show the end
+  const span=TLV.end-TLV.start;
+  TLV.end=TL.maxF; TLV.start=Math.max(0,TL.maxF-span);
+  _clampView(); renderTL();
+}
 function stepBack(){setFrame(TL.cur-1);}
 function stepFwd(){setFrame(TL.cur+1);}
 function setFrameDir(f){setFrame(+f);}
@@ -2448,8 +3047,24 @@ function setShowHandles(v){showHK=v;ikHandles.forEach(h=>{h.group.visible=v;});}
 function setIKMode(v){ikMode=v;}
 function setIdle(v){idleOn=v;}
 function setWave(v){waveOn=v;if(!v){tentPosed.fill(0);}}
-function setFPS(v){TL.fps=v;document.getElementById('fps-lbl').textContent=v+' FPS';}
-function setMaxFrames(v){TL.maxF=v;setV('v-mf',v,'i');document.getElementById('fn-max').textContent=v;document.getElementById('fn').max=v-1;renderTL();}
+function setFPS(v){TL.fps=v;document.getElementById('fps-lbl').textContent=v+' FPS';_updateExportRangeUI();}
+function setMaxFrames(v){
+  v=Math.max(1,Math.min(200000,Math.round(v)));
+  TL.maxF=v;
+  // Clamp view window to new total
+  TLV.end=Math.min(TLV.end,v);
+  if(TLV.start>=TLV.end) TLV.start=Math.max(0,TLV.end-150);
+  // Clamp export range
+  TLE.out=Math.min(TLE.out,v);
+  if(TLE.in>=TLE.out) TLE.in=0;
+  // Update UI
+  const inp=document.getElementById('inp-maxf');if(inp)inp.value=v;
+  document.getElementById('fn-max').textContent=v;
+  document.getElementById('fn').max=v-1;
+  _updateExportRangeUI();
+  _updateZoomHUD();
+  renderTL();renderTraj();
+}
 
 // ── EXPORT ────────────────────────────────────────────────
 function exportPNG(transparent){
@@ -2504,34 +3119,243 @@ function exportGLB(){
   },err=>{toast('GLB error: '+err);},opts);
 }
 
+// ── VIDEO EXPORT — offscreen renderer → WebM capture → MP4 remux ─────────────
+// Resolution helper — swaps W/H for portrait
+function _vidDims(){
+  const orient=document.getElementById('sel-vorient').value;
+  const parts=document.getElementById('sel-vres').value.split('x').map(Number);
+  let [w,h]=parts;
+  if(orient==='portrait'&&w>h){const tmp=w;w=h;h=tmp;}
+  if(orient==='landscape'&&h>w){const tmp=w;w=h;h=tmp;}
+  return{w,h};
+}
+
+function updateVideoResOptions(){
+  const {w,h}=_vidDims();
+  const fps=+document.getElementById('sel-vfps').value||30;
+  const el=document.getElementById('vid-res-preview');
+  if(el) el.textContent=w+' × '+h+' px  ·  '+fps+' fps';
+}
+
+// Yield to browser compositor between frames — prevents crash
+function _yieldFrame(){
+  return new Promise(r=>requestAnimationFrame(()=>setTimeout(r,0)));
+}
+
+let _offRenderer=null;
+let _offCanvas=null;
+let _recCanvas=null;
+
+// ── VIDEO EXPORT ──────────────────────────────────────────
+// Strategy:
+//   1. Try native MP4/H.264 (works on Safari/iOS — gives real .mp4)
+//   2. Fall back to VP9 WebM, then VP8 WebM
+//   3. Render each frame to a SEPARATE offscreen WebGL canvas (live view untouched)
+//   4. Blit to a stable 2D canvas that MediaRecorder watches
+//   5. On stop: collect all chunks → single Blob → download immediately
+//   No third-party remux lib needed.
+
 async function exportVideo(){
   if(!window.MediaRecorder){toast('MediaRecorder not supported');return;}
-  const [w,h]=document.getElementById('sel-vres').value.split('x').map(Number);
-  const fps=+document.getElementById('sel-vfps').value;
-  document.getElementById('vid-wrap').style.display='block';vidCancel=false;
-  const ow=renderer.domElement.width,oh=renderer.domElement.height,oa=camera.aspect;
-  renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();
-  const str=renderer.domElement.captureStream(fps);
-  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
-  const cks=[];videoRec=new MediaRecorder(str,{mimeType:mime});
-  videoRec.ondataavailable=e=>{if(e.data.size>0)cks.push(e.data);};
-  videoRec.onstop=()=>{
-    const bl=new Blob(cks,{type:'video/webm'});const url=URL.createObjectURL(bl);
-    const a=document.createElement('a');a.href=url;a.download='octarig_'+w+'x'+h+'_'+fps+'fps.webm';
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-    renderer.setSize(ow,oh);camera.aspect=oa;camera.updateProjectionMatrix();
-    document.getElementById('vid-wrap').style.display='none';toast('Video exported!');
-  };
-  videoRec.start();
-  for(let f=0;f<=TL.maxF&&!vidCancel;f++){
-    setFrame(f);skinParticles();renderer.render(scene,camera);
-    document.getElementById('vid-prog').style.width=(f/TL.maxF*100).toFixed(0)+'%';
-    document.getElementById('vid-status').textContent='Rendering '+f+'/'+TL.maxF;
-    await new Promise(r=>setTimeout(r,1000/fps));
+
+  const {w,h}=_vidDims();
+  const fps=+document.getElementById('sel-vfps').value||30;
+  const bitrate=+document.getElementById('sel-vqual').value||8000000;
+  const exportIn=Math.max(0,Math.min(TL.maxF-1,TLE.in));
+  const exportOut=Math.max(exportIn+1,Math.min(TL.maxF,TLE.out));
+  const exportFrames=exportOut-exportIn;
+
+  // Warn if no KFs but don't block — user may want to export current static pose
+  if(TL.kfs.length===0){
+    toast('Tip: add keyframes for animated export. Exporting static frame now…');
   }
-  videoRec.stop();
+
+  const setStatus=t=>{const el=document.getElementById('vid-status');if(el)el.textContent=t;};
+  const setEta=t=>{const el=document.getElementById('vid-eta');if(el)el.textContent=t;};
+  const setProg=p=>{const el=document.getElementById('vid-prog');if(el)el.style.width=Math.min(100,p).toFixed(1)+'%';};
+
+  document.getElementById('vid-wrap').style.display='block';
+  setProg(0); setStatus('Starting…'); setEta('');
+  vidCancel=false;
+
+  // Small delay so the UI actually updates before heavy work begins
+  await _yieldFrame();
+
+  // ── 1. Pick MIME — prefer native MP4 on Safari, VP9 on Chrome ──
+  const mimeOrder=[
+    'video/mp4;codecs=avc1.42E01E',  // H.264 baseline — Safari/iOS
+    'video/mp4;codecs=avc1',          // H.264 generic — Safari
+    'video/mp4',                      // MP4 any
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ];
+  const mime=mimeOrder.find(m=>{
+    try{return MediaRecorder.isTypeSupported(m);}catch(e){return false;}
+  })||'video/webm';
+  const ext=mime.startsWith('video/mp4')?'mp4':'webm';
+  const baseName='octarig_'+w+'x'+h+'_'+fps+'fps_F'+exportIn+'-'+exportOut;
+
+  setStatus('Codec: '+mime.split(';')[0]+' → .'+ext);
+  await _yieldFrame();
+
+  // ── 2. Offscreen WebGL renderer (completely separate GL context) ──
+  _offCanvas=document.createElement('canvas');
+  _offCanvas.width=w; _offCanvas.height=h;
+  try{
+    _offRenderer=new THREE.WebGLRenderer({
+      canvas:_offCanvas,
+      antialias:w<=1920,
+      alpha:false,
+      preserveDrawingBuffer:true
+    });
+  }catch(err){
+    toast('WebGL context failed: '+err.message);
+    document.getElementById('vid-wrap').style.display='none';
+    return;
+  }
+  _offRenderer.setPixelRatio(1);
+  _offRenderer.setSize(w,h,false);
+  _offRenderer.shadowMap.enabled=false;
+  _offRenderer.toneMapping=renderer.toneMapping;
+  _offRenderer.toneMappingExposure=renderer.toneMappingExposure;
+  _offRenderer.outputEncoding=THREE.sRGBEncoding;
+  const bgStyle=document.getElementById('sel-bg').value;
+  if(bgStyle==='transp') _offRenderer.setClearColor(0,0);
+  else _offRenderer.setClearColor(renderer.getClearColor(new THREE.Color()),renderer.getClearAlpha());
+
+  // ── 3. Offscreen camera cloned from live camera ──
+  const offCam=new THREE.PerspectiveCamera(camera.fov,w/h,camera.near,camera.far);
+  offCam.position.copy(camera.position);
+  offCam.quaternion.copy(camera.quaternion);
+  offCam.updateProjectionMatrix();
+
+  // ── 4. Stable 2D blit canvas — MediaRecorder watches this, not the GL canvas ──
+  _recCanvas=document.createElement('canvas');
+  _recCanvas.width=w; _recCanvas.height=h;
+  const recCtx=_recCanvas.getContext('2d');
+
+  // ── 5. Wire up MediaRecorder ──
+  let recError=null;
+  const chunks=[];
+
+  let recOpts={mimeType:mime,videoBitsPerSecond:bitrate};
+  let rec;
+  try{
+    rec=new MediaRecorder(_recCanvas.captureStream(fps),recOpts);
+  }catch(err){
+    // If the chosen MIME fails at construction time, fall back to default
+    try{rec=new MediaRecorder(_recCanvas.captureStream(fps));}
+    catch(err2){
+      toast('MediaRecorder failed: '+err2.message);
+      if(_offRenderer){_offRenderer.dispose();_offRenderer=null;}
+      document.getElementById('vid-wrap').style.display='none';
+      return;
+    }
+  }
+  videoRec=rec;
+
+  rec.ondataavailable=e=>{
+    if(e.data&&e.data.size>0) chunks.push(e.data);
+  };
+  rec.onerror=e=>{ recError=e; };
+
+  // ── 6. onstop — assemble blob and trigger download ──
+  rec.onstop=()=>{
+    if(_offRenderer){_offRenderer.dispose();_offRenderer=null;}
+    _offCanvas=null; _recCanvas=null;
+
+    if(vidCancel){
+      document.getElementById('vid-wrap').style.display='none';
+      setStatus('Cancelled');
+      return;
+    }
+
+    if(chunks.length===0){
+      document.getElementById('vid-wrap').style.display='none';
+      toast('Export failed — no video data captured. Try a lower resolution or different browser.');
+      return;
+    }
+
+    setProg(100); setStatus('Saving…');
+
+    // Use the actual recorded MIME for the blob (may differ from requested)
+    const actualMime=rec.mimeType||mime;
+    const actualExt=actualMime.includes('mp4')?'mp4':'webm';
+    const blob=new Blob(chunks,{type:actualMime.split(';')[0]||'video/webm'});
+
+    // Build a download link and click it
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.style.display='none';
+    a.href=url;
+    a.download=baseName+'.'+actualExt;
+    document.body.appendChild(a);
+    a.click();
+    // Clean up after a delay to ensure the click registers
+    setTimeout(()=>{
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },5000);
+
+    document.getElementById('vid-wrap').style.display='none';
+    toast('✓ Saved '+baseName+'.'+actualExt+'  ('+( blob.size/1048576).toFixed(1)+' MB)');
+  };
+
+  // ── 7. Frame render loop ──
+  // Use timeslice=0 to get ondataavailable called on .stop() only —
+  // avoids chunking issues where the last ondataavailable fires after onstop
+  rec.start();
+
+  const startTime=performance.now();
+
+  for(let f=exportIn;f<=exportOut;f++){
+    if(vidCancel){rec.stop();return;}
+
+    // Advance animation
+    setFrame(f);
+    skinParticles();
+
+    // Sync camera
+    offCam.position.copy(camera.position);
+    offCam.quaternion.copy(camera.quaternion);
+    offCam.fov=camera.fov;
+    offCam.updateProjectionMatrix();
+
+    // Render offscreen, blit to recorder canvas
+    _offRenderer.render(scene,offCam);
+    recCtx.drawImage(_offCanvas,0,0);
+
+    // Progress
+    const done=f-exportIn;
+    setProg(done/exportFrames*99);
+    setStatus('Frame '+f+' / '+exportOut);
+    if(done>0){
+      const elapsed=(performance.now()-startTime)/1000;
+      const eta=elapsed/done*(exportFrames-done);
+      setEta(elapsed.toFixed(0)+'s elapsed  ·  ~'+eta.toFixed(0)+'s left');
+    }
+
+    await _yieldFrame();
+  }
+
+  // Request final data flush then stop
+  if(rec.state==='recording'){
+    rec.requestData();
+    await _yieldFrame();
+    rec.stop();
+  }
 }
-function cancelVideo(){vidCancel=true;if(videoRec&&videoRec.state!=='inactive')videoRec.stop();document.getElementById('vid-wrap').style.display='none';}
+
+function cancelVideo(){
+  vidCancel=true;
+  if(videoRec&&videoRec.state!=='inactive') videoRec.stop();
+  if(_offRenderer){_offRenderer.dispose();_offRenderer=null;}
+  _offCanvas=null; _recCanvas=null;
+  document.getElementById('vid-wrap').style.display='none';
+  document.getElementById('vid-status').textContent='Cancelled';
+  toast('Export cancelled');
+}
 
 // ── UI HELPERS ────────────────────────────────────────────
 function switchTab(n){document.querySelectorAll('.stab').forEach(e=>e.classList.toggle('active',e.dataset.tab===n));document.querySelectorAll('.tab-panel').forEach(e=>e.classList.toggle('active',e.id==='tab-'+n));}
@@ -2552,9 +3376,13 @@ function hexToRgb(hex){
 
 // ── INIT DISPLAY ──────────────────────────────────────────
 (function(){
-  setV('v-mf',150,'i');
   document.getElementById('fn-max').textContent='150';
+  const inp=document.getElementById('inp-maxf');if(inp)inp.value=150;
   buildMacList();
+  updateVideoResOptions();
+  _updateExportRangeUI();
+  TLV.start=0; TLV.end=TL.maxF;
+  _updateZoomHUD();
 })();
 </script>
 </body>
