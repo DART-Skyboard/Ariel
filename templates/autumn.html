@@ -311,6 +311,23 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
   .ops-grid{grid-template-columns:repeat(auto-fill,minmax(75px,1fr))}
   .arc-row{flex-direction:column}
 }
+/* ── INLINE MAZE WIDGET ────────────────────────────────────── */
+.maze-widget{margin-top:10px;background:rgba(2,10,20,.75);border:1px solid rgba(0,255,204,.18);border-radius:10px;overflow:hidden}
+.maze-widget-header{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid rgba(0,255,204,.1);background:rgba(0,0,0,.25)}
+.maze-widget-title{font-family:var(--font-d);font-size:.52rem;letter-spacing:2px;color:var(--cyan)}
+.maze-widget-btns{display:flex;gap:5px}
+.maze-widget-btn{background:transparent;border:1px solid rgba(0,255,204,.2);color:rgba(0,255,204,.55);padding:3px 9px;border-radius:3px;cursor:pointer;font-family:var(--font-d);font-size:.44rem;letter-spacing:1px;transition:all .18s}
+.maze-widget-btn:hover{color:var(--cyan);border-color:var(--cyan);background:rgba(0,255,204,.07)}
+.maze-widget-btn.solve{border-color:rgba(0,136,255,.3);color:rgba(0,136,255,.6)}
+.maze-widget-btn.solve:hover{color:var(--blue);border-color:var(--blue);background:rgba(0,136,255,.08)}
+.maze-widget-btn.regen{border-color:rgba(255,68,102,.25);color:rgba(255,68,102,.5)}
+.maze-widget-btn.regen:hover{color:var(--red);border-color:var(--red);background:rgba(255,68,102,.07)}
+.maze-widget-canvas-wrap{position:relative;width:100%;aspect-ratio:1/1;max-height:280px;background:rgba(1,6,14,.9)}
+.maze-widget-canvas-wrap canvas{width:100%!important;height:100%!important;display:block}
+.maze-widget-stats{display:flex;gap:10px;padding:5px 12px;border-top:1px solid rgba(0,255,204,.07);flex-wrap:wrap}
+.maze-ws{font-size:.48rem;font-family:var(--font-d);letter-spacing:1px;color:rgba(0,255,204,.4)}
+.maze-ws .v{color:var(--cyan)}
+.maze-ws.solved .v{color:var(--blue)}
 /* Leaflet map dark override */
 .leaflet-container{background:#060e18!important}
 .leaflet-tile{filter:brightness(.7) saturate(.6) hue-rotate(180deg)}
@@ -1481,6 +1498,18 @@ async function autumnReflex(userInput, userId="default") {
     improvHtml = `<div class="improv-block"><span>◈ AUTUMN ADDED</span>${improv.additions.map(a=>`• ${esc(a)}`).join('<br>')}</div>`;
   }
 
+  // ── Inline Maze Widget detection ──────────────────────────────
+  let mazeHtml = '';
+  if (detectMazeRequest(userInput)) {
+    const lower = userInput.toLowerCase();
+    const sizeLabel = lower.includes('large') ? 'large' : lower.includes('medium') ? 'medium' : 'standard';
+    const sizeKey = lower.includes('large') ? 'large' : lower.includes('medium') ? 'medium' : 'small';
+    const wid = 'mw-' + Date.now();
+    mazeHtml = buildMazeWidgetHtml(wid, sizeLabel);
+    // Tag for post-render init
+    mazeHtml = `<div data-maze-wid="${wid}" data-maze-size="${sizeKey}"></div>` + mazeHtml;
+  }
+
   // Frequency-weighted context from journal
   const freqWeights = buildFrequencyWeights();
   const topJournalKeywords = getTopKeywordsFromJournal(5);
@@ -1500,6 +1529,7 @@ async function autumnReflex(userInput, userId="default") {
     mapHtml,
     improvHtml,
     improvisation: improv,
+    mazeHtml,
     freqWeights,
     topJournalKeywords,
     groupContext: MultiUserSession.buildGroupContext(),
@@ -2019,6 +2049,7 @@ async function handleSend() {
     contextType: reflexData.contextType,
     contextEmotional: reflexData.context?.emotional||"neutral",
     improvHtml: reflexData.improvHtml||'',
+    mazeHtml: reflexData.mazeHtml||'',
     weatherHtml: reflexData.weatherHtml||'',
     mapHtml: reflexData.mapHtml||'',
     media:{ videos:liveData.videos, images:liveData.images, links:liveData.links, sources:liveData.sources }
@@ -2083,8 +2114,472 @@ When improvisation additions were made to a request, mention them naturally as y
 }
 
 // ============================================================
-//  RENDER ENGINE
+//  INLINE CHAT MAZE WIDGET — LEMAC 3D Interactive Maze
+//  Spawns a live Three.js scene inside a chat bubble.
+//  Each widget is self-contained, registered globally.
 // ============================================================
+const _mazeWidgets = {}; // id → { state, three objects, functions }
+
+const MAZE_TRIGGERS = [
+  "make me a maze","generate a maze","show me a maze","create a maze","build a maze",
+  "maze please","give me a maze","maze for me","show a maze","display a maze",
+  "3d maze","draw me a maze","render a maze","maze generator","a maze",
+  "solve the maze","pathfind","show maze","maze tool","labyrinth"
+];
+
+function detectMazeRequest(input) {
+  const l = input.toLowerCase();
+  return MAZE_TRIGGERS.some(t => l.includes(t));
+}
+
+function chatMazeGenGrid(w, h, d) {
+  // Recursive backtracker — same algorithm as LEMAC + orb
+  const grid = Array.from({length:d}, () =>
+    Array.from({length:h}, () =>
+      Array.from({length:w}, () => ({
+        top:true,bottom:true,left:true,right:true,front:true,back:true,visited:false
+      }))
+    )
+  );
+  const stack = [{x:0,y:0,z:0}];
+  grid[0][0][0].visited = true;
+  while(stack.length > 0) {
+    const cur = stack[stack.length-1], ns = [];
+    if(cur.x>0 && !grid[cur.z][cur.y][cur.x-1].visited) ns.push({x:cur.x-1,y:cur.y,z:cur.z,d1:'left',d2:'right'});
+    if(cur.x<w-1 && !grid[cur.z][cur.y][cur.x+1].visited) ns.push({x:cur.x+1,y:cur.y,z:cur.z,d1:'right',d2:'left'});
+    if(cur.y>0 && !grid[cur.z][cur.y-1][cur.x].visited) ns.push({x:cur.x,y:cur.y-1,z:cur.z,d1:'bottom',d2:'top'});
+    if(cur.y<h-1 && !grid[cur.z][cur.y+1][cur.x].visited) ns.push({x:cur.x,y:cur.y+1,z:cur.z,d1:'top',d2:'bottom'});
+    if(cur.z>0 && !grid[cur.z-1][cur.y][cur.x].visited) ns.push({x:cur.x,y:cur.y,z:cur.z-1,d1:'back',d2:'front'});
+    if(cur.z<d-1 && !grid[cur.z+1][cur.y][cur.x].visited) ns.push({x:cur.x,y:cur.y,z:cur.z+1,d1:'front',d2:'back'});
+    if(ns.length > 0) {
+      const n = ns[Math.floor(Math.random()*ns.length)];
+      grid[cur.z][cur.y][cur.x][n.d1] = false;
+      grid[n.z][n.y][n.x][n.d2] = false;
+      grid[n.z][n.y][n.x].visited = true;
+      stack.push(n);
+    } else stack.pop();
+  }
+  return grid;
+}
+
+function chatMazeSolve(grid, w, h, d) {
+  // BFS always finds correct path
+  const key = (x,y,z) => `${x},${y},${z}`;
+  const queue = [{x:0,y:0,z:0,path:[{x:0,y:0,z:0}]}];
+  const visited = new Set([key(0,0,0)]);
+  const goal = key(w-1,h-1,d-1);
+  while(queue.length > 0) {
+    const {x,y,z,path} = queue.shift();
+    if(key(x,y,z) === goal) return path;
+    const c = grid[z][y][x];
+    const moves = [];
+    if(!c.left   && x>0)   moves.push({x:x-1,y,z});
+    if(!c.right  && x<w-1) moves.push({x:x+1,y,z});
+    if(!c.bottom && y>0)   moves.push({x,y:y-1,z});
+    if(!c.top    && y<h-1) moves.push({x,y:y+1,z});
+    if(!c.back   && z>0)   moves.push({x,y,z:z-1});
+    if(!c.front  && z<d-1) moves.push({x,y,z:z+1});
+    for(const m of moves) {
+      const mk = key(m.x,m.y,m.z);
+      if(!visited.has(mk)) { visited.add(mk); queue.push({...m,path:[...path,m]}); }
+    }
+  }
+  return [];
+}
+
+function createInlineMazeWidget(wid, size) {
+  // size: 'small'=8, 'medium'=12, 'large'=16
+  const dim = size==='large' ? 14 : size==='medium' ? 10 : 7;
+  const W=dim, H=dim, D=dim;
+  const U = 1.0; // cell unit size
+
+  const wrap = document.getElementById('maze-wrap-'+wid);
+  if(!wrap) return;
+
+  // Three.js scene
+  const canvas = wrap.querySelector('canvas');
+  if(!canvas) return;
+  const cw = wrap.clientWidth || 280;
+  const ch = wrap.clientHeight || 280;
+
+  const mScene = new THREE.Scene();
+  const mCamera = new THREE.PerspectiveCamera(52, cw/ch, 0.1, 1000);
+  const dist = W * U * 1.35;
+  mCamera.position.set(dist, dist*0.8, dist);
+  mCamera.lookAt(0,0,0);
+
+  const mRenderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+  mRenderer.setSize(cw, ch);
+  mRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  mRenderer.setClearColor(0x010a14,1);
+  mRenderer.sortObjects = true;
+
+  // Ambient + directional lights — stronger for frosted glass
+  mScene.add(new THREE.AmbientLight(0x1a3a5a, 5.0));
+  const dLight = new THREE.DirectionalLight(0x00ffcc, 3.5);
+  dLight.position.set(W, H, D);
+  mScene.add(dLight);
+  const dLight2 = new THREE.DirectionalLight(0x0055ff, 2.5);
+  dLight2.position.set(-W, -H/2, D/2);
+  mScene.add(dLight2);
+  const dLight3 = new THREE.DirectionalLight(0xffffff, 1.5);
+  dLight3.position.set(0, -H, -D);
+  mScene.add(dLight3);
+
+  // Groups
+  const wallGroup = new THREE.Group();
+  const pathGroup = new THREE.Group();
+  const markerGroup = new THREE.Group();
+  mScene.add(wallGroup, pathGroup, markerGroup);
+
+  // State
+  const ws = {
+    wid, W, H, D, U,
+    grid: null, solution: [],
+    pathMeshes: [], solveStep: 0, solveActive: false,
+    solveTimer: null, generation: 0,
+    autoRotate: true, isDrag: false, prevX:0, prevY:0,
+    rotX: 0.35, rotY: 0.4,
+    animId: null, frame: 0,
+    mScene, mCamera, mRenderer, wallGroup, pathGroup, markerGroup
+  };
+  _mazeWidgets[wid] = ws;
+
+  function buildMaze() {
+    // Clear
+    [wallGroup, pathGroup, markerGroup].forEach(g => {
+      while(g.children.length) {
+        const c = g.children[0];
+        if(c.geometry) c.geometry.dispose();
+        if(c.material) { if(Array.isArray(c.material)) c.material.forEach(m=>m.dispose()); else c.material.dispose(); }
+        g.remove(c);
+      }
+    });
+    ws.pathMeshes = []; ws.solveStep = 0; ws.solveActive = false;
+    ws.generation++;
+
+    ws.grid = chatMazeGenGrid(W, H, D);
+    ws.solution = chatMazeSolve(ws.grid, W, H, D);
+
+    const ox=(W*U)/2, oy=(H*U)/2, oz=(D*U)/2;
+    const hs = U*0.5;
+
+    // ── Frosted glass wall panels ──────────────────────────────────────
+    // One PlaneGeometry per wall face.  MeshPhysicalMaterial gives the
+    // semi-transparent frosted look; open passages = no panel = visible gap.
+    // We also keep a thin cyan edge LineSegments overlay for structure.
+
+    const frostMat = new THREE.MeshPhysicalMaterial({
+      color: 0x88ddff,
+      emissive: 0x003344,
+      emissiveIntensity: 0.25,
+      roughness: 0.85,
+      metalness: 0.05,
+      transmission: 0.55,   // glass transmission (r128 supports this flag even without full PBR)
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    const dummy = new THREE.Object3D();
+    // We'll accumulate all wall quads into one InstancedMesh for performance
+    // Count total wall faces first
+    let faceCount = 0;
+    for(let z=0;z<D;z++) for(let y=0;y<H;y++) for(let x=0;x<W;x++) {
+      const c = ws.grid[z][y][x];
+      if(c.left)   faceCount++;
+      if(c.right)  faceCount++;
+      if(c.bottom) faceCount++;
+      if(c.top)    faceCount++;
+      if(c.back)   faceCount++;
+      if(c.front)  faceCount++;
+    }
+
+    const planeGeo = new THREE.PlaneGeometry(U, U);
+    const wallInst = new THREE.InstancedMesh(planeGeo, frostMat, faceCount);
+    wallInst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    let fi = 0;
+
+    // Edge wire overlay verts (thin cyan lines tracing wall edges)
+    const edgeVerts = [];
+
+    for(let z=0;z<D;z++) for(let y=0;y<H;y++) for(let x=0;x<W;x++) {
+      const c = ws.grid[z][y][x];
+      const cx=x*U-ox+hs, cy=y*U-oy+hs, cz=z*U-oz+hs;
+
+      const addFace = (px,py,pz, rx,ry,rz) => {
+        dummy.position.set(px,py,pz);
+        dummy.rotation.set(rx,ry,rz);
+        dummy.updateMatrix();
+        wallInst.setMatrixAt(fi++, dummy.matrix);
+      };
+
+      const addEdge = (ax,ay,az, bx,by,bz) => {
+        edgeVerts.push(ax,ay,az, bx,by,bz);
+      };
+
+      if(c.left) {
+        addFace(cx-hs, cy, cz,  0, Math.PI/2, 0);
+        // edge outline
+        addEdge(cx-hs,cy-hs,cz-hs, cx-hs,cy+hs,cz-hs);
+        addEdge(cx-hs,cy+hs,cz-hs, cx-hs,cy+hs,cz+hs);
+        addEdge(cx-hs,cy+hs,cz+hs, cx-hs,cy-hs,cz+hs);
+        addEdge(cx-hs,cy-hs,cz+hs, cx-hs,cy-hs,cz-hs);
+      }
+      if(c.right) {
+        addFace(cx+hs, cy, cz,  0, Math.PI/2, 0);
+        addEdge(cx+hs,cy-hs,cz-hs, cx+hs,cy+hs,cz-hs);
+        addEdge(cx+hs,cy+hs,cz-hs, cx+hs,cy+hs,cz+hs);
+        addEdge(cx+hs,cy+hs,cz+hs, cx+hs,cy-hs,cz+hs);
+        addEdge(cx+hs,cy-hs,cz+hs, cx+hs,cy-hs,cz-hs);
+      }
+      if(c.bottom) {
+        addFace(cx, cy-hs, cz,  Math.PI/2, 0, 0);
+        addEdge(cx-hs,cy-hs,cz-hs, cx+hs,cy-hs,cz-hs);
+        addEdge(cx+hs,cy-hs,cz-hs, cx+hs,cy-hs,cz+hs);
+        addEdge(cx+hs,cy-hs,cz+hs, cx-hs,cy-hs,cz+hs);
+        addEdge(cx-hs,cy-hs,cz+hs, cx-hs,cy-hs,cz-hs);
+      }
+      if(c.top) {
+        addFace(cx, cy+hs, cz,  Math.PI/2, 0, 0);
+        addEdge(cx-hs,cy+hs,cz-hs, cx+hs,cy+hs,cz-hs);
+        addEdge(cx+hs,cy+hs,cz-hs, cx+hs,cy+hs,cz+hs);
+        addEdge(cx+hs,cy+hs,cz+hs, cx-hs,cy+hs,cz+hs);
+        addEdge(cx-hs,cy+hs,cz+hs, cx-hs,cy+hs,cz-hs);
+      }
+      if(c.back) {
+        addFace(cx, cy, cz-hs,  0, 0, 0);
+        addEdge(cx-hs,cy-hs,cz-hs, cx+hs,cy-hs,cz-hs);
+        addEdge(cx+hs,cy-hs,cz-hs, cx+hs,cy+hs,cz-hs);
+        addEdge(cx+hs,cy+hs,cz-hs, cx-hs,cy+hs,cz-hs);
+        addEdge(cx-hs,cy+hs,cz-hs, cx-hs,cy-hs,cz-hs);
+      }
+      if(c.front) {
+        addFace(cx, cy, cz+hs,  0, 0, 0);
+        addEdge(cx-hs,cy-hs,cz+hs, cx+hs,cy-hs,cz+hs);
+        addEdge(cx+hs,cy-hs,cz+hs, cx+hs,cy+hs,cz+hs);
+        addEdge(cx+hs,cy+hs,cz+hs, cx-hs,cy+hs,cz+hs);
+        addEdge(cx-hs,cy+hs,cz+hs, cx-hs,cy-hs,cz+hs);
+      }
+    }
+    wallInst.instanceMatrix.needsUpdate = true;
+    wallGroup.add(wallInst);
+    ws._wallInst = wallInst; // keep ref for opacity animation
+
+    // Cyan edge wire overlay — drawn on top to reveal structure through glass
+    const eGeo = new THREE.BufferGeometry();
+    eGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts,3));
+    const eMat = new THREE.LineBasicMaterial({color:0x00ffcc, transparent:true, opacity:0.55});
+    wallGroup.add(new THREE.LineSegments(eGeo, eMat));
+    ws._edgeMat = eMat;
+
+    // -- Path meshes (hidden until solve) --
+    const pGeo = new THREE.SphereGeometry(U*0.18, 5, 5);
+    for(const pt of ws.solution) {
+      const m = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({color:0x00aaff, transparent:true, opacity:0}));
+      m.position.set(pt.x*U-ox+hs, pt.y*U-oy+hs, pt.z*U-oz+hs);
+      pathGroup.add(m);
+      ws.pathMeshes.push(m);
+    }
+
+    // -- Start/End markers --
+    const mGeo = new THREE.SphereGeometry(U*0.32, 7, 7);
+    const sMarker = new THREE.Mesh(mGeo, new THREE.MeshBasicMaterial({color:0x00ffcc}));
+    sMarker.position.set(0*U-ox+hs, 0*U-oy+hs, 0*U-oz+hs);
+    const eMarker = new THREE.Mesh(mGeo.clone(), new THREE.MeshBasicMaterial({color:0xff4466}));
+    eMarker.position.set((W-1)*U-ox+hs, (H-1)*U-oy+hs, (D-1)*U-oz+hs);
+    markerGroup.add(sMarker, eMarker);
+
+    // Update stats
+    updateStats(wid, 0);
+  }
+
+  function solveMaze() {
+    if(ws.solveActive) return; // already solving
+    // Reset path visibility
+    ws.pathMeshes.forEach(m => { if(m.material) m.material.opacity = 0; });
+    ws.solveStep = 0;
+    ws.solveActive = true;
+    updateStats(wid, 0);
+  }
+
+  ws.buildMaze = buildMaze;
+  ws.solveMaze = solveMaze;
+
+  // Pointer drag — negated X so swipe-left rotates left
+  canvas.addEventListener('pointerdown', e => { ws.isDrag=true; ws.prevX=e.clientX; ws.prevY=e.clientY; ws.autoRotate=false; });
+  window.addEventListener('pointermove', e => {
+    if(!ws.isDrag) return;
+    ws.rotY -= (e.clientX-ws.prevX)*0.007;
+    ws.rotX += (e.clientY-ws.prevY)*0.007;
+    ws.rotX = Math.max(-1.4, Math.min(1.4, ws.rotX));
+    ws.prevX=e.clientX; ws.prevY=e.clientY;
+  });
+  window.addEventListener('pointerup', () => { ws.isDrag=false; });
+  canvas.addEventListener('wheel', e => {
+    const d = mCamera.position.length();
+    const nd = Math.max(W*0.6, Math.min(W*3, d+e.deltaY*0.04));
+    mCamera.position.normalize().multiplyScalar(nd);
+    mCamera.lookAt(0,0,0);
+  }, {passive:true});
+  // Touch — negated X for correct swipe direction
+  let prevTouchDist = 0;
+  canvas.addEventListener('touchstart', e => {
+    if(e.touches.length===1){ws.isDrag=true;ws.prevX=e.touches[0].clientX;ws.prevY=e.touches[0].clientY;ws.autoRotate=false;}
+    if(e.touches.length===2) prevTouchDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+  },{passive:true});
+  canvas.addEventListener('touchmove', e => {
+    if(ws.isDrag&&e.touches.length===1){
+      ws.rotY-=(e.touches[0].clientX-ws.prevX)*0.007;
+      ws.rotX+=(e.touches[0].clientY-ws.prevY)*0.007;
+      ws.rotX=Math.max(-1.4,Math.min(1.4,ws.rotX));
+      ws.prevX=e.touches[0].clientX; ws.prevY=e.touches[0].clientY;
+    }
+    if(e.touches.length===2){
+      const d2=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+      const cur=mCamera.position.length();
+      const nd=Math.max(W*0.6,Math.min(W*3,cur*(prevTouchDist/d2)));
+      mCamera.position.normalize().multiplyScalar(nd);
+      mCamera.lookAt(0,0,0);
+      prevTouchDist=d2;
+    }
+  },{passive:true});
+  canvas.addEventListener('touchend',()=>{ws.isDrag=false;},{passive:true});
+
+  // Animate
+  function animateMaze() {
+    ws.animId = requestAnimationFrame(animateMaze);
+    ws.frame++;
+    const f = ws.frame;
+
+    // Auto-rotate
+    if(ws.autoRotate) ws.rotY += 0.005;
+
+    // Camera orbit
+    const r = mCamera.position.length();
+    mCamera.position.x = Math.sin(ws.rotY)*Math.cos(ws.rotX)*r;
+    mCamera.position.y = Math.sin(ws.rotX)*r;
+    mCamera.position.z = Math.cos(ws.rotY)*Math.cos(ws.rotX)*r;
+    mCamera.lookAt(0,0,0);
+
+    // Wall frost + edge breathe
+    if(ws._wallInst) {
+      const breathe = 0.22 + 0.08*Math.sin(f*0.022);
+      ws._wallInst.material.opacity = breathe;
+      ws._wallInst.material.emissiveIntensity = 0.15 + 0.12*Math.sin(f*0.018);
+    }
+    if(ws._edgeMat) {
+      ws._edgeMat.opacity = 0.45 + 0.18*Math.sin(f*0.025);
+    }
+
+    // Path solve animation — reveal one node every 3 frames
+    if(ws.solveActive && ws.solveStep < ws.pathMeshes.length) {
+      if(f % 3 === 0) {
+        const pm = ws.pathMeshes[ws.solveStep];
+        if(pm && pm.material) {
+          // Color gradient: cyan at start → blue mid → red at end
+          const progress = ws.solveStep / ws.pathMeshes.length;
+          const c = new THREE.Color();
+          c.setHSL(0.5-progress*0.35, 1.0, 0.55);
+          pm.material.color.copy(c);
+          pm.material.opacity = 0.92;
+        }
+        ws.solveStep++;
+        updateStats(wid, ws.solveStep);
+      }
+    }
+    if(ws.solveActive && ws.solveStep >= ws.pathMeshes.length && ws.pathMeshes.length>0) {
+      ws.solveActive = false;
+      updateStats(wid, ws.pathMeshes.length, true);
+    }
+
+    // Pulse solved path
+    ws.pathMeshes.forEach((pm,i) => {
+      if(pm.material && pm.material.opacity > 0) {
+        const s = 1+0.15*Math.sin(f*0.06+i*0.4);
+        pm.scale.setScalar(s);
+      }
+    });
+
+    // Marker bob
+    markerGroup.children.forEach((m,i) => {
+      m.position.y = m.position.y + Math.sin(f*0.04+i*Math.PI)*0.002;
+    });
+
+    mRenderer.render(mScene, mCamera);
+  }
+
+  buildMaze();
+  animateMaze();
+
+  // ResizeObserver
+  const mro = new ResizeObserver(() => {
+    const nw = wrap.clientWidth||280, nh = wrap.clientHeight||280;
+    if(nw<10||nh<10) return;
+    mCamera.aspect = nw/nh; mCamera.updateProjectionMatrix();
+    mRenderer.setSize(nw, nh);
+  });
+  mro.observe(wrap);
+}
+
+function updateStats(wid, step, solved) {
+  const ws = _mazeWidgets[wid];
+  if(!ws) return;
+  const el = document.getElementById('maze-stats-'+wid);
+  if(!el) return;
+  const total = ws.pathMeshes.length;
+  const cells = ws.W*ws.H*ws.D;
+  el.innerHTML =
+    `<span class="maze-ws">GEN <span class="v">${ws.generation}</span></span>` +
+    `<span class="maze-ws">CELLS <span class="v">${cells}</span></span>` +
+    `<span class="maze-ws">PATH <span class="v">${total}</span></span>` +
+    (step>0 ? `<span class="maze-ws ${solved?'solved':''}">SOLVED <span class="v">${solved?'✓ COMPLETE':(Math.round(step/total*100)+'%')}</span></span>` : '');
+}
+
+function chatMazeRegen(wid) {
+  const ws = _mazeWidgets[wid];
+  if(ws && ws.buildMaze) ws.buildMaze();
+}
+
+function chatMazeSolveBtn(wid) {
+  const ws = _mazeWidgets[wid];
+  if(ws && ws.solveMaze) ws.solveMaze();
+}
+
+function buildMazeWidgetHtml(wid, sizeLabel) {
+  return `<div class="maze-widget">
+    <div class="maze-widget-header">
+      <span class="maze-widget-title">◈ LEAD EDGE MAZE ASH · ${(sizeLabel||'standard').toUpperCase()}</span>
+      <div class="maze-widget-btns">
+        <button class="maze-widget-btn solve" onclick="chatMazeSolveBtn('${wid}')">SOLVE PATH</button>
+        <button class="maze-widget-btn regen" onclick="chatMazeRegen('${wid}')">NEW MAZE</button>
+      </div>
+    </div>
+    <div class="maze-widget-canvas-wrap" id="maze-wrap-${wid}">
+      <canvas></canvas>
+    </div>
+    <div class="maze-widget-stats" id="maze-stats-${wid}">
+      <span class="maze-ws">INITIALIZING...</span>
+    </div>
+  </div>`;
+}
+
+// Called after renderMessages to init any pending maze widgets
+function initPendingMazeWidgets() {
+  document.querySelectorAll('[data-maze-wid]').forEach(el => {
+    const wid = el.getAttribute('data-maze-wid');
+    const size = el.getAttribute('data-maze-size') || 'small';
+    if(!_mazeWidgets[wid]) {
+      // Move the pre-built HTML from data into the chat scroll
+      // (already in DOM, just need to init the Three.js canvas)
+      setTimeout(() => createInlineMazeWidget(wid, size), 60);
+      el.removeAttribute('data-maze-wid'); // prevent re-init
+    }
+  });
+}
+
+
 function renderMessages() {
   const el=document.getElementById("chat-scroll");
   let html="";
@@ -2099,6 +2594,7 @@ function renderMessages() {
     const weatherHtml = m.weatherHtml||'';
     const mapHtml = m.mapHtml||'';
     const improvHtml = m.improvHtml||'';
+    const mazeHtml = m.mazeHtml||'';
 
     // Meta — now rendered SEPARATELY below bubble text, not mixed into chat content
     const grammarMeta = m.grammarMeta ? `<div class="msg-grammar">◈ ${esc(m.grammarMeta)}</div>` : '';
@@ -2115,7 +2611,7 @@ function renderMessages() {
       mediaHtml+=renderLinkCards(m.media.links);
       mediaHtml+=renderSourcePills(m.media.sources);
     }
-    html+=`<div class="msg ${cls}"><div class="bubble">${lbl}${ctxBadge}<div style="white-space:pre-wrap">${esc(m.text)}</div>${weatherHtml}${mapHtml}${mediaHtml}${improvHtml}${grammarMeta}${brpnMeta}${legacyMeta}</div></div>`;
+    html+=`<div class="msg ${cls}"><div class="bubble">${lbl}${ctxBadge}<div style="white-space:pre-wrap">${esc(m.text)}</div>${weatherHtml}${mapHtml}${mazeHtml}${mediaHtml}${improvHtml}${grammarMeta}${brpnMeta}${legacyMeta}</div></div>`;
   }
   if(S.isProcessing){
     html+=`<div class="typing"><div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">BRPN reflexing...</span></div>`;
@@ -2123,6 +2619,7 @@ function renderMessages() {
   el.innerHTML=html;
   el.scrollTop=el.scrollHeight;
   wireMediaCards(el);
+  initPendingMazeWidgets();
   // Re-trigger any map renders needed
   document.querySelectorAll('.map-container[id]').forEach(container=>{
     if (container.children.length === 0 && LocationManager.coords) {
