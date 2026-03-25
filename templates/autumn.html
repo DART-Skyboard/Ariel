@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>Autumn — Lead Edge Ash Tree Reflex</title>
-<meta name="description" content="Autumn LEATR v1.0 Neural Network — DART Meadow / Radical Deepscale LLC">
+<meta name="description" content="Autumn LEATR v2.2 Neural Network — DART Meadow / Radical Deepscale LLC">
 <meta name="theme-color" content="#020a14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -402,6 +402,7 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
       <div>GEO <span class="val" id="hud-geo">—</span></div>
       <div>MAR <span class="val" id="hud-mar">—</span></div>
       <div>AERO <span class="val" id="hud-aero">—</span></div>
+      <div id="brpn-seq-log" style="margin-top:4px;font-size:.44rem;color:rgba(0,255,204,.28);letter-spacing:.5px;max-width:190px;line-height:1.5;word-break:break-word"></div>
     </div>
     <div id="ctx-label" title="Current context type"></div>
     <div id="shell-status">
@@ -642,12 +643,24 @@ const S = {
   arcX: 5,
   qs: { b:1, a:1, p:1, r:2 },
   activeMapId: null,
-  leafletMap: null
+  leafletMap: null,
+  // ── ATTENTIVE EXECUTION + ORB EVOLUTION ───────────────────────────────
+  activeContext: null,   // { type, wid, data, ts, label } — currently live artifact
+  orbEvo: {              // Orb morphological state — grows with every message
+    stage: 0,            // 0‒5 complexity stages
+    totalMessages: 0,
+    emotionalCounts: {},
+    topicChain: [],
+    complexitySum: 0,
+    attentive: false,    // true while dispatching an attentive action
+    sessionSeed: Math.random()
+  }
 };
 function msgs() { return S.sessions[S.currentSession]?.messages || []; }
 function newChat() {
   S.sessions.push({ id: Date.now(), messages: [{ role:"autumn", text:"Hi. What's new?", ts:new Date().toISOString() }] });
   S.currentSession = S.sessions.length - 1;
+  S.activeContext = null;
   saveState(); renderMessages();
 }
 
@@ -1437,11 +1450,25 @@ const MultiUserSession = {
 //  Runs full contact/context/routing/improv/location pipeline
 // ============================================================
 async function autumnReflex(userInput, userId="default") {
+  // Sequence step logger — whispers steps into BRPN HUD
+  function seqLog(step) {
+    const el = document.getElementById('brpn-seq-log');
+    if (!el) return;
+    const now = step;
+    el.textContent = el.textContent ? el.textContent + ' → ' + now : now;
+    // Rolling — keep last 5 steps visible
+    const parts = el.textContent.split(' → ');
+    if (parts.length > 5) el.textContent = parts.slice(-5).join(' → ');
+  }
+  seqLog('GRAMMAR');
   const grammar = grammarParse(userInput);
+  seqLog('CONTACTS');
   const contacts = identifyContacts(grammar);
   const context = classifyContext(contacts, grammar);
+  seqLog(context.emotional.toUpperCase());
   const toolMode = determineToolMode(contacts, userInput);
   const ctxType = detectContextType(userInput, contacts, grammar);
+  seqLog(ctxType.type);
 
   MultiUserSession.logInput(userId, userInput, { contacts, context, grammar });
 
@@ -1476,6 +1503,8 @@ async function autumnReflex(userInput, userId="default") {
         }
         if (weatherData) {
           weatherHtml = renderWeatherWidget(weatherData, geoInfo, habitCtx, null);
+          S.activeContext = { type:'WEATHER', wid:null, data:{ weather:weatherData, geoInfo }, ts:Date.now(), label:'WEATHER' };
+          pushOrbContextMode('weather');
         }
       }
 
@@ -1488,6 +1517,8 @@ async function autumnReflex(userInput, userId="default") {
         setTimeout(()=>{
           if (locationData) renderMapWidget(mapId, locationData, poiData||[]);
         }, 200);
+        S.activeContext = { type:'LOCATION_POI', wid:mapId, data:{ category, pois:poiData, coords:locationData }, ts:Date.now(), label:'MAP' };
+        pushOrbContextMode('location');
       }
     }
   }
@@ -1500,14 +1531,21 @@ async function autumnReflex(userInput, userId="default") {
 
   // ── Inline Maze Widget detection ──────────────────────────────
   let mazeHtml = '';
+  let activeMazeWid = null;
   if (detectMazeRequest(userInput)) {
     const lower = userInput.toLowerCase();
     const sizeLabel = lower.includes('large') ? 'large' : lower.includes('medium') ? 'medium' : 'standard';
     const sizeKey = lower.includes('large') ? 'large' : lower.includes('medium') ? 'medium' : 'small';
     const wid = 'mw-' + Date.now();
+    activeMazeWid = wid;
     mazeHtml = buildMazeWidgetHtml(wid, sizeLabel);
-    // Tag for post-render init
     mazeHtml = `<div data-maze-wid="${wid}" data-maze-size="${sizeKey}"></div>` + mazeHtml;
+    // ── Register as active context immediately ──────────────────────────
+    const _dimMap = { large:14, medium:10, small:7 };
+    const _dim = _dimMap[sizeKey] || 7;
+    S.activeContext = { type:'MAZE', wid, data:{ size:sizeKey, dim:_dim, cells:_dim*_dim*_dim }, ts:Date.now(), label:'MAZE' };
+    seqLog('MAZE·CTX');
+    pushOrbContextMode('maze');
   }
 
   // Frequency-weighted context from journal
@@ -1530,6 +1568,7 @@ async function autumnReflex(userInput, userId="default") {
     improvHtml,
     improvisation: improv,
     mazeHtml,
+    activeMazeWid,
     freqWeights,
     topJournalKeywords,
     groupContext: MultiUserSession.buildGroupContext(),
@@ -1728,6 +1767,16 @@ async function composeResponse(input, analysis, reflexData) {
   if(low.includes("remember")||low.includes("memory")||/what (have we|did we) (talked|discussed)/i.test(low)){
     const text=introspectMemory(memKeys);
     return { text, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
+  }
+
+  // Register writing/report contexts for attentive follow-up
+  if (reflexData?.contextType==="CREATIVE_WRITING") {
+    S.activeContext = { type:'CREATIVE_WRITING', wid:null, data:{ prompt:input }, ts:Date.now(), label:'WRITING' };
+    pushOrbContextMode('writing');
+  }
+  if (reflexData?.contextType==="DATA_REPORT") {
+    S.activeContext = { type:'DATA_REPORT', wid:null, data:{ query:input }, ts:Date.now(), label:'REPORT' };
+    pushOrbContextMode('neutral');
   }
 
   // Image generation pipeline
@@ -2007,11 +2056,380 @@ document.addEventListener('keydown',function(e){
 // ============================================================
 //  CHAT HANDLER
 // ============================================================
+
+// ============================================================
+//  ATTENTIVE EXECUTION LAYER v2.2
+//  The BRPN shell is always listening. Every input is checked
+//  against S.activeContext FIRST. Matching inputs act directly
+//  on the live artifact (maze / weather / map / writing) via
+//  canvas-safe appendChatBubble — no full re-render, no canvas
+//  destruction, no loss of Three.js state.
+// ============================================================
+
+// ── Attentive intent vocabulary ───────────────────────────────────────────
+const ATTENTIVE_PATTERNS = {
+  MAZE: {
+    solve: [
+      "solve it","solve the maze","solve that","show the path","find the path",
+      "path please","show me the solution","find me the way","navigate it","trace it",
+      "solve","run the solve","animate the solve","show me solving","watch it solve",
+      "show me in the visual","show me visually","show me it solving","show me you solving",
+      "now show me","let me watch","walk through it","go solve","please solve",
+      "show the route","draw the path","reveal the path","light it up","highlight the path",
+      "run pathfind","bfs it","lead edge solve","show me the way out","find the exit"
+    ],
+    regen: [
+      "new maze","different maze","generate another","make a new one","regenerate",
+      "restart the maze","fresh maze","another one","different one","redo it",
+      "remake it","new one","build another","try a new","different structure"
+    ],
+    bigger: [
+      "make it bigger","larger maze","increase size","bigger","scale up",
+      "expand it","larger version","go bigger","more cells","more complex"
+    ],
+    smaller: [
+      "make it smaller","smaller maze","compact","tiny","small version",
+      "shrink it","scale down","simpler maze","less complex"
+    ]
+  },
+  WEATHER: {
+    refresh: [
+      "check again","update","refresh","latest","right now","current conditions",
+      "update the weather","what is it now","check current","now"
+    ],
+    tomorrow: [
+      "tomorrow","next day","forecast","what about tomorrow","tomorrow's weather"
+    ]
+  },
+  LOCATION_POI: {
+    more: [
+      "show more","more results","find more","expand","wider search",
+      "more options","others nearby","expand the search","further out"
+    ]
+  },
+  CREATIVE_WRITING: {
+    continue: [
+      "continue","keep going","more","write more","next part","what happens next",
+      "go on","expand","add more","extend it","keep writing","and then","next",
+      "go ahead","proceed","what's next","carry on"
+    ],
+    rewrite: [
+      "rewrite","different version","try again","redo","new version",
+      "change it up","approach it differently","write it differently"
+    ],
+    shorter: ["shorter","condense","summarize","trim","make it shorter","brief version"],
+    longer:  ["longer","more detail","flesh it out","elaborate","add to it","expand it","go deeper"]
+  },
+  DATA_REPORT: {
+    more:      ["more detail","go deeper","elaborate","deeper","more on that","expand on that","add more"],
+    visualize: ["visualize","chart it","graph it","plot it","show as chart","make a chart"]
+  }
+};
+
+// Universal signals — act on whatever is currently active
+const UNIVERSAL_ATTENTIVE = [
+  "do it","run it","execute","go ahead","proceed","make it happen",
+  "yes do that","yeah do it","go","do that","just do it",
+  "yes","yeah","yep","ok do it","sure","go for it","yes please",
+  "make it work","show me","now","do the thing","fire","go now",
+  "activate","trigger","launch","proceed","begin"
+];
+
+function checkAttentiveIntent(userInput) {
+  if (!S.activeContext) return null;
+  const lower = userInput.toLowerCase().trim();
+  const ctx = S.activeContext;
+
+  // Universal signals
+  if (UNIVERSAL_ATTENTIVE.some(sig =>
+    lower === sig || lower === sig+'.' || lower === sig+'!' ||
+    lower.startsWith(sig+' ') || lower.endsWith(' '+sig)
+  )) {
+    const defs = { MAZE:'solve', WEATHER:'refresh', LOCATION_POI:'more',
+                   CREATIVE_WRITING:'continue', DATA_REPORT:'more' };
+    return { isAttentive:true, action:defs[ctx.type]||'continue', context:ctx };
+  }
+
+  // Type-specific pattern matching
+  const typePatterns = ATTENTIVE_PATTERNS[ctx.type];
+  if (typePatterns) {
+    for (const [action, phrases] of Object.entries(typePatterns)) {
+      if (phrases.some(p => lower.includes(p))) {
+        return { isAttentive:true, action, context:ctx };
+      }
+    }
+  }
+
+  // Pronoun + verb backreference ("animate it", "show me it", "now solve that")
+  const hasBackref = /\b(it|that|this|the maze|the path|the solution|the weather|the map|the story|the writing|the report|the visual|what you made|what you generated|the widget|the cube|the grid)\b/i.test(lower);
+  const hasVerb    = /\b(solve|run|animate|show|continue|expand|refresh|update|regen|redo|start|play|execute|trace|navigate|fix|go|find|display|reveal|light up|highlight)\b/i.test(lower);
+  if (hasBackref && hasVerb) {
+    const vm = lower.match(/\b(solve|run|animate|show|continue|expand|refresh|update|regen|redo|execute|trace|navigate|find|display|reveal)\b/);
+    const v2a = {
+      solve:'solve', run:'solve', animate:'solve', show:'solve', trace:'solve',
+      navigate:'solve', execute:'solve', find:'solve', display:'solve', reveal:'solve',
+      regen:'regen', redo:'regen',
+      continue:'continue', expand:'continue',
+      refresh:'refresh', update:'refresh'
+    };
+    const action = vm ? (v2a[vm[1]]||'continue') : 'continue';
+    return { isAttentive:true, action, context:ctx };
+  }
+
+  return null;
+}
+
+async function dispatchAttentiveAction(intent) {
+  const { action, context } = intent;
+  const { type, wid } = context;
+
+  // Orb into attentive state
+  S.orbEvo.attentive = true;
+  pushOrbContextMode('attentive');
+
+  let replyText = '';
+
+  // ── MAZE ──────────────────────────────────────────────────────────────
+  if (type === 'MAZE') {
+    const ws = (typeof _mazeWidgets !== 'undefined') ? _mazeWidgets[wid] : null;
+    switch (action) {
+      case 'solve':
+        if (ws && typeof ws.solveMaze === 'function') {
+          // Delay 80ms so the typing bubble appears first, then fire
+          setTimeout(() => ws.solveMaze(), 80);
+          replyText = `Path-solving now — BFS tracing through ${context.data?.cells||343} cells. The route will animate in the maze above.`;
+        } else if (typeof chatMazeSolveBtn === 'function' && wid) {
+          setTimeout(() => chatMazeSolveBtn(wid), 80);
+          replyText = `Triggering the Lead Edge path-solver — watch the animated route appear in the cube.`;
+        } else {
+          replyText = `The maze widget isn't active in the current view. Scroll up to find it, or ask me to generate a new one.`;
+        }
+        break;
+      case 'regen':
+        if (ws && typeof ws.buildMaze === 'function') {
+          setTimeout(() => ws.buildMaze(), 80);
+        } else if (typeof chatMazeRegen === 'function' && wid) {
+          setTimeout(() => chatMazeRegen(wid), 80);
+        }
+        replyText = `Regenerating — recursive backtracker re-carving the grid. New structure, new solution.`;
+        break;
+      case 'bigger':
+        if (ws) {
+          const n = Math.min((ws.W||7)+4, 18);
+          ws.W=n; ws.H=n; ws.D=n;
+          setTimeout(()=>{ if(ws.buildMaze) ws.buildMaze(); }, 80);
+          S.activeContext.data.cells = n*n*n;
+          replyText = `Scaling to ${n}×${n}×${n} — ${n*n*n} cells. Rebuilding now.`;
+        }
+        break;
+      case 'smaller':
+        if (ws) {
+          const n = Math.max((ws.W||7)-3, 4);
+          ws.W=n; ws.H=n; ws.D=n;
+          setTimeout(()=>{ if(ws.buildMaze) ws.buildMaze(); }, 80);
+          replyText = `Scaling down to ${n}×${n}×${n}. Compact grid rebuilding.`;
+        }
+        break;
+    }
+  }
+
+  // ── WEATHER ───────────────────────────────────────────────────────────
+  else if (type === 'WEATHER') {
+    if (action === 'refresh' && LocationManager.coords) {
+      const fresh = await fetchWeather(LocationManager.coords).catch(()=>null);
+      replyText = fresh
+        ? `Refreshed — ${fresh.temp}°F, ${fresh.desc}. Wind ${fresh.windspeed}mph, humidity ${fresh.humidity}%.`
+        : `Couldn't reach the weather API right now. Try again in a moment.`;
+    }
+  }
+
+  // ── LOCATION POI ──────────────────────────────────────────────────────
+  else if (type === 'LOCATION_POI' && action === 'more') {
+    if (LocationManager.coords && context.data?.category) {
+      const more = await searchNearby(LocationManager.coords, context.data.category, 3000).catch(()=>[]);
+      replyText = more.length
+        ? `Expanded radius — ${more.length} ${context.data.category} results: ${more.slice(0,4).map(p=>`${p.name} (${(p.distance/1000).toFixed(1)}km)`).join(', ')}.`
+        : `No additional results found in the wider radius.`;
+    }
+  }
+
+  // ── TEXT CONTEXTS (writing / reports) — signal caller to use API ──────
+  else if (type === 'CREATIVE_WRITING' || type === 'DATA_REPORT') {
+    replyText = '__ATTENTIVE_CONTINUE__';
+  }
+
+  if (!replyText) replyText = `Acting on the current ${context.label||type}.`;
+
+  // Restore orb
+  setTimeout(() => {
+    S.orbEvo.attentive = false;
+    pushOrbContextMode(S.activeContext?.type?.toLowerCase()||'neutral');
+  }, 2000);
+
+  return replyText;
+}
+
+function buildAttentiveContinuationPrompt(action) {
+  return ({
+    continue: 'Continue from exactly where you left off. No recap — extend naturally from the last sentence.',
+    rewrite:  'Rewrite your previous response with a completely different angle or style.',
+    shorter:  'Condense the previous response to its essential points in about half the length.',
+    longer:   'Expand the previous response significantly — more detail, examples, and depth.',
+    more:     'Go deeper into the same topic — add substantially more analysis and substance.'
+  })[action] || 'Continue from the previous response.';
+}
+
+// ── ORB EVOLUTION ENGINE ──────────────────────────────────────────────────
+// Every message feeds into orbEvo state; pushOrbEvoUpdate() propagates
+// changes to the live Three.js scene (colors, particle counts, intensity).
+
+function evolveOrb(analysis, reflexData) {
+  const evo = S.orbEvo;
+  evo.totalMessages++;
+  evo.complexitySum += Math.abs(analysis?.cognition?.encoded || 0);
+
+  const emotion = reflexData?.context?.emotional || 'neutral';
+  evo.emotionalCounts[emotion] = (evo.emotionalCounts[emotion]||0) + 1;
+
+  const kws = reflexData?.contacts?.filter(c=>c.role==='entity').map(c=>c.word.toLowerCase()) || [];
+  evo.topicChain = [...evo.topicChain, ...kws].slice(-20);
+
+  // Stage advancement: 0→5 based on message count
+  const stages = [0, 5, 15, 35, 70, 120];
+  for (let i = stages.length-1; i >= 0; i--) {
+    if (evo.totalMessages >= stages[i]) { evo.stage = i; break; }
+  }
+
+  if (typeof pushOrbEvoUpdate === 'function') pushOrbEvoUpdate(evo, emotion, analysis);
+
+  // Persist alongside journal
+  try {
+    localStorage.setItem('autumn_orb_evo', JSON.stringify({
+      stage: evo.stage, totalMessages: evo.totalMessages,
+      emotionalCounts: evo.emotionalCounts, complexitySum: evo.complexitySum,
+      topicChain: evo.topicChain.slice(-10)
+    }));
+  } catch(e) {}
+}
+
+function loadOrbEvo() {
+  try {
+    const d = JSON.parse(localStorage.getItem('autumn_orb_evo')||'null');
+    if (d) Object.assign(S.orbEvo, d);
+  } catch(e) {}
+}
+
+// ── Orb context mode colors ────────────────────────────────────────────────
+const ORB_MODE_COLORS = {
+  neutral:   [0x00ffcc, 0x0088ff, 0xff4466, 0x00ffcc],
+  maze:      [0x00ffdd, 0x00cc66, 0x22ff99, 0x00ffaa],
+  weather:   [0x0099ff, 0x44ccff, 0x8866ff, 0x44aaff],
+  location:  [0xffcc00, 0xff9900, 0x00ffcc, 0xffbb33],
+  writing:   [0xff88cc, 0xcc44ff, 0x8888ff, 0xff66cc],
+  attentive: [0x00ffcc, 0xff4466, 0xffcc00, 0xffffff],  // attentive mode
+  thinking:  [0x4444ff, 0x8800ff, 0xff4466, 0x8888ff]
+};
+
+function pushOrbContextMode(mode) {
+  const colors = ORB_MODE_COLORS[mode] || ORB_MODE_COLORS.neutral;
+  // Recolor shells + core + particles if scene is live
+  if (typeof shells !== 'undefined' && shells.length >= 3) {
+    shells[0]?.material?.color?.setHex(colors[0]);
+    shells[1]?.material?.color?.setHex(colors[1]);
+    shells[2]?.material?.color?.setHex(colors[2]);
+  }
+  if (typeof core !== 'undefined' && core?.material?.color) core.material.color.setHex(colors[3]);
+  if (typeof particles !== 'undefined') {
+    particles.forEach((p,i) => p?.material?.color?.setHex(colors[i%3]));
+  }
+  // Pulse intensity varies by mode
+  if (typeof pulseShells === 'function') {
+    pulseShells(mode==='attentive' ? 2.0 : mode==='thinking' ? 1.5 : 0.8);
+  }
+}
+
+// ── Growth particles: orb gains new orbiting nodes as journal grows ────────
+let _orbGrowthCount = 0;
+function growOrbParticles() {
+  if (typeof scene === 'undefined' || !scene) return;
+  const target = Math.min(Math.floor(S.journal.length / 3), 45);
+  if (target <= _orbGrowthCount) return;
+  const gc = [0x00ffcc, 0x0088ff, 0xff4466, 0xffcc00, 0xff88cc];
+  for (let i = _orbGrowthCount; i < target; i++) {
+    const pg = new THREE.SphereGeometry(0.022, 4, 4);
+    const pm = new THREE.MeshBasicMaterial({color:gc[i%gc.length], transparent:true, opacity:0.45});
+    const p = new THREE.Mesh(pg, pm);
+    p.userData = {
+      r: 2.2 + Math.random() * 0.9,
+      spd: 0.12 + Math.random() * 0.5,
+      off: Math.random() * Math.PI * 2,
+      yOff: (Math.random() - 0.5) * 2.4,
+      growth: true
+    };
+    scene.add(p);
+    particles.push(p);
+    _orbGrowthCount++;
+  }
+}
+
 async function handleSend() {
   const input=document.getElementById("chat-input");
   const text=input.value.trim();
   if(!text||S.isProcessing) return;
   input.value="";
+
+  // ── ATTENTIVE INTERCEPT ── runs BEFORE full pipeline ─────────────────
+  const _attentiveIntent = checkAttentiveIntent(text);
+  if (_attentiveIntent) {
+    const userMsg = {role:"user", text, ts:new Date().toISOString()};
+    msgs().push(userMsg);
+    appendChatBubble(userMsg);  // safe append — no innerHTML wipe
+    S.isProcessing = true;
+
+    // Typing indicator
+    const _tDiv = document.createElement('div');
+    _tDiv.className = 'typing';
+    _tDiv.innerHTML = '<div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">attentive reflex…</span>';
+    document.getElementById('chat-scroll')?.appendChild(_tDiv);
+
+    pulseShells(1.4);
+    if(typeof setOrbThinking==='function') setOrbThinking(true);
+    pushOrbContextMode('thinking');
+
+    let _attReply = await dispatchAttentiveAction(_attentiveIntent);
+    const _attAnalysis = processLEATR(text);
+    S.lastAnalysis = _attAnalysis;
+
+    // Text contexts routed through API with continuation instruction
+    if (typeof _attReply === 'string' && _attReply === '__ATTENTIVE_CONTINUE__') {
+      const _hint = buildAttentiveContinuationPrompt(_attentiveIntent.action);
+      const _cr = await generateReply(
+        text + ' [ATTENTIVE: ' + _hint + ']',
+        _attAnalysis, S.lastReflex
+      ).catch(()=>({text:'Unable to continue.',grammarMeta:'',brpnMeta:''}));
+      _attReply = typeof _cr==='object' ? _cr.text : _cr;
+    }
+
+    S.isProcessing = false;
+    if(typeof setOrbThinking==='function') setOrbThinking(false);
+
+    const _attMsg = {
+      role:"autumn", text:_attReply, ts:new Date().toISOString(),
+      id:'msg-att-'+Date.now(),
+      meta:{ elapsed:_attAnalysis.elapsed, qs:_attAnalysis.quantumSocket,
+             grammar:grammarSignature(_attAnalysis.grammar) },
+      contextType: 'ATTENTIVE',
+      attentiveAction: _attentiveIntent.action,
+      attentiveTarget: _attentiveIntent.context.type
+    };
+    msgs().push(_attMsg);
+    appendChatBubble(_attMsg);  // safe append — canvas nodes untouched
+    saveState(); updateFooter();
+    pulseShells(0.6);
+    autoReadLastResponse();
+    return; // ← short-circuit
+  }
+  // ── END ATTENTIVE INTERCEPT ────────────────────────────────────────────
 
   msgs().push({role:"user",text,ts:new Date().toISOString()});
   S.isProcessing=true;
@@ -2050,6 +2468,7 @@ async function handleSend() {
     contextEmotional: reflexData.context?.emotional||"neutral",
     improvHtml: reflexData.improvHtml||'',
     mazeHtml: reflexData.mazeHtml||'',
+    mazeWid: reflexData.activeMazeWid||null,
     weatherHtml: reflexData.weatherHtml||'',
     mapHtml: reflexData.mapHtml||'',
     media:{ videos:liveData.videos, images:liveData.images, links:liveData.links, sources:liveData.sources }
@@ -2059,6 +2478,12 @@ async function handleSend() {
   if(typeof setOrbThinking==='function') setOrbThinking(false);
   saveState(); renderMessages(); updateFooter();
   pulseShells(0.8);
+  evolveOrb(analysis, reflexData);      // ← orb morphs with every message
+  growOrbParticles();                    // ← orb gains nodes as journal grows
+  pushOrbContextMode(                    // ← recolor based on what just happened
+    reflexData?.contextType==='CONVERSATION' ? 'neutral' :
+    (reflexData?.contextType||'neutral').toLowerCase().replace('_poi','').replace('_','')||'neutral'
+  );
   autoReadLastResponse();
 }
 
@@ -2580,8 +3005,47 @@ function initPendingMazeWidgets() {
 }
 
 
+// ── Canvas preservation registry ──────────────────────────────────────────
+// Before each full DOM rebuild we pull live Three.js maze canvases out of the
+// tree and re-insert them after innerHTML is reassigned — so WebGL contexts
+// are never destroyed by a re-render triggered by an unrelated message.
+const _savedCanvases = {};
+
+function detachLiveCanvases() {
+  document.querySelectorAll('[id^="maze-wrap-"]').forEach(node => {
+    const wid = node.id.replace('maze-wrap-', '');
+    if (typeof _mazeWidgets !== 'undefined' && _mazeWidgets[wid]) {
+      // Plant a dimensioned placeholder so layout doesn't collapse
+      const ph = document.createElement('div');
+      ph.id = 'maze-wrap-' + wid;
+      ph.style.cssText = `width:${node.clientWidth||280}px;height:${node.clientHeight||280}px`;
+      node.parentNode?.replaceChild(ph, node);
+      _savedCanvases[wid] = node;
+    }
+  });
+}
+
+function reattachLiveCanvases() {
+  Object.entries(_savedCanvases).forEach(([wid, savedNode]) => {
+    const ph = document.getElementById('maze-wrap-' + wid);
+    if (ph) {
+      ph.parentNode.replaceChild(savedNode, ph);
+      // Nudge Three.js renderer to recalculate size
+      const ws = typeof _mazeWidgets !== 'undefined' ? _mazeWidgets[wid] : null;
+      if (ws && ws.mRenderer) {
+        const nw = savedNode.clientWidth||280, nh = savedNode.clientHeight||280;
+        ws.mCamera.aspect = nw/nh;
+        ws.mCamera.updateProjectionMatrix();
+        ws.mRenderer.setSize(nw, nh);
+      }
+    }
+    delete _savedCanvases[wid];
+  });
+}
+
 function renderMessages() {
   const el=document.getElementById("chat-scroll");
+  detachLiveCanvases(); // ← pull out live Three.js nodes before wipe
   let html="";
   for(const m of msgs()){
     const cls=m.role==="user"?"user":"autumn";
@@ -2617,6 +3081,7 @@ function renderMessages() {
     html+=`<div class="typing"><div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">BRPN reflexing...</span></div>`;
   }
   el.innerHTML=html;
+  reattachLiveCanvases(); // ← slot saved canvases back in
   el.scrollTop=el.scrollHeight;
   wireMediaCards(el);
   initPendingMazeWidgets();
@@ -2629,6 +3094,27 @@ function renderMessages() {
       setTimeout(()=>renderMapWidget(mapId, LocationManager.coords, poiData), 100);
     }
   });
+}
+
+function appendChatBubble(msg) {
+  // Appends one message bubble to #chat-scroll.
+  // Does NOT call innerHTML = — existing canvas nodes are untouched.
+  const el = document.getElementById('chat-scroll');
+  if (!el) return;
+  const cls = msg.role === 'user' ? 'user' : 'autumn';
+  const lbl = msg.role === 'autumn'
+    ? `<div class="msg-lbl"><img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/autumn.png" alt="" style="height:14px;width:auto;vertical-align:middle;margin-right:4px;filter:drop-shadow(0 0 4px rgba(191,0,255,.3))">AUTUMN</div>`
+    : '';
+  const ctxBadge = msg.contextType ? `<div class="msg-ctx-badge">${msg.contextType}</div>` : '';
+  const meta = msg.meta ? `<div class="msg-meta">${(msg.meta.elapsed||0).toFixed(1)}ms | Q:${(msg.meta.qs||0).toFixed(1)}</div>` : '';
+  const div = document.createElement('div');
+  div.className = `msg ${cls}`;
+  div.style.animation = 'fadeIn .3s ease';
+  div.innerHTML = `<div class="bubble">${lbl}${ctxBadge}<div style="white-space:pre-wrap">${esc(msg.text||'')}</div>${meta}</div>`;
+  // Remove any typing indicator
+  el.querySelector('.typing')?.remove();
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
 }
 
 function esc(s){if(typeof s!=='string')return '';return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -3599,6 +4085,7 @@ document.getElementById("chat-input").onkeydown=e=>{if(e.key==="Enter")handleSen
 
 checkConsent();
 loadState();
+loadOrbEvo();
 renderMessages();
 updateFooter();
 if(S.lastAnalysis) updateHUD(S.lastAnalysis);
