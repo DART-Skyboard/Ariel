@@ -4868,17 +4868,31 @@ ${currentLogic}
 
     if (!newCode) throw new Error('Claude returned no code');
 
-    // Show Claude's message in chat log
-    ideChatAppend('claude', message);
+    // Load into editor
+    if (_ideMonaco) { _ideMonaco.setValue(newCode); }
     ideLog('claude_response', {message: message.substring(0,500), codeLines: newCode.split('\n').length});
 
-    // Load into editor
-    if (_ideMonaco) {
-      _ideMonaco.setValue(newCode);
-      ideSetStatus('dirty', 'Claude update ready — review & commit');
+    // Auto-commit to GitHub immediately — no manual step needed
+    ideSetStatus('working','Auto-committing to GitHub…');
+    try {
+      const _pat2 = _getPAT();
+      if(!_pat2) throw new Error('No GitHub token');
+      if(!_ideFileSHA){try{await ideFetchFile();}catch(e){}}
+      const _ab={message:'Autumn IDE: '+prompt.substring(0,65),content:btoa(unescape(encodeURIComponent(newCode)))};
+      if(_ideFileSHA)_ab.sha=_ideFileSHA;
+      const _ar=await fetch(_GH_API,{method:'PUT',headers:{Authorization:`token ${_pat2}`,'Content-Type':'application/json',Accept:'application/vnd.github.v3+json'},body:JSON.stringify(_ab)});
+      if(!_ar.ok){const _ae=await _ar.json();throw new Error(_ae.message||_ar.status);}
+      const _ad=await _ar.json();_ideFileSHA=_ad.content?.sha;
+      try{(new Function(newCode))();}catch(e){console.warn('[Autumn IDE hot-reload]',e);}
+      ideSetStatus('saved','Committed & live · '+new Date().toLocaleTimeString());
+      ideLog('commit',{message:_ab.message,lines:newCode.split('\n').length});
+      ideChatAppend('claude', message+'\n\n◈ Committed to GitHub and hot-reloaded. Changes are active now.');
+      ideToast('◈ Committed & live');
+    } catch(_ce) {
+      ideSetStatus('dirty','Generated — auto-commit failed: '+_ce.message);
+      ideChatAppend('claude', message+'\n\n⚠ Generated but auto-commit failed: '+_ce.message+'. Use ▲ COMMIT manually.');
+      ideToast('Auto-commit failed: '+_ce.message, true);
     }
-
-    ideToast('◈ Update ready — review editor then ▲ COMMIT');
 
   } catch(e) {
     document.getElementById('ide-chat-log')?.querySelector('.ide-thinking')?.remove();
