@@ -2143,6 +2143,7 @@ maze_generate(width: 10, height: 10)
                     }
                     
                     lastEncryptedData = new TextEncoder().encode(decryptedContent).buffer;
+                    window._lastDecryptedText = decryptedContent; // keep text for clean ZIP packaging
                     lastEncryptedFileName = "decrypted_content_" + Date.now() + ".zip";
                     downloadDecryptedZipBtn.style.display = 'block';
 
@@ -2171,14 +2172,23 @@ maze_generate(width: 10, height: 10)
             }
         });
 
-        downloadDecryptedZipBtn.addEventListener('click', () => {
-            if (lastEncryptedData && lastEncryptedFileName) {
-                const _mtype = lastEncryptedFileName && lastEncryptedFileName.endsWith('.zip') ? 'application/zip' : 'application/octet-stream';
-                const blob = new Blob([lastEncryptedData], { type: _mtype });
-                saveAs(blob, lastEncryptedFileName);
-                document.getElementById('outputContent').textContent += "\nDecrypted Data (ZIP) downloaded.";
-            } else {
+        downloadDecryptedZipBtn.addEventListener('click', async () => {
+            if (!lastEncryptedData) {
                 document.getElementById('outputContent').textContent += "\nNo decrypted data to download.";
+                return;
+            }
+            try {
+                // Decode the stored ArrayBuffer back to text
+                const decText = new TextDecoder().decode(lastEncryptedData);
+                // Wrap in a real JSZip archive
+                const zip = new JSZip();
+                zip.file('decrypted_content.txt', decText);
+                const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+                const fname = lastEncryptedFileName || ('decrypted_content_' + Date.now() + '.zip');
+                saveAs(zipBlob, fname);
+                document.getElementById('outputContent').textContent += "\nDecrypted Data (ZIP) downloaded — extract to read decrypted_content.txt";
+            } catch(e) {
+                document.getElementById('outputContent').textContent += "\nDownload error: " + e.message;
             }
         });
 
