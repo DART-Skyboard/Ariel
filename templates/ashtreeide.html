@@ -1063,10 +1063,13 @@
                 if(this.mazeData.mode==='planar') {
                     instant?this.drawInstantPlanarPath(this.mazeData.solutionPath,cs):this.drawAnimatedPlanarPath(this.mazeData.solutionPath,cs);
                 } else {
-                    const u=cs;
-                    const ox=(this.mazeData.w*u)/2,oy=(this.mazeData.h*u)/2,oz=(this.mazeData.d*u)/2;
-                    const geo=new THREE.BoxGeometry(u*0.5,u*0.5,u*0.5),mat=LEMAC_ENGINE.getPathMaterial();
-                    const draw=(list)=>{list.forEach(p=>{const m=new THREE.Mesh(geo,mat);m.position.set(p.x*u-ox+u/2,p.y*u-oy+u/2,p.z*u-oz+u/2);this.mazeGroup.add(m);});};
+                    // Use the same offsets that drawCubicMaze used
+                    const u  = this.mazeData._u  || cs;
+                    const ox = this.mazeData._ox || (this.mazeData.w*u)/2;
+                    const oy = this.mazeData._oy || (this.mazeData.h*u)/2;
+                    const oz = this.mazeData._oz || (this.mazeData.d*u)/2;
+                    const geo=new THREE.BoxGeometry(u*0.45,u*0.45,u*0.45), mat=LEMAC_ENGINE.getPathMaterial();
+                    const draw=(list)=>{list.forEach(p=>{const m=new THREE.Mesh(geo,mat);m.position.set(p.x*u-ox+u/2, p.y*u-oy+u/2, p.z*u-oz+u/2);this.mazeGroup.add(m);});};
                     if(instant){draw(this.mazeData.solutionPath);}else{let i=0;const a=()=>{if(i<this.mazeData.solutionPath.length){draw([this.mazeData.solutionPath[i++]]);setTimeout(a,20);}};a();}
                 }
             },
@@ -1082,13 +1085,26 @@
                 const b=new THREE.Box3().setFromObject(this.mazeGroup),c=b.getCenter(new THREE.Vector3());this.mazeGroup.position.sub(c);
             },
             drawCubicMaze(g,start,end,w,h,d,cs,wh) {
-                const u=cs,wt=u*0.08,wg=new THREE.BoxGeometry(1,1,1),wm=LEMAC_ENGINE.getWallMaterial();
+                const u=cs, wt=u*0.08;
+                const ox=(w*u)/2, oy=(h*u)/2, oz=(d*u)/2;
+                // Store offsets on mazeData so handleSolve uses the same coord space
+                this.mazeData._ox=ox; this.mazeData._oy=oy; this.mazeData._oz=oz; this.mazeData._u=u;
+                const wg=new THREE.BoxGeometry(1,1,1), wm=LEMAC_ENGINE.getWallMaterial();
                 for(let z=0;z<d;z++){for(let y=0;y<h;y++){for(let x=0;x<w;x++){const c=g[z][y][x];
-                    if(c.right&&x<w-1){const l=new THREE.Mesh(wg,wm);l.scale.set(wt,u,u);l.position.set((x+1)*u,y*u+u/2,z*u+u/2);this.mazeGroup.add(l);}
-                    if(c.bottom&&y<h-1){const l=new THREE.Mesh(wg,wm);l.scale.set(u,wt,u);l.position.set(x*u+u/2,(y+1)*u,z*u+u/2);this.mazeGroup.add(l);}
-                    if(c.front&&z<d-1){const l=new THREE.Mesh(wg,wm);l.scale.set(u,u,wt);l.position.set(x*u+u/2,y*u+u/2,(z+1)*u);this.mazeGroup.add(l);}}}}
-                const ox=(w*u)/2,oy=(h*u)/2,oz=(d*u)/2;
-                [start,end].forEach(p=>{const m=new THREE.Mesh(new THREE.SphereGeometry(u*0.4,8,8),new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2}));m.position.set(p.x*u-ox+u/2,p.y*u-oy+u/2,p.z*u-oz+u/2);this.mazeGroup.add(m);});
+                    // Right wall
+                    if(c.right&&x<w-1){const l=new THREE.Mesh(wg,wm);l.scale.set(wt,u,u);l.position.set((x+1)*u-ox, y*u-oy+u/2, z*u-oz+u/2);this.mazeGroup.add(l);}
+                    // Bottom wall
+                    if(c.bottom&&y<h-1){const l=new THREE.Mesh(wg,wm);l.scale.set(u,wt,u);l.position.set(x*u-ox+u/2, (y+1)*u-oy, z*u-oz+u/2);this.mazeGroup.add(l);}
+                    // Front wall
+                    if(c.front&&z<d-1){const l=new THREE.Mesh(wg,wm);l.scale.set(u,u,wt);l.position.set(x*u-ox+u/2, y*u-oy+u/2, (z+1)*u-oz);this.mazeGroup.add(l);}
+                }}}
+                // Start / end markers centered in their cells
+                [start,end].forEach(p=>{
+                    const m=new THREE.Mesh(new THREE.SphereGeometry(u*0.38,8,8),new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2}));
+                    m.position.set(p.x*u-ox+u/2, p.y*u-oy+u/2, p.z*u-oz+u/2);
+                    this.mazeGroup.add(m);
+                });
+                // mazeGroup stays at origin — no position shift needed
             },
             drawAnimatedPlanarPath(path,cs){this.clearPathObject();if(!path)return;this.pathObject=new THREE.Group();this.mazeGroup.add(this.pathObject);const g=new THREE.PlaneGeometry(cs*0.8,cs*0.8),m=LEMAC_ENGINE.getPathMaterial();m.side=THREE.DoubleSide;m.transparent=true;m.opacity=0.85;let i=0;const a=()=>{if(i>=path.length)return;const c=path[i],s=new THREE.Mesh(g,m);s.position.set(c.x*cs+cs/2,0.2,c.y*cs+cs/2);s.rotation.x=-Math.PI/2;this.pathObject.add(s);i++;setTimeout(a,25);};a();},
             drawInstantPlanarPath(path,cs){this.clearPathObject();if(!path)return;this.pathObject=new THREE.Group();this.mazeGroup.add(this.pathObject);const g=new THREE.PlaneGeometry(cs*0.8,cs*0.8),m=LEMAC_ENGINE.getPathMaterial();m.side=THREE.DoubleSide;m.transparent=true;m.opacity=0.85;for(const c of path){const s=new THREE.Mesh(g,m);s.position.set(c.x*cs+cs/2,0.2,c.y*cs+cs/2);s.rotation.x=-Math.PI/2;this.pathObject.add(s);}},
