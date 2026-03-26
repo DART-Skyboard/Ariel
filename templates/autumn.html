@@ -442,41 +442,6 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .cog-state-label.reflexing{color:rgba(255,68,102,.6);border-color:rgba(255,68,102,.25)}
 #thought-pulse{position:absolute;bottom:12px;right:10px;width:5px;height:5px;border-radius:50%;background:rgba(0,255,204,.0);box-shadow:none;transition:all 1.2s;z-index:10}
 #thought-pulse.active{background:rgba(0,255,204,.4);box-shadow:0 0 8px rgba(0,255,204,.3)}
-
-/* ── LIVE PREVIEW PANEL ─────────────────────────────────── */
-#ide-preview-panel{position:fixed;bottom:0;left:0;right:0;height:52%;z-index:9700;background:#000814;border-top:2px solid var(--border);display:none;flex-direction:column;transition:height .2s}
-#ide-preview-panel.open{display:flex}
-#ide-preview-bar{display:flex;align-items:center;gap:6px;padding:5px 12px;background:rgba(0,4,12,.95);border-bottom:1px solid var(--border);flex-shrink:0;user-select:none}
-#ide-preview-bar-title{font-family:var(--font-d);font-size:.46rem;letter-spacing:2px;color:rgba(0,255,204,.5);flex:1;cursor:pointer}
-.ide-pv-btn{background:transparent;border:1px solid var(--border);color:var(--dim);padding:4px 9px;border-radius:4px;cursor:pointer;font-family:var(--font-d);font-size:.42rem;letter-spacing:1px;transition:all .2s;white-space:nowrap}
-.ide-pv-btn:hover{color:var(--cyan);border-color:var(--cyan)}
-.ide-pv-btn.run{background:rgba(0,255,204,.12);border-color:rgba(0,255,204,.3);color:var(--cyan)}
-.ide-pv-btn.stop{background:rgba(255,68,102,.1);border-color:rgba(255,68,102,.25);color:rgba(255,68,102,.7)}
-#ide-preview-iframe-wrap{flex:1;min-height:0;background:#fff;position:relative;overflow:hidden}
-#ide-preview-iframe{width:100%;height:100%;border:none;display:block}
-#ide-preview-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:rgba(0,255,204,.2);font-family:var(--font-d);font-size:.55rem;letter-spacing:2px;gap:8px;pointer-events:none}
-#ide-preview-console-wrap{flex-shrink:0;max-height:180px;min-height:0;overflow:hidden;border-top:1px solid var(--border);display:flex;flex-direction:column;transition:max-height .2s}
-#ide-preview-console-wrap.collapsed{max-height:26px}
-#ide-preview-console-bar{display:flex;align-items:center;gap:6px;padding:3px 12px;background:rgba(0,0,0,.5);border-bottom:1px solid rgba(0,255,204,.05);flex-shrink:0;cursor:pointer}
-#ide-preview-console-bar span{font-family:var(--font-d);font-size:.4rem;letter-spacing:2px;color:rgba(0,255,204,.35);flex:1}
-#ide-preview-console-clear{background:none;border:none;color:rgba(0,255,204,.25);font-size:.4rem;cursor:pointer;font-family:var(--font-d);padding:2px 6px}
-#ide-preview-console-clear:hover{color:var(--cyan)}
-#ide-preview-console{flex:1;overflow-y:auto;padding:4px 0;font-family:'Courier New',monospace;font-size:11px}
-#ide-preview-console::-webkit-scrollbar{width:3px}
-#ide-preview-console::-webkit-scrollbar-thumb{background:rgba(0,255,204,.15)}
-.pvc-line{padding:2px 12px;border-bottom:1px solid rgba(255,255,255,.03);display:flex;gap:8px;word-break:break-all;animation:fadeIn .15s ease}
-.pvc-line.log{color:rgba(180,210,230,.7)}
-.pvc-line.info{color:rgba(100,200,150,.8)}
-.pvc-line.warn{color:rgba(240,190,80,.8);background:rgba(40,30,0,.4)}
-.pvc-line.error{color:rgba(255,100,100,.9);background:rgba(40,0,0,.4)}
-.pvc-badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;flex-shrink:0;align-self:flex-start;margin-top:2px}
-.pvc-line.log .pvc-badge{background:rgba(0,100,150,.3);color:rgba(100,180,220,.7)}
-.pvc-line.info .pvc-badge{background:rgba(0,100,60,.3);color:rgba(80,200,140,.7)}
-.pvc-line.warn .pvc-badge{background:rgba(80,60,0,.4);color:rgba(200,160,50,.8)}
-.pvc-line.error .pvc-badge{background:rgba(80,0,0,.4);color:rgba(220,80,80,.9)}
-.pvc-ts{font-size:9px;color:rgba(0,255,204,.15);flex-shrink:0;align-self:flex-start;margin-top:2px}
-#ide-preview-resize-handle{height:5px;background:rgba(0,255,204,.06);cursor:ns-resize;flex-shrink:0;transition:background .15s}
-#ide-preview-resize-handle:hover{background:rgba(0,255,204,.2)}
 </style>
 </head>
 <body>
@@ -5067,276 +5032,77 @@ Return the complete updated autumn-logic.js file only.`;
 }
 
 // ── Intercept handleSend for logic-update intent ──────────────
-const _origHandleSend=handleSend;
-async function handleSend(){
-  const input=document.getElementById('chat-input');
-  const text=input?.value?.trim();
-  if(!text||S.isProcessing) return;
+(function _installHandleSendOverride() {
+  const _origHandleSend = handleSend; // captures real original — no hoisting conflict
+  window.handleSend = async function handleSendIDE() {
+    const input=document.getElementById('chat-input');
+    const text=input?.value?.trim();
+    if(!text||S.isProcessing) return;
 
-  if(checkLogicUpdateIntent(text)){
-    input.value='';
-    const userMsg={role:'user',text,ts:new Date().toISOString()};
-    msgs().push(userMsg);
-    S.isProcessing=true;
-    setProcessingUI(true);
-    renderMessages();
-    pulseShells(1.6);
-    if(typeof setOrbThinking==='function') setOrbThinking(true);
+    if(checkLogicUpdateIntent(text)){
+      input.value='';
+      const userMsg={role:'user',text,ts:new Date().toISOString()};
+      msgs().push(userMsg);
+      S.isProcessing=true;
+      setProcessingUI(true);
+      renderMessages();
+      pulseShells(1.6);
+      if(typeof setOrbThinking==='function') setOrbThinking(true);
 
-    const typDiv=document.createElement('div');
-    typDiv.className='typing';
-    typDiv.innerHTML='<div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">connecting to Claude API…</span>';
-    document.getElementById('chat-scroll')?.appendChild(typDiv);
-    document.getElementById('chat-scroll')?.scrollTo(0,999999);
+      const typDiv=document.createElement('div');
+      typDiv.className='typing';
+      typDiv.innerHTML='<div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">connecting to Claude API…</span>';
+      document.getElementById('chat-scroll')?.appendChild(typDiv);
+      document.getElementById('chat-scroll')?.scrollTo(0,999999);
 
-    let replyText='',replyBadge='';
+      let replyText='',replyBadge='';
 
-    if(!_ideUnlocked){
-      replyText='◈ IDE authentication required to proceed with this logic update. Please enter your IDE password.';
-      replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · AWAITING AUTH</div>';
-      _idePendingAction=()=>{input.value=text;_origHandleSend();};
-      document.getElementById('ide-pw-modal').classList.add('open');
-      setTimeout(()=>document.getElementById('ide-pw-input')?.focus(),300);
-    } else {
-      const result=await runLogicUpdate(text);
-      if(result===null){
-        replyText='◈ Authentication required. Enter your credentials and I will proceed with the update.';
-        replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · AWAITING CREDENTIALS</div>';
-      } else if(result.success){
-        replyText=`◈ Logic update complete.\n\nI connected to the Claude API, generated the updated autumn-logic.js, committed it to GitHub (templates/autumn-logic.js), and hot-reloaded it into this session.\n\nCommit: "${result.commitMsg}"\n\nYou can test the new behavior now. Open the ◈ IDE to review the diff.`;
-        replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · COMMITTED & LIVE</div>';
+      if(!_ideUnlocked){
+        replyText='◈ IDE authentication required to proceed with this logic update. Please enter your IDE password.';
+        replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · AWAITING AUTH</div>';
+        _idePendingAction=()=>{input.value=text;_origHandleSend();};
+        document.getElementById('ide-pw-modal').classList.add('open');
+        setTimeout(()=>document.getElementById('ide-pw-input')?.focus(),300);
       } else {
-        replyText=`◈ Logic update failed: ${result.error}\n\nVerify your GitHub token has write access to DART-Skyboard/Ariel. Use 🔑 CLEAR TOKEN in the IDE header to reset it.`;
-        replyBadge='<div class="logic-update-badge" style="border-color:rgba(255,68,102,.3);color:var(--red)">LOGIC UPDATE · ERROR</div>';
+        const result=await runLogicUpdate(text);
+        if(result===null){
+          replyText='◈ Authentication required. Enter your credentials and I will proceed with the update.';
+          replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · AWAITING CREDENTIALS</div>';
+        } else if(result.success){
+          replyText=`◈ Logic update complete.
+
+Commit: "${result.commitMsg}"
+
+Hot-reloaded into this session. Open ◈ IDE to review.`;
+          replyBadge='<div class="logic-update-badge"><span class="lu-dot"></span>LOGIC UPDATE · COMMITTED & LIVE</div>';
+        } else {
+          replyText=`◈ Logic update failed: ${result.error}`;
+          replyBadge='<div class="logic-update-badge" style="border-color:rgba(255,68,102,.3);color:var(--red)">LOGIC UPDATE · ERROR</div>';
+        }
       }
+
+      typDiv.remove();
+      S.isProcessing=false;
+      setProcessingUI(false);
+      if(typeof setOrbThinking==='function') setOrbThinking(false);
+
+      const analysis=processLEATR(text);
+      S.lastAnalysis=analysis;
+      msgs().push({
+        role:'autumn',text:replyText,ts:new Date().toISOString(),id:'msg-ide-'+Date.now(),
+        meta:{elapsed:analysis.elapsed,qs:analysis.quantumSocket,grammar:grammarSignature(analysis.grammar)},
+        contextType:'LOGIC_UPDATE',improvHtml:replyBadge
+      });
+      saveState();renderMessages();updateFooter();pulseShells(0.8);
+      return;
     }
-
-    typDiv.remove();
-    S.isProcessing=false;
-    setProcessingUI(false);
-    if(typeof setOrbThinking==='function') setOrbThinking(false);
-
-    const analysis=processLEATR(text);
-    S.lastAnalysis=analysis;
-    msgs().push({
-      role:'autumn',text:replyText,ts:new Date().toISOString(),id:'msg-ide-'+Date.now(),
-      meta:{elapsed:analysis.elapsed,qs:analysis.quantumSocket,grammar:grammarSignature(analysis.grammar)},
-      contextType:'LOGIC_UPDATE',improvHtml:replyBadge
-    });
-    saveState();renderMessages();updateFooter();pulseShells(0.8);
-    return;
-  }
-  return _origHandleSend.apply(this,arguments);
-}
-
-
-// ============================================================
-//  IDE LIVE PREVIEW SYSTEM v1.0
-//  Sandboxed iframe — full HTML5, JS, WebGL, WebXR, Three.js,
-//  Pyodide (Python), p5.js, BabylonJS, any CDN import.
-//  Console log captured via postMessage bridge.
-// ============================================================
-
-let _pvOpen = false;
-let _pvConsoleCollapsed = false;
-let _pvRunning = false;
-
-function idePreviewGetCode() {
-  // Get code from Monaco if open, otherwise return null
-  if (typeof _ideMonaco !== 'undefined' && _ideMonaco) {
-    return _ideMonaco.getValue() || '';
-  }
-  return '';
-}
-
-function idePreviewToggle() {
-  const panel = document.getElementById('ide-preview-panel');
-  if (!panel) return;
-  _pvOpen = !_pvOpen;
-  panel.classList.toggle('open', _pvOpen);
-  if (_pvOpen && !_pvRunning) {
-    document.getElementById('ide-preview-empty').style.display = 'flex';
-  }
-}
-
-function idePreviewOpen() {
-  const panel = document.getElementById('ide-preview-panel');
-  if (!panel) return;
-  _pvOpen = true;
-  panel.classList.add('open');
-}
-
-function idePreviewClose() {
-  const panel = document.getElementById('ide-preview-panel');
-  if (!panel) return;
-  _pvOpen = false;
-  panel.classList.remove('open');
-  idePreviewStop();
-}
-
-function idePreviewRun() {
-  const code = idePreviewGetCode();
-  if (!code || !code.trim()) {
-    idePreviewLogMsg('No code in editor. Open the IDE and write or load some code first.', 'warn');
-    idePreviewOpen();
-    return;
-  }
-  idePreviewOpen();
-  _pvRunning = true;
-  document.getElementById('ide-preview-empty').style.display = 'none';
-
-  // Console bridge — injected into iframe head
-  const consoleBridge = `<script>
-(function(){
-  var _m=['log','warn','error','info','debug'];
-  _m.forEach(function(lv){
-    var _o=console[lv].bind(console);
-    console[lv]=function(){
-      var a=Array.prototype.slice.call(arguments);
-      try{window.parent.postMessage({_pvBridge:true,level:lv,
-        msg:a.map(function(x){
-          try{return typeof x==='object'?JSON.stringify(x,null,2):String(x);}catch(e){return String(x);}
-        }).join(' ')
-      },'*');}catch(e){}
-      _o.apply(console,arguments);
-    };
-  });
-  window.addEventListener('error',function(e){
-    window.parent.postMessage({_pvBridge:true,level:'error',
-      msg:'Uncaught: '+e.message+' ('+e.filename+':'+e.lineno+')'},'*');
-  });
-  window.addEventListener('unhandledrejection',function(e){
-    window.parent.postMessage({_pvBridge:true,level:'error',
-      msg:'UnhandledRejection: '+(e.reason?.message||e.reason||'unknown')},'*');
-  });
+    // Normal chat — pass to original
+    return _origHandleSend.call(this);
+  };
+  // Re-bind so button and keyboard use the new wrapper
+  document.getElementById('send-btn').onclick = window.handleSend;
+  document.getElementById('chat-input').onkeydown = e=>{cognoticeActivity();if(e.key==='Enter')window.handleSend();};
 })();
-<\/script>`;
-
-  // Auto-inject Three.js if THREE is referenced but no CDN import present
-  let injected = code;
-  if (/\bTHREE\b/.test(injected) && !/three.*\.js|three@|three\.module/i.test(injected)) {
-    const cdn = `<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>`;
-    injected = injected.includes('<head') 
-      ? injected.replace(/(<head[^>]*>)/i, '$1\n  '+cdn)
-      : cdn + injected;
-    idePreviewLogMsg('Auto-injected Three.js r128', 'info');
-  }
-
-  // Inject console bridge after <head> or at start
-  if (/<head[^>]*>/i.test(injected)) {
-    injected = injected.replace(/(<head[^>]*>)/i, '$1\n  '+consoleBridge);
-  } else if (/<html[^>]*>/i.test(injected)) {
-    injected = injected.replace(/(<html[^>]*>)/i, '$1\n'+consoleBridge);
-  } else {
-    // Plain JS/CSS snippet — wrap in full HTML doc
-    injected = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-${consoleBridge}
-</head><body style="margin:0;background:#000814;color:#c8e6f0">
-<script type="module">\n${injected}\n<\/script>
-</body></html>`;
-  }
-
-  const iframe = document.getElementById('ide-preview-iframe');
-  idePreviewLogMsg('--- Running preview ---', 'info');
-  iframe.srcdoc = injected;
-
-  // Update run button to show stop
-  const runBtn = document.getElementById('ide-preview-run-btn');
-  if (runBtn) { runBtn.textContent = '■ STOP'; runBtn.classList.add('stop'); runBtn.classList.remove('run'); }
-}
-
-function idePreviewStop() {
-  const iframe = document.getElementById('ide-preview-iframe');
-  if (iframe) { iframe.srcdoc = ''; }
-  _pvRunning = false;
-  document.getElementById('ide-preview-empty').style.display = 'flex';
-  const runBtn = document.getElementById('ide-preview-run-btn');
-  if (runBtn) { runBtn.textContent = '▶ RUN'; runBtn.classList.add('run'); runBtn.classList.remove('stop'); }
-}
-
-function idePreviewToggleConsole() {
-  const wrap = document.getElementById('ide-preview-console-wrap');
-  if (!wrap) return;
-  _pvConsoleCollapsed = !_pvConsoleCollapsed;
-  wrap.classList.toggle('collapsed', _pvConsoleCollapsed);
-}
-
-function idePreviewClearLog() {
-  const el = document.getElementById('ide-preview-console');
-  if (el) el.innerHTML = '';
-}
-
-function idePreviewLogMsg(msg, level) {
-  level = level || 'log';
-  const el = document.getElementById('ide-preview-console');
-  if (!el) return;
-  const ts = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  const line = document.createElement('div');
-  line.className = 'pvc-line ' + level;
-  const safeMsg = String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  line.innerHTML = `<span class="pvc-badge">${level.toUpperCase()}</span><span class="pvc-ts">${ts}</span><span>${safeMsg}</span>`;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
-  // Auto-expand console if error
-  if (level === 'error' && _pvConsoleCollapsed) idePreviewToggleConsole();
-}
-
-// Listen for messages from iframe
-window.addEventListener('message', function(e) {
-  if (e.data && e.data._pvBridge) {
-    idePreviewLogMsg(e.data.msg, e.data.level || 'log');
-  }
-});
-
-// Drag resize handle
-(function() {
-  let _dragging = false, _startY = 0, _startH = 0;
-  function onDown(e) {
-    _dragging = true;
-    _startY = e.clientY || e.touches?.[0]?.clientY || 0;
-    const panel = document.getElementById('ide-preview-panel');
-    _startH = panel ? panel.offsetHeight : 400;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.addEventListener('touchmove', onMove, {passive:false});
-    document.addEventListener('touchend', onUp);
-    e.preventDefault();
-  }
-  function onMove(e) {
-    if (!_dragging) return;
-    const y = e.clientY || e.touches?.[0]?.clientY || 0;
-    const delta = _startY - y;
-    const panel = document.getElementById('ide-preview-panel');
-    if (panel) {
-      const newH = Math.max(120, Math.min(window.innerHeight * 0.85, _startH + delta));
-      panel.style.height = newH + 'px';
-    }
-    e.preventDefault();
-  }
-  function onUp() {
-    _dragging = false;
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-    document.removeEventListener('touchmove', onMove);
-    document.removeEventListener('touchend', onUp);
-  }
-  document.addEventListener('DOMContentLoaded', function() {
-    const handle = document.getElementById('ide-preview-resize-handle');
-    if (handle) {
-      handle.addEventListener('mousedown', onDown);
-      handle.addEventListener('touchstart', onDown, {passive:false});
-    }
-  });
-})();
-
-function idePreviewPopout() {
-  const code = idePreviewGetCode();
-  if (!code) return;
-  const w = window.open('', '_blank');
-  w.document.write(code);
-  w.document.close();
-}
 
 // ============================================================
 //  END IDE SYSTEM
@@ -5431,7 +5197,6 @@ loadAutumnLogic();
     </div>
     <div class="ide-btns">
       <button class="ide-btn" onclick="closeIDE()" title="Back to Autumn chat" style="color:var(--cyan);border-color:rgba(0,255,204,.3);font-size:.52rem">← CHAT</button>
-      <button class="ide-btn" id="ide-preview-run-btn" onclick="if(window._pvRunning)idePreviewStop();else idePreviewRun()" style="color:var(--cyan);border-color:rgba(0,255,204,.3);background:rgba(0,255,204,.08)">▶ RUN</button>
       <input id="ide-commit-msg" placeholder="Commit message…" type="text" value="Update autumn-logic.js via IDE">
       <button class="ide-btn save" onclick="ideCommit()">▲ COMMIT</button>
       <button class="ide-btn" onclick="ideReload()">↺ RELOAD</button>
@@ -5472,34 +5237,6 @@ loadAutumnLogic();
 
 <!-- Toast -->
 <div id="ide-toast"></div>
-
-
-<!-- ═══ LIVE PREVIEW PANEL ═══ -->
-<div id="ide-preview-panel">
-  <div id="ide-preview-resize-handle"></div>
-  <div id="ide-preview-bar">
-    <span id="ide-preview-bar-title" onclick="idePreviewToggle()">◈ LIVE PREVIEW</span>
-    <button class="ide-pv-btn run" id="ide-preview-run-btn" onclick="if(_pvRunning)idePreviewStop();else idePreviewRun()">▶ RUN</button>
-    <button class="ide-pv-btn" onclick="idePreviewClearLog()">↺ CLEAR LOG</button>
-    <button class="ide-pv-btn" onclick="idePreviewToggleConsole()">⌨ CONSOLE</button>
-    <button class="ide-pv-btn" id="ide-preview-popout-btn" onclick="idePreviewPopout()" title="Open in new tab">↗</button>
-    <button class="ide-pv-btn danger" onclick="idePreviewClose()">✕</button>
-  </div>
-  <div id="ide-preview-iframe-wrap">
-    <div id="ide-preview-empty">◈ PREVIEW<br><span style="font-size:.4rem;opacity:.5">Press ▶ RUN to execute editor code</span></div>
-    <iframe id="ide-preview-iframe"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock allow-popups"
-      allow="xr-spatial-tracking; camera; microphone; fullscreen; accelerometer; gyroscope"
-      title="Live Preview"></iframe>
-  </div>
-  <div id="ide-preview-console-wrap">
-    <div id="ide-preview-console-bar" onclick="idePreviewToggleConsole()">
-      <span>◈ CONSOLE OUTPUT</span>
-      <button id="ide-preview-console-clear" onclick="event.stopPropagation();idePreviewClearLog()">CLEAR</button>
-    </div>
-    <div id="ide-preview-console"></div>
-  </div>
-</div>
 
 </body>
 </html>
