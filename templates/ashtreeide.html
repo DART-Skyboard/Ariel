@@ -1214,228 +1214,166 @@
         // --- CRYPTOLOGY MAZE VISUALIZER (new, for modal with multiple viewports) ---
         // This will manage multiple Three.js instances for each maze, or a single renderer with multiple cameras.
         // For simplicity and isolation, we will create separate canvases, scenes, cameras, and renderers for each maze.
+        // ── CRYPTOLOGY MAZE VISUALIZER ────────────────────────────
+        // Uses same LEMAC_ENGINE + rendering as the main IDE visualizer
+        // Each viewport is a mini Three.js scene with orbit controls
         const CRYPTOLOGY_MAZE_VISUALIZER = {
-            viewports: [], // Stores { id, type, canvas, scene, camera, renderer, controls, mazeGroup, animationFrameId }
-
-            initViewport(id, type, container, width, height, depth) {
-                const canvasWrapper = document.createElement('div');
-                canvasWrapper.classList.add('maze-single-canvas-wrapper');
-                canvasWrapper.style.width = '100%'; // Will be managed by CSS Grid
-                canvasWrapper.style.height = '100%';
-
-                const titleDiv = document.createElement('div');
-                titleDiv.classList.add('canvas-title');
-                titleDiv.textContent = `${type} Maze - ${id}`;
-                canvasWrapper.appendChild(titleDiv);
-
-                const canvas = document.createElement('canvas');
-                canvasWrapper.appendChild(canvas);
-                container.appendChild(canvasWrapper);
-
-                const scene = new THREE.Scene();
-                const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000); // Aspect ratio will be 1 initially, updated on resize
-                camera.position.set(width * 0.7, height * 0.7, depth * 0.7); // Adjusted starting position
-                camera.lookAt(0, 0, 0);
-
-                const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
-                renderer.setPixelRatio(window.devicePixelRatio);
-                renderer.shadowMap.enabled = true;
-
-                const controls = new OrbitControls(camera, renderer.domElement);
-                controls.enableDamping = false;
-
-                scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-                const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-                dirLight.position.set(width / 2, height, depth / 2);
-                dirLight.castShadow = true;
-                scene.add(dirLight);
-
-                const mazeGroup = new THREE.Group();
-                scene.add(mazeGroup);
-
-                const viewport = { id, type, canvas, canvasWrapper, scene, camera, renderer, controls, mazeGroup, animationFrameId: null };
-                this.viewports.push(viewport);
-
-                // Resize observer for dynamic canvas sizing
-                new ResizeObserver(() => this.onResizeViewport(viewport)).observe(canvasWrapper);
-
-                this.animateViewport(viewport);
-                this.onResizeViewport(viewport); // Initial call to size the canvas
-                return viewport;
-            },
+            viewports: [],
 
             clearAllViewports() {
-                this.viewports.forEach(viewport => {
-                    cancelAnimationFrame(viewport.animationFrameId);
-                    viewport.mazeGroup.traverse(obj => {
-                        if (obj.isMesh) {
-                            if (obj.geometry) obj.geometry.dispose();
-                            if (obj.material) {
-                                // Dispose of textures if they exist
-                                if (Array.isArray(obj.material)) {
-                                    obj.material.forEach(m => m.dispose());
-                                } else {
-                                    obj.material.dispose();
-                                }
-                            }
-                        }
-                    });
-                    viewport.scene.clear();
-                    viewport.renderer.dispose();
-                    viewport.controls.dispose();
-                    viewport.canvasWrapper.remove();
+                this.viewports.forEach(vp => {
+                    cancelAnimationFrame(vp.animId);
+                    vp.renderer.dispose();
+                    vp.controls.dispose();
+                    vp.wrapper.remove();
                 });
                 this.viewports = [];
             },
 
-            onResizeViewport(viewport) {
-                const parent = viewport.canvasWrapper;
-                if (!parent) return;
+            initViewport(id, type, container, w, h, d) {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'position:relative;width:100%;height:100%;background:#000814;overflow:hidden;';
 
-                const width = parent.clientWidth;
-                const height = parent.clientHeight;
+                const titleEl = document.createElement('div');
+                titleEl.style.cssText = 'position:absolute;top:4px;left:6px;z-index:2;font-family:var(--font-d);font-size:.38rem;color:rgba(0,255,204,.5);letter-spacing:1px;pointer-events:none;';
+                titleEl.textContent = type.toUpperCase() + ' MAZE · ' + id;
+                wrapper.appendChild(titleEl);
 
-                viewport.camera.aspect = width / height;
-                viewport.camera.updateProjectionMatrix();
-                viewport.renderer.setSize(width, height);
-            },
+                const canvas = document.createElement('canvas');
+                canvas.style.cssText = 'display:block;width:100%;height:100%;';
+                wrapper.appendChild(canvas);
+                container.appendChild(wrapper);
 
-            animateViewport(viewport) {
-                viewport.controls.update();
-                viewport.renderer.render(viewport.scene, viewport.camera);
-                viewport.animationFrameId = requestAnimationFrame(() => this.animateViewport(viewport));
-            },
+                const scene = new THREE.Scene();
+                scene.fog = new THREE.FogExp2(0x000814, 0.004);
+                const mazeGroup = new THREE.Group();
+                scene.add(mazeGroup);
 
-            draw3DMaze(viewport, grid, start, end, cellSize = 10, wallHeight = 8) {
-                // Clear existing maze
-                while (viewport.mazeGroup.children.length > 0) {
-                    viewport.mazeGroup.remove(viewport.mazeGroup.children[0]);
-                }
+                scene.add(new THREE.AmbientLight(0x00ffcc, 0.4));
+                const dl = new THREE.DirectionalLight(0x00ffcc, 1.6);
+                dl.position.set(50, 80, 50);
+                scene.add(dl);
+                const fl = new THREE.DirectionalLight(0x0088ff, 0.8);
+                fl.position.set(-50, -30, 50);
+                scene.add(fl);
 
-                const width = grid[0][0].length;
-                const height = grid[0].length;
-                const depth = grid.length;
+                const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
+                camera.position.set(w*8, h*8, d*8);
 
-                const wallThickness = cellSize * 0.1;
-                const wallGeometry = new THREE.BoxGeometry(1, 1, 1);
-                const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
-                const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.9 });
+                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                renderer.setClearColor(0x000000, 0);
 
-                // Create a base for the entire maze to sit on
-                const mazeBaseGeometry = new THREE.BoxGeometry(width * cellSize, 0.1, height * cellSize);
-                const mazeBase = new THREE.Mesh(mazeBaseGeometry, floorMaterial);
-                mazeBase.position.set(width * cellSize / 2, -0.05, height * cellSize / 2);
-                mazeBase.receiveShadow = true;
-                viewport.mazeGroup.add(mazeBase);
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = false;
+                controls.enableZoom = true;
+                controls.enableRotate = true;
 
+                const vp = { id, type, wrapper, canvas, scene, mazeGroup, camera, renderer, controls, animId: null };
+                this.viewports.push(vp);
 
-                for (let z = 0; z < depth; z++) {
-                    for (let y = 0; y < height; y++) {
-                        for (let x = 0; x < width; x++) {
-                            const cell = grid[z][y][x];
-
-                            // Draw horizontal floor plane for each cell
-                            const floorGeometry = new THREE.PlaneGeometry(cellSize, cellSize);
-                            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-                            floor.rotation.x = -Math.PI / 2;
-                            floor.position.set(x * cellSize + cellSize / 2, z * wallHeight, y * cellSize + cellSize / 2);
-                            floor.receiveShadow = true;
-                            viewport.mazeGroup.add(floor);
-
-
-                            // Walls
-                            if (cell.walls.north) {
-                                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-                                wall.scale.set(cellSize, wallHeight, wallThickness);
-                                wall.position.set(x * cellSize + cellSize / 2, z * wallHeight + wallHeight / 2, y * cellSize);
-                                wall.castShadow = true;
-                                viewport.mazeGroup.add(wall);
-                            }
-                            if (cell.walls.east) {
-                                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-                                wall.scale.set(wallThickness, wallHeight, cellSize);
-                                wall.position.set((x + 1) * cellSize, z * wallHeight + wallHeight / 2, y * cellSize + cellSize / 2);
-                                wall.castShadow = true;
-                                viewport.mazeGroup.add(wall);
-                            }
-                            if (cell.walls.south) {
-                                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-                                wall.scale.set(cellSize, wallHeight, wallThickness);
-                                wall.position.set(x * cellSize + cellSize / 2, z * wallHeight + wallHeight / 2, (y + 1) * cellSize);
-                                wall.castShadow = true;
-                                viewport.mazeGroup.add(wall);
-                            }
-                            if (cell.walls.west) {
-                                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
-                                wall.scale.set(wallThickness, wallHeight, cellSize);
-                                wall.position.set(x * cellSize, z * wallHeight + wallHeight / 2, y * cellSize + cellSize / 2);
-                                wall.castShadow = true;
-                                viewport.mazeGroup.add(wall);
-                            }
-                            if (cell.walls.up && z < depth - 1) {
-                                // Draw an "up" wall as a translucent plane or indicator
-                                const upWallGeometry = new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8);
-                                const upWallMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-                                const upWall = new THREE.Mesh(upWallGeometry, upWallMaterial);
-                                upWall.rotation.x = -Math.PI / 2; // Flat on XY plane
-                                upWall.position.set(x * cellSize + cellSize / 2, (z + 1) * wallHeight - wallThickness / 2, y * cellSize + cellSize / 2);
-                                viewport.mazeGroup.add(upWall);
-                            }
-                            if (cell.walls.down && z > 0) {
-                                // Draw a "down" wall as a translucent plane or indicator
-                                const downWallGeometry = new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8);
-                                const downWallMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-                                const downWall = new THREE.Mesh(downWallGeometry, downWallMaterial);
-                                downWall.rotation.x = -Math.PI / 2;
-                                downWall.position.set(x * cellSize + cellSize / 2, z * wallHeight - wallThickness / 2, y * cellSize + cellSize / 2);
-                                viewport.mazeGroup.add(downWall);
-                            }
-                        }
-                    }
-                }
-
-                // Start and End points
-                [start, end].forEach((p, index) => {
-                    if (p) {
-                        const material = new THREE.MeshStandardMaterial({ color: index === 0 ? 0x00ff00 : 0xff0000, emissive: index === 0 ? 0x00aa00 : 0xaa0000 });
-                        const marker = new THREE.Mesh(new THREE.BoxGeometry(cellSize * 0.8, 0.2, cellSize * 0.8), material);
-                        marker.position.set(p.x * cellSize + cellSize / 2, p.z * wallHeight + 0.1, p.y * cellSize + cellSize / 2);
-                        viewport.mazeGroup.add(marker);
+                // Resize to fill wrapper
+                const ro = new ResizeObserver(() => {
+                    const W = wrapper.clientWidth, H = wrapper.clientHeight;
+                    if (W > 0 && H > 0) {
+                        camera.aspect = W / H;
+                        camera.updateProjectionMatrix();
+                        renderer.setSize(W, H);
                     }
                 });
+                ro.observe(wrapper);
 
-                // Center the maze group
-                const bbox = new THREE.Box3().setFromObject(viewport.mazeGroup);
-                const center = bbox.getCenter(new THREE.Vector3());
-                viewport.mazeGroup.position.sub(center);
+                const animate = () => {
+                    vp.animId = requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                };
+                animate();
+                return vp;
+            },
 
-                // Adjust camera to frame the new maze
-                const size = bbox.getSize(new THREE.Vector3());
+            drawMaze(vp, mode, w, h, d, cs) {
+                // Clear existing
+                while (vp.mazeGroup.children.length > 0) {
+                    const c = vp.mazeGroup.children[0];
+                    vp.mazeGroup.remove(c);
+                    if (c.isMesh) { c.geometry?.dispose(); c.material?.dispose(); }
+                }
+
+                cs = cs || 8;
+                const ox = (w*cs)/2, oy = (h*cs)/2, oz = (d*cs)/2;
+                const wm = LEMAC_ENGINE.getWallMaterial();
+
+                if (mode === 'planar') {
+                    // 2D planar maze using LEMAC_ENGINE
+                    const g = LEMAC_ENGINE.generatePlanar(w, h);
+                    const wt = cs * 0.08;
+                    const wg = new THREE.BoxGeometry(1,1,1);
+                    // Internal walls
+                    for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) {
+                        const c = g[y][x];
+                        if (c.E && x < w-1) { const l=new THREE.Mesh(wg,wm); l.scale.set(wt,cs,cs); l.position.set((x+1)*cs-ox, 0, y*cs-oz+cs/2); vp.mazeGroup.add(l); }
+                        if (c.S && y < h-1) { const l=new THREE.Mesh(wg,wm); l.scale.set(cs,cs,wt); l.position.set(x*cs-ox+cs/2, 0, (y+1)*cs-oz); vp.mazeGroup.add(l); }
+                    }}
+                    // Perimeter
+                    for(let x=0;x<w;x++){
+                        let l=new THREE.Mesh(wg,wm); l.scale.set(cs,cs,wt); l.position.set(x*cs-ox+cs/2,0,-oz); vp.mazeGroup.add(l);
+                        l=new THREE.Mesh(wg,wm); l.scale.set(cs,cs,wt); l.position.set(x*cs-ox+cs/2,0,h*cs-oz); vp.mazeGroup.add(l);
+                    }
+                    for(let y=0;y<h;y++){
+                        let l=new THREE.Mesh(wg,wm); l.scale.set(wt,cs,cs); l.position.set(-ox,0,y*cs-oz+cs/2); vp.mazeGroup.add(l);
+                        l=new THREE.Mesh(wg,wm); l.scale.set(wt,cs,cs); l.position.set(w*cs-ox,0,y*cs-oz+cs/2); vp.mazeGroup.add(l);
+                    }
+                    // Markers
+                    const sm=new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2});
+                    const em=new THREE.MeshStandardMaterial({color:0xff4466,emissive:0xff4466,emissiveIntensity:1.0});
+                    [sm,em].forEach((m,i)=>{
+                        const x=i===0?0:w-1, y=i===0?0:h-1;
+                        const mesh=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),m);
+                        mesh.position.set(x*cs-ox+cs/2, cs*0.5, y*cs-oz+cs/2);
+                        vp.mazeGroup.add(mesh);
+                    });
+                    // Store for path solve
+                    vp._grid=g; vp._mode='planar'; vp._w=w; vp._h=h; vp._d=1; vp._cs=cs; vp._ox=ox; vp._oy=oy; vp._oz=oz;
+                } else {
+                    // 3D cubic maze using same 6-face plane approach as main viewport
+                    const g = LEMAC_ENGINE.generateCubic(w, h, d);
+                    const pYZ=new THREE.PlaneGeometry(cs,cs);
+                    const pXZ=new THREE.PlaneGeometry(cs,cs);
+                    const pXY=new THREE.PlaneGeometry(cs,cs);
+
+                    for(let z=0;z<d;z++){for(let y=0;y<h;y++){for(let x=0;x<w;x++){
+                        const c=g[z][y][x];
+                        const cx=x*cs-ox+cs/2, cy=y*cs-oy+cs/2, cz=z*cs-oz+cs/2;
+                        if(c.left){const l=new THREE.Mesh(pYZ,wm);l.position.set(x*cs-ox,cy,cz);vp.mazeGroup.add(l);}
+                        if(c.right&&x===w-1){const l=new THREE.Mesh(pYZ,wm);l.position.set((x+1)*cs-ox,cy,cz);vp.mazeGroup.add(l);}
+                        if(c.top){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,y*cs-oy,cz);vp.mazeGroup.add(l);}
+                        if(c.bottom&&y===h-1){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,(y+1)*cs-oy,cz);vp.mazeGroup.add(l);}
+                        if(c.back){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,z*cs-oz);vp.mazeGroup.add(l);}
+                        if(c.front&&z===d-1){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,(z+1)*cs-oz);vp.mazeGroup.add(l);}
+                    }}}
+                    const sm=new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2});
+                    const em=new THREE.MeshStandardMaterial({color:0xff4466,emissive:0xff4466,emissiveIntensity:1.0});
+                    [[0,0,0],[w-1,h-1,d-1]].forEach(([px,py,pz],i)=>{
+                        const mesh=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),i===0?sm:em);
+                        mesh.position.set(px*cs-ox+cs/2,py*cs-oy+cs/2,pz*cs-oz+cs/2);
+                        vp.mazeGroup.add(mesh);
+                    });
+                    vp._grid=g; vp._mode='cubic'; vp._w=w; vp._h=h; vp._d=d; vp._cs=cs; vp._ox=ox; vp._oy=oy; vp._oz=oz;
+                }
+
+                // Frame camera on maze
+                const box = new THREE.Box3().setFromObject(vp.mazeGroup);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
                 const maxDim = Math.max(size.x, size.y, size.z);
-                const fov = viewport.camera.fov * (Math.PI / 180);
-                let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
-                cameraZ *= 1.5; // Add some padding
+                const fov = vp.camera.fov * (Math.PI / 180);
+                const dist = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.6;
+                vp.controls.target.copy(center);
+                vp.camera.position.set(center.x + dist*0.7, center.y + dist*0.7, center.z + dist*0.7);
+                vp.controls.update();
 
-                viewport.camera.position.set(center.x + cameraZ, center.y + cameraZ, center.z + cameraZ); // Roughly frame it
-                viewport.controls.target.copy(center);
-                viewport.controls.update();
-            },
-
-            drawPath(viewport, path, cellSize = 10, wallHeight = 8) {
-                // Clear existing path
-                viewport.mazeGroup.children = viewport.mazeGroup.children.filter(obj => !obj.userData.isPath);
-
-                if (!path || path.length < 1) return;
-
-                const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00aaff, transparent: true, opacity: 0.7, depthTest: false }); // Render on top
-                const pathGeometry = new THREE.CylinderGeometry(cellSize * 0.2, cellSize * 0.2, 0.5, 8); // Small cylinders for path segments
-
-                path.forEach(p => {
-                    const pathSegment = new THREE.Mesh(pathGeometry, pathMaterial);
-                    pathSegment.position.set(p.x * cellSize + cellSize / 2, p.z * wallHeight + 0.25, p.y * cellSize + cellSize / 2);
-                    pathSegment.userData.isPath = true; // Mark for easy removal
-                    viewport.mazeGroup.add(pathSegment);
-                });
+                return { grid: vp._grid, mode: vp._mode };
             }
         };
 
@@ -1917,171 +1855,80 @@ maze_generate(width: 10, height: 10)
         addRootMazeLayerBtn.click();
 
         generateMazeKeysBtn.addEventListener('click', async () => {
-            mazeOutput.textContent = "Generating 3D Mazes and Hashing Keys...\n";
-            CRYPTOLOGY_MAZE_VISUALIZER.clearAllViewports(); // Clear previous viewports
+            mazeOutput.textContent = "◈ Generating mazes and hashing keys...\n";
+            CRYPTOLOGY_MAZE_VISUALIZER.clearAllViewports();
 
-            const rootMazeConfig = {
-                width: parseInt(rootMazeWidthInput.value),
-                height: parseInt(rootMazeHeightInput.value),
-                depth: parseInt(rootMazeDepthInput.value),
-                layers: []
-            };
+            const modalMode = document.getElementById('maze-tab-3d')?.classList.contains('active') ? 'cubic' : 'planar';
+            const rootW = parseInt(rootMazeWidthInput.value)||10;
+            const rootH = parseInt(rootMazeHeightInput.value)||10;
+            const rootD = parseInt(rootMazeDepthInput.value)||3;
 
-            rootMazeLayersContainer.querySelectorAll('.maze-layer-item').forEach(layerDiv => {
-                const layerDepth = parseInt(layerDiv.querySelector('.layer-depth-input').value);
-                rootMazeConfig.layers.push({ depth: layerDepth });
-            });
-
-            // --- Collect and setup the viewports list before generation ---
-            
-            // 1. Root Maze Viewport (always exists)
-            const mazeConfigsToGenerate = [{
-                type: 'Root',
-                id: 'Root',
-                width: rootMazeConfig.width,
-                height: rootMazeConfig.height,
-                depth: rootMazeConfig.depth,
-                layers: rootMazeConfig.layers,
-            }];
-
-            // 2. Interchange Dimension Viewports
+            const configs = [{type:'Root', id:'Root', w:rootW, h:rootH, d:rootD}];
             for (const dim of interchangeDimensions) {
-                const width = parseInt(dim.element.querySelector('.dim-width-input').value);
-                const height = parseInt(dim.element.querySelector('.dim-height-input').value);
-                const depth = parseInt(dim.element.querySelector('.dim-depth-input').value);
-                
-                mazeConfigsToGenerate.push({
-                    type: 'Interchange',
-                    id: dim.id,
-                    width: width,
-                    height: height,
-                    depth: depth,
-                    layers: dim.layers,
+                configs.push({
+                    type:'Interchange', id:dim.id,
+                    w:parseInt(dim.element.querySelector('.dim-width-input').value)||8,
+                    h:parseInt(dim.element.querySelector('.dim-height-input').value)||8,
+                    d:parseInt(dim.element.querySelector('.dim-depth-input').value)||2
                 });
             }
 
-            const totalViewports = mazeConfigsToGenerate.length;
+            const total = configs.length;
+            const cellH = 240;
+            mazeCanvasContainer.style.cssText = `display:grid;width:100%;height:auto;overflow:visible;gap:2px;grid-template-columns:${total===1?'1fr':'1fr 1fr'};grid-auto-rows:${total===1?'320px':cellH+'px'};`;
 
-            // --- Configure the CSS Grid for Tiling (400x400) ---
-            if (totalViewports === 1) {
-                mazeCanvasContainer.style.gridTemplateColumns = '1fr';
-                mazeCanvasContainer.style.gridAutoRows = '1fr'; // 400x400
-                mazeCanvasContainer.style.width = '400px';
-                mazeCanvasContainer.style.height = '400px';
-            } else if (totalViewports === 2) {
-                // 200x400 side-by-side 
-                mazeCanvasContainer.style.gridTemplateColumns = '1fr 1fr';
-                mazeCanvasContainer.style.gridAutoRows = '1fr'; 
-                mazeCanvasContainer.style.width = '400px';
-                mazeCanvasContainer.style.height = '400px';
-            } else if (totalViewports === 3 || totalViewports === 4) {
-                // 4 quadrants: 200x200
-                mazeCanvasContainer.style.gridTemplateColumns = '1fr 1fr';
-                mazeCanvasContainer.style.gridAutoRows = '1fr 1fr'; 
-                mazeCanvasContainer.style.width = '400px';
-                mazeCanvasContainer.style.height = '400px';
-            } else if (totalViewports > 4) {
-                // More than 4, switch back to flexible large grid with overflow for scrolling
-                mazeCanvasContainer.style.gridTemplateColumns = `repeat(auto-fit, minmax(200px, 1fr))`;
-                mazeCanvasContainer.style.gridAutoRows = `minmax(200px, 1fr)`;
-                // Allow container to stretch for scrolling inside the modal-content
-                mazeCanvasContainer.style.width = '100%'; 
-                mazeCanvasContainer.style.height = 'auto'; 
-                mazeCanvasContainer.style.overflow = 'auto'; // Enable scroll
-            }
-            
-            // --- Generate and Display ---
+            const allMazeStructures = [], interchangeDimData = [];
 
-            const allMazeStructures = [];
-            const interchangeDimData = [];
+            for (let i = 0; i < configs.length; i++) {
+                const cfg = configs[i];
+                const vp = CRYPTOLOGY_MAZE_VISUALIZER.initViewport(cfg.id, cfg.type, mazeCanvasContainer, cfg.w, cfg.h, cfg.d);
+                if (total > 2 && i === total-1 && total%2 !== 0) vp.wrapper.style.gridColumn = 'span 2';
 
-            for (let i = 0; i < mazeConfigsToGenerate.length; i++) {
-                const config = mazeConfigsToGenerate[i];
-                const { grid: generatedGrid, segments: generatedSegments } = generateOriginal3DMaze(
-                    config.width, config.height, config.depth
-                );
-                
-                const startPoint = {x:0, y:0, z:0};
-                const endPoint = {x:config.width-1, y:config.height-1, z:config.depth-1};
+                const result = CRYPTOLOGY_MAZE_VISUALIZER.drawMaze(vp, modalMode, cfg.w, cfg.h, cfg.d, 8);
 
-                const mazePath = findPathBFS(generatedGrid, startPoint, endPoint,
-                                            config.width, config.height, config.depth);
-
-                const viewport = CRYPTOLOGY_MAZE_VISUALIZER.initViewport(config.id, config.type, mazeCanvasContainer, config.width, config.height, config.depth);
-                
-                // For 3-viewport scenario, make the third one span two columns to be 400x200
-                if (totalViewports === 3 && i === 2) {
-                    viewport.canvasWrapper.style.gridColumn = 'span 2';
-                }
-
-                CRYPTOLOGY_MAZE_VISUALIZER.draw3DMaze(viewport, generatedGrid, startPoint, endPoint, 10, 8);
-                if (mazePath) CRYPTOLOGY_MAZE_VISUALIZER.drawPath(viewport, mazePath, 10, 8);
-                
-                allMazeStructures.push({ 
-                    type: config.type.toLowerCase(), 
-                    id: config.id, 
-                    segments: generatedSegments.map(s => ({ start: s.start, end: s.end, depth: s.depth })), 
-                    config: { width: config.width, height: config.height, depth: config.depth } 
-                });
-
-                if (config.type === 'Interchange') {
-                    interchangeDimData.push({ id: config.id, segments: generatedSegments.map(s => ({ start: s.start, end: s.end, depth: s.depth })) });
-                }
-            }
-            // --- End of Maze Generation and Display ---
-
-
-            mazeOutput.textContent += `Generated Root Maze (${rootMazeConfig.width}x${rootMazeConfig.height}x${rootMazeConfig.depth} with ${rootMazeConfig.layers.length} layers).\n`;
-            interchangeDimensions.forEach(dim => {
-                const width = parseInt(dim.element.querySelector('.dim-width-input').value);
-                const height = parseInt(dim.element.querySelector('.dim-height-input').value);
-                const depth = parseInt(dim.element.querySelector('.dim-depth-input').value);
-                mazeOutput.textContent += `Generated Interchange Dimension ${dim.id} (${width}x${height}x${depth}).\n`;
-            });
-
-            let hashInputData = JSON.stringify(allMazeStructures);
-            let iterativeHashes = [];
-            if (interchangeDimData.length > 0) {
-                for (let i = interchangeDimData.length - 1; i >= 0; i--) {
-                    const dim = interchangeDimData[i];
-                    let dimDataString = JSON.stringify(dim.segments);
-                    let combinedContentForHash = messageToEncryptInput.value + editor.value;
-                    for(const file of attachedCryptologyFiles) {
-                         combinedContentForHash += String.fromCharCode(...new Uint8Array(file.content));
+                const segments = [];
+                if (modalMode === 'cubic') {
+                    const g = result.grid;
+                    for(let z=0;z<cfg.d;z++) for(let y=0;y<cfg.h;y++) for(let x=0;x<cfg.w;x++) {
+                        const c=g[z][y][x];
+                        ['right','bottom','front'].forEach(dir=>{ if(!c[dir]) segments.push({from:{x,y,z},dir}); });
                     }
-
-                    const contentToHash = combinedContentForHash + dimDataString;
-                    const dimHash = await strongAcronisHash(contentToHash);
-                    iterativeHashes.unshift({ id: dim.id, hash: dimHash });
-                    mazeOutput.textContent += `Hashed Interchange Dimension ${dim.id} (iterative).\n`;
+                } else {
+                    const g = result.grid;
+                    for(let y=0;y<cfg.h;y++) for(let x=0;x<cfg.w;x++) {
+                        const c=g[y][x];
+                        ['E','S'].forEach(dir=>{ if(!c[dir]) segments.push({from:{x,y,z:0},dir}); });
+                    }
                 }
+
+                allMazeStructures.push({type:cfg.type.toLowerCase(),id:cfg.id,segments,config:{width:cfg.w,height:cfg.h,depth:cfg.d}});
+                if(cfg.type==='Interchange') interchangeDimData.push({id:cfg.id,segments});
+                mazeOutput.textContent += `◈ ${cfg.type} maze ${cfg.w}×${cfg.h}${modalMode==='cubic'?'×'+cfg.d:''} generated\n`;
             }
 
-            const rootHashInput = hashInputData + JSON.stringify(iterativeHashes);
-            const rootMazeHash = await strongAcronisHash(rootHashInput);
-            mazeOutput.textContent += `Hashed Root Maze (group hash of all maze data and iterative hashes).\n`;
+            let iterativeHashes = [];
+            for (let i = interchangeDimData.length-1; i >= 0; i--) {
+                const dim = interchangeDimData[i];
+                let combined = messageToEncryptInput.value + editor.value;
+                for(const f of attachedCryptologyFiles) combined += String.fromCharCode(...new Uint8Array(f.content));
+                const dimHash = await strongAcronisHash(combined + JSON.stringify(dim.segments));
+                iterativeHashes.unshift({id:dim.id,hash:dimHash});
+            }
 
-            const finalKeySeed = rootMazeHash + iterativeHashes.map(h => h.hash).join('');
+            const rootMazeHash = await strongAcronisHash(JSON.stringify(allMazeStructures)+JSON.stringify(iterativeHashes));
+            const finalKeySeed = rootMazeHash + iterativeHashes.map(h=>h.hash).join('');
             const { privateKey, publicKey } = await generateAsymmetricKeys(finalKeySeed);
 
-            generatedPrivateKey = privateKey;
-            generatedPublicKey = publicKey;
-            generatedMazeData = {
-                rootMazeConfig: rootMazeConfig,
-                interchangeDimensions: interchangeDimData,
-                rootMazeHash: rootMazeHash,
-                iterativeHashes: iterativeHashes,
-                allMazeSegments: allMazeStructures.map(m => ({type: m.type, id: m.id, segments: m.segments}))
-            };
+            generatedPrivateKey = privateKey; generatedPublicKey = publicKey;
+            generatedMazeData = {rootMazeConfig:{width:rootW,height:rootH,depth:rootD},interchangeDimensions:interchangeDimData,rootMazeHash,iterativeHashes,allMazeSegments:allMazeStructures.map(m=>({type:m.type,id:m.id,segments:m.segments}))};
 
             privateKeyValue.textContent = generatedPrivateKey;
             publicKeyValue.textContent = generatedPublicKey;
-            privateKeyDisplay.style.display = 'block';
-            publicKeyDisplay.style.display = 'block';
+            privateKeyDisplay.style.display = 'flex';
+            publicKeyDisplay.style.display = 'flex';
             downloadEncryptedZipBtn.style.display = 'none';
             downloadDecryptedZipBtn.style.display = 'none';
-
-            mazeOutput.textContent += `\nPrivate Key and Public Key generated based on maze structure.`;
+            mazeOutput.textContent += `\n◈ SHA-256 keys generated from maze structure.`;
         });
 
         cryptologyFileAttach.addEventListener('change', (event) => {
