@@ -133,6 +133,27 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 #ide-prompt-send:disabled{opacity:.4;cursor:not-allowed}
 #ide-prompt-status{padding:4px 14px 8px;font-size:.48rem;font-family:var(--font-d);letter-spacing:1px;color:rgba(0,255,204,.4);min-height:20px;display:none}
 #ide-prompt-status.show{display:block}
+/* ─── IDE RESPONSE WINDOW ───────────────────────────────── */
+#ide-chat-wrap{flex-shrink:0;border-top:1px solid rgba(0,255,204,.07);background:rgba(0,2,8,.5);display:flex;flex-direction:column;max-height:220px;min-height:0;overflow:hidden;transition:max-height .25s ease}
+#ide-chat-wrap.collapsed{max-height:28px}
+#ide-chat-bar{display:flex;align-items:center;justify-content:space-between;padding:4px 14px;cursor:pointer;user-select:none;flex-shrink:0;border-bottom:1px solid rgba(0,255,204,.05)}
+#ide-chat-bar-label{font-family:var(--font-d);font-size:.44rem;letter-spacing:2px;color:rgba(0,255,204,.4)}
+#ide-chat-bar-toggle{font-size:.5rem;color:var(--dim);transition:transform .2s}
+#ide-chat-wrap.collapsed #ide-chat-bar-toggle{transform:rotate(180deg)}
+#ide-chat-log{flex:1;overflow-y:auto;padding:8px 14px;display:flex;flex-direction:column;gap:8px;min-height:0}
+#ide-chat-log::-webkit-scrollbar{width:3px}
+#ide-chat-log::-webkit-scrollbar-thumb{background:rgba(0,255,204,.15);border-radius:2px}
+.ide-msg{display:flex;flex-direction:column;gap:3px;animation:fadeIn .25s ease}
+.ide-msg-who{font-family:var(--font-d);font-size:.4rem;letter-spacing:1.5px;opacity:.5}
+.ide-msg-who.user{color:var(--blue)}
+.ide-msg-who.claude{color:var(--cyan)}
+.ide-msg-text{font-family:var(--font-b);font-size:12px;line-height:1.6;color:var(--bright);white-space:pre-wrap;word-break:break-word}
+.ide-msg-text.user{color:rgba(136,204,255,.85)}
+.ide-msg-text.claude{color:var(--bright)}
+.ide-msg-ts{font-size:.38rem;color:#1a3a4a;font-family:monospace}
+.ide-thinking{display:flex;gap:4px;align-items:center;padding:4px 0}
+.ide-thinking-dot{width:5px;height:5px;border-radius:50%;background:var(--cyan);animation:pulse 1.2s infinite}
+.ide-thinking-lbl{font-size:10px;color:var(--dim);margin-left:4px;font-family:var(--font-b)}
 #ide-footer{display:flex;align-items:center;justify-content:space-between;padding:6px 14px;border-top:1px solid var(--border);flex-shrink:0;background:rgba(0,0,0,.3);font-size:.48rem;font-family:var(--font-d);letter-spacing:1px;gap:8px;flex-wrap:wrap}
 #ide-status-text{color:rgba(0,255,204,.45);min-width:0}
 #ide-commit-msg{background:transparent;border:1px solid var(--border);color:var(--bright);padding:4px 8px;border-radius:3px;font-size:11px;font-family:monospace;outline:none;width:260px;max-width:45%}
@@ -4617,7 +4638,39 @@ console.log('[autumn-logic.js] Extension loaded · ' + new Date().toISOString())
 `;
 }
 
-// ── IDE Prompt Panel ──────────────────────────────────────────
+// ── IDE Chat log ──────────────────────────────────────────────
+function ideChatToggle() {
+  const wrap = document.getElementById('ide-chat-wrap');
+  if (wrap) wrap.classList.toggle('collapsed');
+}
+
+function ideChatAppend(who, text, isThinking=false) {
+  const log = document.getElementById('ide-chat-log');
+  if (!log) return;
+  // Remove any existing thinking indicator
+  if (!isThinking) log.querySelector('.ide-thinking')?.remove();
+
+  if (isThinking) {
+    const el = document.createElement('div');
+    el.className = 'ide-thinking';
+    el.innerHTML = '<div class="ide-thinking-dot" style="animation-delay:0s"></div><div class="ide-thinking-dot" style="animation-delay:.2s"></div><div class="ide-thinking-dot" style="animation-delay:.4s"></div><span class="ide-thinking-lbl">Claude is thinking…</span>';
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+
+  const ts = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const wrap = document.createElement('div');
+  wrap.className = 'ide-msg';
+  wrap.innerHTML = `<span class="ide-msg-who ${who}">${who === 'user' ? '▸ YOU' : '◈ CLAUDE'}</span><div class="ide-msg-text ${who}">${esc(text)}</div><span class="ide-msg-ts">${ts}</span>`;
+  log.appendChild(wrap);
+  log.scrollTop = log.scrollHeight;
+
+  // Expand chat window if collapsed
+  document.getElementById('ide-chat-wrap')?.classList.remove('collapsed');
+}
+
+// ── IDE Prompt Panel toggle ───────────────────────────────────
 function ideTogglePrompt() {
   const body = document.getElementById('ide-prompt-body');
   const tog  = document.getElementById('ide-prompt-toggle');
@@ -4647,12 +4700,15 @@ async function ideSubmitPrompt() {
     return;
   }
 
+  // Echo user message into chat log
+  ideChatAppend('user', prompt);
+  input.value = '';
+
   btn.disabled = true;
   btn.textContent = '…';
-  status.textContent = '◈ Connecting to Claude API…';
-  status.style.color = 'rgba(0,136,255,.6)';
-  status.classList.add('show');
-  ideSetStatus('working', 'Claude is generating update…');
+  if(status){ status.textContent=''; status.classList.remove('show'); }
+  ideSetStatus('working', 'Claude is thinking…');
+  ideChatAppend('claude', '', true); // thinking indicator
 
   // Grab current editor content as the base
   let currentLogic = _ideMonaco ? _ideMonaco.getValue() : '';
@@ -4660,52 +4716,74 @@ async function ideSubmitPrompt() {
     try { currentLogic = await ideFetchFile(); } catch(e) { currentLogic = _ideStarterTemplate(); }
   }
 
-  const systemPrompt = `You are an expert JavaScript developer updating autumn-logic.js — the brain extension file for Autumn, an AI assistant at radicaldeepscale.com built on the LEATR v2 neural system.
+  const systemPrompt = `You are Claude, the AI developer assistant integrated into the Autumn Logic IDE at radicaldeepscale.com.
 
-The file runs via new Function(code) on top of autumn.html. All autumn.html globals are in scope: S (state object), msgs(), handleSend(), composeResponse(input,analysis,reflexData), processLEATR(text), autumnReflex(text,mode), generateReply(), renderMessages(), etc.
+Autumn is an AI chat assistant built on the LEATR (Lead Edge Ash Tree Reflex) v2 neural system. You are updating autumn-logic.js — her brain extension file that runs via new Function(code) on top of autumn.html.
 
-RULES:
-1. Return ONLY valid JavaScript — no markdown fences, no explanation, no preamble
-2. Use: const _orig_X = (typeof X !== 'undefined') ? X : null; before overriding any function
-3. Comment each new section with // ── [feature name] ──
-4. Never corrupt S state or break the existing UI
-5. Keep the console.log timestamp line at the end of the file
+All autumn.html globals are in scope: S (state), msgs(), handleSend(), composeResponse(input,analysis,reflexData), processLEATR(text), autumnReflex(text,mode), generateReply(), renderMessages(), pulseShells(), ideToast(), etc.
+
+You must respond with ONLY a JSON object in this exact format — no text outside the JSON:
+{
+  "message": "A conversational explanation of what you did, what changed, and any notes. Be specific and direct. 2-4 sentences.",
+  "code": "THE COMPLETE UPDATED autumn-logic.js FILE HERE"
+}
+
+Code rules:
+- Use: const _orig_X = (typeof X !== 'undefined') ? X : null; before overriding any function
+- Comment each new section with // ── [feature name] ──
+- Never corrupt S state or break the existing UI
+- Keep the console.log timestamp line at the end
 
 CURRENT autumn-logic.js:
 ---
 ${currentLogic}
----
-
-User request: ${prompt}
-
-Return the complete updated autumn-logic.js only.`;
+---`;
 
   try {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'anthropic-version':'2023-06-01', 'x-api-key': ak },
-      body: JSON.stringify({ model: _CLAUDE_MDL, max_tokens: 4096, system: systemPrompt, messages: [{ role:'user', content: prompt }] })
+      body: JSON.stringify({
+        model: _CLAUDE_MDL,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role:'user', content: prompt }]
+      })
     });
-    if (!r.ok) throw new Error('Claude API ' + r.status);
+    if (!r.ok) throw new Error('Claude API HTTP ' + r.status);
     const data = await r.json();
-    let newCode = data.content?.[0]?.text || '';
-    if (!newCode) throw new Error('Empty response from Claude');
-    newCode = newCode.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    const raw = data.content?.[0]?.text || '';
+    if (!raw) throw new Error('Empty response from Claude');
 
-    // Update editor
-    if (_ideMonaco) {
-      _ideMonaco.setValue(newCode);
-      ideSetStatus('dirty', 'Claude update ready — not yet committed');
+    // Parse JSON response
+    let message = '', newCode = '';
+    try {
+      const clean = raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
+      const parsed = JSON.parse(clean);
+      message = parsed.message || '';
+      newCode  = parsed.code   || '';
+    } catch(e) {
+      // Fallback: if Claude returned plain JS without JSON wrapper
+      newCode  = raw.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+      message  = 'Code updated. Review the editor and commit when ready.';
     }
 
-    status.textContent = '◈ Update generated — review above, then ▲ COMMIT to push to GitHub.';
-    status.style.color = 'rgba(0,255,204,.6)';
-    input.value = '';
-    ideToast('◈ Claude generated update — review & commit');
+    if (!newCode) throw new Error('Claude returned no code');
+
+    // Show Claude's message in chat log
+    ideChatAppend('claude', message);
+
+    // Load into editor
+    if (_ideMonaco) {
+      _ideMonaco.setValue(newCode);
+      ideSetStatus('dirty', 'Claude update ready — review & commit');
+    }
+
+    ideToast('◈ Update ready — review editor then ▲ COMMIT');
 
   } catch(e) {
-    status.textContent = '◈ Error: ' + e.message;
-    status.style.color = 'rgba(255,68,102,.7)';
+    document.getElementById('ide-chat-log')?.querySelector('.ide-thinking')?.remove();
+    ideChatAppend('claude', '◈ Error: ' + e.message);
     ideSetStatus('error', e.message);
     ideToast(e.message, true);
   }
@@ -5008,6 +5086,14 @@ loadAutumnLogic();
       <button id="ide-prompt-send" onclick="ideSubmitPrompt()">▸ UPDATE</button>
     </div>
     <div id="ide-prompt-status"></div>
+  </div>
+  <!-- Claude Response Chat Log -->
+  <div id="ide-chat-wrap">
+    <div id="ide-chat-bar" onclick="ideChatToggle()">
+      <span id="ide-chat-bar-label">◈ CLAUDE RESPONSES</span>
+      <span id="ide-chat-bar-toggle">▾</span>
+    </div>
+    <div id="ide-chat-log"></div>
   </div>
   <div id="ide-footer">
     <span id="ide-status-text">Ready</span>
