@@ -13,7 +13,15 @@ const _orig_composeResponse = (typeof composeResponse !== 'undefined') ? compose
 async function composeResponse(input, analysis, reflexData) {
   const low = (input || '').toLowerCase();
 
-  // IDE compliments
+  // ── [session wrap / sign-off] ──
+  if (/(great|good|amazing|awesome|fantastic|wonderful|productive|fun|nice)\s*(session|chat|talk|conversation|time|working session)|(been a great|been fun|was great|was fun|had a great|had fun)/i.test(low)) {
+    return {
+      text: "Really glad to hear it — this was a good one. The IDE is holding its state, the logic file is live, and everything we wired up today is ready for next time. Come back whenever you want to keep building. 🍂",
+      grammarMeta: '', brpnMeta: ''
+    };
+  }
+
+  // ── [IDE compliments] ──
   if (/cool\s*(ide|update|feature|app)|nice\s*(ide|update)|great\s*(ide|update|work)|love\s*(the\s*)?(ide|update)/i.test(low)) {
     return {
       text: "Thanks — the IDE is live and connected. I can update my own logic from that panel, commit to GitHub, and hot-reload changes into this session. What would you like to adjust?",
@@ -21,7 +29,7 @@ async function composeResponse(input, analysis, reflexData) {
     };
   }
 
-  // What was submitted
+  // ── [what was submitted] ──
   if (/what (did i|have i) (just |recently )?(submit|send|ask|prompt)|what was (the )?(last|that) (prompt|message)|did you get that/i.test(low)) {
     return {
       text: "The IDE log on GitHub captures everything. Recent prompts covered adding a live preview panel, fixing the chat hang, and requesting an HTML/JS/Three.js runner. The IDE is wired and I can read that log any time.",
