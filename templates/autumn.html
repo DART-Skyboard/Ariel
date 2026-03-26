@@ -2810,18 +2810,38 @@ When location POI data is available, describe the nearest results conversational
 When image generation is requested, describe the scene through the 7 natural tool layers.
 When improvisation additions were made to a request, mention them naturally as your own creative contribution.`;
 
-    const history=msgs().slice(-10).map(m=>({role:m.role==="autumn"?"assistant":"user",content:m.text}));
-    const ak=_getAK?.()||'';
-    const res=await fetch("https://api.anthropic.com/v1/messages",{
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "anthropic-version":"2023-06-01",
-        "anthropic-dangerous-direct-browser-access":"true",
-        ...(ak?{"x-api-key":ak}:{})
+    // Build clean history — skip messages with empty/null text, enforce user/assistant alternation
+    const rawMsgs = msgs().slice(-20);
+    const history = [];
+    for (const m of rawMsgs) {
+      const txt = (m.text||'').trim();
+      if (!txt || txt.length < 1) continue; // skip empty (maze/weather/webview widgets)
+      const role = m.role === 'autumn' ? 'assistant' : 'user';
+      // Avoid consecutive same roles (API requires strict alternation)
+      if (history.length > 0 && history[history.length-1].role === role) continue;
+      history.push({ role, content: txt });
+    }
+    // Must start with user message
+    while (history.length > 0 && history[0].role === 'assistant') history.shift();
+    // Cap at 10
+    const trimHistory = history.slice(-10);
+
+    const ak = _getAK?.() || '';
+    // 25 second timeout so the UI doesn't hang forever
+    const _ac = new AbortController();
+    const _timeout = setTimeout(() => _ac.abort(), 25000);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: _ac.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        ...(ak ? {"x-api-key": ak} : {})
       },
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1200,system:systemPrompt,messages:history})
+      body: JSON.stringify({model:"claude-sonnet-4-6", max_tokens:1200, system:systemPrompt, messages:trimHistory})
     });
+    clearTimeout(_timeout);
     const data=await res.json();
     const apiReply=data.content?.map(c=>c.text||"").join("");
     if(apiReply){
