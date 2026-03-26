@@ -1098,10 +1098,15 @@
                 if(this.mazeData.mode==='planar') {
                     instant?this.drawInstantPlanarPath(this.mazeData.solutionPath,cs):this.drawAnimatedPlanarPath(this.mazeData.solutionPath,cs);
                 } else {
-                    // Raw coords — mazeGroup is already Box3-centered, children use raw space
-                    const u = this.mazeData._u || cs;
-                    const geo=new THREE.BoxGeometry(u*0.45,u*0.45,u*0.45), mat=LEMAC_ENGINE.getPathMaterial();
-                    const draw=(list)=>{list.forEach(p=>{const m=new THREE.Mesh(geo,mat);m.position.set(p.x*u+u/2, p.y*u+u/2, p.z*u+u/2);this.mazeGroup.add(m);});};
+                    // Use same offsets that drawCubicMaze used — stored on mazeData
+                    const u  = this.mazeData._u  || cs;
+                    const ox = this.mazeData._ox || (this.mazeData.w*u)/2;
+                    const oy = this.mazeData._oy || (this.mazeData.h*u)/2;
+                    const oz = this.mazeData._oz || (this.mazeData.d*u)/2;
+                    const geo=new THREE.BoxGeometry(u*0.42,u*0.42,u*0.42), mat=LEMAC_ENGINE.getPathMaterial();
+                    const draw=(list)=>{list.forEach(p=>{const m=new THREE.Mesh(geo,mat);
+                        m.position.set(p.x*u - ox + u/2, p.y*u - oy + u/2, p.z*u - oz + u/2);
+                        this.mazeGroup.add(m);});};
                     if(instant){draw(this.mazeData.solutionPath);}else{let i=0;const a=()=>{if(i<this.mazeData.solutionPath.length){draw([this.mazeData.solutionPath[i++]]);setTimeout(a,20);}};a();}
                 }
             },
@@ -2584,7 +2589,29 @@ maze_generate(width: 10, height: 10)
 
         window.ideTogglePrompt = function ideTogglePrompt(){const body=document.getElementById('ide-prompt-body');if(body){const open=body.style.display==='none';body.style.display=open?'flex':'none';if(open)setTimeout(()=>document.getElementById('ide-prompt-input')?.focus(),80);}}
 
-        window.ideSubmitPrompt = async function ideSubmitPrompt(){const input=document.getElementById('ide-prompt-input');const btn=document.getElementById('ide-prompt-send');const prompt=input?.value?.trim();if(!prompt)return;const ak=_getAK();const pat=_getPAT();if(!ak){document.getElementById('ide-ak-modal').classList.add('open');setTimeout(()=>document.getElementById('ide-ak-input')?.focus(),100);return;}if(!pat){document.getElementById('ide-pat-modal').classList.add('open');setTimeout(()=>document.getElementById('ide-pat-input')?.focus(),100);return;}ideChatAppend('user',prompt);input.value='';btn.disabled=true;btn.textContent='…';ideSetStatus('working','Claude is thinking…');ideChatAppend('claude','',true);let currentLogic='';try{currentLogic=_ideMonaco?_ideMonaco.getValue():'';if(!currentLogic||currentLogic.startsWith('// Loading')){try{currentLogic=await ideFetchFile();}catch(e){currentLogic=_ideStarterTemplate();}}}catch(e){}const systemPrompt=`You are Claude, the AI developer assistant in the Ash Tree IDE at radicaldeepscale.com.\n\nAsh Tree IDE is a cryptology-focused code IDE with:\n- LEMAC maze engine (planar 2D and cubic 3D modes, reflective/dither render)\n- Lead Edge Cryptology system (SubtleCrypto SHA-256 key derivation, encrypt/decrypt/ZIP)\n- Ash language compiler/parser\n- Three.js 3D maze visualizer\n\nYou are updating ashtreeide-logic.js — the extension file that runs via new Function(code).\n\nRespond ONLY with this JSON format:\n{\n  "message": "2-4 sentence explanation of what you changed and why.",\n  "code": "THE COMPLETE UPDATED ashtreeide-logic.js"\n}\n\nCode rules:\n- Use: const _orig_X = (typeof X !== 'undefined') ? X : null; before overriding\n- Comment sections with // ── [feature] ──\n- Never corrupt global state\n- Keep console.log at end\n\nCURRENT ashtreeide-logic.js:\n---\n${currentLogic}\n---`;try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','x-api-key':ak,'anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:_CLAUDE_MDL,max_tokens:4096,system:systemPrompt,messages:[{role:'user',content:prompt}]})});if(!r.ok)throw new Error('Claude API HTTP '+r.status);const data=await r.json();const raw=data.content?.[0]?.text||'';if(!raw)throw new Error('Empty response');let message='',newCode='';try{const clean=raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();const parsed=JSON.parse(clean);message=parsed.message||'';newCode=parsed.code||'';}catch(e){newCode=raw.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();message='Code updated. Review and commit when ready.';}if(!newCode)throw new Error('No code in response');ideChatAppend('claude',message);if(_ideMonaco){_ideMonaco.setValue(newCode);ideSetStatus('dirty','Claude update ready — review & commit');}ideToast('◈ Update ready — review then ▲ COMMIT');}catch(e){document.getElementById('ide-chat-log')?.querySelector('.ide-thinking')?.remove();ideChatAppend('claude','◈ Error: '+e.message);ideSetStatus('error',e.message);ideToast(e.message,true);}btn.disabled=false;btn.textContent='▸ UPDATE';}
+        window.ideSubmitPrompt = async function ideSubmitPrompt(){const input=document.getElementById('ide-prompt-input');const btn=document.getElementById('ide-prompt-send');const prompt=input?.value?.trim();if(!prompt)return;const ak=_getAK();const pat=_getPAT();if(!ak){document.getElementById('ide-ak-modal').classList.add('open');setTimeout(()=>document.getElementById('ide-ak-input')?.focus(),100);return;}if(!pat){document.getElementById('ide-pat-modal').classList.add('open');setTimeout(()=>document.getElementById('ide-pat-input')?.focus(),100);return;}ideChatAppend('user',prompt);input.value='';btn.disabled=true;btn.textContent='…';ideSetStatus('working','Claude is thinking…');ideChatAppend('claude','',true);let currentLogic='';try{currentLogic=_ideMonaco?_ideMonaco.getValue():'';if(!currentLogic||currentLogic.startsWith('// Loading')){try{currentLogic=await ideFetchFile();}catch(e){currentLogic=_ideStarterTemplate();}}}catch(e){}const systemPrompt=`You are Claude, the AI developer assistant in the Ash Tree IDE at radicaldeepscale.com.\n\nAsh Tree IDE is a cryptology-focused code IDE with:\n- LEMAC maze engine (planar 2D and cubic 3D modes, reflective/dither render)\n- Lead Edge Cryptology system (SubtleCrypto SHA-256 key derivation, encrypt/decrypt/ZIP)\n- Ash language compiler/parser\n- Three.js 3D maze visualizer\n\nYou are updating ashtreeide-logic.js — the extension file that runs via new Function(code).\n\nRespond ONLY with this JSON format:\n{\n  "message": "2-4 sentence explanation of what you changed and why.",\n  "code": "THE COMPLETE UPDATED ashtreeide-logic.js"\n}\n\nCode rules:\n- Use: const _orig_X = (typeof X !== 'undefined') ? X : null; before overriding\n- Comment sections with // ── [feature] ──\n- Never corrupt global state\n- Keep console.log at end\n\nCURRENT ashtreeide-logic.js:\n---\n${currentLogic}\n---`;try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','x-api-key':ak,'anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:_CLAUDE_MDL,max_tokens:4096,system:systemPrompt,messages:[{role:'user',content:prompt}]})});if(!r.ok)throw new Error('Claude API HTTP '+r.status);const data=await r.json();const raw=data.content?.[0]?.text||'';if(!raw)throw new Error('Empty response');let message='',newCode='';try{const clean=raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();const parsed=JSON.parse(clean);message=parsed.message||'';newCode=parsed.code||'';}catch(e){newCode=raw.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();message='Code updated. Review and commit when ready.';}if(!newCode)throw new Error('No code in response');
+        if(_ideMonaco){_ideMonaco.setValue(newCode);}
+        // Auto-commit to GitHub immediately
+        ideSetStatus('working','Auto-committing to GitHub…');
+        try {
+          const pat2=_getPAT();
+          if(!pat2) throw new Error('No GitHub token');
+          if(!_ideFileSHA){try{await ideFetchFile();}catch(e){}}
+          const autoBody={message:'IDE auto-update: '+prompt.substring(0,60),content:btoa(unescape(encodeURIComponent(newCode)))};
+          if(_ideFileSHA)autoBody.sha=_ideFileSHA;
+          const ar=await fetch(_GH_API_IDE,{method:'PUT',headers:{Authorization:`token ${pat2}`,'Content-Type':'application/json',Accept:'application/vnd.github.v3+json'},body:JSON.stringify(autoBody)});
+          if(!ar.ok){const ae=await ar.json();throw new Error(ae.message||ar.status);}
+          const ad=await ar.json();_ideFileSHA=ad.content?.sha;
+          // Hot-reload into session
+          try{(new Function(newCode))();}catch(e){console.warn('[IDE hot-reload]',e);}
+          ideSetStatus('saved','Committed & live · '+new Date().toLocaleTimeString());
+          ideChatAppend('claude',message+'\n\n◈ Committed to GitHub and hot-reloaded live. Changes are active now.');
+          ideToast('◈ Committed & live — '+new Date().toLocaleTimeString());
+        } catch(commitErr) {
+          ideSetStatus('dirty','Generated — commit failed: '+commitErr.message);
+          ideChatAppend('claude',message+'\n\n⚠ Generated but auto-commit failed: '+commitErr.message+'. Use ▲ COMMIT to push manually.');
+          ideToast('Auto-commit failed: '+commitErr.message, true);
+        }}catch(e){document.getElementById('ide-chat-log')?.querySelector('.ide-thinking')?.remove();ideChatAppend('claude','◈ Error: '+e.message);ideSetStatus('error',e.message);ideToast(e.message,true);}btn.disabled=false;btn.textContent='▸ UPDATE';}
 
         function _idePromptKeyHandler(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ideSubmitPrompt();}}
 
