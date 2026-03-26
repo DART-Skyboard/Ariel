@@ -117,6 +117,22 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .ide-btn.danger:hover{border-color:var(--red);color:var(--red)}
 #ide-editor-wrap{flex:1;overflow:hidden;position:relative;min-height:0}
 #ide-editor{width:100%;height:100%}
+/* ─── IDE PROMPT PANEL ──────────────────────────────────── */
+#ide-prompt-panel{flex-shrink:0;border-top:1px solid var(--border);background:rgba(0,4,10,.6);display:flex;flex-direction:column;gap:0}
+#ide-prompt-header{display:flex;align-items:center;justify-content:space-between;padding:6px 14px;border-bottom:1px solid rgba(0,255,204,.06);cursor:pointer;user-select:none}
+#ide-prompt-label{font-family:var(--font-d);font-size:.48rem;letter-spacing:2px;color:rgba(0,255,204,.5)}
+#ide-prompt-toggle{font-size:.55rem;color:var(--dim);transition:transform .2s}
+#ide-prompt-toggle.open{transform:rotate(180deg)}
+#ide-prompt-body{padding:10px 12px;display:none;gap:8px;align-items:flex-end}
+#ide-prompt-body.open{display:flex}
+#ide-prompt-input{flex:1;background:rgba(0,255,204,.04);border:1px solid rgba(0,255,204,.14);color:var(--bright);padding:9px 12px;border-radius:6px;font-family:var(--font-b);font-size:13px;outline:none;resize:none;min-height:42px;max-height:120px;line-height:1.5;transition:border-color .2s}
+#ide-prompt-input::placeholder{color:#1a3a4a}
+#ide-prompt-input:focus{border-color:rgba(0,255,204,.35)}
+#ide-prompt-send{background:linear-gradient(135deg,rgba(0,255,204,.18),rgba(0,136,255,.12));border:1px solid rgba(0,255,204,.28);color:var(--cyan);padding:9px 16px;border-radius:6px;cursor:pointer;font-family:var(--font-d);font-size:.5rem;letter-spacing:1px;transition:all .2s;white-space:nowrap;flex-shrink:0;height:42px}
+#ide-prompt-send:hover{filter:brightness(1.3)}
+#ide-prompt-send:disabled{opacity:.4;cursor:not-allowed}
+#ide-prompt-status{padding:4px 14px 8px;font-size:.48rem;font-family:var(--font-d);letter-spacing:1px;color:rgba(0,255,204,.4);min-height:20px;display:none}
+#ide-prompt-status.show{display:block}
 #ide-footer{display:flex;align-items:center;justify-content:space-between;padding:6px 14px;border-top:1px solid var(--border);flex-shrink:0;background:rgba(0,0,0,.3);font-size:.48rem;font-family:var(--font-d);letter-spacing:1px;gap:8px;flex-wrap:wrap}
 #ide-status-text{color:rgba(0,255,204,.45);min-width:0}
 #ide-commit-msg{background:transparent;border:1px solid var(--border);color:var(--bright);padding:4px 8px;border-radius:3px;font-size:11px;font-family:monospace;outline:none;width:260px;max-width:45%}
@@ -4601,7 +4617,107 @@ console.log('[autumn-logic.js] Extension loaded · ' + new Date().toISOString())
 `;
 }
 
-// ── Load extension on startup ─────────────────────────────────
+// ── IDE Prompt Panel ──────────────────────────────────────────
+function ideTogglePrompt() {
+  const body = document.getElementById('ide-prompt-body');
+  const tog  = document.getElementById('ide-prompt-toggle');
+  const open = body.classList.toggle('open');
+  tog.classList.toggle('open', open);
+  if (open) setTimeout(()=>document.getElementById('ide-prompt-input')?.focus(), 80);
+}
+
+async function ideSubmitPrompt() {
+  const input  = document.getElementById('ide-prompt-input');
+  const btn    = document.getElementById('ide-prompt-send');
+  const status = document.getElementById('ide-prompt-status');
+  const prompt = input?.value?.trim();
+  if (!prompt) return;
+
+  // Need both keys
+  const ak  = _getAK();
+  const pat = _getPAT();
+  if (!ak) {
+    document.getElementById('ide-ak-modal').classList.add('open');
+    setTimeout(()=>document.getElementById('ide-ak-input')?.focus(), 100);
+    return;
+  }
+  if (!pat) {
+    document.getElementById('ide-pat-modal').classList.add('open');
+    setTimeout(()=>document.getElementById('ide-pat-input')?.focus(), 100);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '…';
+  status.textContent = '◈ Connecting to Claude API…';
+  status.style.color = 'rgba(0,136,255,.6)';
+  status.classList.add('show');
+  ideSetStatus('working', 'Claude is generating update…');
+
+  // Grab current editor content as the base
+  let currentLogic = _ideMonaco ? _ideMonaco.getValue() : '';
+  if (!currentLogic || currentLogic.startsWith('// Loading')) {
+    try { currentLogic = await ideFetchFile(); } catch(e) { currentLogic = _ideStarterTemplate(); }
+  }
+
+  const systemPrompt = `You are an expert JavaScript developer updating autumn-logic.js — the brain extension file for Autumn, an AI assistant at radicaldeepscale.com built on the LEATR v2 neural system.
+
+The file runs via new Function(code) on top of autumn.html. All autumn.html globals are in scope: S (state object), msgs(), handleSend(), composeResponse(input,analysis,reflexData), processLEATR(text), autumnReflex(text,mode), generateReply(), renderMessages(), etc.
+
+RULES:
+1. Return ONLY valid JavaScript — no markdown fences, no explanation, no preamble
+2. Use: const _orig_X = (typeof X !== 'undefined') ? X : null; before overriding any function
+3. Comment each new section with // ── [feature name] ──
+4. Never corrupt S state or break the existing UI
+5. Keep the console.log timestamp line at the end of the file
+
+CURRENT autumn-logic.js:
+---
+${currentLogic}
+---
+
+User request: ${prompt}
+
+Return the complete updated autumn-logic.js only.`;
+
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'anthropic-version':'2023-06-01', 'x-api-key': ak },
+      body: JSON.stringify({ model: _CLAUDE_MDL, max_tokens: 4096, system: systemPrompt, messages: [{ role:'user', content: prompt }] })
+    });
+    if (!r.ok) throw new Error('Claude API ' + r.status);
+    const data = await r.json();
+    let newCode = data.content?.[0]?.text || '';
+    if (!newCode) throw new Error('Empty response from Claude');
+    newCode = newCode.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+
+    // Update editor
+    if (_ideMonaco) {
+      _ideMonaco.setValue(newCode);
+      ideSetStatus('dirty', 'Claude update ready — not yet committed');
+    }
+
+    status.textContent = '◈ Update generated — review above, then ▲ COMMIT to push to GitHub.';
+    status.style.color = 'rgba(0,255,204,.6)';
+    input.value = '';
+    ideToast('◈ Claude generated update — review & commit');
+
+  } catch(e) {
+    status.textContent = '◈ Error: ' + e.message;
+    status.style.color = 'rgba(255,68,102,.7)';
+    ideSetStatus('error', e.message);
+    ideToast(e.message, true);
+  }
+
+  btn.disabled = false;
+  btn.textContent = '▸ UPDATE';
+}
+
+// ── IDE prompt — Enter to submit (Shift+Enter for newline) ────
+function _idePromptKeyHandler(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ideSubmitPrompt(); }
+}
 async function loadAutumnLogic() {
   try {
     const r=await fetch(_GH_RAW+'?t='+Date.now());
@@ -4880,6 +4996,18 @@ loadAutumnLogic();
   </div>
   <div id="ide-editor-wrap">
     <div id="ide-editor"></div>
+  </div>
+  <!-- Prompt Panel -->
+  <div id="ide-prompt-panel">
+    <div id="ide-prompt-header" onclick="ideTogglePrompt()">
+      <span id="ide-prompt-label">◈ CLAUDE PROMPT — describe a logic update in plain language</span>
+      <span id="ide-prompt-toggle">▾</span>
+    </div>
+    <div id="ide-prompt-body" class="open">
+      <textarea id="ide-prompt-input" placeholder="e.g. Make Autumn respond to 'status' with her current BRPN shell values…&#10;Shift+Enter for new line · Enter to submit" rows="2" onkeydown="_idePromptKeyHandler(event)"></textarea>
+      <button id="ide-prompt-send" onclick="ideSubmitPrompt()">▸ UPDATE</button>
+    </div>
+    <div id="ide-prompt-status"></div>
   </div>
   <div id="ide-footer">
     <span id="ide-status-text">Ready</span>
