@@ -4900,11 +4900,35 @@ async function loadAutumnLogic() {
   try {
     const r=await fetch(_GH_RAW+'?t='+Date.now());
     if (!r.ok) return;
-    const code=await r.text();
-    if (code&&code.trim()&&code.length>10&&!code.startsWith('404')) {
-      (new Function(code))();
-      console.log('[Autumn] autumn-logic.js loaded');
+    let code=await r.text();
+    if (!code||!code.trim()||code.length<10||code.startsWith('404')) return;
+    // Strip JSON wrapper if Claude response was committed raw
+    if (code.trimStart().startsWith('{')) {
+      try {
+        const parsed=JSON.parse(code);
+        if (parsed.code&&typeof parsed.code==='string') {
+          console.warn('[Autumn] autumn-logic.js was JSON-wrapped, extracting code');
+          code=parsed.code;
+        }
+      } catch(e) { /* not JSON, use as-is */ }
     }
+    // Snapshot handleSend and generateReply BEFORE executing logic file
+    // so any override inside can't silently replace them with broken versions
+    const _hsBefore=handleSend, _grBefore=generateReply;
+    (new Function(code))();
+    // Restore handleSend and generateReply — logic file must not override these
+    // Only composeResponse is safe for the logic file to override
+    if (handleSend !== _hsBefore) {
+      console.warn('[Autumn] autumn-logic.js tried to override handleSend — blocked');
+      window.handleSend = _hsBefore;
+      document.getElementById('send-btn').onclick = _hsBefore;
+      document.getElementById('chat-input').onkeydown = e=>{cognoticeActivity();if(e.key==='Enter')_hsBefore();};
+    }
+    if (generateReply !== _grBefore) {
+      console.warn('[Autumn] autumn-logic.js tried to override generateReply — blocked');
+      window.generateReply = _grBefore;
+    }
+    console.log('[Autumn] autumn-logic.js loaded safely');
   } catch(e) { console.log('[Autumn] No logic extension:', e.message); }
 }
 
