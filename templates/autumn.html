@@ -4596,11 +4596,13 @@ async function ideCommit() {
     _ideFileSHA=d.content.sha;
     ideSetStatus('saved','Committed · '+new Date().toLocaleTimeString());
     ideToast('◈ Committed to GitHub → templates/autumn-logic.js');
+    ideLog('commit', {message: msg, lines: code.split('\n').length});
     if(document.getElementById('ide-commit-msg'))
       document.getElementById('ide-commit-msg').value='Update autumn-logic.js via IDE';
   } catch(e) {
     ideSetStatus('error','Commit failed: '+e.message);
     ideToast('Commit failed: '+e.message,true);
+    ideLog('error', {source:'ideCommit', message: e.message});
   }
 }
 
@@ -4613,6 +4615,7 @@ async function ideHotReload() {
     (new Function(code))();
     ideToast('⚡ Logic active in current session');
     ideSetStatus('saved','Hot-reloaded · '+new Date().toLocaleTimeString());
+    ideLog('hotreload', {status:'success'});
   } catch(e) { ideToast('Hot-reload error: '+e.message,true); }
 }
 
@@ -4643,6 +4646,60 @@ function _ideStarterTemplate() {
 
 console.log('[autumn-logic.js] Extension loaded · ' + new Date().toISOString());
 `;
+}
+
+// ============================================================
+//  AUTUMN IDE REMOTE LOG v1.0
+//  Writes session events to templates/autumn-ide-log.json
+//  so Claude can read the IDE log remotely from GitHub.
+//  Events: prompt_sent, claude_response, error, commit, hotreload
+// ============================================================
+
+const _GH_LOG     = 'templates/autumn-ide-log.json';
+const _GH_LOG_API = `https://api.github.com/repos/${_GH_REPO}/contents/${_GH_LOG}`;
+let _ideLogSHA    = null;
+let _ideLogQueue  = [];
+let _ideLogTimer  = null;
+
+async function ideLog(event, data={}) {
+  const entry = { ts: new Date().toISOString(), event, ...data };
+  _ideLogQueue.push(entry);
+  clearTimeout(_ideLogTimer);
+  _ideLogTimer = setTimeout(_ideFlushLog, 4000);
+}
+
+async function _ideFlushLog() {
+  const pat = _getPAT();
+  if (!pat || _ideLogQueue.length === 0) return;
+  const batch = [..._ideLogQueue];
+  _ideLogQueue = [];
+  try {
+    let existing = [];
+    try {
+      const r = await fetch(_GH_LOG_API, {
+        headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
+      });
+      if (r.ok) {
+        const d = await r.json();
+        _ideLogSHA = d.sha;
+        const raw = decodeURIComponent(escape(atob(d.content.replace(/\n/g,''))));
+        existing = JSON.parse(raw);
+        if (!Array.isArray(existing)) existing = [];
+      }
+    } catch(e) { existing = []; }
+    const merged = [...existing, ...batch].slice(-200);
+    const body = {
+      message: `IDE log: ${batch.map(e=>e.event).join(', ')}`,
+      content: btoa(unescape(encodeURIComponent(JSON.stringify(merged, null, 2))))
+    };
+    if (_ideLogSHA) body.sha = _ideLogSHA;
+    const cr = await fetch(_GH_LOG_API, {
+      method: 'PUT',
+      headers: { Authorization: `token ${pat}`, 'Content-Type': 'application/json', Accept: 'application/vnd.github.v3+json' },
+      body: JSON.stringify(body)
+    });
+    if (cr.ok) { const cd = await cr.json(); _ideLogSHA = cd.content?.sha; }
+  } catch(e) { console.warn('[IDE log]', e.message); }
 }
 
 // ── IDE Chat log ──────────────────────────────────────────────
@@ -4709,6 +4766,7 @@ async function ideSubmitPrompt() {
 
   // Echo user message into chat log
   ideChatAppend('user', prompt);
+  ideLog('prompt_sent', {prompt: prompt.substring(0,300)});
   input.value = '';
 
   btn.disabled = true;
@@ -4779,6 +4837,7 @@ ${currentLogic}
 
     // Show Claude's message in chat log
     ideChatAppend('claude', message);
+    ideLog('claude_response', {message: message.substring(0,500), codeLines: newCode.split('\n').length});
 
     // Load into editor
     if (_ideMonaco) {
@@ -4791,6 +4850,7 @@ ${currentLogic}
   } catch(e) {
     document.getElementById('ide-chat-log')?.querySelector('.ide-thinking')?.remove();
     ideChatAppend('claude', '◈ Error: ' + e.message);
+    ideLog('error', {source:'ideSubmitPrompt', message: e.message});
     ideSetStatus('error', e.message);
     ideToast(e.message, true);
   }
