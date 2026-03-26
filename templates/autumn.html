@@ -142,6 +142,16 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 #ide-pat-box a:hover{color:var(--cyan)}
 #ide-pat-input{width:100%;background:rgba(0,255,204,.04);border:1px solid var(--border);color:var(--bright);padding:9px 12px;border-radius:5px;font-family:monospace;font-size:12px;outline:none;margin:12px 0}
 #ide-pat-input:focus{border-color:rgba(0,255,204,.35)}
+/* ─── ANTHROPIC KEY MODAL ───────────────────────────────── */
+#ide-ak-modal{position:fixed;inset:0;z-index:9860;background:rgba(2,10,20,.95);display:none;align-items:center;justify-content:center;backdrop-filter:blur(10px)}
+#ide-ak-modal.open{display:flex}
+#ide-ak-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:26px 22px;max-width:480px;width:90%}
+#ide-ak-box h2{font-family:var(--font-d);font-size:13px;color:var(--cyan);margin-bottom:8px;letter-spacing:2px}
+#ide-ak-box p{font-size:11px;color:var(--dim);margin-bottom:4px;line-height:1.7}
+#ide-ak-box a{color:rgba(0,136,255,.7);text-decoration:none}
+#ide-ak-box a:hover{color:var(--cyan)}
+#ide-ak-input{width:100%;background:rgba(0,255,204,.04);border:1px solid var(--border);color:var(--bright);padding:9px 12px;border-radius:5px;font-family:monospace;font-size:12px;outline:none;margin:12px 0}
+#ide-ak-input:focus{border-color:rgba(0,255,204,.35)}
 /* ─── IDE TOAST ─────────────────────────────────────────── */
 #ide-toast{position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:9950;background:rgba(0,255,204,.12);border:1px solid rgba(0,255,204,.3);color:var(--cyan);padding:10px 20px;border-radius:6px;font-family:var(--font-d);font-size:.5rem;letter-spacing:1.5px;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
 #ide-toast.show{opacity:1}
@@ -4385,7 +4395,22 @@ function saveIDEPAT() {
   _openIDEDirect();
 }
 function closeIDEPATModal() { document.getElementById('ide-pat-modal').classList.remove('open'); }
-function ideClearPAT() { try{sessionStorage.removeItem('_aut_ide_pat');}catch(e){} ideToast('Token cleared.'); }
+function ideClearPAT() { try{sessionStorage.removeItem('_aut_ide_pat');}catch(e){} ideToast('GitHub token cleared.'); }
+
+// ── Anthropic API key (sessionStorage, cleared on tab close) ──
+function _getAK() { try { return sessionStorage.getItem('_aut_ide_ak')||''; } catch(e){ return ''; } }
+function _setAK(v) { try { sessionStorage.setItem('_aut_ide_ak',v); } catch(e){} }
+
+function saveIDEAK() {
+  const v = (document.getElementById('ide-ak-input')?.value||'').trim();
+  if (!v) { ideToast('Enter an API key first.',true); return; }
+  _setAK(v);
+  document.getElementById('ide-ak-input').value = '';
+  closeIDEAKModal();
+  ideToast('◈ Anthropic key saved for this session.');
+}
+function closeIDEAKModal() { document.getElementById('ide-ak-modal').classList.remove('open'); }
+function ideClearAK() { try{sessionStorage.removeItem('_aut_ide_ak');}catch(e){} ideToast('Anthropic key cleared.'); }
 
 // ── Toast ─────────────────────────────────────────────────────
 let _ideToastTimer = null;
@@ -4653,9 +4678,11 @@ User request: ${userRequest}
 Return the complete updated autumn-logic.js file only.`;
 
   try {
+    const ak=_getAK();
+    if(!ak){ ideToast('Anthropic API key required — click 🤖 KEY in the IDE header.',true); return {success:false,error:'No Anthropic API key. Click 🤖 KEY in the IDE header to add it.'}; }
     const r=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01'},
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','x-api-key':ak},
       body:JSON.stringify({model:_CLAUDE_MDL,max_tokens:4096,system:systemPrompt,messages:[{role:'user',content:userRequest}]})
     });
     if(!r.ok) throw new Error('Claude API '+r.status);
@@ -4817,6 +4844,21 @@ loadAutumnLogic();
   </div>
 </div>
 
+<!-- ANTHROPIC API KEY MODAL -->
+<div id="ide-ak-modal">
+  <div id="ide-ak-box">
+    <h2>◈ ANTHROPIC API KEY</h2>
+    <p>An Anthropic API key is required so the IDE can call Claude to generate logic updates.<br><br>
+    Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a>.<br><br>
+    Your key is stored in <strong>sessionStorage only</strong> — cleared automatically when you close this tab. It is never committed to GitHub or sent anywhere except Anthropic's API.</p>
+    <input type="password" id="ide-ak-input" placeholder="sk-ant-api03-…" autocomplete="off" onkeydown="if(event.key==='Enter')saveIDEAK()">
+    <div class="ide-pw-btns" style="margin-top:4px">
+      <button class="m-btn primary" onclick="saveIDEAK()">SAVE KEY</button>
+      <button class="m-btn" onclick="closeIDEAKModal()">CANCEL</button>
+    </div>
+  </div>
+</div>
+
 <!-- IDE OVERLAY -->
 <div id="ide-overlay">
   <div id="ide-header">
@@ -4826,12 +4868,14 @@ loadAutumnLogic();
       <span id="ide-file-info">templates/autumn-logic.js · DART-Skyboard/Ariel</span>
     </div>
     <div class="ide-btns">
+      <button class="ide-btn" onclick="closeIDE()" title="Back to Autumn chat" style="color:var(--cyan);border-color:rgba(0,255,204,.3);font-size:.52rem">← CHAT</button>
       <input id="ide-commit-msg" placeholder="Commit message…" type="text" value="Update autumn-logic.js via IDE">
       <button class="ide-btn save" onclick="ideCommit()">▲ COMMIT</button>
       <button class="ide-btn" onclick="ideReload()">↺ RELOAD</button>
       <button class="ide-btn" onclick="ideHotReload()">⚡ HOT-RELOAD</button>
-      <button class="ide-btn" onclick="ideClearPAT()" title="Clear GitHub token">🔑</button>
-      <button class="ide-btn danger" onclick="closeIDE()">✕</button>
+      <button class="ide-btn" onclick="document.getElementById('ide-ak-modal').classList.add('open');setTimeout(()=>document.getElementById('ide-ak-input')?.focus(),100)" title="Set Anthropic API key">🤖 KEY</button>
+      <button class="ide-btn" onclick="ideClearPAT()" title="Clear GitHub token">🔑 GH</button>
+      <button class="ide-btn danger" onclick="closeIDE()" title="Close IDE">✕</button>
     </div>
   </div>
   <div id="ide-editor-wrap">
