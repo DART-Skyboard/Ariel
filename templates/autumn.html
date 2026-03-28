@@ -5522,129 +5522,476 @@ const DART_PROCESSOR = {
   }
 };
 
-// ── LEMAC ENGINE (full version — planar + cubic) ────────────────────────
+// ── LEMAC ENGINE — exact port of lemac.html logic ────────────────────────
+// Two-branch degree-map solver: maze encodes itself as scalar field (Branch 1),
+// dead-end pruning collapses it (Branch 2), sigma remainder IS the path.
+// InstancedMesh rendering, PlaneGeometry walls, random perimeter start/end.
+
 const LEMAC_ENGINE_ASH = {
-  mode: 'cubic', engine: 'reflective',
+  mode: 'cubic',
+  engine: 'reflective',
+
+  // ── Wall material — reflective cyan or Bayer dither (matches lemac.html) ──
+  getWallMaterial() {
+    if (this.engine === 'reflective') {
+      return new THREE.MeshStandardMaterial({
+        color: 0x00ffcc, emissive: 0x00ffcc, emissiveIntensity: 0.55,
+        metalness: 0.6, roughness: 0.25,
+        transparent: true, opacity: 0.88, side: THREE.DoubleSide
+      });
+    }
+    // Bayer dithered
+    const size = 4;
+    const bayer = new Uint8Array([0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5].map(v=>Math.round(v/15*255)));
+    const tex = new THREE.DataTexture(bayer, size, size, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.magFilter = THREE.NearestFilter; tex.needsUpdate = true;
+    return new THREE.MeshStandardMaterial({
+      color: 0x00ffcc, alphaMap: tex, transparent: true,
+      opacity: 0.75, side: THREE.DoubleSide, alphaTest: 0.01
+    });
+  },
+
+  getPathMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: 0x00d9ff, emissive: 0x00d9ff, emissiveIntensity: 1.5
+    });
+  },
+
+  // ── PLANAR GENERATION — exact lemac.html generatePlanar() ─────────────
+  // Cells: { top, bottom, left, right, visited } — true = wall present
   generatePlanar(w, h) {
-    const g = Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>({x,y,N:true,E:true,S:true,W:true,v:false})));
-    const stack=[g[0][0]]; g[0][0].v=true;
-    const nb=(c)=>{const r=[];const dirs=[[-1,0,'N','S'],[0,1,'E','W'],[1,0,'S','N'],[0,-1,'W','E']];for(const[dy,dx,d,od]of dirs){const ny=c.y+dy,nx=c.x+dx;if(ny>=0&&ny<h&&nx>=0&&nx<w&&!g[ny][nx].v)r.push({cell:g[ny][nx],d,od});}return r;};
-    while(stack.length){const c=stack[stack.length-1];const ns=nb(c);if(ns.length){const{cell,d,od}=ns[Math.floor(Math.random()*ns.length)];c[d]=false;cell[od]=false;cell.v=true;stack.push(cell);}else stack.pop();}
-    return g;
+    const grid = Array(h).fill().map(() =>
+      Array(w).fill().map(() => ({ top:true, bottom:true, left:true, right:true, visited:false }))
+    );
+    const stack = [{x:0, y:0}];
+    grid[0][0].visited = true;
+    while (stack.length > 0) {
+      const curr = stack[stack.length-1];
+      const ns = [];
+      if (curr.y > 0   && !grid[curr.y-1][curr.x].visited) ns.push({x:curr.x,   y:curr.y-1, d1:'top',    d2:'bottom'});
+      if (curr.y < h-1 && !grid[curr.y+1][curr.x].visited) ns.push({x:curr.x,   y:curr.y+1, d1:'bottom', d2:'top'});
+      if (curr.x > 0   && !grid[curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y,   d1:'left',   d2:'right'});
+      if (curr.x < w-1 && !grid[curr.y][curr.x+1].visited) ns.push({x:curr.x+1, y:curr.y,   d1:'right',  d2:'left'});
+      if (ns.length > 0) {
+        const next = ns[Math.floor(Math.random() * ns.length)];
+        grid[curr.y][curr.x][next.d1] = false;
+        grid[next.y][next.x][next.d2] = false;
+        grid[next.y][next.x].visited = true;
+        stack.push(next);
+      } else stack.pop();
+    }
+    // Random perimeter start/end (punch holes in perimeter walls)
+    const start = this._randPerimeter2D(w, h);
+    const end   = this._randPerimeter2D(w, h, start);
+    grid[start.y][start.x][start.face] = false;
+    grid[end.y][end.x][end.face]       = false;
+    return { grid, start, end, w, h };
   },
+
+  _randPerimeter2D(w, h, exclude) {
+    let res;
+    do {
+      const side = Math.floor(Math.random()*4);
+      if      (side===0) res = {x:Math.floor(Math.random()*w), y:0,   face:'top'};
+      else if (side===1) res = {x:Math.floor(Math.random()*w), y:h-1, face:'bottom'};
+      else if (side===2) res = {x:0,   y:Math.floor(Math.random()*h), face:'left'};
+      else               res = {x:w-1, y:Math.floor(Math.random()*h), face:'right'};
+    } while (exclude && res.x===exclude.x && res.y===exclude.y);
+    return res;
+  },
+
+  // ── CUBIC GENERATION — exact lemac.html generateCubic() ──────────────
+  // Cells: { top, bottom, left, right, front, back, visited }
   generateCubic(w, h, d) {
-    const g=Array.from({length:d},(_,z)=>Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>({x,y,z,left:true,right:true,top:true,bottom:true,back:true,front:true,v:false}))));
-    const stack=[g[0][0][0]]; g[0][0][0].v=true;
-    const dirs=[[-1,0,0,'left','right'],[1,0,0,'right','left'],[0,-1,0,'top','bottom'],[0,1,0,'bottom','top'],[0,0,-1,'back','front'],[0,0,1,'front','back']];
-    const nb=(c)=>{const r=[];for(const[dx,dy,dz,d,od]of dirs){const nx=c.x+dx,ny=c.y+dy,nz=c.z+dz;if(nx>=0&&nx<w&&ny>=0&&ny<h&&nz>=0&&nz<d&&!g[nz][ny][nx].v)r.push({cell:g[nz][ny][nx],d,od});}return r;};
-    while(stack.length){const c=stack[stack.length-1];const ns=nb(c);if(ns.length){const{cell,d,od}=ns[Math.floor(Math.random()*ns.length)];c[d]=false;cell[od]=false;cell.v=true;stack.push(cell);}else stack.pop();}
-    return g;
+    const grid = Array(d).fill().map(() =>
+      Array(h).fill().map(() =>
+        Array(w).fill().map(() => ({
+          top:true, bottom:true, left:true, right:true, front:true, back:true, visited:false
+        }))
+      )
+    );
+    const stack = [{x:0, y:0, z:0}];
+    grid[0][0][0].visited = true;
+    while (stack.length > 0) {
+      const curr = stack[stack.length-1];
+      const ns = [];
+      if (curr.x > 0   && !grid[curr.z][curr.y][curr.x-1].visited) ns.push({x:curr.x-1,y:curr.y,  z:curr.z,   d1:'left',  d2:'right'});
+      if (curr.x < w-1 && !grid[curr.z][curr.y][curr.x+1].visited) ns.push({x:curr.x+1,y:curr.y,  z:curr.z,   d1:'right', d2:'left'});
+      if (curr.y > 0   && !grid[curr.z][curr.y-1][curr.x].visited) ns.push({x:curr.x,  y:curr.y-1,z:curr.z,   d1:'bottom',d2:'top'});
+      if (curr.y < h-1 && !grid[curr.z][curr.y+1][curr.x].visited) ns.push({x:curr.x,  y:curr.y+1,z:curr.z,   d1:'top',   d2:'bottom'});
+      if (curr.z > 0   && !grid[curr.z-1][curr.y][curr.x].visited) ns.push({x:curr.x,  y:curr.y,  z:curr.z-1, d1:'back',  d2:'front'});
+      if (curr.z < d-1 && !grid[curr.z+1][curr.y][curr.x].visited) ns.push({x:curr.x,  y:curr.y,  z:curr.z+1, d1:'front', d2:'back'});
+      if (ns.length > 0) {
+        const next = ns[Math.floor(Math.random() * ns.length)];
+        grid[curr.z][curr.y][curr.x][next.d1] = false;
+        grid[next.z][next.y][next.x][next.d2] = false;
+        grid[next.z][next.y][next.x].visited = true;
+        stack.push(next);
+      } else stack.pop();
+    }
+    const start = this._randPerimeter3D(w, h, d);
+    const end   = this._randPerimeter3D(w, h, d, start);
+    grid[start.z][start.y][start.x][start.face] = false;
+    grid[end.z][end.y][end.x][end.face]         = false;
+    return { grid, start, end, w, h, d };
   },
-  solvePlanar(g,s,e,w,h){const q=[{...s,path:[s]}];const vis=new Set([`${s.x},${s.y}`]);while(q.length){const{x,y,path}=q.shift();if(x===e.x&&y===e.y)return path;const c=g[y][x];const moves=[{nx:x,ny:y-1,wall:'N'},{nx:x+1,ny:y,wall:'E'},{nx:x,ny:y+1,wall:'S'},{nx:x-1,ny:y,wall:'W'}];for(const{nx,ny,wall}of moves){if(nx<0||nx>=w||ny<0||ny>=h||c[wall])continue;const k=`${nx},${ny}`;if(!vis.has(k)){vis.add(k);q.push({x:nx,y:ny,path:[...path,{x:nx,y:ny}]});}}}return null;},
-  solveCubic(g,s,e,w,h,d){const q=[{...s,path:[s]}];const vis=new Set([`${s.x},${s.y},${s.z}`]);while(q.length){const{x,y,z,path}=q.shift();if(x===e.x&&y===e.y&&z===e.z)return path;const c=g[z][y][x];const moves=[{nx:x-1,ny:y,nz:z,wall:'left'},{nx:x+1,ny:y,nz:z,wall:'right'},{nx:x,ny:y-1,nz:z,wall:'top'},{nx:x,ny:y+1,nz:z,wall:'bottom'},{nx:x,ny:y,nz:z-1,wall:'back'},{nx:x,ny:y,nz:z+1,wall:'front'}];for(const{nx,ny,nz,wall}of moves){if(nx<0||nx>=w||ny<0||ny>=h||nz<0||nz>=d||c[wall])continue;const k=`${nx},${ny},${nz}`;if(!vis.has(k)){vis.add(k);q.push({x:nx,y:ny,z:nz,path:[...path,{x:nx,y:ny,z:nz}]});}}}return null;},
-  getWallMaterial(){return new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:.6,transparent:true,opacity:.85,side:THREE.DoubleSide});},
-  getPathMaterial(){return new THREE.MeshStandardMaterial({color:0x00aaff,emissive:0x00aaff,emissiveIntensity:.8,transparent:true,opacity:.9});}
+
+  _randPerimeter3D(w, h, d, exclude) {
+    let res;
+    do {
+      const face = Math.floor(Math.random()*6);
+      if      (face===0) res = {x:0,   y:Math.floor(Math.random()*h),z:Math.floor(Math.random()*d),face:'left'};
+      else if (face===1) res = {x:w-1, y:Math.floor(Math.random()*h),z:Math.floor(Math.random()*d),face:'right'};
+      else if (face===2) res = {x:Math.floor(Math.random()*w),y:0,   z:Math.floor(Math.random()*d),face:'bottom'};
+      else if (face===3) res = {x:Math.floor(Math.random()*w),y:h-1, z:Math.floor(Math.random()*d),face:'top'};
+      else if (face===4) res = {x:Math.floor(Math.random()*w),y:Math.floor(Math.random()*h),z:0,   face:'back'};
+      else               res = {x:Math.floor(Math.random()*w),y:Math.floor(Math.random()*h),z:d-1, face:'front'};
+    } while (exclude && res.x===exclude.x && res.y===exclude.y && res.z===exclude.z);
+    return res;
+  },
+
+  // ── SOLVE — two-branch degree-map sigma solver (lemac.html solve()) ───
+  // Branch 1: encode maze as degreeMap scalar field (open connection counts)
+  // Branch 2: iteratively prune degree-1 dead ends, propagate to neighbors
+  // Sigma:    remainder that cannot be pruned = the solution path
+  // Order:    DFS from start through remaining path cells
+  solvePlanar(mazeResult) {
+    const {grid, start, end, w, h} = mazeResult;
+
+    // BRANCH 1 — build degree map (count open walls per cell)
+    const degreeMap = new Map();
+    const allCells = [];
+    for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
+      const c = grid[y][x];
+      let deg = 0;
+      if (!c.top) deg++; if (!c.bottom) deg++;
+      if (!c.left) deg++; if (!c.right) deg++;
+      degreeMap.set(`${x},${y}`, deg);
+      allCells.push({x, y});
+    }
+
+    // Pin start/end — force-include them regardless of their degree
+    const sK = `${start.x},${start.y}`;
+    const eK = `${end.x},${end.y}`;
+    degreeMap.set(sK, 10); degreeMap.set(eK, 10);
+
+    // BRANCH 2 — dead-end pruning (sigma collapse)
+    // Each dead end (degree=1) is eliminated; its single neighbor loses a connection.
+    // This cascades until no more degree-1 nodes exist.
+    let changed = true;
+    const pruned = new Set();
+    while (changed) {
+      changed = false;
+      allCells.forEach(cell => {
+        const key = `${cell.x},${cell.y}`;
+        if (!pruned.has(key) && degreeMap.get(key) === 1) {
+          pruned.add(key); changed = true;
+          // propagate: reduce degree of each open neighbor
+          const c = grid[cell.y][cell.x];
+          if (!c.top    && cell.y > 0)   { const nk=`${cell.x},${cell.y-1}`; degreeMap.set(nk, degreeMap.get(nk)-1); }
+          if (!c.bottom && cell.y < h-1) { const nk=`${cell.x},${cell.y+1}`; degreeMap.set(nk, degreeMap.get(nk)-1); }
+          if (!c.left   && cell.x > 0)   { const nk=`${cell.x-1},${cell.y}`; degreeMap.set(nk, degreeMap.get(nk)-1); }
+          if (!c.right  && cell.x < w-1) { const nk=`${cell.x+1},${cell.y}`; degreeMap.set(nk, degreeMap.get(nk)-1); }
+        }
+      });
+    }
+
+    // SIGMA — what remains after Branch 2 collapse = the path
+    const pathCells = allCells.filter(c => !pruned.has(`${c.x},${c.y}`));
+    const pathSet = new Set(pathCells.map(p => `${p.x},${p.y}`));
+
+    // ORDER — DFS traversal from start through path cells
+    const ordered = [], visited = new Set(), stack = [{x:start.x, y:start.y}];
+    while (stack.length > 0) {
+      const p = stack.pop();
+      const key = `${p.x},${p.y}`;
+      if (visited.has(key)) continue;
+      visited.add(key); ordered.push(p);
+      const c = grid[p.y][p.x];
+      if (!c.top    && p.y>0   && pathSet.has(`${p.x},${p.y-1}`))   stack.push({x:p.x, y:p.y-1});
+      if (!c.bottom && p.y<h-1 && pathSet.has(`${p.x},${p.y+1}`))   stack.push({x:p.x, y:p.y+1});
+      if (!c.left   && p.x>0   && pathSet.has(`${p.x-1},${p.y}`))   stack.push({x:p.x-1, y:p.y});
+      if (!c.right  && p.x<w-1 && pathSet.has(`${p.x+1},${p.y}`))   stack.push({x:p.x+1, y:p.y});
+    }
+    return ordered;
+  },
+
+  solveCubic(mazeResult) {
+    const {grid, start, end, w, h, d} = mazeResult;
+
+    // BRANCH 1 — degree map for 3D
+    const degreeMap = new Map();
+    const allCells = [];
+    for (let z=0; z<d; z++) for (let y=0; y<h; y++) for (let x=0; x<w; x++) {
+      const c = grid[z][y][x];
+      let deg = 0;
+      if (!c.top) deg++; if (!c.bottom) deg++;
+      if (!c.left) deg++; if (!c.right) deg++;
+      if (!c.front) deg++; if (!c.back) deg++;
+      degreeMap.set(`${x},${y},${z}`, deg);
+      allCells.push({x, y, z});
+    }
+    const sK = `${start.x},${start.y},${start.z}`;
+    const eK = `${end.x},${end.y},${end.z}`;
+    degreeMap.set(sK, 10); degreeMap.set(eK, 10);
+
+    // BRANCH 2 — 3D dead-end pruning
+    let changed = true;
+    const pruned = new Set();
+    while (changed) {
+      changed = false;
+      allCells.forEach(cell => {
+        const key = `${cell.x},${cell.y},${cell.z}`;
+        if (!pruned.has(key) && degreeMap.get(key) === 1) {
+          pruned.add(key); changed = true;
+          const c = grid[cell.z][cell.y][cell.x];
+          if (!c.left   && cell.x>0)   { const nk=`${cell.x-1},${cell.y},${cell.z}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+          if (!c.right  && cell.x<w-1) { const nk=`${cell.x+1},${cell.y},${cell.z}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+          if (!c.bottom && cell.y>0)   { const nk=`${cell.x},${cell.y-1},${cell.z}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+          if (!c.top    && cell.y<h-1) { const nk=`${cell.x},${cell.y+1},${cell.z}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+          if (!c.back   && cell.z>0)   { const nk=`${cell.x},${cell.y},${cell.z-1}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+          if (!c.front  && cell.z<d-1) { const nk=`${cell.x},${cell.y},${cell.z+1}`;   degreeMap.set(nk,degreeMap.get(nk)-1); }
+        }
+      });
+    }
+
+    // SIGMA remainder + DFS ordering
+    const pathCells = allCells.filter(c => !pruned.has(`${c.x},${c.y},${c.z}`));
+    const pathSet = new Set(pathCells.map(p => `${p.x},${p.y},${p.z}`));
+    const ordered = [], visited = new Set(), stack = [{x:start.x,y:start.y,z:start.z}];
+    while (stack.length > 0) {
+      const p = stack.pop();
+      const key = `${p.x},${p.y},${p.z}`;
+      if (visited.has(key)) continue;
+      visited.add(key); ordered.push(p);
+      const c = grid[p.z][p.y][p.x];
+      if (!c.left   && p.x>0)   { const nk=`${p.x-1},${p.y},${p.z}`;   if(pathSet.has(nk)) stack.push({x:p.x-1,y:p.y,z:p.z}); }
+      if (!c.right  && p.x<w-1) { const nk=`${p.x+1},${p.y},${p.z}`;   if(pathSet.has(nk)) stack.push({x:p.x+1,y:p.y,z:p.z}); }
+      if (!c.bottom && p.y>0)   { const nk=`${p.x},${p.y-1},${p.z}`;   if(pathSet.has(nk)) stack.push({x:p.x,y:p.y-1,z:p.z}); }
+      if (!c.top    && p.y<h-1) { const nk=`${p.x},${p.y+1},${p.z}`;   if(pathSet.has(nk)) stack.push({x:p.x,y:p.y+1,z:p.z}); }
+      if (!c.back   && p.z>0)   { const nk=`${p.x},${p.y},${p.z-1}`;   if(pathSet.has(nk)) stack.push({x:p.x,y:p.y,z:p.z-1}); }
+      if (!c.front  && p.z<d-1) { const nk=`${p.x},${p.y},${p.z+1}`;   if(pathSet.has(nk)) stack.push({x:p.x,y:p.y,z:p.z+1}); }
+    }
+    return ordered;
+  }
 };
 
-// ── ASH MAZE VIEWPORT ───────────────────────────────────────────────────
+// ── ASH MAZE VIEWPORT — InstancedMesh + LEMAC exact geometry ─────────────
+// Mirrors lemac.html drawCubicGeometry/drawPlanarGeometry exactly:
+// single InstancedMesh per generate, PlaneGeometry walls with dummy.updateMatrix()
 let _ashMazeScene=null,_ashMazeCamera=null,_ashMazeRenderer=null,_ashMazeControls=null;
-let _ashMazeGroup=null,_ashMazeData=null,_ashMazeAnimId=null;
+let _ashMazeGroup=null,_ashSolutionGroup=null,_ashMarkersGroup=null,_ashMasterGroup=null;
+let _ashMazeData=null,_ashMazeAnimId=null,_ashMazeAnimQueue=[],_ashMazeAnimating=false;
 
 function ASH_MAZE_init(canvas) {
   if (_ashMazeRenderer) { cancelAnimationFrame(_ashMazeAnimId); _ashMazeRenderer.dispose(); }
   _ashMazeScene = new THREE.Scene();
-  _ashMazeScene.fog = new THREE.FogExp2(0x000814, 0.004);
-  _ashMazeGroup = new THREE.Group();
-  _ashMazeScene.add(_ashMazeGroup);
-  _ashMazeScene.add(new THREE.AmbientLight(0x00ffcc, 0.4));
-  const dl = new THREE.DirectionalLight(0x00ffcc, 1.8); dl.position.set(50,80,50);
-  _ashMazeScene.add(dl);
-  const fl = new THREE.DirectionalLight(0x0088ff, 0.8); fl.position.set(-50,-30,50);
-  _ashMazeScene.add(fl);
-  const W = canvas.parentElement.clientWidth||300, H = canvas.parentElement.clientHeight||300;
+  _ashMazeScene.fog = new THREE.FogExp2(0x000814, 0.003);
+
+  _ashMasterGroup  = new THREE.Group();
+  _ashMazeGroup    = new THREE.Group(); _ashMazeGroup.name = 'MAZE_PERIMETER_WALLS';
+  _ashSolutionGroup= new THREE.Group(); _ashSolutionGroup.name = 'SOLUTION_PATH';
+  _ashMarkersGroup = new THREE.Group(); _ashMarkersGroup.name = 'ENTRY_EXIT_MARKERS';
+  _ashMasterGroup.add(_ashMazeGroup, _ashSolutionGroup, _ashMarkersGroup);
+  _ashMazeScene.add(_ashMasterGroup);
+
+  // Lighting — matches lemac.html
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.0); keyLight.position.set(10,20,10);
+  const fillLight = new THREE.DirectionalLight(0x00d9ff, 2.5); fillLight.position.set(-10,5,10);
+  const backLight = new THREE.DirectionalLight(0xffd4a3, 4.0); backLight.position.set(0,-10,-10);
+  const ambient   = new THREE.AmbientLight(0x404040, 1.0);
+  _ashMazeScene.add(keyLight, fillLight, backLight, ambient);
+
+  const W = canvas.parentElement?.clientWidth||300;
+  const H = canvas.parentElement?.clientHeight||300;
   _ashMazeCamera = new THREE.PerspectiveCamera(60, W/H, 0.1, 5000);
-  _ashMazeCamera.position.set(60,60,60);
+  _ashMazeCamera.position.set(15,15,15);
+
   _ashMazeRenderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
   _ashMazeRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-  _ashMazeRenderer.setSize(W, H);
+  _ashMazeRenderer.setSize(W,H);
+
   _ashMazeControls = new THREE.OrbitControls(_ashMazeCamera, canvas);
   _ashMazeControls.enableDamping = false;
+
   new ResizeObserver(()=>{
-    const w=canvas.parentElement.clientWidth||300, h=canvas.parentElement.clientHeight||300;
+    const w=canvas.parentElement?.clientWidth||300, h=canvas.parentElement?.clientHeight||300;
     _ashMazeCamera.aspect=w/h; _ashMazeCamera.updateProjectionMatrix();
     _ashMazeRenderer.setSize(w,h);
-  }).observe(canvas.parentElement);
-  function animate(){_ashMazeAnimId=requestAnimationFrame(animate);_ashMazeControls.update();_ashMazeRenderer.render(_ashMazeScene,_ashMazeCamera);}
+  }).observe(canvas.parentElement||canvas);
+
+  function animate(){
+    _ashMazeAnimId=requestAnimationFrame(animate);
+    _ashMazeControls.update();
+    if (_ashMazeAnimating && _ashMazeAnimQueue.length>0) {
+      // Step through animation queue — draw one node per frame
+      const batch = _ashMazeAnimQueue.splice(0, 3);
+      _ashDrawPathNodes(batch);
+      if (_ashMazeAnimQueue.length===0) _ashMazeAnimating=false;
+    }
+    _ashMazeRenderer.render(_ashMazeScene, _ashMazeCamera);
+  }
   animate();
+}
+
+function _ashClearGroups() {
+  [_ashMazeGroup, _ashSolutionGroup, _ashMarkersGroup].forEach(g => {
+    if (!g) return;
+    while (g.children.length>0) {
+      const c=g.children[0]; g.remove(c);
+      if (c.isMesh||c.isInstancedMesh){c.geometry?.dispose();if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material?.dispose();}
+    }
+  });
 }
 
 function ASH_MAZE_generate() {
   if (!_ashMazeGroup) return;
-  while (_ashMazeGroup.children.length) {
-    const c=_ashMazeGroup.children[0]; _ashMazeGroup.remove(c);
-    if(c.isMesh){c.geometry?.dispose();c.material?.dispose();}
-  }
-  const w=_ashState.mazeW, h=_ashState.mazeH, d=_ashState.mazeD, cs=_ashState.mazeCs;
-  const ox=(w*cs)/2, oy=(h*cs)/2, oz=(d*cs)/2;
-  const wm = LEMAC_ENGINE_ASH.getWallMaterial();
+  _ashClearGroups();
+  _ashMazeAnimating=false; _ashMazeAnimQueue=[];
 
-  if (_ashState.mazeMode==='planar') {
-    const g = LEMAC_ENGINE_ASH.generatePlanar(w,h);
-    const wg=new THREE.BoxGeometry(1,1,1), wt=cs*0.09;
-    for(let y=0;y<h;y++){for(let x=0;x<w;x++){const c=g[y][x];
-      if(c.E&&x<w-1){const l=new THREE.Mesh(wg,wm);l.scale.set(wt,cs*0.6,cs);l.position.set((x+1)*cs-ox,0,y*cs-oz+cs/2);_ashMazeGroup.add(l);}
-      if(c.S&&y<h-1){const l=new THREE.Mesh(wg,wm);l.scale.set(cs,cs*0.6,wt);l.position.set(x*cs-ox+cs/2,0,(y+1)*cs-oz);_ashMazeGroup.add(l);}
-    }}
-    const sp=LEMAC_ENGINE_ASH.solvePlanar(g,{x:0,y:0},{x:w-1,y:h-1},w,h);
-    _ashMazeData={g,mode:'planar',w,h,d:1,cs,ox,oy,oz,path:sp};
-    _ashMazeGroup.position.set(0,0,0);
+  const w=_ashState.mazeW||10, h=_ashState.mazeH||10, d=_ashState.mazeD||4;
+  const u=_ashState.mazeCs||1.0;
+  const mode=_ashState.mazeMode||'cubic';
+  LEMAC_ENGINE_ASH.mode=mode;
+  LEMAC_ENGINE_ASH.engine=_ashState.mazeEngine||'reflective';
+
+  let mazeResult;
+  if (mode==='planar') {
+    mazeResult = LEMAC_ENGINE_ASH.generatePlanar(w,h);
+    _ashDrawPlanarGeometry(mazeResult, u);
   } else {
-    const g = LEMAC_ENGINE_ASH.generateCubic(w,h,d);
-    const pYZ=new THREE.PlaneGeometry(cs,cs),pXZ=new THREE.PlaneGeometry(cs,cs),pXY=new THREE.PlaneGeometry(cs,cs);
-    for(let z=0;z<d;z++){for(let y=0;y<h;y++){for(let x=0;x<w;x++){
-      const c=g[z][y][x], cx=x*cs-ox+cs/2, cy=y*cs-oy+cs/2, cz=z*cs-oz+cs/2;
-      if(c.left){const l=new THREE.Mesh(pYZ,wm);l.position.set(x*cs-ox,cy,cz);_ashMazeGroup.add(l);}
-      if(c.right&&x===w-1){const l=new THREE.Mesh(pYZ,wm);l.position.set((x+1)*cs-ox,cy,cz);_ashMazeGroup.add(l);}
-      if(c.top){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,y*cs-oy,cz);_ashMazeGroup.add(l);}
-      if(c.bottom&&y===h-1){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,(y+1)*cs-oy,cz);_ashMazeGroup.add(l);}
-      if(c.back){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,z*cs-oz);_ashMazeGroup.add(l);}
-      if(c.front&&z===d-1){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,(z+1)*cs-oz);_ashMazeGroup.add(l);}
-    }}}
-    const sp=LEMAC_ENGINE_ASH.solveCubic(g,{x:0,y:0,z:0},{x:w-1,y:h-1,z:d-1},w,h,d);
-    _ashMazeData={g,mode:'cubic',w,h,d,cs,ox,oy,oz,path:sp};
+    mazeResult = LEMAC_ENGINE_ASH.generateCubic(w,h,d);
+    _ashDrawCubicGeometry(mazeResult, u);
   }
-  // Start/end markers
-  const sm=new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2});
-  const em=new THREE.MeshStandardMaterial({color:0xff4466,emissive:0xff4466,emissiveIntensity:1.0});
-  const s=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),sm);
-  s.position.set(-ox+cs/2,_ashState.mazeMode==='cubic'?-oy+cs/2:cs*0.5,-oz+cs/2);
-  _ashMazeGroup.add(s);
-  const e=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),em);
-  const ex=(w-1)*cs-ox+cs/2, ey=_ashState.mazeMode==='cubic'?(h-1)*cs-oy+cs/2:cs*0.5, ez=(d-1)*cs-oz+cs/2;
-  e.position.set(ex,ey,ez); _ashMazeGroup.add(e);
-  // Frame camera
-  const box=new THREE.Box3().setFromObject(_ashMazeGroup);
+  _ashMazeData = {...mazeResult, u, mode};
+  _ashDrawMarkers(u, mode);
+  _ashFrameCamera();
+}
+
+// ── Exact lemac.html drawPlanarGeometry — InstancedMesh ─────────────────
+function _ashDrawPlanarGeometry(mr, u) {
+  const {grid,w,h} = mr;
+  const wallGeo = new THREE.BoxGeometry(u, u*1.5, u*0.1);
+  const wallMat = LEMAC_ENGINE_ASH.getWallMaterial();
+  const inst = new THREE.InstancedMesh(wallGeo, wallMat, w*h*4);
+  const dummy = new THREE.Object3D();
+  const ox=(w*u)/2, oz=(h*u)/2;
+  let i=0;
+  for (let y=0; y<h; y++) {
+    for (let x=0; x<w; x++) {
+      const c=grid[y][x], cx=x*u-ox+u/2, cz=y*u-oz+u/2;
+      if(c.top)    {dummy.position.set(cx,0,cz-u/2);dummy.rotation.set(0,0,0);           dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+      if(c.bottom) {dummy.position.set(cx,0,cz+u/2);dummy.rotation.set(0,0,0);           dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+      if(c.left)   {dummy.position.set(cx-u/2,0,cz);dummy.rotation.set(0,Math.PI/2,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+      if(c.right)  {dummy.position.set(cx+u/2,0,cz);dummy.rotation.set(0,Math.PI/2,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+    }
+  }
+  inst.count=i;
+  _ashMazeGroup.add(inst);
+}
+
+// ── Exact lemac.html drawCubicGeometry — InstancedMesh + PlaneGeometry ───
+function _ashDrawCubicGeometry(mr, u) {
+  const {grid,w,h,d} = mr;
+  const wallGeo = new THREE.PlaneGeometry(u,u);
+  const wallMat = LEMAC_ENGINE_ASH.getWallMaterial();
+  const inst = new THREE.InstancedMesh(wallGeo, wallMat, w*h*d*6);
+  const dummy = new THREE.Object3D();
+  const ox=(w*u)/2, oy=(h*u)/2, oz=(d*u)/2;
+  let i=0;
+  for (let z=0; z<d; z++) {
+    for (let y=0; y<h; y++) {
+      for (let x=0; x<w; x++) {
+        const c=grid[z][y][x], cx=x*u-ox+u/2, cy=y*u-oy+u/2, cz=z*u-oz+u/2;
+        if(c.left)  {dummy.position.set(cx-u/2,cy,cz);dummy.rotation.set(0,Math.PI/2,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+        if(c.right) {dummy.position.set(cx+u/2,cy,cz);dummy.rotation.set(0,Math.PI/2,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+        if(c.bottom){dummy.position.set(cx,cy-u/2,cz);dummy.rotation.set(Math.PI/2,0,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+        if(c.top)   {dummy.position.set(cx,cy+u/2,cz);dummy.rotation.set(Math.PI/2,0,0);  dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+        if(c.back)  {dummy.position.set(cx,cy,cz-u/2);dummy.rotation.set(0,0,0);           dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+        if(c.front) {dummy.position.set(cx,cy,cz+u/2);dummy.rotation.set(0,0,0);           dummy.updateMatrix();inst.setMatrixAt(i++,dummy.matrix);}
+      }
+    }
+  }
+  inst.count=i;
+  _ashMazeGroup.add(inst);
+}
+
+// ── Exact lemac.html drawMarkers — random perimeter start/end ────────────
+function _ashDrawMarkers(u, mode) {
+  if (!_ashMazeData) return;
+  const {start,end,w,h,d} = _ashMazeData;
+  const markerGeo = new THREE.SphereGeometry(u*0.35);
+  const sM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color:0x00d9ff,emissive:0x00d9ff,emissiveIntensity:2}));
+  const eM = new THREE.Mesh(markerGeo, new THREE.MeshStandardMaterial({color:0xff0000,emissive:0xff0000,emissiveIntensity:2}));
+  const ox=(w*u)/2, oy=(h*u)/2, oz=(mode==='cubic'?(d*u)/2:(h*u)/2);
+
+  function setPos(mesh, term) {
+    let px=term.x*u-ox+u/2, py=0, pz=0;
+    if (mode==='planar') {
+      pz=term.y*u-oz+u/2;
+      if(term.face==='left')   px-=u/2; if(term.face==='right')  px+=u/2;
+      if(term.face==='top')    pz-=u/2; if(term.face==='bottom') pz+=u/2;
+    } else {
+      py=term.y*u-oy+u/2; pz=term.z*u-oz+u/2;
+      if(term.face==='left')   px-=u/2; if(term.face==='right')  px+=u/2;
+      if(term.face==='bottom') py-=u/2; if(term.face==='top')    py+=u/2;
+      if(term.face==='back')   pz-=u/2; if(term.face==='front')  pz+=u/2;
+    }
+    mesh.position.set(px,py,pz);
+  }
+  setPos(sM,start); setPos(eM,end);
+  _ashMarkersGroup.add(sM,eM);
+}
+
+// ── LEMAC sigma-solve → animated or instant path draw ───────────────────
+function ASH_MAZE_solvePath(instant) {
+  if (!_ashMazeData) return;
+  // Clear previous solution
+  while(_ashSolutionGroup.children.length>0){
+    const c=_ashSolutionGroup.children[0];_ashSolutionGroup.remove(c);
+    c.geometry?.dispose();c.material?.dispose();
+  }
+  _ashMazeAnimating=false; _ashMazeAnimQueue=[];
+
+  const ordered = _ashMazeData.mode==='planar'
+    ? LEMAC_ENGINE_ASH.solvePlanar(_ashMazeData)
+    : LEMAC_ENGINE_ASH.solveCubic(_ashMazeData);
+
+  if (instant || _ashState.mazeInstantSolve) {
+    _ashDrawPathNodes(ordered);
+  } else {
+    _ashMazeAnimQueue = [...ordered];
+    _ashMazeAnimating = true;
+  }
+}
+
+function _ashDrawPathNodes(list) {
+  if (!list||!list.length) return;
+  const u=_ashMazeData.u, mode=_ashMazeData.mode;
+  const {w,h,d} = _ashMazeData;
+  const ox=(w*u)/2, oy=(h*u)/2, oz=(mode==='cubic'?(d*u)/2:(h*u)/2);
+  const geo=new THREE.BoxGeometry(u*0.5,u*0.5,u*0.5);
+  const mat=LEMAC_ENGINE_ASH.getPathMaterial();
+  list.forEach(p=>{
+    const mesh=new THREE.Mesh(geo,mat);
+    const py = mode==='cubic'? p.y*u-oy+u/2 : 0;
+    const pz = mode==='cubic'? p.z*u-oz+u/2 : p.y*u-oz+u/2;
+    mesh.position.set(p.x*u-ox+u/2, py, pz);
+    _ashSolutionGroup.add(mesh);
+  });
+}
+
+function _ashFrameCamera() {
+  if (!_ashMasterGroup||!_ashMazeCamera) return;
+  const box=new THREE.Box3().setFromObject(_ashMasterGroup);
   const sz=box.getSize(new THREE.Vector3()), ctr=box.getCenter(new THREE.Vector3());
   const maxD=Math.max(sz.x,sz.y,sz.z), fov=_ashMazeCamera.fov*(Math.PI/180);
-  const dist=Math.abs(maxD/2/Math.tan(fov/2))*1.6;
+  const dist=Math.abs(maxD/2/Math.tan(fov/2))*1.5;
   _ashMazeControls.target.copy(ctr);
   _ashMazeCamera.position.set(ctr.x+dist*.7,ctr.y+dist*.7,ctr.z+dist*.7);
   _ashMazeControls.update();
 }
 
-function ASH_MAZE_solvePath() {
-  if (!_ashMazeData?.path) return;
-  const {path,cs,ox,oy,oz,mode}=_ashMazeData;
-  const geo=new THREE.BoxGeometry(cs*.4,cs*.4,cs*.4), mat=LEMAC_ENGINE_ASH.getPathMaterial();
-  let i=0;
-  const draw=()=>{
-    if(i>=path.length)return;
-    const p=path[i++], m=new THREE.Mesh(geo,mat);
-    m.position.set(p.x*cs-ox+cs/2, mode==='cubic'?p.y*cs-oy+cs/2:cs*0.5, (p.z||0)*cs-oz+cs/2);
-    _ashMazeGroup.add(m); setTimeout(draw,18);
-  };
-  draw();
-}
 
 // ── CRYPTOLOGY ENGINE (SHA-256 + shuffle encrypt) ───────────────────────
 async function ashSHA256(data) {
@@ -5717,15 +6064,26 @@ function _ashMazeHTML(){
       <option value="cubic" ${_ashState.mazeMode==='cubic'?'selected':''}>Cubic 3D</option>
       <option value="planar" ${_ashState.mazeMode==='planar'?'selected':''}>Planar 2D</option>
     </select>
-    <div class="ash-ctrl-lbl">WIDTH</div>
-    <input type="number" class="ash-ctrl-input" id="ashMazeW" value="${_ashState.mazeW}" min="3" max="30" onchange="_ashState.mazeW=+this.value">
-    <div class="ash-ctrl-lbl">HEIGHT</div>
-    <input type="number" class="ash-ctrl-input" id="ashMazeH" value="${_ashState.mazeH}" min="3" max="30" onchange="_ashState.mazeH=+this.value">
-    <div class="ash-ctrl-lbl" id="ashMazeDLabel">DEPTH</div>
+    <div class="ash-ctrl-lbl">RENDER</div>
+    <select class="ash-ctrl-input" id="ashMazeEngine" onchange="_ashState.mazeEngine=this.value;LEMAC_ENGINE_ASH.engine=this.value">
+      <option value="reflective">Reflective Cyan</option>
+      <option value="dither">Bayer Dither</option>
+    </select>
+    <div class="ash-ctrl-lbl">W</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeW" value="${_ashState.mazeW}" min="3" max="40" onchange="_ashState.mazeW=+this.value">
+    <div class="ash-ctrl-lbl">H</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeH" value="${_ashState.mazeH}" min="3" max="40" onchange="_ashState.mazeH=+this.value">
+    <div class="ash-ctrl-lbl">D</div>
     <input type="number" class="ash-ctrl-input" id="ashMazeD" value="${_ashState.mazeD}" min="1" max="20" onchange="_ashState.mazeD=+this.value">
+    <div class="ash-ctrl-lbl">UNIT SIZE</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeCs" value="${_ashState.mazeCs||1}" min="0.5" max="5" step="0.5" onchange="_ashState.mazeCs=+this.value">
+    <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+      <input type="checkbox" id="ashMazeInstant" ${_ashState.mazeInstantSolve?'checked':''} onchange="_ashState.mazeInstantSolve=this.checked" style="width:auto">
+      <span class="ash-ctrl-lbl" style="margin-top:0">Instant Solve</span>
+    </div>
     <button class="ash-btn" style="margin-top:8px" onclick="ASH_MAZE_generate()">▸ Generate</button>
-    <button class="ash-btn" style="margin-top:4px" onclick="ASH_MAZE_solvePath()">⬡ Solve Path</button>
-    <button class="ash-btn" style="margin-top:4px" onclick="ashMazeFrame()">◉ Frame View</button>
+    <button class="ash-btn" style="margin-top:4px" onclick="ASH_MAZE_solvePath()">⬡ Sigma Solve</button>
+    <button class="ash-btn" style="margin-top:4px" onclick="_ashFrameCamera()">◉ Frame View</button>
     <button class="ash-btn" style="margin-top:4px" onclick="ashMazeExportPNG()">↓ PNG</button>
     <button class="ash-btn" style="margin-top:4px;margin-bottom:8px" onclick="ashSendMazeToChat()">→ Chat</button>
   </div>
@@ -5823,7 +6181,8 @@ window.ashClearOutput = function() {
   if (el) el.innerHTML = '';
 };
 
-window.ashMazeFrame = function() {
+window.ashMazeFrame = function() { _ashFrameCamera(); };
+function _ashMazeFrameOld() {
   if (!_ashMazeGroup||!_ashMazeCamera) return;
   const b=new THREE.Box3().setFromObject(_ashMazeGroup);
   const sz=b.getSize(new THREE.Vector3()), ctr=b.getCenter(new THREE.Vector3());
