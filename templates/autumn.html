@@ -16,6 +16,65 @@
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.5.0/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.0.3/dist/pako.min.js"></script>
+<script>
+// OrbitControls UMD shim for Three.js r128
+(function(){
+if(typeof THREE==='undefined') return;
+THREE.OrbitControls=function(camera,domElement){
+  this.camera=camera; this.domElement=domElement||document.body;
+  this.enabled=true; this.enableDamping=false; this.dampingFactor=0.05;
+  this.enableZoom=true; this.enableRotate=true; this.enablePan=true;
+  this.target=new THREE.Vector3();
+  var _this=this, spherical=new THREE.Spherical(), sphericalDelta=new THREE.Spherical();
+  var scale=1, panOffset=new THREE.Vector3(), zoomChanged=false;
+  var rotateStart=new THREE.Vector2(), rotateEnd=new THREE.Vector2(), rotateDelta=new THREE.Vector2();
+  var STATE={NONE:-1,ROTATE:0,DOLLY:1,PAN:2}, state=STATE.NONE;
+  var EPS=0.000001;
+  function getAutoRotationAngle(){return 2*Math.PI/60/60*_this.autoRotateSpeed;}
+  function getZoomScale(){return Math.pow(0.95,_this.zoomSpeed);}
+  function rotateLeft(angle){sphericalDelta.theta-=angle;}
+  function rotateUp(angle){sphericalDelta.phi-=angle;}
+  var v=new THREE.Vector3();
+  function panLeft(distance,objectMatrix){v.setFromMatrixColumn(objectMatrix,0);v.multiplyScalar(-distance);panOffset.add(v);}
+  function panUp(distance,objectMatrix){v.setFromMatrixColumn(objectMatrix,1);v.multiplyScalar(distance);panOffset.add(v);}
+  function pan(deltaX,deltaY){var el=_this.domElement;if(camera.isPerspectiveCamera){var pos=camera.position,targetDist=pos.clone().sub(_this.target).length(),th=Math.tan(THREE.MathUtils.degToRad(camera.fov/2));panLeft(2*deltaX*targetDist*th/el.clientHeight,camera.matrix);panUp(2*deltaY*targetDist*th/el.clientHeight,camera.matrix);}else if(camera.isOrthographicCamera){panLeft(deltaX*(camera.right-camera.left)/camera.zoom/el.clientWidth,camera.matrix);panUp(deltaY*(camera.top-camera.bottom)/camera.zoom/el.clientHeight,camera.matrix);}}
+  this.autoRotate=false; this.autoRotateSpeed=2.0; this.zoomSpeed=1.0; this.rotateSpeed=1.0;
+  this.update=function(){
+    var offset=new THREE.Vector3(), quat=new THREE.Quaternion().setFromUnitVectors(camera.up,new THREE.Vector3(0,1,0)), quatInverse=quat.clone().invert(), lastPos=new THREE.Vector3(), lastQuat=new THREE.Quaternion();
+    return function update(){
+      var position=camera.position; offset.copy(position).sub(_this.target); offset.applyQuaternion(quat);
+      spherical.setFromVector3(offset);
+      if(_this.autoRotate&&state===STATE.NONE){rotateLeft(getAutoRotationAngle());}
+      if(_this.enableDamping){spherical.theta+=sphericalDelta.theta*_this.dampingFactor;spherical.phi+=sphericalDelta.phi*_this.dampingFactor;}
+      else{spherical.theta+=sphericalDelta.theta;spherical.phi+=sphericalDelta.phi;}
+      spherical.phi=Math.max(EPS,Math.min(Math.PI-EPS,spherical.phi));
+      spherical.makeSafe(); spherical.radius*=scale;
+      _this.target.add(panOffset);
+      offset.setFromSpherical(spherical); offset.applyQuaternion(quatInverse);
+      position.copy(_this.target).add(offset); camera.lookAt(_this.target);
+      if(_this.enableDamping){sphericalDelta.theta*=(1-_this.dampingFactor);sphericalDelta.phi*=(1-_this.dampingFactor);panOffset.multiplyScalar(1-_this.dampingFactor);}
+      else{sphericalDelta.set(0,0,0);panOffset.set(0,0,0);}
+      scale=1; zoomChanged=false;
+      if(lastPos.distanceToSquared(camera.position)>EPS||8*(1-lastQuat.dot(camera.quaternion))>EPS){lastPos.copy(camera.position);lastQuat.copy(camera.quaternion);zoomChanged=true;}
+      return zoomChanged;
+    };
+  }();
+  this.dispose=function(){_this.domElement.removeEventListener('contextmenu',onContextMenu);_this.domElement.removeEventListener('pointerdown',onPointerDown);_this.domElement.removeEventListener('wheel',onMouseWheel);};
+  function onPointerDown(e){if(!_this.enabled)return;if(e.pointerType==='touch'){if(e.touches&&e.touches.length>1)return;rotateStart.set(e.clientX,e.clientY);}else if(e.button===0){rotateStart.set(e.clientX,e.clientY);}state=STATE.ROTATE;document.addEventListener('pointermove',onPointerMove);document.addEventListener('pointerup',onPointerUp);}
+  function onPointerMove(e){if(!_this.enabled||state!==STATE.ROTATE)return;rotateEnd.set(e.clientX,e.clientY);rotateDelta.subVectors(rotateEnd,rotateStart).multiplyScalar(_this.rotateSpeed);var el=_this.domElement;rotateLeft(2*Math.PI*rotateDelta.x/el.clientHeight);rotateUp(2*Math.PI*rotateDelta.y/el.clientHeight);rotateStart.copy(rotateEnd);}
+  function onPointerUp(){state=STATE.NONE;document.removeEventListener('pointermove',onPointerMove);document.removeEventListener('pointerup',onPointerUp);}
+  function onMouseWheel(e){if(!_this.enabled||!_this.enableZoom)return;e.preventDefault();if(e.deltaY<0){scale/=getZoomScale();}else{scale*=getZoomScale();}_this.update();}
+  function onContextMenu(e){if(!_this.enabled)return;e.preventDefault();}
+  _this.domElement.addEventListener('contextmenu',onContextMenu);
+  _this.domElement.addEventListener('pointerdown',onPointerDown);
+  _this.domElement.addEventListener('wheel',onMouseWheel,{passive:false});
+  this.update();
+};
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
 :root{--cyan:#00ffcc;--blue:#0088ff;--red:#ff4466;--bg:#020a14;--bg2:#0a1628;--panel:rgba(6,16,32,0.72);--border:rgba(0,255,204,0.12);--text:#c8e6f0;--dim:#4a7a8a;--bright:#d0e8f0;--font-d:'Orbitron',monospace;--font-b:'Exo 2',sans-serif;--r:14px}
@@ -442,6 +501,57 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .cog-state-label.reflexing{color:rgba(255,68,102,.6);border-color:rgba(255,68,102,.25)}
 #thought-pulse{position:absolute;bottom:12px;right:10px;width:5px;height:5px;border-radius:50%;background:rgba(0,255,204,.0);box-shadow:none;transition:all 1.2s;z-index:10}
 #thought-pulse.active{background:rgba(0,255,204,.4);box-shadow:0 0 8px rgba(0,255,204,.3)}
+
+/* ── ASH TREE IDE PANEL ──────────────────────────────────────────────────── */
+#ash-overlay{position:fixed;inset:0;z-index:9600;background:rgba(2,8,20,.98);display:none;flex-direction:column;backdrop-filter:blur(12px)}
+#ash-overlay.open{display:flex}
+#ash-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0a1220;border-bottom:1px solid rgba(0,255,204,.12);flex-shrink:0}
+#ash-bar-title{color:var(--cyan);font-family:var(--font-d);font-size:.55rem;letter-spacing:2px;flex:1}
+.ash-btn{background:rgba(0,255,204,.06);border:1px solid rgba(0,255,204,.18);color:var(--cyan);padding:5px 12px;border-radius:4px;font-family:var(--font-d);font-size:.42rem;letter-spacing:.5px;cursor:pointer;transition:all .18s}
+.ash-btn:hover{background:rgba(0,255,204,.15)}
+.ash-btn.danger{color:var(--red);border-color:rgba(255,68,102,.3)}
+#ash-tabs{display:flex;gap:2px;padding:0 10px;background:#080e18;border-bottom:1px solid rgba(0,255,204,.08);flex-shrink:0}
+.ash-tab{padding:8px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--font-d);font-size:.42rem;letter-spacing:.8px;cursor:pointer;transition:all .18s}
+.ash-tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+#ash-body{flex:1;display:flex;flex-direction:column;overflow:hidden}
+/* Ash language editor panel */
+#ash-editor-wrap{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr auto;gap:0;min-height:0}
+#ash-code-panel{display:flex;flex-direction:column;border-right:1px solid rgba(0,255,204,.08)}
+#ash-code-label{padding:4px 10px;background:#0a1220;font-family:var(--font-d);font-size:.38rem;color:rgba(0,255,204,.4);letter-spacing:1px;border-bottom:1px solid rgba(0,255,204,.06)}
+#ash-editor{flex:1;background:#060d18;color:#a8d8a8;font-family:'Fira Code',monospace;font-size:13px;padding:10px;border:none;outline:none;resize:none;min-height:0}
+#ash-output-panel{display:flex;flex-direction:column;background:#040a14}
+#ash-output-label{padding:4px 10px;background:#0a1220;font-family:var(--font-d);font-size:.38rem;color:rgba(0,136,255,.4);letter-spacing:1px;border-bottom:1px solid rgba(0,136,255,.06)}
+#ash-output-content{flex:1;overflow-y:auto;padding:8px 10px;font-family:'Fira Code',monospace;font-size:11px;color:#8ab4cc;min-height:0}
+#ash-ctrl-bar{grid-column:span 2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:#080e18;border-top:1px solid rgba(0,255,204,.08)}
+/* Maze panel */
+#ash-maze-wrap{flex:1;display:grid;grid-template-columns:200px 1fr;min-height:0}
+#ash-maze-controls{padding:10px;border-right:1px solid rgba(0,255,204,.08);display:flex;flex-direction:column;gap:6px;overflow-y:auto}
+.ash-ctrl-lbl{font-family:var(--font-d);font-size:.38rem;color:rgba(0,255,204,.45);letter-spacing:1px;margin-top:4px}
+.ash-ctrl-input{width:100%;background:rgba(0,255,204,.04);border:1px solid rgba(0,255,204,.15);color:var(--text);padding:4px 6px;border-radius:3px;font-family:var(--font-d);font-size:.48rem}
+select.ash-ctrl-input{cursor:pointer}
+#ash-viewport{flex:1;position:relative;background:#000814;min-height:0}
+#ash-viewport canvas{display:block;width:100%;height:100%}
+/* Crypto panel */
+#ash-crypto-wrap{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.ash-crypto-section{background:rgba(0,4,12,.5);border:1px solid rgba(0,255,204,.1);border-radius:6px;padding:12px}
+.ash-crypto-title{font-family:var(--font-d);font-size:.44rem;color:var(--cyan);letter-spacing:1px;margin-bottom:8px}
+.ash-key-box{background:rgba(0,0,0,.3);border:1px solid rgba(0,255,204,.1);border-radius:4px;padding:8px;margin-top:6px;display:flex;flex-direction:column;gap:6px}
+.ash-key-val{font-family:'Fira Code',monospace;font-size:.7rem;color:#e06c75;word-break:break-all;line-height:1.5}
+.ash-key-lbl{font-family:var(--font-d);font-size:.36rem;color:rgba(0,255,204,.4);letter-spacing:1px}
+.ash-key-btns{display:flex;gap:6px;flex-wrap:wrap}
+/* Maze modal inside ash overlay */
+#ash-maze-modal{position:absolute;inset:0;z-index:10;background:rgba(2,8,20,.97);display:none;flex-direction:column;overflow-y:auto}
+#ash-maze-modal.open{display:flex}
+#ash-maze-modal-header{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0a1220;border-bottom:1px solid rgba(0,255,204,.12);flex-shrink:0}
+#ash-maze-modal-body{flex:1;padding:12px;display:flex;flex-direction:column;gap:10px}
+#ash-maze-modal-canvas{width:100%;height:300px;background:#000814;border:1px solid rgba(0,255,204,.1);border-radius:4px;display:grid;gap:2px}
+#ash-maze-modal-output{font-family:'Fira Code',monospace;font-size:.7rem;color:#8ab4cc;padding:8px;background:rgba(0,0,0,.3);border-radius:4px;min-height:60px;max-height:120px;overflow-y:auto}
+@media(max-width:600px){
+  #ash-editor-wrap{grid-template-columns:1fr;grid-template-rows:1fr 1fr auto}
+  #ash-code-panel{border-right:none;border-bottom:1px solid rgba(0,255,204,.08)}
+  #ash-maze-wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  #ash-maze-controls{border-right:none;border-bottom:1px solid rgba(0,255,204,.08);display:grid;grid-template-columns:1fr 1fr}
+}
 </style>
 </head>
 <body>
@@ -4247,7 +4357,9 @@ const TOOL_TABS=[
   {id:"maze",label:"Lead Edge",icon:"🌀"},
   {id:"arcedge",label:"Arc Edge",icon:"📐"},
   {id:"journal",label:"Journal",icon:"📖"},
-  {id:"sessions",label:"Sessions",icon:"💬"}
+  {id:"sessions",label:"Sessions",icon:"💬"},
+  {id:"ashtree",label:"Ash Tree",icon:"⬡"},
+  {id:"crypto",label:"Cryptology",icon:"🔐"}
 ];
 let currentToolTab="cognition";
 
@@ -4269,6 +4381,8 @@ function renderToolsContent(){
     case "arcedge":   el.innerHTML=renderToolsArcEdge();bindToolsArcEdge(); break;
     case "journal":   el.innerHTML=renderToolsJournal(); break;
     case "sessions":  el.innerHTML=renderToolsSessions(); break;
+    case "ashtree":   el.innerHTML=renderToolsAshTree(); bindToolsAshTree(); break;
+    case "crypto":    el.innerHTML=renderToolsCrypto(); bindToolsCrypto(); break;
   }
 }
 
@@ -5248,6 +5362,660 @@ loadAutumnLogic();
     <span style="color:rgba(0,255,204,.2);font-size:.42rem">Ctrl+S / ⌘S to commit · Changes reflect live after ⚡ HOT-RELOAD</span>
   </div>
 </div>
+
+<script>
+// ============================================================
+//  ASH TREE IDE INTEGRATION — autumn.html extension block
+//  DART_PROCESSOR + LEMAC_ENGINE + MAZE_VISUALIZER +
+//  CRYPTOLOGY + Ash Tree Tool Panel + Crypto Tool Panel
+//  Injected as plain <script> before </body>
+// ============================================================
+
+// ── Raw GitHub URLs for Ash language definition files ───────────────────
+const _ASH_DEFS_BASE = 'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/dartide/';
+const _ASH_SYNTAX_URL = _ASH_DEFS_BASE + 'syntaxdefinitions.json';
+const _ASH_INSTR_URL  = _ASH_DEFS_BASE + 'instructionset.json';
+const _ASH_OUTPUT_URL = _ASH_DEFS_BASE + 'outputdefinitions.json';
+
+// ── Ash IDE State ───────────────────────────────────────────────────────
+const _ashState = {
+  tab: 'language',          // 'language' | 'maze' | 'crypto'
+  ashCode: `// Ash language — DART Meadow / Radical Deepscale LLC\n// Keywords: with, var, irin, irout, thenplace\n\n(CoreParameterNode):-:{\n    with\n        var (ti) //Tool (Sets)\n    {\n        irin ("Initial Data Set")\n        thenplace\n        irout ("Result: placeto (s)")\n    }\n}|';'|\n\n// Maze command example:\n// maze_generate(width: 8, height: 8)\n`,
+  mazeMode: 'cubic',
+  mazeW: 10, mazeH: 10, mazeD: 4,
+  mazeCs: 8,
+  mazeViz: null,
+  cryptoPrivKey: '', cryptoPubKey: '',
+  cryptoMazeData: null,
+  cryptoLastEncData: null,
+  cryptoLastEncName: null,
+  syntaxDefs: null, instrDefs: null, outputDefs: null,
+  defsLoaded: false
+};
+
+// ── Load Ash language defs from GitHub ─────────────────────────────────
+async function ashLoadDefs() {
+  if (_ashState.defsLoaded) return;
+  try {
+    const [s,i,o] = await Promise.all([
+      fetch(_ASH_SYNTAX_URL).then(r=>r.json()),
+      fetch(_ASH_INSTR_URL).then(r=>r.json()),
+      fetch(_ASH_OUTPUT_URL).then(r=>r.json())
+    ]);
+    _ashState.syntaxDefs = s; _ashState.instrDefs = i; _ashState.outputDefs = o;
+    _ashState.defsLoaded = true;
+    console.log('[Ash] Definition files loaded from dartide/');
+  } catch(e) { console.warn('[Ash] Could not load defs:', e.message); }
+}
+
+// ── DART_PROCESSOR (Ash language compiler) ──────────────────────────────
+const DART_PROCESSOR = {
+  syntaxDefs: null, executionMap: null, outputTemplates: null,
+  log(type, message) {
+    const el = document.getElementById('ash-output-content');
+    if (!el) return;
+    const ts = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    const div = document.createElement('div');
+    div.style.cssText = 'padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04);';
+    const typeColor = type==='ERROR'?'#ff6b6b':type==='SYSTEM'?'#00ffcc':type==='NODE START'?'#a8d8a8':'#8ab4cc';
+    div.innerHTML = `<span style="color:${typeColor};font-size:.6rem;font-family:var(--font-d);margin-right:6px">${type}</span><span style="opacity:.8">${message}</span>`;
+    el.appendChild(div); el.scrollTop = el.scrollHeight;
+  },
+  lex(code) {
+    const defs = _ashState.syntaxDefs || this.syntaxDefs;
+    if (!defs) return [{type:'text',value:code}];
+    const tokens = []; let remaining = code;
+    while (remaining.length > 0) {
+      let matched = false;
+      for (const tok of defs.tokens) {
+        const re = new RegExp('^(?:' + tok.regex + ')');
+        const m = remaining.match(re);
+        if (m) { tokens.push({type:tok.type,value:m[0]}); remaining=remaining.slice(m[0].length); matched=true; break; }
+      }
+      if (!matched) { tokens.push({type:'error',value:remaining[0]}); remaining=remaining.slice(1); }
+    }
+    return tokens;
+  },
+  parse(tokens) {
+    const nodes = []; let i = 0;
+    while (i < tokens.length) {
+      const tok = tokens[i];
+      if (tok.type === 'node-block-start') {
+        const name = tok.value.replace(/[():\-{]/g,'').trim();
+        const body = [];
+        i++;
+        while (i < tokens.length && tokens[i].type !== 'node-block-end') {
+          if (tokens[i].type === 'keyword') {
+            const kw = tokens[i].value; const args = [];
+            i++;
+            while (i < tokens.length && tokens[i].type !== 'keyword' && tokens[i].type !== 'node-block-end') {
+              if (tokens[i].type === 'string') args.push(tokens[i].value.slice(1,-1));
+              i++;
+            }
+            body.push({type:'KeywordStatement',keyword:kw,args});
+            continue;
+          }
+          if (tokens[i].type === 'function-def') {
+            const fn = tokens[i].value; const fnArgs = [];
+            i++;
+            while (i < tokens.length && tokens[i].type !== 'function-def' && tokens[i].type !== 'keyword' && tokens[i].type !== 'node-block-end') {
+              if (tokens[i].type==='string') fnArgs.push(tokens[i].value.slice(1,-1));
+              i++;
+            }
+            body.push({type:'FunctionCall',name:fn,args:fnArgs});
+            continue;
+          }
+          i++;
+        }
+        nodes.push({type:'NodeBlock',name,body});
+      }
+      i++;
+    }
+    return nodes;
+  },
+  interpret(body) {
+    const tpl = (_ashState.outputDefs||this.outputTemplates)?.templates || {};
+    for (const node of body) {
+      if (node.type === 'KeywordStatement') {
+        const kw = node.keyword, args = node.args;
+        if (kw==='irin') {
+          this.log('→ irin', (tpl.keyword_irin||'irin: {{data}}').replace('{{data}}', args[0]||''));
+        } else if (kw==='irout') {
+          this.log('← irout', (tpl.keyword_irout||'irout: {{result}}').replace('{{result}}', args[0]||''));
+        } else if (kw==='thenplace') {
+          this.log('↻ thenplace', 'Placing var(s) with var(e)');
+        } else { this.log(kw, args.join(', ')); }
+      } else if (node.type === 'FunctionCall') {
+        if (node.name==='maze_generate') {
+          const cfg = {}; node.args.forEach(a=>{ const [k,v]=a.split(':'); cfg[k.trim()]=parseInt(v)||10; });
+          this.log('MAZE', `Generating ${cfg.width||8}×${cfg.height||8} maze`);
+          if (typeof ASH_MAZE_initViewport === 'function') {
+            _ashState.mazeW = cfg.width||8; _ashState.mazeH = cfg.height||8;
+            ASH_MAZE_generate();
+          }
+        }
+      }
+    }
+  },
+  run(code) {
+    const el = document.getElementById('ash-output-content');
+    if (el) el.innerHTML = '';
+    this.log('SYSTEM', '◈ Running Ash program…');
+    // Check for legacy maze commands
+    const mazeMatch = code.match(/maze_generate\s*\(([^)]*)\)/);
+    if (mazeMatch) {
+      const args = {}; mazeMatch[1].split(',').forEach(pair=>{const [k,v]=pair.split(':');if(k)args[k.trim()]=parseInt(v)||10;});
+      this.log('SYSTEM', `Forwarding maze_generate to Ash Maze Engine`);
+      _ashState.mazeW=args.width||8; _ashState.mazeH=args.height||8;
+      if (document.getElementById('ash-viewport')) ASH_MAZE_generate();
+    }
+    const tokens = this.lex(code);
+    const ast = this.parse(tokens);
+    for (const node of ast) {
+      if (node.type==='NodeBlock') {
+        this.log('NODE START', `◈ ${node.name}`);
+        this.interpret(node.body);
+        this.log('NODE END', `${node.name}`);
+      }
+    }
+    if (ast.length===0 && !mazeMatch) this.log('SYSTEM','No executable nodes found.');
+  }
+};
+
+// ── LEMAC ENGINE (full version — planar + cubic) ────────────────────────
+const LEMAC_ENGINE_ASH = {
+  mode: 'cubic', engine: 'reflective',
+  generatePlanar(w, h) {
+    const g = Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>({x,y,N:true,E:true,S:true,W:true,v:false})));
+    const stack=[g[0][0]]; g[0][0].v=true;
+    const nb=(c)=>{const r=[];const dirs=[[-1,0,'N','S'],[0,1,'E','W'],[1,0,'S','N'],[0,-1,'W','E']];for(const[dy,dx,d,od]of dirs){const ny=c.y+dy,nx=c.x+dx;if(ny>=0&&ny<h&&nx>=0&&nx<w&&!g[ny][nx].v)r.push({cell:g[ny][nx],d,od});}return r;};
+    while(stack.length){const c=stack[stack.length-1];const ns=nb(c);if(ns.length){const{cell,d,od}=ns[Math.floor(Math.random()*ns.length)];c[d]=false;cell[od]=false;cell.v=true;stack.push(cell);}else stack.pop();}
+    return g;
+  },
+  generateCubic(w, h, d) {
+    const g=Array.from({length:d},(_,z)=>Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>({x,y,z,left:true,right:true,top:true,bottom:true,back:true,front:true,v:false}))));
+    const stack=[g[0][0][0]]; g[0][0][0].v=true;
+    const dirs=[[-1,0,0,'left','right'],[1,0,0,'right','left'],[0,-1,0,'top','bottom'],[0,1,0,'bottom','top'],[0,0,-1,'back','front'],[0,0,1,'front','back']];
+    const nb=(c)=>{const r=[];for(const[dx,dy,dz,d,od]of dirs){const nx=c.x+dx,ny=c.y+dy,nz=c.z+dz;if(nx>=0&&nx<w&&ny>=0&&ny<h&&nz>=0&&nz<d&&!g[nz][ny][nx].v)r.push({cell:g[nz][ny][nx],d,od});}return r;};
+    while(stack.length){const c=stack[stack.length-1];const ns=nb(c);if(ns.length){const{cell,d,od}=ns[Math.floor(Math.random()*ns.length)];c[d]=false;cell[od]=false;cell.v=true;stack.push(cell);}else stack.pop();}
+    return g;
+  },
+  solvePlanar(g,s,e,w,h){const q=[{...s,path:[s]}];const vis=new Set([`${s.x},${s.y}`]);while(q.length){const{x,y,path}=q.shift();if(x===e.x&&y===e.y)return path;const c=g[y][x];const moves=[{nx:x,ny:y-1,wall:'N'},{nx:x+1,ny:y,wall:'E'},{nx:x,ny:y+1,wall:'S'},{nx:x-1,ny:y,wall:'W'}];for(const{nx,ny,wall}of moves){if(nx<0||nx>=w||ny<0||ny>=h||c[wall])continue;const k=`${nx},${ny}`;if(!vis.has(k)){vis.add(k);q.push({x:nx,y:ny,path:[...path,{x:nx,y:ny}]});}}}return null;},
+  solveCubic(g,s,e,w,h,d){const q=[{...s,path:[s]}];const vis=new Set([`${s.x},${s.y},${s.z}`]);while(q.length){const{x,y,z,path}=q.shift();if(x===e.x&&y===e.y&&z===e.z)return path;const c=g[z][y][x];const moves=[{nx:x-1,ny:y,nz:z,wall:'left'},{nx:x+1,ny:y,nz:z,wall:'right'},{nx:x,ny:y-1,nz:z,wall:'top'},{nx:x,ny:y+1,nz:z,wall:'bottom'},{nx:x,ny:y,nz:z-1,wall:'back'},{nx:x,ny:y,nz:z+1,wall:'front'}];for(const{nx,ny,nz,wall}of moves){if(nx<0||nx>=w||ny<0||ny>=h||nz<0||nz>=d||c[wall])continue;const k=`${nx},${ny},${nz}`;if(!vis.has(k)){vis.add(k);q.push({x:nx,y:ny,z:nz,path:[...path,{x:nx,y:ny,z:nz}]});}}}return null;},
+  getWallMaterial(){return new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:.6,transparent:true,opacity:.85,side:THREE.DoubleSide});},
+  getPathMaterial(){return new THREE.MeshStandardMaterial({color:0x00aaff,emissive:0x00aaff,emissiveIntensity:.8,transparent:true,opacity:.9});}
+};
+
+// ── ASH MAZE VIEWPORT ───────────────────────────────────────────────────
+let _ashMazeScene=null,_ashMazeCamera=null,_ashMazeRenderer=null,_ashMazeControls=null;
+let _ashMazeGroup=null,_ashMazeData=null,_ashMazeAnimId=null;
+
+function ASH_MAZE_init(canvas) {
+  if (_ashMazeRenderer) { cancelAnimationFrame(_ashMazeAnimId); _ashMazeRenderer.dispose(); }
+  _ashMazeScene = new THREE.Scene();
+  _ashMazeScene.fog = new THREE.FogExp2(0x000814, 0.004);
+  _ashMazeGroup = new THREE.Group();
+  _ashMazeScene.add(_ashMazeGroup);
+  _ashMazeScene.add(new THREE.AmbientLight(0x00ffcc, 0.4));
+  const dl = new THREE.DirectionalLight(0x00ffcc, 1.8); dl.position.set(50,80,50);
+  _ashMazeScene.add(dl);
+  const fl = new THREE.DirectionalLight(0x0088ff, 0.8); fl.position.set(-50,-30,50);
+  _ashMazeScene.add(fl);
+  const W = canvas.parentElement.clientWidth||300, H = canvas.parentElement.clientHeight||300;
+  _ashMazeCamera = new THREE.PerspectiveCamera(60, W/H, 0.1, 5000);
+  _ashMazeCamera.position.set(60,60,60);
+  _ashMazeRenderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+  _ashMazeRenderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  _ashMazeRenderer.setSize(W, H);
+  _ashMazeControls = new THREE.OrbitControls(_ashMazeCamera, canvas);
+  _ashMazeControls.enableDamping = false;
+  new ResizeObserver(()=>{
+    const w=canvas.parentElement.clientWidth||300, h=canvas.parentElement.clientHeight||300;
+    _ashMazeCamera.aspect=w/h; _ashMazeCamera.updateProjectionMatrix();
+    _ashMazeRenderer.setSize(w,h);
+  }).observe(canvas.parentElement);
+  function animate(){_ashMazeAnimId=requestAnimationFrame(animate);_ashMazeControls.update();_ashMazeRenderer.render(_ashMazeScene,_ashMazeCamera);}
+  animate();
+}
+
+function ASH_MAZE_generate() {
+  if (!_ashMazeGroup) return;
+  while (_ashMazeGroup.children.length) {
+    const c=_ashMazeGroup.children[0]; _ashMazeGroup.remove(c);
+    if(c.isMesh){c.geometry?.dispose();c.material?.dispose();}
+  }
+  const w=_ashState.mazeW, h=_ashState.mazeH, d=_ashState.mazeD, cs=_ashState.mazeCs;
+  const ox=(w*cs)/2, oy=(h*cs)/2, oz=(d*cs)/2;
+  const wm = LEMAC_ENGINE_ASH.getWallMaterial();
+
+  if (_ashState.mazeMode==='planar') {
+    const g = LEMAC_ENGINE_ASH.generatePlanar(w,h);
+    const wg=new THREE.BoxGeometry(1,1,1), wt=cs*0.09;
+    for(let y=0;y<h;y++){for(let x=0;x<w;x++){const c=g[y][x];
+      if(c.E&&x<w-1){const l=new THREE.Mesh(wg,wm);l.scale.set(wt,cs*0.6,cs);l.position.set((x+1)*cs-ox,0,y*cs-oz+cs/2);_ashMazeGroup.add(l);}
+      if(c.S&&y<h-1){const l=new THREE.Mesh(wg,wm);l.scale.set(cs,cs*0.6,wt);l.position.set(x*cs-ox+cs/2,0,(y+1)*cs-oz);_ashMazeGroup.add(l);}
+    }}
+    const sp=LEMAC_ENGINE_ASH.solvePlanar(g,{x:0,y:0},{x:w-1,y:h-1},w,h);
+    _ashMazeData={g,mode:'planar',w,h,d:1,cs,ox,oy,oz,path:sp};
+    _ashMazeGroup.position.set(0,0,0);
+  } else {
+    const g = LEMAC_ENGINE_ASH.generateCubic(w,h,d);
+    const pYZ=new THREE.PlaneGeometry(cs,cs),pXZ=new THREE.PlaneGeometry(cs,cs),pXY=new THREE.PlaneGeometry(cs,cs);
+    for(let z=0;z<d;z++){for(let y=0;y<h;y++){for(let x=0;x<w;x++){
+      const c=g[z][y][x], cx=x*cs-ox+cs/2, cy=y*cs-oy+cs/2, cz=z*cs-oz+cs/2;
+      if(c.left){const l=new THREE.Mesh(pYZ,wm);l.position.set(x*cs-ox,cy,cz);_ashMazeGroup.add(l);}
+      if(c.right&&x===w-1){const l=new THREE.Mesh(pYZ,wm);l.position.set((x+1)*cs-ox,cy,cz);_ashMazeGroup.add(l);}
+      if(c.top){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,y*cs-oy,cz);_ashMazeGroup.add(l);}
+      if(c.bottom&&y===h-1){const l=new THREE.Mesh(pXZ,wm);l.rotation.x=Math.PI/2;l.position.set(cx,(y+1)*cs-oy,cz);_ashMazeGroup.add(l);}
+      if(c.back){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,z*cs-oz);_ashMazeGroup.add(l);}
+      if(c.front&&z===d-1){const l=new THREE.Mesh(pXY,wm);l.position.set(cx,cy,(z+1)*cs-oz);_ashMazeGroup.add(l);}
+    }}}
+    const sp=LEMAC_ENGINE_ASH.solveCubic(g,{x:0,y:0,z:0},{x:w-1,y:h-1,z:d-1},w,h,d);
+    _ashMazeData={g,mode:'cubic',w,h,d,cs,ox,oy,oz,path:sp};
+  }
+  // Start/end markers
+  const sm=new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x00ffcc,emissiveIntensity:1.2});
+  const em=new THREE.MeshStandardMaterial({color:0xff4466,emissive:0xff4466,emissiveIntensity:1.0});
+  const s=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),sm);
+  s.position.set(-ox+cs/2,_ashState.mazeMode==='cubic'?-oy+cs/2:cs*0.5,-oz+cs/2);
+  _ashMazeGroup.add(s);
+  const e=new THREE.Mesh(new THREE.SphereGeometry(cs*0.35,8,8),em);
+  const ex=(w-1)*cs-ox+cs/2, ey=_ashState.mazeMode==='cubic'?(h-1)*cs-oy+cs/2:cs*0.5, ez=(d-1)*cs-oz+cs/2;
+  e.position.set(ex,ey,ez); _ashMazeGroup.add(e);
+  // Frame camera
+  const box=new THREE.Box3().setFromObject(_ashMazeGroup);
+  const sz=box.getSize(new THREE.Vector3()), ctr=box.getCenter(new THREE.Vector3());
+  const maxD=Math.max(sz.x,sz.y,sz.z), fov=_ashMazeCamera.fov*(Math.PI/180);
+  const dist=Math.abs(maxD/2/Math.tan(fov/2))*1.6;
+  _ashMazeControls.target.copy(ctr);
+  _ashMazeCamera.position.set(ctr.x+dist*.7,ctr.y+dist*.7,ctr.z+dist*.7);
+  _ashMazeControls.update();
+}
+
+function ASH_MAZE_solvePath() {
+  if (!_ashMazeData?.path) return;
+  const {path,cs,ox,oy,oz,mode}=_ashMazeData;
+  const geo=new THREE.BoxGeometry(cs*.4,cs*.4,cs*.4), mat=LEMAC_ENGINE_ASH.getPathMaterial();
+  let i=0;
+  const draw=()=>{
+    if(i>=path.length)return;
+    const p=path[i++], m=new THREE.Mesh(geo,mat);
+    m.position.set(p.x*cs-ox+cs/2, mode==='cubic'?p.y*cs-oy+cs/2:cs*0.5, (p.z||0)*cs-oz+cs/2);
+    _ashMazeGroup.add(m); setTimeout(draw,18);
+  };
+  draw();
+}
+
+// ── CRYPTOLOGY ENGINE (SHA-256 + shuffle encrypt) ───────────────────────
+async function ashSHA256(data) {
+  let bytes;
+  if (typeof data==='string') bytes=new TextEncoder().encode(data);
+  else if (data instanceof ArrayBuffer) bytes=new Uint8Array(data);
+  else bytes=new TextEncoder().encode(JSON.stringify(data));
+  const buf=await crypto.subtle.digest('SHA-256',bytes);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function ashDeriveKeyHash(data,salt=''){const f=await ashSHA256(data+salt+'round1');return ashSHA256(f+salt+'round2');}
+async function ashGenerateKeys(seed=''){
+  const entropy=seed+Date.now().toString(16)+crypto.getRandomValues(new Uint8Array(16)).join('');
+  const ps=crypto.getRandomValues(new Uint8Array(8)).join(''), qs=crypto.getRandomValues(new Uint8Array(8)).join('');
+  const pk=await ashDeriveKeyHash(entropy,ps+'priv'), qk=await ashDeriveKeyHash(entropy,qs+'pub');
+  return {privateKey:'DART_PRIV_'+pk+qs+'END', publicKey:'DART_PUB_'+qk+ps+'END'};
+}
+async function ashEncrypt(text) {
+  const arr=Array.from(text), seq=[];
+  for(let i=0;i<arr.length;i++){const j=Math.floor(Math.random()*arr.length);seq.push([i,j]);[arr[i],arr[j]]=[arr[j],arr[i]];}
+  const enc=arr.join('');
+  const keys=await ashGenerateKeys(enc+JSON.stringify(seq));
+  return {...keys, encryptedData:enc, shuffleSequence:seq};
+}
+async function ashDecrypt(enc, seq) {
+  const arr=Array.from(enc);
+  for(let i=seq.length-1;i>=0;i--){const[a,b]=seq[i];[arr[a],arr[b]]=[arr[b],arr[a]];}
+  return arr.join('');
+}
+
+// ── RENDER: Ash Tree language panel ────────────────────────────────────
+function renderToolsAshTree() {
+  return `<div style="display:flex;flex-direction:column;height:100%;gap:0">
+  <div style="display:flex;gap:4px;padding:6px 10px;background:rgba(0,4,12,.6);border-bottom:1px solid rgba(0,255,204,.08);flex-shrink:0">
+    <button class="ash-tab ${_ashState.tab==='language'?'active':''}" onclick="ashSetTab('language')">⬡ Language</button>
+    <button class="ash-tab ${_ashState.tab==='maze'?'active':''}" onclick="ashSetTab('maze')">🌀 Maze</button>
+    <button class="ash-tab ${_ashState.tab==='crypto'?'active':''}" onclick="ashSetTab('crypto')">🔐 Crypto</button>
+    <button class="ash-btn" onclick="openAshIDE()" style="margin-left:auto;font-size:.38rem">◈ Full IDE</button>
+  </div>
+  <div id="ash-tool-body" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+    ${_ashState.tab==='language'?_ashLangHTML():_ashState.tab==='maze'?_ashMazeHTML():_ashCryptoHTML()}
+  </div>
+</div>`;
+}
+
+function _ashLangHTML(){
+  return `<div id="ash-editor-wrap">
+  <div id="ash-code-panel">
+    <div id="ash-code-label">⬡ ASH CODE</div>
+    <textarea id="ash-editor" spellcheck="false">${_ashState.ashCode.replace(/</g,'&lt;')}</textarea>
+  </div>
+  <div id="ash-output-panel">
+    <div id="ash-output-label">◈ OUTPUT</div>
+    <div id="ash-output-content"></div>
+  </div>
+  <div id="ash-ctrl-bar">
+    <button class="ash-btn" onclick="ashRun()">▸ Build & Run</button>
+    <button class="ash-btn" onclick="ashLoadDefs().then(()=>ashToast('◈ Defs loaded'))">↺ Load Defs</button>
+    <button class="ash-btn" onclick="ashClearOutput()">✕ Clear</button>
+    <button class="ash-btn" onclick="ashSendToChat()" style="margin-left:auto">→ Send to Chat</button>
+  </div>
+</div>`;
+}
+
+function _ashMazeHTML(){
+  return `<div id="ash-maze-wrap">
+  <div id="ash-maze-controls">
+    <div class="ash-ctrl-lbl">MODE</div>
+    <select class="ash-ctrl-input" id="ashMazeMode" onchange="_ashState.mazeMode=this.value">
+      <option value="cubic" ${_ashState.mazeMode==='cubic'?'selected':''}>Cubic 3D</option>
+      <option value="planar" ${_ashState.mazeMode==='planar'?'selected':''}>Planar 2D</option>
+    </select>
+    <div class="ash-ctrl-lbl">WIDTH</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeW" value="${_ashState.mazeW}" min="3" max="30" onchange="_ashState.mazeW=+this.value">
+    <div class="ash-ctrl-lbl">HEIGHT</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeH" value="${_ashState.mazeH}" min="3" max="30" onchange="_ashState.mazeH=+this.value">
+    <div class="ash-ctrl-lbl" id="ashMazeDLabel">DEPTH</div>
+    <input type="number" class="ash-ctrl-input" id="ashMazeD" value="${_ashState.mazeD}" min="1" max="20" onchange="_ashState.mazeD=+this.value">
+    <button class="ash-btn" style="margin-top:8px" onclick="ASH_MAZE_generate()">▸ Generate</button>
+    <button class="ash-btn" style="margin-top:4px" onclick="ASH_MAZE_solvePath()">⬡ Solve Path</button>
+    <button class="ash-btn" style="margin-top:4px" onclick="ashMazeFrame()">◉ Frame View</button>
+    <button class="ash-btn" style="margin-top:4px" onclick="ashMazeExportPNG()">↓ PNG</button>
+    <button class="ash-btn" style="margin-top:4px;margin-bottom:8px" onclick="ashSendMazeToChat()">→ Chat</button>
+  </div>
+  <div id="ash-viewport"><canvas id="ash-maze-canvas"></canvas></div>
+</div>`;
+}
+
+function _ashCryptoHTML(){
+  return `<div id="ash-crypto-wrap">
+  <div class="ash-crypto-section">
+    <div class="ash-crypto-title">◈ LEAD EDGE CRYPTOLOGY</div>
+    <div class="ash-ctrl-lbl">MESSAGE TO ENCRYPT</div>
+    <textarea class="ash-ctrl-input" id="ashCryptoMsg" rows="3" placeholder="Enter message or leave blank to use Ash editor content…" style="resize:vertical">${''}</textarea>
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+      <button class="ash-btn" onclick="ashDoEncrypt()">▲ Encrypt</button>
+      <button class="ash-btn" onclick="ashShowDecryptUI()">▼ Decrypt</button>
+    </div>
+  </div>
+  ${_ashState.cryptoPrivKey?`
+  <div class="ash-crypto-section">
+    <div class="ash-crypto-title">🔑 KEYS GENERATED</div>
+    <div class="ash-key-box">
+      <div class="ash-key-lbl">PRIVATE KEY</div>
+      <div class="ash-key-val" id="ashPrivKeyVal">${_ashState.cryptoPrivKey}</div>
+      <div class="ash-key-btns">
+        <button class="ash-btn" onclick="ashCopyKey('ashPrivKeyVal')">◈ Copy</button>
+        <button class="ash-btn" onclick="ashDownloadKey('private')">↓ Save</button>
+      </div>
+    </div>
+    <div class="ash-key-box">
+      <div class="ash-key-lbl">PUBLIC KEY</div>
+      <div class="ash-key-val" id="ashPubKeyVal">${_ashState.cryptoPubKey}</div>
+      <div class="ash-key-btns">
+        <button class="ash-btn" onclick="ashCopyKey('ashPubKeyVal')">◈ Copy</button>
+        <button class="ash-btn" onclick="ashDownloadKey('public')">↓ Save</button>
+      </div>
+    </div>
+    <div style="margin-top:8px">
+      <button class="ash-btn" id="ashDownloadEncBtn" style="display:none;width:100%" onclick="ashDownloadEncZip()">↓ Download Encrypted ZIP</button>
+    </div>
+  </div>`:''}
+  <div class="ash-crypto-section" id="ashDecryptUI" style="display:none">
+    <div class="ash-crypto-title">▼ DECRYPT</div>
+    <div class="ash-ctrl-lbl">PRIVATE KEY</div>
+    <textarea class="ash-ctrl-input" id="ashDecPrivKey" rows="2" placeholder="DART_PRIV_…"></textarea>
+    <div class="ash-ctrl-lbl" style="margin-top:6px">UPLOAD ENCRYPTED ZIP</div>
+    <input type="file" id="ashDecZip" accept=".zip" style="margin-top:4px;color:var(--text);font-size:.7rem">
+    <button class="ash-btn" style="margin-top:8px;width:100%" onclick="ashDoDecrypt()">▼ Decrypt & Download</button>
+  </div>
+</div>`;
+}
+
+// ── renderToolsCrypto (alias — same as crypto tab) ──────────────────────
+function renderToolsCrypto() {
+  _ashState.tab = 'crypto';
+  return renderToolsAshTree();
+}
+function bindToolsCrypto() { bindToolsAshTree(); }
+
+// ── Bind functions ──────────────────────────────────────────────────────
+function bindToolsAshTree() {
+  // Save editor content on change
+  const ed = document.getElementById('ash-editor');
+  if (ed) ed.addEventListener('input', ()=>{ _ashState.ashCode = ed.value; });
+  // Init maze viewport if on maze tab
+  if (_ashState.tab === 'maze') {
+    setTimeout(()=>{
+      const canvas = document.getElementById('ash-maze-canvas');
+      if (canvas && !_ashMazeRenderer) ASH_MAZE_init(canvas);
+      else if (canvas && _ashMazeRenderer) {
+        // Re-attach to new canvas
+        ASH_MAZE_init(canvas);
+      }
+      ASH_MAZE_generate();
+    }, 80);
+  }
+}
+
+window.ashSetTab = function(tab) {
+  _ashState.tab = tab;
+  const el = document.getElementById('tools-body');
+  if (!el) return;
+  el.innerHTML = renderToolsAshTree();
+  bindToolsAshTree();
+};
+
+window.ashRun = function() {
+  const code = document.getElementById('ash-editor')?.value || _ashState.ashCode;
+  _ashState.ashCode = code;
+  DART_PROCESSOR.run(code);
+};
+
+window.ashClearOutput = function() {
+  const el = document.getElementById('ash-output-content');
+  if (el) el.innerHTML = '';
+};
+
+window.ashMazeFrame = function() {
+  if (!_ashMazeGroup||!_ashMazeCamera) return;
+  const b=new THREE.Box3().setFromObject(_ashMazeGroup);
+  const sz=b.getSize(new THREE.Vector3()), ctr=b.getCenter(new THREE.Vector3());
+  const maxD=Math.max(sz.x,sz.y,sz.z), fov=_ashMazeCamera.fov*(Math.PI/180);
+  const dist=Math.abs(maxD/2/Math.tan(fov/2))*1.6;
+  _ashMazeControls.target.copy(ctr);
+  _ashMazeCamera.position.set(ctr.x+dist*.7,ctr.y+dist*.7,ctr.z+dist*.7);
+  _ashMazeControls.update();
+};
+
+window.ashMazeExportPNG = function() {
+  if (!_ashMazeRenderer) return;
+  _ashMazeRenderer.render(_ashMazeScene, _ashMazeCamera);
+  const url = _ashMazeRenderer.domElement.toDataURL('image/png');
+  const a = document.createElement('a'); a.href=url; a.download='ash_maze.png'; a.click();
+};
+
+window.ashSendToChat = function() {
+  const code = document.getElementById('ash-editor')?.value || _ashState.ashCode;
+  const inp = document.getElementById('chat-input');
+  if (inp) { inp.value = '▸ash run: ' + code.split('\n')[0].slice(0,60); }
+  document.getElementById('tools-overlay')?.classList.remove('open');
+};
+
+window.ashSendMazeToChat = function() {
+  const inp = document.getElementById('chat-input');
+  if (inp) inp.value = `generate a ${_ashState.mazeMode} maze ${_ashState.mazeW}×${_ashState.mazeH}${_ashState.mazeMode==='cubic'?'×'+_ashState.mazeD:''}`;
+  document.getElementById('tools-overlay')?.classList.remove('open');
+  setTimeout(()=>window.handleSend?.(), 100);
+};
+
+function ashToast(msg) { if(typeof ideToast==='function') ideToast(msg); else console.log(msg); }
+
+window.ashCopyKey = function(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const text = el.textContent.trim();
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(()=>ashToast('◈ Copied')).catch(()=>ashClipboardFallback(text));
+  } else { ashClipboardFallback(text); }
+};
+
+function ashClipboardFallback(text) {
+  const ta=document.createElement('textarea'); ta.value=text;
+  ta.style.cssText='position:fixed;top:0;left:0;opacity:0;';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); ashToast('◈ Copied'); } catch(e) { ashToast('Copy failed — select manually', true); }
+  document.body.removeChild(ta);
+}
+
+window.ashDownloadKey = function(type) {
+  const key = type==='private'?_ashState.cryptoPrivKey:_ashState.cryptoPubKey;
+  if (!key) return;
+  const blob = new Blob([key],{type:'text/plain'});
+  saveAs(blob, `ash_${type}_key.txt`);
+};
+
+window.ashDoEncrypt = async function() {
+  const msg = document.getElementById('ashCryptoMsg')?.value || _ashState.ashCode;
+  if (!msg.trim()) { ashToast('Enter a message first'); return; }
+  ashToast('◈ Encrypting…');
+  const result = await ashEncrypt(msg);
+  _ashState.cryptoPrivKey = result.privateKey;
+  _ashState.cryptoPubKey  = result.publicKey;
+  _ashState.cryptoLastEnc = result;
+  // Package as ZIP
+  const zip = new JSZip();
+  zip.file('encrypted_data.txt', result.encryptedData);
+  zip.file('public_key.txt', result.publicKey);
+  zip.file('shuffle_sequence.json', JSON.stringify(result.shuffleSequence));
+  const blob = await zip.generateAsync({type:'blob'});
+  _ashState.cryptoLastEncBlob = blob;
+  _ashState.cryptoLastEncName = 'encrypted_ash_'+Date.now()+'.zip';
+  // Refresh panel
+  const el = document.getElementById('tools-body');
+  if (el) { el.innerHTML = renderToolsAshTree(); bindToolsAshTree(); }
+  setTimeout(()=>{
+    const btn = document.getElementById('ashDownloadEncBtn');
+    if (btn) btn.style.display = 'block';
+    ashToast('◈ Encrypted — download ready');
+  }, 100);
+};
+
+window.ashDownloadEncZip = function() {
+  if (_ashState.cryptoLastEncBlob) saveAs(_ashState.cryptoLastEncBlob, _ashState.cryptoLastEncName);
+};
+
+window.ashShowDecryptUI = function() {
+  const el = document.getElementById('ashDecryptUI');
+  if (el) el.style.display = el.style.display==='none'?'block':'none';
+};
+
+window.ashDoDecrypt = async function() {
+  const privKey = document.getElementById('ashDecPrivKey')?.value.trim();
+  const file = document.getElementById('ashDecZip')?.files[0];
+  if (!privKey||!file) { ashToast('Need private key and ZIP file'); return; }
+  try {
+    const zip = await JSZip.loadAsync(file);
+    const encData = await zip.file('encrypted_data.txt')?.async('text');
+    const seqText = await zip.file('shuffle_sequence.json')?.async('text');
+    if (!encData||!seqText) { ashToast('ZIP missing required files'); return; }
+    const seq = JSON.parse(seqText);
+    const decrypted = await ashDecrypt(encData, seq);
+    const outZip = new JSZip();
+    outZip.file('decrypted_content.txt', decrypted);
+    const blob = await outZip.generateAsync({type:'blob',compression:'DEFLATE'});
+    saveAs(blob, 'decrypted_'+Date.now()+'.zip');
+    ashToast('◈ Decrypted — ZIP downloaded');
+  } catch(e) { ashToast('Decrypt error: '+e.message, true); }
+};
+
+// ── Full ASH TREE IDE overlay ───────────────────────────────────────────
+window.openAshIDE = function() {
+  let ov = document.getElementById('ash-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'ash-overlay';
+    ov.innerHTML = `
+<div id="ash-bar">
+  <span id="ash-bar-title">⬡ ASH TREE IDE — LEATR BRAIN BUILDER</span>
+  <button class="ash-btn" onclick="ashIDESetTab('language')">⬡ Language</button>
+  <button class="ash-btn" onclick="ashIDESetTab('maze')">🌀 Maze</button>
+  <button class="ash-btn" onclick="ashIDESetTab('crypto')">🔐 Crypto</button>
+  <button class="ash-btn danger" onclick="document.getElementById('ash-overlay').classList.remove('open')">✕ Close</button>
+</div>
+<div id="ash-body">
+  <div id="ash-editor-wrap">
+    <div id="ash-code-panel">
+      <div id="ash-code-label">⬡ ASH CODE</div>
+      <textarea id="ash-editor" spellcheck="false"></textarea>
+    </div>
+    <div id="ash-output-panel">
+      <div id="ash-output-label">◈ OUTPUT</div>
+      <div id="ash-output-content"></div>
+    </div>
+    <div id="ash-ctrl-bar">
+      <button class="ash-btn" onclick="ashRun()">▸ Build & Run</button>
+      <button class="ash-btn" onclick="ashLoadDefs().then(()=>ashToast('◈ Defs loaded'))">↺ Load Defs</button>
+      <button class="ash-btn" onclick="ashClearOutput()">✕ Clear</button>
+      <button class="ash-btn" style="margin-left:auto" onclick="ashSendToChat()">→ Autumn Chat</button>
+    </div>
+  </div>
+  <div id="ash-maze-wrap" style="display:none">
+    <div id="ash-maze-controls">
+      <div class="ash-ctrl-lbl">MODE</div>
+      <select class="ash-ctrl-input" id="ashMazeModeIDE" onchange="_ashState.mazeMode=this.value">
+        <option value="cubic">Cubic 3D</option><option value="planar">Planar 2D</option>
+      </select>
+      <div class="ash-ctrl-lbl">W</div><input type="number" class="ash-ctrl-input" id="ashMazeWIDE" value="10" min="3" max="30" onchange="_ashState.mazeW=+this.value">
+      <div class="ash-ctrl-lbl">H</div><input type="number" class="ash-ctrl-input" id="ashMazeHIDE" value="10" min="3" max="30" onchange="_ashState.mazeH=+this.value">
+      <div class="ash-ctrl-lbl">D</div><input type="number" class="ash-ctrl-input" id="ashMazeDIDE" value="4" min="1" max="20" onchange="_ashState.mazeD=+this.value">
+      <button class="ash-btn" onclick="ASH_MAZE_generate()">▸ Generate</button>
+      <button class="ash-btn" onclick="ASH_MAZE_solvePath()">⬡ Solve</button>
+      <button class="ash-btn" onclick="ashMazeFrame()">◉ Frame</button>
+      <button class="ash-btn" onclick="ashMazeExportPNG()">↓ PNG</button>
+    </div>
+    <div id="ash-viewport"><canvas id="ash-maze-canvas"></canvas></div>
+  </div>
+</div>`;
+    document.body.appendChild(ov);
+  }
+  ov.classList.add('open');
+  const ed = document.getElementById('ash-editor');
+  if (ed) ed.value = _ashState.ashCode;
+  ed?.addEventListener('input',()=>{ _ashState.ashCode=ed.value; });
+  ashLoadDefs();
+};
+
+window.ashIDESetTab = function(tab) {
+  const lang = document.getElementById('ash-editor-wrap');
+  const maze = document.getElementById('ash-maze-wrap');
+  if (!lang||!maze) return;
+  if (tab==='language') { lang.style.display='grid'; maze.style.display='none'; }
+  else if (tab==='maze') {
+    lang.style.display='none'; maze.style.display='grid';
+    setTimeout(()=>{
+      const cv=document.getElementById('ash-maze-canvas');
+      if(cv) { ASH_MAZE_init(cv); ASH_MAZE_generate(); }
+    },80);
+  }
+};
+
+// ── Expose TOOL TAB render functions ───────────────────────────────────
+window.renderToolsAshTree = renderToolsAshTree;
+window.renderToolsCrypto  = renderToolsCrypto;
+window.bindToolsAshTree   = bindToolsAshTree;
+window.bindToolsCrypto    = bindToolsCrypto;
+
+// Auto-load defs on page load
+ashLoadDefs();
+
+</script>
 
 <!-- Toast -->
 <div id="ide-toast"></div>
