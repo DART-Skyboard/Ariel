@@ -299,7 +299,7 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .listen-btn:hover{color:#ffb347;border-color:#ffb347;box-shadow:0 0 10px rgba(255,179,71,.15)}
 .listen-btn.tuning{color:#ffb347;border-color:#ffb347;background:rgba(255,179,71,.1);animation:musicPulse 1.2s ease-in-out infinite}
 @keyframes musicPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,179,71,.4)}50%{box-shadow:0 0 0 7px rgba(255,179,71,0)}}
-#music-indicator{display:none;align-items:center;gap:6px;font-size:10px;color:#ffb347;font-family:var(--font-d);letter-spacing:1px}
+#music-indicator{display:none;align-items:center;gap:6px;font-size:10px;color:#ffb347;font-family:var(--font-d);letter-spacing:1px;flex-wrap:nowrap;max-width:200px}
 #music-indicator.show{display:flex}
 .music-bars{display:flex;align-items:flex-end;gap:2px;height:14px}
 .music-bar{width:3px;background:#ffb347;border-radius:1px;animation:barBounce .8s ease-in-out infinite}
@@ -2947,9 +2947,26 @@ const MUSIC_ENGINE = {
   mediaRecorder: null,
   audioChunks: [],
   stream: null,
+  audioCtx: null,      // shared AudioContext — stays alive to avoid re-triggering audio session
   captureTimer: null,
-  AUDD_TOKEN: 'test',   // set to your AudD API token; 'test' uses free tier
-  CAPTURE_MS: 8000      // 8-second capture window
+  countdownTimer: null,
+  captureStartTime: null,
+  AUDD_TOKEN: 'test',        // replace with your AudD token from audd.io — free tier: 300/month
+  ACR_ACCESS_KEY: '',        // optional: ACRCloud access key for second-source fallback
+  ACR_ACCESS_SECRET: '',     // optional: ACRCloud access secret
+  ACR_HOST: 'identify-us-west-2.acrcloud.com',
+  CAPTURE_MS: 20000,         // 20-second capture for rare/quiet tracks
+  MIN_BLOB_BYTES: 4000,      // minimum audio data before attempting ID
+  RETRY_ATTEMPTS: 2,         // retry count on no-match before giving up
+  // Audio constraints: disable all processing that would interfere with music playback
+  AUDIO_CONSTRAINTS: {
+    echoCancellation: false,   // critical — prevents browser muting background audio
+    noiseSuppression: false,   // keep off — suppression would degrade music signal
+    autoGainControl: false,    // keep off — AGC distorts music dynamics
+    channelCount: { ideal: 2 }, // stereo capture for richer audio fingerprint
+    sampleRate: { ideal: 44100 },
+    latency: 0
+  }
 };
 
 // Genre → LEATR Natural Tool mapping (semantic assignment)
@@ -3027,34 +3044,75 @@ async function toggleMusicListen() {
 
 async function startMusicCapture() {
   try {
-    MUSIC_ENGINE.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    // Request mic with music-safe constraints — echoCancellation:false is critical
+    // to prevent the browser from switching the OS audio session to "voice mode"
+    // which would duck or mute any music playing in the background
+    MUSIC_ENGINE.stream = await navigator.mediaDevices.getUserMedia({
+      audio: MUSIC_ENGINE.AUDIO_CONSTRAINTS,
+      video: false
+    });
+
     MUSIC_ENGINE.audioChunks = [];
     MUSIC_ENGINE.isListening = true;
+    MUSIC_ENGINE.captureStartTime = Date.now();
 
     document.getElementById('listen-btn')?.classList.add('tuning');
     document.getElementById('music-indicator')?.classList.add('show');
-    document.getElementById('listen-btn').title = 'Stop listening';
+    const lb = document.getElementById('listen-btn');
+    if (lb) lb.title = 'Tap to stop early';
 
-    const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg','audio/mp4']
-      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    // Update indicator with live countdown
+    const indicator = document.getElementById('music-indicator');
+    const totalSec = Math.round(MUSIC_ENGINE.CAPTURE_MS / 1000);
+    let elapsed = 0;
+    if (indicator) {
+      const countSpan = document.createElement('span');
+      countSpan.id = 'music-countdown';
+      countSpan.style.cssText = 'font-family:var(--font-d);font-size:9px;color:rgba(255,179,71,.7);margin-left:4px;letter-spacing:1px;';
+      countSpan.textContent = `0s / ${totalSec}s`;
+      indicator.appendChild(countSpan);
+    }
+    MUSIC_ENGINE.countdownTimer = setInterval(() => {
+      elapsed++;
+      const span = document.getElementById('music-countdown');
+      if (span) span.textContent = `${elapsed}s / ${totalSec}s`;
+    }, 1000);
 
-    MUSIC_ENGINE.mediaRecorder = new MediaRecorder(MUSIC_ENGINE.stream, mimeType ? { mimeType } : {});
+    // Pick best available mime type — prefer opus/webm for compact audio
+    const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4','']
+      .find(t => t === '' || MediaRecorder.isTypeSupported(t));
+
+    const recOptions = {};
+    if (mimeType) recOptions.mimeType = mimeType;
+    // Use higher bitrate for better fingerprint quality
+    if (mimeType && mimeType.includes('opus')) recOptions.audioBitsPerSecond = 128000;
+
+    MUSIC_ENGINE.mediaRecorder = new MediaRecorder(MUSIC_ENGINE.stream, recOptions);
     MUSIC_ENGINE.mediaRecorder.ondataavailable = e => {
       if (e.data && e.data.size > 0) MUSIC_ENGINE.audioChunks.push(e.data);
     };
     MUSIC_ENGINE.mediaRecorder.onstop = async () => {
-      const blob = new Blob(MUSIC_ENGINE.audioChunks, { type: mimeType || 'audio/webm' });
+      const blobType = mimeType || 'audio/webm';
+      const blob = new Blob(MUSIC_ENGINE.audioChunks, { type: blobType });
       cleanupMusicCapture();
       await processMusicCapture(blob);
     };
 
-    MUSIC_ENGINE.mediaRecorder.start(250);
+    // Collect chunks every 500ms for smoother data flow
+    MUSIC_ENGINE.mediaRecorder.start(500);
     MUSIC_ENGINE.captureTimer = setTimeout(() => stopMusicCapture(), MUSIC_ENGINE.CAPTURE_MS);
 
   } catch (err) {
     cleanupMusicCapture();
+    let hint = '';
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')
+      hint = 'Microphone permission was denied. Check your browser site settings and allow microphone access.';
+    else if (err.name === 'NotFoundError')
+      hint = 'No microphone detected on this device.';
+    else
+      hint = err.message;
     const errMsg = {
-      role: 'autumn', text: `◈ I couldn't access your microphone to listen. Check browser permissions and try again.\n\n(${err.message})`,
+      role: 'autumn', text: `◈ I couldn't start listening — ${hint}`,
       ts: new Date().toISOString(), id: 'msg-music-err-' + Date.now(),
       grammarMeta: '', brpnMeta: '', contextType: 'MUSIC_ID'
     };
@@ -3072,25 +3130,100 @@ function stopMusicCapture() {
 
 function cleanupMusicCapture() {
   MUSIC_ENGINE.isListening = false;
+  if (MUSIC_ENGINE.countdownTimer) { clearInterval(MUSIC_ENGINE.countdownTimer); MUSIC_ENGINE.countdownTimer = null; }
   if (MUSIC_ENGINE.stream) { MUSIC_ENGINE.stream.getTracks().forEach(t => t.stop()); MUSIC_ENGINE.stream = null; }
   document.getElementById('listen-btn')?.classList.remove('tuning');
   document.getElementById('music-indicator')?.classList.remove('show');
+  document.getElementById('music-countdown')?.remove();
   const lb = document.getElementById('listen-btn');
   if (lb) lb.title = 'Listen to music — Autumn will identify and analyze';
 }
 
+// ── AudD identification (primary) ────────────────────────────────────────
 async function identifyMusicAudd(blob) {
   const form = new FormData();
+  // AudD accepts webm/opus directly — no conversion needed
   form.append('file', blob, 'capture.webm');
   form.append('api_token', MUSIC_ENGINE.AUDD_TOKEN);
-  form.append('return', 'apple_music,spotify');
+  // Request all metadata sources for maximum coverage
+  form.append('return', 'apple_music,spotify,deezer,lyrics,musicbrainz');
   try {
-    const res = await fetch('https://api.audd.io/', { method: 'POST', body: form });
+    const res = await fetch('https://api.audd.io/', {
+      method: 'POST', body: form,
+      signal: AbortSignal.timeout(15000)
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    if (data.status === 'success' && data.result) return data.result;
+    if (data.status === 'success' && data.result) return { ...data.result, _source: 'audd' };
+    // AudD-specific error codes
+    if (data.status === 'error') {
+      if (data.error?.error_code === 901) return { _tokenError: true }; // token exhausted
+    }
     return null;
   } catch (e) { return null; }
+}
+
+// ── ACRCloud identification (secondary fallback, larger rare music DB) ───
+async function identifyMusicACR(blob) {
+  if (!MUSIC_ENGINE.ACR_ACCESS_KEY || !MUSIC_ENGINE.ACR_ACCESS_SECRET) return null;
+  try {
+    // Build HMAC-SHA1 signature using Web Crypto API
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const stringToSign = `POST\n/v1/identify\n${MUSIC_ENGINE.ACR_ACCESS_KEY}\naudio\n1\n${timestamp}`;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(MUSIC_ENGINE.ACR_ACCESS_SECRET),
+      { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const sigBuf = await crypto.subtle.sign('HMAC', key, enc.encode(stringToSign));
+    const signature = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+
+    const form = new FormData();
+    form.append('sample', blob, 'capture.webm');
+    form.append('access_key', MUSIC_ENGINE.ACR_ACCESS_KEY);
+    form.append('data_type', 'audio');
+    form.append('signature_version', '1');
+    form.append('signature', signature);
+    form.append('timestamp', timestamp);
+    form.append('sample_bytes', blob.size.toString());
+
+    const res = await fetch(`https://${MUSIC_ENGINE.ACR_HOST}/v1/identify`, {
+      method: 'POST', body: form,
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.status?.code === 0 && data.metadata?.music?.[0]) {
+      const m = data.metadata.music[0];
+      // Normalize ACRCloud response to match AudD format
+      return {
+        title:        m.title || '',
+        artist:       m.artists?.[0]?.name || '',
+        album:        m.album?.name || '',
+        release_date: m.release_date || '',
+        label:        m.label || '',
+        genres:       m.genres?.map(g => g.name) || [],
+        timecode:     m.play_offset_ms || 0,
+        _source:      'acrcloud'
+      };
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+// ── Master identification: tries AudD first, ACRCloud second ─────────────
+async function identifyMusic(blob) {
+  // Try AudD
+  const auddResult = await identifyMusicAudd(blob);
+  if (auddResult?._tokenError) {
+    // Token is exhausted — skip straight to ACRCloud if configured
+    return await identifyMusicACR(blob);
+  }
+  if (auddResult && !auddResult._tokenError) return auddResult;
+
+  // AudD returned nothing — try ACRCloud fallback
+  const acrResult = await identifyMusicACR(blob);
+  if (acrResult) return acrResult;
+
+  return null;
 }
 
 // Daisy-chain deep research: wiki → discography → collaborators → news → yt → reddit
@@ -3203,9 +3336,10 @@ function buildAutumnMusicReflection(track, leatrData, research, genreTool, brpn)
 
 // Assemble and render the full music card + response
 async function processMusicCapture(blob) {
-  if (!blob || blob.size < 1000) {
+  if (!blob || blob.size < MUSIC_ENGINE.MIN_BLOB_BYTES) {
     const failMsg = {
-      role: 'autumn', text: `◈ The audio captured was too short or empty. Hold the ♫ button for at least 8 seconds with music playing nearby.`,
+      role: 'autumn',
+      text: `◈ The audio capture was too short or silent — I need at least a few seconds of music to work with. Hold ♫ while music is playing and let the full 20 seconds run for best results.`,
       ts: new Date().toISOString(), id: 'msg-music-empty-' + Date.now(),
       grammarMeta: '', brpnMeta: '', contextType: 'MUSIC_ID'
     };
@@ -3218,22 +3352,36 @@ async function processMusicCapture(blob) {
   pulseShells(1.6);
   if (typeof setOrbThinking === 'function') setOrbThinking(true);
 
-  // Show "identifying..." typing indicator
   const tDiv = document.createElement('div');
   tDiv.className = 'typing';
   tDiv.id = 'music-typing';
-  tDiv.innerHTML = '<div class="typing-dot" style="background:#ffb347;animation-delay:0s"></div><div class="typing-dot" style="background:#ffb347;animation-delay:.2s"></div><div class="typing-dot" style="background:#ffb347;animation-delay:.4s"></div><span class="typing-lbl" style="color:#ffb347">identifying music…</span>';
+  tDiv.innerHTML = '<div class="typing-dot" style="background:#ffb347;animation-delay:0s"></div><div class="typing-dot" style="background:#ffb347;animation-delay:.2s"></div><div class="typing-dot" style="background:#ffb347;animation-delay:.4s"></div><span class="typing-lbl" style="color:#ffb347">cross-referencing recognition network…</span>';
   document.getElementById('chat-scroll')?.appendChild(tDiv);
 
-  const track = await identifyMusicAudd(blob);
+  // Try identification — with retry on first failure
+  let track = null;
+  for (let attempt = 0; attempt <= MUSIC_ENGINE.RETRY_ATTEMPTS; attempt++) {
+    track = await identifyMusic(blob);
+    if (track) break;
+    if (attempt < MUSIC_ENGINE.RETRY_ATTEMPTS) {
+      // Brief pause before retry
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+
   document.getElementById('music-typing')?.remove();
 
   if (!track) {
     S.isProcessing = false;
     if (typeof setOrbThinking === 'function') setOrbThinking(false);
+
+    const isTestToken = MUSIC_ENGINE.AUDD_TOKEN === 'test';
+    const noMatchText = isTestToken
+      ? `◈ Recognition came back empty — and the AudD token is currently set to \`test\` (free tier, very limited quota).\n\nTo unlock full identification across all current, classic, rare, and streaming music:\n1. Sign up free at **audd.io** — you get 300 recognitions/month\n2. Add your token: open the source and set \`MUSIC_ENGINE.AUDD_TOKEN = 'your-token'\`\n\nFor a second-source with 100M+ track coverage including rare and classical music, you can also set up an **ACRCloud** free account and add \`ACR_ACCESS_KEY\` + \`ACR_ACCESS_SECRET\`.\n\nAlternatively — describe the music to me and I'll research it from there.`
+      : `◈ I listened through ${MUSIC_ENGINE.RETRY_ATTEMPTS + 1} passes against the recognition network and couldn't find a match. A few possibilities:\n\n• The audio signal was too faint — try moving the device closer to the speaker\n• Very new unreleased material may not be in the database yet\n• Some extremely obscure recordings (private press, bootlegs, home recordings) aren't indexed\n\nDescribe anything you can hear — artist name, lyrics, genre, mood — and I'll research from that direction instead.`;
+
     const noMatchMsg = {
-      role: 'autumn',
-      text: `◈ I listened but couldn't match anything in the recognition network. The audio may be too faint, distorted, or it might be something obscure. Try again with the source a bit closer — or describe the music to me and I'll work from that.`,
+      role: 'autumn', text: noMatchText,
       ts: new Date().toISOString(), id: 'msg-music-nomatch-' + Date.now(),
       grammarMeta: '', brpnMeta: '', contextType: 'MUSIC_ID'
     };
