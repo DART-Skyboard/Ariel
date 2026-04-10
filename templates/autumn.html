@@ -1628,12 +1628,7 @@ const CONTEXT_REGISTRY = {
     apis: ["nominatim","overpass"],
     label: "LOCATION"
   },
-  IMAGE_GENERATION: {
-    triggers: ["generate an image","create an image","draw me","make an image","picture of","generate a picture","visualize","render","illustrate","create art","generate art","paint me"],
-    requiresLocation: false,
-    apis: [],
-    label: "IMAGEGEN"
-  },
+
   MULTI_USER: {
     triggers: ["we all","everyone here","group chat","join us","add user","multi user","session with","chat together","group session"],
     requiresLocation: false,
@@ -3312,7 +3307,7 @@ async function runImageFromReference(text, analysis, reflexData, referenceImgs) 
   const spinMsg = {
     role:'autumn', text:'', ts:new Date().toISOString(), id:cardId,
     grammarMeta:'', brpnMeta:'', contextType:'IMAGE_GEN',
-    imageGenCard:`<div class="img-gen-card" id="${cardId}-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>ANALYZING REFERENCE${referenceImgs.length>1?' ('+referenceImgs.length+' images)':''}…</div></div>`
+    imageGenCard:'<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>ANALYZING REFERENCE'+(referenceImgs.length>1?' ('+referenceImgs.length+' images)':'')+'\u2026</div></div>'
   };
   msgs().push(spinMsg);
   renderThumbRow && renderThumbRow();
@@ -3418,7 +3413,7 @@ async function runImageGeneration(text, analysis, reflexData) {
     id: cardId,
     grammarMeta: '', brpnMeta: '',
     contextType: 'IMAGE_GEN',
-    imageGenCard: `<div class="img-gen-card" id="${cardId}-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>GENERATING IMAGE · ${styleInfo.label}…</div></div>`
+    imageGenCard: '<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>GENERATING IMAGE · '+styleInfo.label+'…</div></div>'
   };
   msgs().push(genMsg);
   renderMessages();
@@ -4300,19 +4295,15 @@ ${city ? 'User city: ' + city : ''}\`;
           contentBlocks.push({ type:'image', source:{ type:'base64', media_type:img.mimeType, data:img.base64 } });
           // Add per-image annotation as text between images
           if (_visionImgs.length > 1) {
-            const fraxNote = img.fraxMeta ? ` [Image ${i+1}: FRAX channels=${img.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')} ${img.fraxMeta.bitDepth}bit]` : ` [Image ${i+1}: ${img.fileName}]`;
-            const pixNote = img.analysis ? ` brightness:${img.analysis.brightness} contrast:${img.analysis.contrast} dominant:${img.analysis.dominantColor}` : '';
+            const fraxNote = img.fraxMeta ? ' [Image '+(i+1)+': FRAX channels='+img.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')+' '+img.fraxMeta.bitDepth+'bit]' : ' [Image '+(i+1)+': '+img.fileName+']';
+            const pixNote = img.analysis ? ' brightness:'+img.analysis.brightness+' contrast:'+img.analysis.contrast+' dominant:'+img.analysis.dominantColor : '';
             contentBlocks.push({ type:'text', text: fraxNote + pixNote });
           }
         });
         // Add the user's actual text with analysis summary
         const firstImg = _visionImgs[0];
-        const analysisNote = firstImg.analysis
-          ? ` [Primary image: ${firstImg.width}×${firstImg.height} brightness=${firstImg.analysis.brightness} contrast=${firstImg.analysis.contrast} saturation=${firstImg.analysis.saturation} entropy=${firstImg.analysis.entropy} dominantColor=${firstImg.analysis.dominantColor} topColors=${firstImg.analysis.topColors?.slice(0,3).join(',')||''}]`
-          : '';
-        const fraxNote0 = firstImg.fraxMeta
-          ? ` [FRAX v${firstImg.fraxMeta.version}: channels=${firstImg.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')} compression=${['Raw','RLE','Deflate'][firstImg.fraxMeta.compression]} bitDepth=${firstImg.fraxMeta.bitDepth}]`
-          : '';
+        const analysisNote = firstImg.analysis ? ' [Primary image: '+firstImg.width+'×'+firstImg.height+' brightness='+firstImg.analysis.brightness+' contrast='+firstImg.analysis.contrast+' saturation='+firstImg.analysis.saturation+' entropy='+firstImg.analysis.entropy+' dominantColor='+firstImg.analysis.dominantColor+' topColors='+(firstImg.analysis.topColors?firstImg.analysis.topColors.slice(0,3).join(','):'')+']' : '';
+        const fraxNote0 = firstImg.fraxMeta ? ' [FRAX v'+firstImg.fraxMeta.version+': channels='+firstImg.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')+' compression='+['Raw','RLE','Deflate'][firstImg.fraxMeta.compression]+' bitDepth='+firstImg.fraxMeta.bitDepth+']' : '';
         contentBlocks.push({ type:'text', text:(textContent||'Analyze this image.')+analysisNote+fraxNote0 });
         trimHistory[lastIdx] = { role:'user', content: contentBlocks };
       }
@@ -4331,7 +4322,7 @@ ${city ? 'User city: ' + city : ''}\`;
         "anthropic-dangerous-direct-browser-access": "true",
         ...(ak ? {"x-api-key": ak} : {})
       },
-      body: JSON.stringify({model:"claude-sonnet-4-6", max_tokens:1200, system:systemPrompt, messages:trimHistory})
+      body: JSON.stringify({model:"claude-sonnet-4-6", max_tokens:2048, system:systemPrompt, messages:trimHistory})
     });
     clearTimeout(_timeout);
     const data=await res.json();
