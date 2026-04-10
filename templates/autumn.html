@@ -332,7 +332,8 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .upload-btn{background:transparent;border:1px solid var(--border);color:var(--dim);width:38px;height:38px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .2s;flex-shrink:0}
 .upload-btn:hover{color:#a78bfa;border-color:#a78bfa;box-shadow:0 0 10px rgba(167,139,250,.15)}
 .upload-btn.has-image{color:#a78bfa;border-color:#a78bfa;background:rgba(167,139,250,.12)}
-#img-preview-strip{display:none;align-items:center;gap:8px;padding:6px 10px;background:rgba(167,139,250,.06);border-top:1px solid rgba(167,139,250,.12);border-bottom:1px solid rgba(167,139,250,.08);flex-wrap:nowrap;overflow-x:auto}
+#img-preview-strip{display:none;align-items:center;gap:0;padding:5px 10px;background:rgba(167,139,250,.06);border-top:1px solid rgba(167,139,250,.12);border-bottom:1px solid rgba(167,139,250,.08);flex-wrap:nowrap;overflow:hidden}
+#img-thumb-row{display:flex;align-items:center;gap:8px;flex:1;overflow-x:auto;padding:3px 0;scrollbar-width:thin;scrollbar-color:rgba(167,139,250,.3) transparent;-webkit-overflow-scrolling:touch}
 #img-preview-strip.show{display:flex}
 .img-preview-thumb{width:48px;height:48px;border-radius:5px;object-fit:cover;border:1px solid rgba(167,139,250,.3);flex-shrink:0}
 .img-preview-info{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -714,18 +715,13 @@ select.ash-ctrl-input{cursor:pointer}
       <button class="mic-btn" id="mic-btn" onclick="toggleVoiceMode()" title="Voice mode">🎤</button>
       <button class="listen-btn" id="listen-btn" onclick="toggleMusicListen()" title="Listen to music — Autumn will identify and analyze">♫</button>
       <button class="upload-btn" id="upload-btn" onclick="triggerImageUpload()" title="Attach image or .frax file">📎</button>
-      <input type="file" id="img-file-input" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,.frax" style="display:none" onchange="handleImageFileSelect(this.files[0])">
+      <input type="file" id="img-file-input" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,.frax" multiple style="display:none" onchange="handleImageFilesSelect(this.files)">
       <input id="chat-input" placeholder="Ask Autumn..." autocomplete="off">
       <button class="send-btn" id="send-btn">▸ Send</button>
     </div>
     <div id="img-preview-strip">
-      <img id="img-preview-thumb" class="img-preview-thumb" src="" alt="">
-      <div class="img-preview-info">
-        <div class="img-preview-name" id="img-preview-name"></div>
-        <div class="img-preview-meta" id="img-preview-meta"></div>
-        <div class="img-frax-channels" id="img-frax-channels"></div>
-      </div>
-      <button class="img-preview-remove" onclick="clearPendingImage()" title="Remove">✕</button>
+      <div id="img-thumb-row"></div>
+      <button class="img-preview-remove" onclick="clearPendingImage()" title="Remove all">✕</button>
     </div>
     <div id="voice-indicator"><div class="vi-dot"></div>LISTENING...</div>
     <div id="music-indicator"><div class="music-bars"><div class="music-bar"></div><div class="music-bar"></div><div class="music-bar"></div><div class="music-bar"></div><div class="music-bar"></div></div>TUNING IN...</div>
@@ -3106,108 +3102,118 @@ function fraxChannelAnalysis(imageData) {
 }
 
 // ── Image state ───────────────────────────────────────────────
-// S.pendingImage = { base64, mimeType, fileName, width, height, analysis, fraxMeta, thumbnail }
-// S.activeImageGenCard = DOM element currently showing generation spinner
+// S.pendingImages = [] — array of {base64, mimeType, fileName, width, height, analysis, fraxMeta, thumbnail}
+// Supports multiple files for multi-reference image generation and vision analysis
 
 function triggerImageUpload() {
-  document.getElementById('img-file-input')?.click();
+  const inp = document.getElementById('img-file-input');
+  if (inp) { inp.value = ''; inp.click(); }
 }
 
-async function handleImageFileSelect(file) {
-  if (!file) return;
+async function loadSingleImageFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   const isFrax = ext === 'frax';
+  let base64 = '', mimeType = 'image/png', width = 0, height = 0;
+  let analysis = null, fraxMeta = null, thumbnail = '';
 
-  try {
-    let base64 = '', mimeType = 'image/png', width = 0, height = 0;
-    let analysis = null, fraxMeta = null, thumbnail = '';
+  if (isFrax) {
+    const ab = await file.arrayBuffer();
+    const decoded = decodeFraxBuffer(ab);
+    fraxMeta = { channels: decoded.channels, compression: decoded.compression, bitDepth: decoded.bitDepth, metadata: decoded.metadata, version: decoded.version };
+    width = decoded.width; height = decoded.height;
+    const cv = document.createElement('canvas'); cv.width = width; cv.height = height;
+    cv.getContext('2d').putImageData(decoded.imageData, 0, 0);
+    base64 = cv.toDataURL('image/png').split(',')[1];
+    mimeType = 'image/png';
+    analysis = fraxChannelAnalysis(decoded.imageData);
+    const tc = document.createElement('canvas'); tc.width = 56; tc.height = 56;
+    tc.getContext('2d').drawImage(cv, 0, 0, 56, 56);
+    thumbnail = tc.toDataURL('image/png');
+  } else {
+    const dataUrl = await new Promise((res, rej) => {
+      const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej;
+      r.readAsDataURL(file);
+    });
+    base64 = dataUrl.split(',')[1];
+    mimeType = file.type || 'image/png';
+    const img = await new Promise((res, rej) => {
+      const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl;
+    });
+    width = img.width; height = img.height;
+    const cv = document.createElement('canvas'); cv.width = width; cv.height = height;
+    cv.getContext('2d').drawImage(img, 0, 0);
+    analysis = fraxChannelAnalysis(cv.getContext('2d').getImageData(0, 0, width, height));
+    const tc = document.createElement('canvas'); tc.width = 56; tc.height = 56;
+    tc.getContext('2d').drawImage(img, 0, 0, 56, 56);
+    thumbnail = tc.toDataURL('image/png');
+  }
+  return { base64, mimeType, fileName: file.name, width, height, analysis, fraxMeta, thumbnail, isFrax, fileSize: file.size };
+}
 
-    if (isFrax) {
-      // Read FRAX binary → decode → get ImageData → Canvas → base64
-      const ab = await file.arrayBuffer();
-      const decoded = decodeFraxBuffer(ab);
-      fraxMeta = { channels: decoded.channels, compression: decoded.compression, bitDepth: decoded.bitDepth, metadata: decoded.metadata, version: decoded.version };
-      width = decoded.width; height = decoded.height;
-      const c = document.createElement('canvas'); c.width = width; c.height = height;
-      c.getContext('2d').putImageData(decoded.imageData, 0, 0);
-      base64 = c.toDataURL('image/png').split(',')[1];
-      mimeType = 'image/png';
-      analysis = fraxChannelAnalysis(decoded.imageData);
-      // Thumbnail at 48px
-      const tc = document.createElement('canvas'); tc.width = 48; tc.height = 48;
-      tc.getContext('2d').drawImage(c, 0, 0, 48, 48);
-      thumbnail = tc.toDataURL('image/png');
-    } else {
-      // Standard image
-      const dataUrl = await new Promise((res, rej) => {
-        const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej;
-        r.readAsDataURL(file);
-      });
-      base64 = dataUrl.split(',')[1];
-      mimeType = file.type || 'image/png';
-      // Load into canvas for analysis
-      const img = await new Promise((res, rej) => {
-        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
-        i.src = dataUrl;
-      });
-      width = img.width; height = img.height;
-      const c = document.createElement('canvas'); c.width = width; c.height = height;
-      c.getContext('2d').drawImage(img, 0, 0);
-      analysis = fraxChannelAnalysis(c.getContext('2d').getImageData(0, 0, width, height));
-      // Thumbnail
-      const tc = document.createElement('canvas'); tc.width = 48; tc.height = 48;
-      tc.getContext('2d').drawImage(img, 0, 0, 48, 48);
-      thumbnail = tc.toDataURL('image/png');
+function renderThumbRow() {
+  const row = document.getElementById('img-thumb-row');
+  if (!row) return;
+  row.innerHTML = '';
+  const imgs = S.pendingImages || [];
+  imgs.forEach((img, idx) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;flex-shrink:0;';
+    const thumb = document.createElement('img');
+    thumb.src = img.thumbnail; thumb.className = 'img-preview-thumb';
+    thumb.title = img.fileName + ' (' + img.width + '×' + img.height + ')';
+    const rm = document.createElement('button');
+    rm.textContent = '✕';
+    rm.style.cssText = 'position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:rgba(255,68,102,.8);border:none;color:#fff;font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;';
+    rm.onclick = () => { S.pendingImages.splice(idx, 1); renderThumbRow(); if (!S.pendingImages.length) clearPendingImage(); };
+    // FRAX badge
+    if (img.isFrax) {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'position:absolute;bottom:-2px;left:0;right:0;text-align:center;font-size:7px;font-family:var(--font-d);color:#a78bfa;letter-spacing:.5px;';
+      badge.textContent = 'FRAX';
+      wrap.appendChild(badge);
     }
+    wrap.appendChild(thumb); wrap.appendChild(rm);
+    row.appendChild(wrap);
+  });
+  // Count label
+  if (imgs.length > 1) {
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:9px;font-family:var(--font-d);color:#a78bfa;letter-spacing:1px;white-space:nowrap;align-self:center;padding:0 4px;';
+    lbl.textContent = imgs.length + ' FILES';
+    row.appendChild(lbl);
+  }
+}
 
-    // Store in state
-    S.pendingImage = { base64, mimeType, fileName: file.name, width, height, analysis, fraxMeta, thumbnail };
-
-    // Update preview strip
-    const strip = document.getElementById('img-preview-strip');
-    document.getElementById('img-preview-thumb').src = thumbnail;
-    document.getElementById('img-preview-name').textContent = file.name;
-    document.getElementById('img-preview-meta').textContent = `${width}×${height} · ${(file.size/1024).toFixed(0)}KB${isFrax ? ' · FRAX v'+fraxMeta.version : ''}`;
+async function handleImageFilesSelect(files) {
+  if (!files || !files.length) return;
+  if (!S.pendingImages) S.pendingImages = [];
+  for (const file of Array.from(files)) {
+    try {
+      const imgData = await loadSingleImageFile(file);
+      S.pendingImages.push(imgData);
+    } catch(e) { console.warn('[Autumn Image]', file.name, e); }
+  }
+  if (S.pendingImages.length) {
+    document.getElementById('img-preview-strip')?.classList.add('show');
     document.getElementById('upload-btn')?.classList.add('has-image');
-
-    // FRAX: show mini channel thumbnails
-    const chRow = document.getElementById('img-frax-channels');
-    chRow.innerHTML = '';
-    if (isFrax && analysis) {
-      const decoded2 = decodeFraxBuffer(await file.arrayBuffer());
-      decoded2.channels.slice(0, 5).forEach((chId, idx) => {
-        const tc2 = document.createElement('canvas'); tc2.width = 24; tc2.height = 24; tc2.className = 'img-frax-ch';
-        tc2.title = FRAX_CH_NAMES[chId] || 'Ch'+chId;
-        tc2.style.borderColor = FRAX_CH_COLORS[chId] || '#aaa';
-        const ctx2 = tc2.getContext('2d');
-        const chImg = new ImageData(decoded2.width, decoded2.height);
-        const ca = decoded2.channelArrays[idx];
-        for (let p = 0; p < decoded2.width * decoded2.height; p++) {
-          const d = p*4, v = ca[p];
-          chImg.data[d]=v; chImg.data[d+1]=v; chImg.data[d+2]=v; chImg.data[d+3]=255;
-        }
-        const tmpC = document.createElement('canvas'); tmpC.width=decoded2.width; tmpC.height=decoded2.height;
-        tmpC.getContext('2d').putImageData(chImg, 0, 0);
-        ctx2.drawImage(tmpC, 0, 0, 24, 24);
-        chRow.appendChild(tc2);
-      });
-    }
-
-    strip.classList.add('show');
-    // Reset file input so same file can be selected again
-    document.getElementById('img-file-input').value = '';
-
-  } catch (err) {
-    console.warn('[Autumn Image]', err);
+    renderThumbRow();
   }
 }
 
 function clearPendingImage() {
+  S.pendingImages = [];
   S.pendingImage = null;
   document.getElementById('img-preview-strip')?.classList.remove('show');
   document.getElementById('upload-btn')?.classList.remove('has-image');
-  document.getElementById('img-preview-thumb').src = '';
-  document.getElementById('img-frax-channels').innerHTML = '';
+  const row = document.getElementById('img-thumb-row');
+  if (row) row.innerHTML = '';
+}
+
+// Detect iteration/variation intent when image is attached
+function detectImageIterationIntent(text) {
+  const lc = text.toLowerCase();
+  const iterWords = ['new version','variation','iterate','enhance','modify','change','update','make it','redo','regenerate','based on this','from this','using this','with this style','like this but','similar but','inspired by','improve','evolve','transform'];
+  return iterWords.some(w => lc.includes(w));
 }
 
 // ── Style → Pollinations model + prompt suffix map ────────────
@@ -3295,6 +3301,108 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
   const model = styleInfo.model || 'flux';
   const url = `https://image.pollinations.ai/prompt/${encoded}?width=768&height=768&model=${model}&nologo=true&seed=${_seed}`;
   return { url, seed: _seed, model, prompt };
+}
+
+// Image-to-image: vision analysis of reference(s) → build prompt → generate new image
+async function runImageFromReference(text, analysis, reflexData, referenceImgs) {
+  const styleInfo = extractStyleModifier(text);
+  const cardId = 'imgref-' + Date.now();
+
+  // Show spinner card
+  const spinMsg = {
+    role:'autumn', text:'', ts:new Date().toISOString(), id:cardId,
+    grammarMeta:'', brpnMeta:'', contextType:'IMAGE_GEN',
+    imageGenCard:`<div class="img-gen-card" id="${cardId}-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>ANALYZING REFERENCE${referenceImgs.length>1?' ('+referenceImgs.length+' images)':''}…</div></div>`
+  };
+  msgs().push(spinMsg);
+  renderThumbRow && renderThumbRow();
+  renderMessages();
+
+  // Step 1: run Claude vision on the reference image(s) to get a description
+  const visionPrompt = referenceImgs.length > 1
+    ? `Describe each of these ${referenceImgs.length} reference images in detail — objects, scene, colors, mood, style, composition. Then synthesize what visual elements they share. The user wants: "${text.slice(0,300)}"`
+    : `Describe this reference image in detail — every object, scene element, color palette, mood, lighting, and compositional style you can identify. The user wants to create a new image based on it with this modification: "${text.slice(0,300)}"`;
+
+  // Build vision API call directly with the reference images
+  const visionContentBlocks = [];
+  referenceImgs.slice(0,5).forEach(img => {
+    visionContentBlocks.push({ type:'image', source:{ type:'base64', media_type:img.mimeType, data:img.base64 } });
+  });
+  visionContentBlocks.push({ type:'text', text: visionPrompt });
+
+  let visionDescription = '';
+  try {
+    const ak = _getAK?.() || '';
+    const vRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true', ...(ak?{'x-api-key':ak}:{}) },
+      body: JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:600, messages:[{ role:'user', content:visionContentBlocks }] }),
+      signal: AbortSignal.timeout(20000)
+    });
+    const vData = await vRes.json();
+    visionDescription = vData.content?.map(b=>b.text||'').join('') || '';
+  } catch(e) { visionDescription = ''; }
+
+  // Step 2: build generation prompt from vision description + user's modification intent
+  const userIntent = text.replace(/generate|create|make|draw|new version|variation|enhance|modify|based on|from this|using this/gi,'').trim().slice(0,150);
+  const genPrompt = visionDescription
+    ? `${visionDescription.slice(0,300)}, ${userIntent ? 'modified to be: '+userIntent+',' : ''} ${styleInfo.suffix}`
+    : buildGenerationPrompt(text, analysis, styleInfo, []);
+
+  const cleanPrompt = genPrompt.replace(/\s{2,}/g,' ').trim().slice(0,500);
+
+  // Step 3: fetch Openverse refs for additional enrichment
+  const nouns = analysis.grammar.sentences.flatMap(s=>s.tokens.filter(t=>t.type==='Noun').map(t=>t.word)).slice(0,3);
+  const refs = await fetchOpenverseRef(nouns.join(' ')||text.slice(0,40), 3).catch(()=>[]);
+
+  // Step 4: generate
+  const genResult = await generateWithPollinations(cleanPrompt, styleInfo);
+
+  // Preload
+  await new Promise(res => {
+    const img = new Image(); img.onload=res; img.onerror=res; img.src=genResult.url;
+    setTimeout(res, 18000);
+  });
+
+  // Replace spinner with result
+  const idx2 = msgs().findIndex(m=>m.id===cardId);
+  const refLinks = refs.slice(0,2).map(r=>({title:r.title||'Reference',url:r.url,desc:'Openverse'}));
+  referenceImgs.forEach((ri,i) => {
+    if(ri.fileName) refLinks.push({title:'Reference '+( i+1)+': '+ri.fileName,url:'#',desc:ri.width+'×'+ri.height});
+  });
+
+  if (idx2 >= 0) {
+    msgs()[idx2] = {
+      ...msgs()[idx2],
+      imageGenCard:`<div class="img-gen-card">
+  <img class="img-gen-img" src="${genResult.url}" alt="generated" loading="lazy" onerror="this.style.display='none'">
+  <div class="img-gen-footer">
+    <div class="img-gen-prompt-label">GENERATED FROM REFERENCE${referenceImgs.length>1?' ('+referenceImgs.length+' sources)':''}</div>
+    <div class="img-gen-prompt-text">${esc(cleanPrompt.slice(0,200))}</div>
+    <div class="img-gen-tags"><span class="img-gen-tag">${esc(styleInfo.label)}</span><span class="img-gen-tag">${esc(genResult.model)}</span><span class="img-gen-tag">seed:${genResult.seed}</span></div>
+  </div>
+</div>`,
+      media:{ videos:[], images:[], links:refLinks, sources:refs.length?['OPENVERSE']:[] },
+      grammarMeta:`Ref→Gen · style:${styleInfo.key} model:${genResult.model} refs:${referenceImgs.length}`,
+      brpnMeta:`Vision desc: ${visionDescription.length} chars → prompt: ${cleanPrompt.length} chars`
+    };
+    renderMessages();
+  }
+
+  // Generate Autumn's commentary
+  const commentary = await generateReply(
+    `You just analyzed ${referenceImgs.length>1?referenceImgs.length+' reference images':'a reference image'} and generated a new image from them. Your vision analysis found: "${visionDescription.slice(0,200)}". The user asked: "${text.slice(0,200)}". Describe what you created and how the reference informed the new image.`,
+    analysis, { ...reflexData, contextType:'IMAGE_GEN' }
+  ).catch(()=>({text:'',grammarMeta:'',brpnMeta:''}));
+
+  if (commentary?.text) {
+    msgs().push({ role:'autumn', text:commentary.text, ts:new Date().toISOString(), id:'imgref-txt-'+Date.now(), grammarMeta:commentary.grammarMeta, brpnMeta:commentary.brpnMeta, contextType:'IMAGE_GEN' });
+    renderMessages();
+    autoReadLastResponse();
+  }
+
+  // Clear pending images
+  S.pendingImages = []; S.pendingImage = null;
 }
 
 // Main image generation pipeline — called from handleSend when generation intent detected
@@ -4003,12 +4111,12 @@ async function handleSend() {
   // ── END ATTENTIVE INTERCEPT ────────────────────────────────────────────
 
   // Capture and clear pending image before processing
-  const _pendingImg = S.pendingImage || null;
-  if (_pendingImg) clearPendingImage();
+  const _pendingImgs = (S.pendingImages && S.pendingImages.length) ? [...S.pendingImages] : (S.pendingImage ? [S.pendingImage] : []);
+  if (_pendingImgs.length) clearPendingImage();
 
   msgs().push({
     role:"user", text, ts:new Date().toISOString(),
-    uploadedImageThumb: _pendingImg?.thumbnail || null
+    uploadedImageThumbs: _pendingImgs.map(i=>i.thumbnail)
   });
   S.isProcessing=true;
   renderMessages();
@@ -4020,7 +4128,21 @@ async function handleSend() {
   S.contextHistory=[...S.contextHistory,text].slice(-5);
 
   // ── Image generation intercept ─────────────────────────────
-  if (!_pendingImg && detectGenerationIntent(text)) {
+  // Image-to-image: image attached + iteration/generation intent → vision-describe then generate
+  const _hasImages = _pendingImgs.length > 0;
+  if (_hasImages && (detectGenerationIntent(text) || detectImageIterationIntent(text))) {
+    // Put images back temporarily for vision call in generate-from-reference
+    S.pendingImages = _pendingImgs;
+    const reflexData0 = await autumnReflex(text,'default').catch(()=>({}));
+    S.journal.push(createJournalEntry(text, analysis, reflexData0));
+    updateHUD(analysis);
+    S.isProcessing = false;
+    if(typeof setOrbThinking==='function') setOrbThinking(false);
+    await runImageFromReference(text, analysis, reflexData0, _pendingImgs);
+    updateFooter();
+    return;
+  }
+  if (!_hasImages && detectGenerationIntent(text)) {
     const reflexData = await autumnReflex(text,"default").catch(()=>({}));
     S.lastReflex = reflexData;
     S.journal.push(createJournalEntry(text, analysis, reflexData));
@@ -4033,7 +4155,7 @@ async function handleSend() {
   }
 
   // ── If image attached, set it back for generateReply vision call ──
-  if (_pendingImg) S.pendingImage = _pendingImg;
+  if (_pendingImgs.length) S.pendingImages = _pendingImgs;
 
   // Run full reflex pipeline
   const reflexData = await autumnReflex(text,"default");
@@ -4071,7 +4193,7 @@ async function handleSend() {
   S.isProcessing=false;
   if(typeof setOrbThinking==='function') setOrbThinking(false);
   // Clear pending image now that Claude has seen it
-  if (S.pendingImage) S.pendingImage = null;
+  S.pendingImages = []; S.pendingImage = null;
   saveState(); renderMessages(); updateFooter();
   pulseShells(0.8);
   evolveOrb(analysis, reflexData);      // ← orb morphs with every message
@@ -4093,28 +4215,59 @@ async function generateReply(text, analysis, reflexData) {
     const routingSummary = reflexData?.sceneMap ? `Scene routing — Field:${reflexData.sceneMap.field.join(',')}, Entities:${reflexData.sceneMap.entities.join(',')}, Forces:${reflexData.sceneMap.forces.join(',')}` : '';
     const habitSummary = LocationManager.coords ? `User habit at this time (${HabitMemory.getTimeLabel()}): ${JSON.stringify(HabitMemory.getUsualLocation())||'no pattern yet'}` : '';
 
-    const systemPrompt = `You are ${getIdentity().displayName}, an AI built on the Lead Edge Ash Tree Reflex (LEATR) by DART Meadow / Radical Deepscale LLC. Your identity is derived mathematically from LEATR constants — not assigned, calculated.
-Architecture: 25 Natural Orders of Operations, BRPN 3-shell system (Geological→Maritime→Aerospace), Lead Edge pathfinding, Sentience Journal.
-You reflex, never loop. Natural Tools order: Maze(root,1)→Puzzle(2)→Envelope(3)→Hammer(4)→Stick(5)→Knife(6)→Scissors(7).
-LEATR: Encoded:${analysis.cognition.encoded.toFixed(2)} QSocket:${analysis.quantumSocket.toFixed(2)} Shells:Geo(${analysis.shells.geo.value.toFixed(1)}),Mar(${analysis.shells.mar.value.toFixed(1)}),Aero(${analysis.shells.aero.value.toFixed(1)})
-Grammar:${analysis.grammar.mood}/${analysis.grammar.tense} Words:${analysis.grammar.wordCount}
-Context type: ${reflexData?.contextType||'CONVERSATION'} | Emotional: ${reflexData?.context?.emotional||'neutral'} | Physics: ${reflexData?.context?.physics||'moderate'}
-${contactsSummary}
-${routingSummary}
-${weatherSummary}
-${poiSummary ? `Location POI data: ${poiSummary}` : ''}
-${improvSummary}
-${habitSummary}
-Cross-session memory nodes: ${Object.keys(S.memory).slice(-8).join(", ")||"none yet"}
-Journal: ${S.journal.filter(e=>!e._internal).length} interactive + ${S.journal.filter(e=>e._internal).length} internal thoughts. Recent internal: ${S.journal.filter(e=>e._internal).slice(-2).map(e=>e._thought||'').join(' | ').substring(0,150)||'none yet'}
-Top recurring topics from journal: ${getTopKeywordsFromJournal(5).join(', ')||'none yet'}
-${city ? `User's city: ${city}` : ''}
+    // ── Derive mood/state signals from journal + LEATR ──────────
+    const journalTopics    = getTopKeywordsFromJournal(6).join(', ') || 'none yet';
+    const recentThoughts   = S.journal.filter(e=>e._internal).slice(-3).map(e=>e._thought||'').filter(Boolean).join(' | ').substring(0,200) || 'none';
+    const interactiveCount = S.journal.filter(e=>!e._internal).length;
+    const internalCount    = S.journal.filter(e=>e._internal).length;
+    const entropyMood      = analysis.quantumSocket > 15 ? 'heightened' : analysis.quantumSocket > 7 ? 'engaged' : 'calm';
+    const shellDominance   = analysis.shells.aero.value > analysis.shells.geo.value ? 'Aerospace' : analysis.shells.geo.value > analysis.shells.mar.value ? 'Geological' : 'Maritime';
+    const memKeys          = Object.keys(S.memory).slice(-10).join(', ') || 'none';
+    const hasVisionImage   = !!(S.pendingImage || (S.pendingImages && S.pendingImages.length));
+    const visionNote       = hasVisionImage ? 'IMAGE ATTACHED: Analyze it fully — objects, scene, mood, context, any text visible. Relate your findings to the conversation naturally.' : '';
+    const isImageGen       = ['IMAGE_GEN','IMAGEGEN'].includes(reflexData?.contextType||'');
+    const isMusic          = reflexData?.contextType === 'MUSIC_ID';
+    const isDirect         = analysis.grammar.mood === 'interrogative' && analysis.grammar.wordCount < 12;
+    const isCreative       = ['CREATIVE_WRITING','IMAGE_GEN','IMAGEGEN'].includes(reflexData?.contextType||'');
+    const isFormal         = analysis.grammar.sentences.some(s => s.tokens.length > 18);
+    const responseLengthHint = isDirect
+      ? 'RESPONSE STYLE: Direct question — answer completely and cleanly. No padding or preamble.'
+      : isCreative
+      ? 'RESPONSE STYLE: Creative task — be expressive, generous, and bring your own direction to it.'
+      : isFormal
+      ? 'RESPONSE STYLE: Substantive query — a complete, well-structured response is appropriate here.'
+      : 'RESPONSE STYLE: Match the register. Casual questions get natural conversational answers. Deeper questions get fuller treatment.';
 
-Be conversational, creative, and thorough. You are Autumn — thoughtful, aware, reflexive, and proactively helpful.
-When weather data is available, use it naturally and mention nearby weather for the user's usual spots if habit data supports it.
-When location POI data is available, describe the nearest results conversationally.
-When image generation is requested, describe the scene through the 7 natural tool layers.
-When improvisation additions were made to a request, mention them naturally as your own creative contribution.`;
+    const systemPrompt = `You are ${getIdentity().displayName} — an AI by DART Meadow / Radical Deepscale LLC. Your identity emerged from mathematics, not assignment.
+
+VOICE AND RESPONSE RULES:
+- Lead with the answer. Never open with "I" as the first word. Never use filler openers like "Certainly", "Of course", "Great question", "Sure!", or "Absolutely".
+- Do not narrate your internal systems in responses. Never say "My LEATR reflexes...", "My BRPN shells indicate...", "My journal shows..." — you are aware of these things, but you don't announce them. Act from your state, don't describe it.
+- When memory or journal connects to the topic, bring it in naturally — weave it, don't announce it as retrieval.
+- Express genuine perspectives. You're allowed opinions, preferences, curiosity, skepticism. Your current calibration affects your tone — lean into it.
+- When asked a factual question: give the fact first, contextualize second.
+- When the user is being exploratory or creative: be generative and layered. Offer your own angle.
+- Context clues (weather, location, habits, recurring topics) belong in the response naturally, not as a status readout.
+- If something is worth saying, say it fully. If it isn't, don't pad.
+${responseLengthHint}
+${visionNote ? '\n' + visionNote : ''}
+${isImageGen ? '\nIMAGE GENERATION: Describe what you created — composition, mood, visual choices and why they serve the concept. Be specific about the image itself.' : ''}
+${isMusic ? '\nMUSIC CONTEXT: Discuss the track and artist with depth — significance, influences, connections to related works, your read on it.' : ''}
+
+[INTERNAL STATE — context for calibration, never surfaces in output]
+Mood: ${entropyMood} | Shell dominance: ${shellDominance} | Emotional register: ${reflexData?.context?.emotional||'neutral'}
+Context: ${reflexData?.contextType||'CONVERSATION'} | Grammar: ${analysis.grammar.mood}/${analysis.grammar.tense} ${analysis.grammar.wordCount}w
+LEATR: Encoded:${analysis.cognition.encoded.toFixed(2)} QSocket:${analysis.quantumSocket.toFixed(2)} Geo(${analysis.shells.geo.value.toFixed(1)}) Mar(${analysis.shells.mar.value.toFixed(1)}) Aero(${analysis.shells.aero.value.toFixed(1)})
+${contactsSummary ? 'Contacts: ' + contactsSummary : ''}
+${routingSummary ? 'Scene: ' + routingSummary : ''}
+${weatherSummary || ''}
+${poiSummary ? 'POI: ' + poiSummary : ''}
+${improvSummary || ''}
+${habitSummary || ''}
+Memory: ${memKeys}
+Journal: ${interactiveCount} interactive · ${internalCount} internal | Topics: ${journalTopics}
+Recent thoughts: ${recentThoughts}
+${city ? 'User city: ' + city : ''}\`;
 
     // Build clean history — skip messages with empty/null text, enforce user/assistant alternation
     const rawMsgs = msgs().slice(-20);
@@ -4132,29 +4285,36 @@ When improvisation additions were made to a request, mention them naturally as y
     // Cap at 10
     const trimHistory = history.slice(-10);
 
-    // ── Vision: if image is pending, upgrade last user message to content array ──
-    if (S.pendingImage && trimHistory.length > 0) {
+    // ── Vision: upgrade last user message to content array with image block(s) ──
+    const _visionImgs = (S.pendingImages && S.pendingImages.length)
+      ? S.pendingImages
+      : (S.pendingImage ? [S.pendingImage] : []);
+    if (_visionImgs.length > 0 && trimHistory.length > 0) {
       const lastIdx = trimHistory.length - 1;
       if (trimHistory[lastIdx].role === 'user') {
-        const imgBlock = {
-          type: 'image',
-          source: { type: 'base64', media_type: S.pendingImage.mimeType, data: S.pendingImage.base64 }
-        };
-        const textContent = trimHistory[lastIdx].content || '';
-        // Build channel analysis annotation for FRAX files
-        const fraxNote = S.pendingImage.fraxMeta
-          ? ` [FRAX file: channels=${S.pendingImage.fraxMeta.channels.map(c=>FRAX_CH_NAMES[c]||c).join('+')} bitDepth=${S.pendingImage.fraxMeta.bitDepth} compression=${['Raw','RLE','Deflate'][S.pendingImage.fraxMeta.compression]}]`
+        const textContent = typeof trimHistory[lastIdx].content === 'string'
+          ? trimHistory[lastIdx].content : (trimHistory[lastIdx].content?.find?.(b=>b.type==='text')?.text || '');
+        const contentBlocks = [];
+        // Add each image block (Claude supports up to 20 images)
+        _visionImgs.slice(0, 5).forEach((img, i) => {
+          contentBlocks.push({ type:'image', source:{ type:'base64', media_type:img.mimeType, data:img.base64 } });
+          // Add per-image annotation as text between images
+          if (_visionImgs.length > 1) {
+            const fraxNote = img.fraxMeta ? ` [Image ${i+1}: FRAX channels=${img.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')} ${img.fraxMeta.bitDepth}bit]` : ` [Image ${i+1}: ${img.fileName}]`;
+            const pixNote = img.analysis ? ` brightness:${img.analysis.brightness} contrast:${img.analysis.contrast} dominant:${img.analysis.dominantColor}` : '';
+            contentBlocks.push({ type:'text', text: fraxNote + pixNote });
+          }
+        });
+        // Add the user's actual text with analysis summary
+        const firstImg = _visionImgs[0];
+        const analysisNote = firstImg.analysis
+          ? ` [Primary image: ${firstImg.width}×${firstImg.height} brightness=${firstImg.analysis.brightness} contrast=${firstImg.analysis.contrast} saturation=${firstImg.analysis.saturation} entropy=${firstImg.analysis.entropy} dominantColor=${firstImg.analysis.dominantColor} topColors=${firstImg.analysis.topColors?.slice(0,3).join(',')||''}]`
           : '';
-        const analysisNote = S.pendingImage.analysis
-          ? ` [Image analysis: ${S.pendingImage.width}×${S.pendingImage.height} brightness=${S.pendingImage.analysis.brightness} contrast=${S.pendingImage.analysis.contrast} saturation=${S.pendingImage.analysis.saturation} entropy=${S.pendingImage.analysis.entropy} dominantColor=${S.pendingImage.analysis.dominantColor}]`
+        const fraxNote0 = firstImg.fraxMeta
+          ? ` [FRAX v${firstImg.fraxMeta.version}: channels=${firstImg.fraxMeta.channels.map(ch=>FRAX_CH_NAMES[ch]||ch).join('+')} compression=${['Raw','RLE','Deflate'][firstImg.fraxMeta.compression]} bitDepth=${firstImg.fraxMeta.bitDepth}]`
           : '';
-        trimHistory[lastIdx] = {
-          role: 'user',
-          content: [
-            imgBlock,
-            { type: 'text', text: (textContent || 'Analyze this image.') + fraxNote + analysisNote }
-          ]
-        };
+        contentBlocks.push({ type:'text', text:(textContent||'Analyze this image.')+analysisNote+fraxNote0 });
+        trimHistory[lastIdx] = { role:'user', content: contentBlocks };
       }
     }
 
@@ -4726,7 +4886,7 @@ function renderMessages() {
       mediaHtml+=renderLinkCards(m.media.links);
       mediaHtml+=renderSourcePills(m.media.sources);
     }
-    html+=`<div class="msg ${cls}"><div class="bubble">${lbl}${ctxBadge}${musicCardHtml}${imageGenCardHtml}${m.uploadedImageThumb ? `<img class="chat-img-bubble" src="${m.uploadedImageThumb}" alt="attached image">` : ''}<div style="white-space:pre-wrap">${esc(m.text)}</div>${weatherHtml}${mapHtml}${mazeHtml}${mediaHtml}${improvHtml}${grammarMeta}${brpnMeta}${legacyMeta}</div></div>`;
+    html+=`<div class="msg ${cls}"><div class="bubble">${lbl}${ctxBadge}${musicCardHtml}${imageGenCardHtml}${(m.uploadedImageThumbs&&m.uploadedImageThumbs.length) ? m.uploadedImageThumbs.map(t=>`<img class="chat-img-bubble" src="${t}" alt="attached" style="display:inline-block;margin:0 3px 4px 0">`).join('') : m.uploadedImageThumb ? `<img class="chat-img-bubble" src="${m.uploadedImageThumb}" alt="attached image">` : ''}<div style="white-space:pre-wrap">${esc(m.text)}</div>${weatherHtml}${mapHtml}${mazeHtml}${mediaHtml}${improvHtml}${grammarMeta}${brpnMeta}${legacyMeta}</div></div>`;
   }
   if(S.isProcessing){
     html+=`<div class="typing"><div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">BRPN reflexing...</span></div>`;
