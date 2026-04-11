@@ -324,19 +324,20 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .img-gen-btn:hover{background:rgba(167,139,250,.15);border-color:#a78bfa}
 .img-gen-btn.download{color:var(--cyan);border-color:rgba(0,255,204,.3)}
 .img-gen-btn.download:hover{background:rgba(0,255,204,.1);border-color:var(--cyan)}
-#img-modal{position:fixed;inset:0;z-index:9900;background:rgba(2,10,20,.95);display:none;flex-direction:column;align-items:center;justify-content:center;backdrop-filter:blur(12px);padding:20px}
+#img-modal{position:fixed;inset:0;z-index:9900;display:none;flex-direction:column;align-items:center;justify-content:center;padding:16px;
+  background:rgba(4,12,24,0.72);backdrop-filter:blur(22px) saturate(180%);-webkit-backdrop-filter:blur(22px) saturate(180%)}
 #img-modal.open{display:flex}
-#img-modal-img{max-width:100%;max-height:75vh;border-radius:10px;box-shadow:0 0 60px rgba(167,139,250,.3);display:block}
-#img-modal-info{margin-top:14px;text-align:center;max-width:500px}
-#img-modal-prompt{font-size:11px;color:var(--text);font-style:italic;line-height:1.5;margin-bottom:10px}
-#img-modal-tags{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:14px}
-.img-modal-tag{font-size:8px;font-family:var(--font-d);padding:3px 8px;border-radius:2px;letter-spacing:1px;color:#a78bfa;border:1px solid rgba(167,139,250,.3)}
-#img-modal-actions{display:flex;gap:10px;justify-content:center}
-.img-modal-btn{font-family:var(--font-d);font-size:9px;letter-spacing:1.5px;padding:8px 18px;border-radius:5px;cursor:pointer;transition:all .2s}
+#img-modal-inner{background:rgba(8,20,40,0.6);border:1px solid rgba(0,229,255,0.15);border-radius:16px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px;max-width:96vw;box-shadow:0 8px 60px rgba(0,0,0,.7),0 0 40px rgba(0,229,255,.06)}
+#img-modal-img{max-width:100%;max-height:68vh;border-radius:10px;display:block;touch-action:pinch-zoom}
+#img-modal-loading{color:#a78bfa;font-family:var(--font-d);font-size:10px;letter-spacing:1.5px}
+#img-modal-prompt{font-size:10px;color:rgba(255,255,255,.55);font-style:italic;line-height:1.5;text-align:center;max-width:380px}
+#img-modal-tags{display:flex;gap:5px;justify-content:center;flex-wrap:wrap}
+.img-modal-tag{font-size:8px;font-family:var(--font-d);padding:2px 7px;border-radius:2px;letter-spacing:1px;color:#a78bfa;border:1px solid rgba(167,139,250,.25)}
+#img-modal-actions{display:flex;gap:10px;justify-content:center;width:100%}
+.img-modal-btn{font-family:var(--font-d);font-size:9px;letter-spacing:1.5px;padding:9px 20px;border-radius:6px;cursor:pointer;transition:all .2s;flex:1;max-width:160px}
 .img-modal-btn.close-btn{background:transparent;border:1px solid rgba(255,68,102,.3);color:#ff4466}
-.img-modal-btn.close-btn:hover{background:rgba(255,68,102,.1)}
-.img-modal-btn.dl-btn{background:linear-gradient(135deg,rgba(0,255,204,.15),rgba(0,136,255,.1));border:1px solid rgba(0,255,204,.3);color:var(--cyan)}
-.img-modal-btn.dl-btn:hover{filter:brightness(1.3)}
+.img-modal-btn.dl-btn{background:linear-gradient(135deg,rgba(0,229,255,.15),rgba(0,136,255,.08));border:1px solid rgba(0,229,255,.35);color:var(--cyan)}
+.img-modal-btn:active{transform:scale(.96)}
 .img-gen-img{width:100%;display:block}
 .img-gen-footer{padding:10px 12px;display:flex;flex-direction:column;gap:5px}
 .img-gen-prompt-label{font-family:var(--font-d);font-size:8px;color:rgba(167,139,250,.6);letter-spacing:1.5px}
@@ -775,9 +776,9 @@ select.ash-ctrl-input{cursor:pointer}
 <!-- Voice Settings Modal -->
 <!-- Image preview modal -->
 <div id="img-modal">
-  <div id="img-modal-loading" style="color:#a78bfa;font-family:var(--font-d);font-size:11px;letter-spacing:1.5px;margin-bottom:20px">LOADING…</div>
-  <img id="img-modal-img" src="" alt="Generated image" style="display:none">
-  <div id="img-modal-info">
+  <div id="img-modal-inner">
+    <div id="img-modal-loading" style="color:#a78bfa;font-family:var(--font-d);font-size:10px;letter-spacing:1.5px">LOADING…</div>
+    <img id="img-modal-img" src="" alt="Generated image" style="display:none" title="Touch and hold to save image">
     <div id="img-modal-prompt"></div>
     <div id="img-modal-tags"></div>
     <div id="img-modal-actions">
@@ -3048,37 +3049,44 @@ function autumnSaveImage(genId) {
   var g = window._autumnGens && window._autumnGens[genId];
   var url = g ? g.url : null;
   if(!url) {
-    // Try modal img
     var mimg = document.getElementById('img-modal-img');
     if(mimg && mimg.dataset.genUrl) url = mimg.dataset.genUrl;
+    else if(mimg && mimg.src && mimg.src.length > 10) url = mimg.src;
   }
   if(!url) return;
-  // Use canvas to convert cross-origin image for download
+  var fname = 'autumn-lise-' + Date.now() + '.jpg';
+  // If it's already a data URL (LISE canvas output) — download directly
+  if(url.startsWith('data:')) {
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); }, 300);
+    return;
+  }
+  // For external URLs: try canvas copy first, then direct open
   var img = new Image();
   img.crossOrigin = 'anonymous';
   img.onload = function() {
-    var canvas = document.createElement('canvas');
-    canvas.width = img.width || 768;
-    canvas.height = img.height || 768;
-    canvas.getContext('2d').drawImage(img, 0, 0);
     try {
-      var dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      var cv = document.createElement('canvas');
+      cv.width = img.naturalWidth || img.width;
+      cv.height = img.naturalHeight || img.height;
+      cv.getContext('2d').drawImage(img, 0, 0);
+      var dataUrl = cv.toDataURL('image/jpeg', 0.95);
       var a = document.createElement('a');
       a.href = dataUrl;
-      a.download = 'autumn-' + Date.now() + '.jpg';
+      a.download = fname;
       document.body.appendChild(a);
       a.click();
       setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); }, 300);
     } catch(e) {
-      // CORS blocked — fallback: open in new tab so user can long-press save
       window.open(url, '_blank');
     }
   };
-  img.onerror = function() {
-    // Direct link fallback
-    window.open(url, '_blank');
-  };
-  img.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now();
+  img.onerror = function(){ window.open(url, '_blank'); };
+  img.src = url;
 }
 
 // ── Delegated event handler for generated image cards ───────────
@@ -3653,22 +3661,61 @@ async function liseSynthesizeCanvas(descriptor, elements, styleInfo, canvasSize)
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
 
-  // If no references loaded, generate a procedural base from LEATR constants
-  if(loaded === 0) {
-    var leatrVal = parseFloat(elements.leatrSig) || 7.389;
-    for(var pass = 0; pass < 3; pass++) {
-      for(var x = 0; x < canvasSize; x += 8) {
-        for(var y = 0; y < canvasSize; y += 8) {
-          var t = (x*leatrVal + y) / (canvasSize * leatrVal);
-          var r2 = Math.round(Math.sin(t*Math.PI*2+pass)*127+128);
-          var g2 = Math.round(Math.cos(t*Math.PI*3+pass)*127+128);
-          var b2 = Math.round(Math.sin(t*Math.PI*5)*127+128);
-          ctx.fillStyle = 'rgba('+r2+','+g2+','+b2+',0.15)';
-          ctx.fillRect(x, y, 8, 8);
-        }
-      }
-    }
-  }
+  // Procedural base — rich scene built from LEATR math constants
+  // Always runs; references layer on top if available
+  var lv = parseFloat(elements.leatrSig) || 7.389;
+  var subjectHash = elements.subjects.reduce(function(a,w){ return a + w.charCodeAt(0); }, 0) || 42;
+  var qualityHash = elements.qualities.reduce(function(a,w){ return a + w.charCodeAt(0); }, 0) || 17;
+
+  // Layer 1: Depth fog — radial gradient from center
+  var fog = ctx.createRadialGradient(canvasSize/2, canvasSize/2, canvasSize*0.1, canvasSize/2, canvasSize/2, canvasSize*0.9);
+  fog.addColorStop(0,   'rgba(255,255,255,0.08)');
+  fog.addColorStop(0.5, 'rgba(0,0,0,0.0)');
+  fog.addColorStop(1,   'rgba(0,0,0,0.5)');
+  ctx.fillStyle = fog;
+  ctx.fillRect(0,0,canvasSize,canvasSize);
+
+  // Layer 2: Subject silhouette shapes — derived from subject word hashes
+  elements.subjects.slice(0,4).forEach(function(word, wi) {
+    var wh = word.split('').reduce(function(a,ch){ return a*31+ch.charCodeAt(0); }, 0);
+    var cx2 = ((wh * 7 + subjectHash * 3) % canvasSize);
+    var cy2 = ((wh * 13 + qualityHash * 5) % canvasSize);
+    var rx = 30 + (Math.abs(wh) % 80);
+    var ry = 30 + (Math.abs(wh * lv) % 100);
+    var hue = (wh * lv * 37) % 360;
+    // Radial shape for this subject element
+    var sg = ctx.createRadialGradient(cx2, cy2, 4, cx2, cy2, Math.max(rx,ry));
+    sg.addColorStop(0, 'hsla('+hue+',60%,70%,0.35)');
+    sg.addColorStop(0.5, 'hsla('+(hue+30)+',50%,40%,0.2)');
+    sg.addColorStop(1, 'hsla('+(hue+60)+',40%,20%,0)');
+    ctx.globalCompositeOperation = wi === 0 ? 'source-over' : 'screen';
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.ellipse(cx2, cy2, rx, ry, (wh%6)*0.5, 0, Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Layer 3: LEATR geometry — tool-specific structural lines
+  ctx.strokeStyle = 'rgba(0,229,255,0.12)';
+  ctx.lineWidth = 1;
+  var toolGeom = {
+    'Maze':     function(){ for(var i=0;i<8;i++){ ctx.beginPath(); ctx.rect(i*canvasSize/8, i*canvasSize/8, canvasSize/8*(8-i), canvasSize/8*(8-i)); ctx.stroke(); } },
+    'Puzzle':   function(){ for(var i=0;i<8;i++){ ctx.beginPath(); ctx.moveTo(i*canvasSize/7,0); ctx.lineTo(i*canvasSize/7,canvasSize); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,i*canvasSize/7); ctx.lineTo(canvasSize,i*canvasSize/7); ctx.stroke(); } },
+    'Envelope': function(){ ctx.beginPath(); ctx.arc(canvasSize/2, canvasSize/2, canvasSize*0.35, 0, Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.arc(canvasSize/2, canvasSize/2, canvasSize*0.2, 0, Math.PI*2); ctx.stroke(); },
+    'Hammer':   function(){ ctx.beginPath(); ctx.moveTo(canvasSize*0.1,canvasSize*0.5); ctx.lineTo(canvasSize*0.9,canvasSize*0.5); ctx.lineWidth=3; ctx.stroke(); ctx.lineWidth=1; },
+    'Stick':    function(){ for(var i=0;i<5;i++){ ctx.beginPath(); ctx.moveTo(canvasSize*(0.2+i*0.15), 0); ctx.bezierCurveTo(canvasSize*(0.15+i*0.15), canvasSize*0.5, canvasSize*(0.25+i*0.15), canvasSize*0.5, canvasSize*(0.2+i*0.15), canvasSize); ctx.stroke(); } },
+    'Knife':    function(){ ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(canvasSize,canvasSize); ctx.lineWidth=2; ctx.stroke(); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(canvasSize,0); ctx.lineTo(0,canvasSize); ctx.stroke(); },
+    'Scissors': function(){ ctx.beginPath(); ctx.moveTo(0,canvasSize/2); ctx.lineTo(canvasSize,canvasSize/2); ctx.stroke(); ctx.beginPath(); ctx.arc(canvasSize*0.25,canvasSize*0.25,canvasSize*0.15,0,Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.arc(canvasSize*0.75,canvasSize*0.75,canvasSize*0.15,0,Math.PI*2); ctx.stroke(); }
+  };
+  (toolGeom[elements.primaryTool] || toolGeom['Envelope'])();
+
+  // Layer 4: Atmospheric haze — vignette
+  var vig = ctx.createRadialGradient(canvasSize/2, canvasSize/2, canvasSize*0.3, canvasSize/2, canvasSize/2, canvasSize*0.75);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.6)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0,0,canvasSize,canvasSize);
 
   // Apply LEATR Natural Tool transform
   liseApplyToolTransform(ctx, canvasSize, canvasSize, elements.primaryTool, elements.shellColor);
@@ -3862,7 +3909,7 @@ async function runImageGeneration(text, analysis, reflexData) {
     + '</div>'
     + '<div class="img-gen-card-actions">'
     + '<button class="img-gen-btn" data-genid="'+_genId+'" data-action="expand">⤢ EXPAND</button>'
-    + '<button class="img-gen-btn download" data-genid="'+_genId+'" data-action="save">⬇ SAVE</button>'
+    + '<button class="img-gen-btn download" data-genid="'+_genId+'" data-action="save" title="Download image">⬇̲</button>'
     + '</div></div>';
   var idx=msgs().findIndex(function(m){return m.id===cardId;});
   if(idx>=0){msgs()[idx]=Object.assign({},msgs()[idx],{imageGenCard:finalCard,media:{videos:[],images:[],links:refLinks,sources:refs.length?['OPENVERSE']:[]},grammarMeta:'Generated · style:'+styleInfo.key+' model:'+genResult.model+' seed:'+genResult.seed});renderMessages();}
