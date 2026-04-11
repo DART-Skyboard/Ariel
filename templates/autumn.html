@@ -17,16 +17,18 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script type="module">
-// Kokoro TTS — loads once, caches in browser
-import { KokoroTTS } from 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.0/dist/kokoro.web.js';
+// Kokoro TTS via @huggingface/transformers — runs fully in-browser, no API key
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js';
+env.allowLocalModels = false;
+env.backends.onnx.wasm.numThreads = 2;
 window._kokoroLoad = (async () => {
   try {
-    const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-ONNX', {dtype:'q8'});
-    window._kokoroTTS = tts;
+    window._kokoroPipe = await pipeline('text-to-speech', 'onnx-community/Kokoro-82M-ONNX',
+      { dtype: 'q8', device: 'wasm' });
     window._kokoroReady = true;
-    console.log('[Kokoro] TTS ready');
+    console.log('[Kokoro] TTS pipeline ready');
   } catch(e) {
-    console.warn('[Kokoro] Failed to load, falling back to Web Speech API:', e.message);
+    console.warn('[Kokoro] Failed, using Web Speech API:', e.message);
     window._kokoroReady = false;
   }
 })();
@@ -4453,25 +4455,56 @@ async function processMusicCapture(blob) {
 }
 
 // Semantic intent classifier
+// Keyword-based intent classifier — works without any API key
+function classifyIntentLocal(text, hasPendingImages) {
+  var lc = text.toLowerCase().trim();
+  // Session management first
+  if (/\b(clear|wipe|hide|clean|blank|reset|refresh)\b.*\b(chat|window|messages|screen)\b/.test(lc) ||
+      /\b(chat|window|messages|screen)\b.*\b(clear|wipe|hide|clean)\b/.test(lc)) return 'CLEAR_CHAT';
+  if (/\b(delete|erase|destroy|remove)\b.*\b(history|all|everything|messages)\b/.test(lc)) return 'DELETE_CHAT';
+  if (/\b(new|open|start|fresh)\b.*\b(chat|session|conversation)\b/.test(lc) ||
+      /\b(new chat|start fresh|fresh start)\b/.test(lc)) return 'NEW_CHAT';
+  if (/\b(archive|save)\b.*\b(chat|session|this|conversation)\b/.test(lc)) return 'ARCHIVE';
+  if (/\b(show|restore|unhide|reveal)\b.*\b(messages|history|hidden)\b/.test(lc)) return 'SHOW_HIDDEN';
+  // Vision when image attached
+  if (hasPendingImages && /\b(identify|who|what|describe|analyze|examine|look at|find|read|tell me about|what is|who is)\b/.test(lc)) return 'VISION_ANALYSIS';
+  // Image generation
+  var imgKeywords = ['generate','create','make','draw','paint','render','show','depict','visualize','imagine','illustrate','produce'];
+  var imgNouns = ['image','picture','photo','portrait','scene','art','visual','depiction','illustration','concept','rendering'];
+  var styleWords = ['realistic','ultrarealistic','life-like','lifelike','anime','cartoon','cyberpunk','space punk','spacepunk','noir','sketch','vintage','3d','rendered'];
+  var hasAction = imgKeywords.some(function(w){ return lc.indexOf(w) !== -1; });
+  var hasNoun = imgNouns.some(function(w){ return lc.indexOf(w) !== -1; });
+  var hasStyle = styleWords.some(function(w){ return lc.indexOf(w) !== -1; });
+  if (hasAction && (hasNoun || hasStyle)) return 'IMAGE_GEN';
+  if (hasStyle && hasNoun) return 'IMAGE_GEN';
+  return 'CONVERSATION';
+}
+
 async function classifyIntent(text, hasPendingImages) {
+  // Always run local classifier first — works without API key
+  var localLabel = classifyIntentLocal(text, hasPendingImages);
+  // If local gives a definitive non-CONVERSATION answer, trust it
+  if (localLabel !== 'CONVERSATION') return localLabel;
+  // Try API classifier only if key is available
+  var ak = typeof _getAK === 'function' ? (_getAK() || '') : '';
+  if (!ak) return localLabel;
   try {
-    var ak = typeof _getAK === 'function' ? (_getAK() || '') : '';
     var res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true',...(ak?{'x-api-key':ak}:{})},
+      headers: {'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true','x-api-key':ak},
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 15,
-        system: 'Classify the user intent. Reply with ONLY one label:\nIMAGE_GEN - create/generate/make/draw/render/paint/visualize/imagine an image, picture, art, visual, scene, portrait, illustration, concept\nVISION_ANALYSIS - identify/analyze/describe/examine/read what is in an attached image or screenshot\nCLEAR_CHAT - clear/hide/clean/wipe/blank/reset/refresh the visible chat window\nDELETE_CHAT - permanently delete/erase all chat history\nNEW_CHAT - open/start/create a new chat session\nARCHIVE - save/archive the current chat session\nSHOW_HIDDEN - restore/show/unhide previously hidden messages\nCONVERSATION - anything else',
+        system: 'Classify the user intent. Reply with ONLY one label:\nIMAGE_GEN\nVISION_ANALYSIS\nCLEAR_CHAT\nDELETE_CHAT\nNEW_CHAT\nARCHIVE\nSHOW_HIDDEN\nCONVERSATION',
         messages: [{role:'user', content: (hasPendingImages ? '[IMAGE ATTACHED] ' : '') + text}]
       }),
-      signal: AbortSignal.timeout(3000)
+      signal: AbortSignal.timeout(2500)
     });
     var d = await res.json();
     var label = ((d.content && d.content[0] && d.content[0].text) || 'CONVERSATION').trim().replace(/[^A-Z_]/g,'').toUpperCase();
     var valid = ['IMAGE_GEN','VISION_ANALYSIS','CLEAR_CHAT','DELETE_CHAT','NEW_CHAT','ARCHIVE','SHOW_HIDDEN','CONVERSATION'];
     return valid.indexOf(label) !== -1 ? label : 'CONVERSATION';
-  } catch(e) { return 'CONVERSATION'; }
+  } catch(e) { return localLabel; }
 }
 
 async function handleSend() {
@@ -6075,35 +6108,60 @@ var _KOKORO_VOICE = 'af_bella';
 
 async function _speakKokoro(text, onEnd) {
   try {
-    var tts = window._kokoroTTS;
-    if (!tts) { _speakWebSpeech(text, onEnd); return; }
+    var pipe = window._kokoroPipe;
+    if (!pipe) { _speakWebSpeech(text, onEnd); return; }
     Voice.speaking = true; Voice.cancelled = false;
     var _mb = document.getElementById('mic-btn');
     if (_mb && Voice.active) _mb.style.boxShadow = '0 0 14px rgba(0,229,255,.6)';
-    var clean = text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0, 3000);
-    var audio = await tts.generate(clean, { voice: _KOKORO_VOICE, speed: Voice.speed || 1.0 });
+    var clean = text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0, 2000);
+    // Generate audio — pipeline returns {audio: Float32Array, sampling_rate: number}
+    var result = await pipe(clean, { speaker_id: 0, speed: Voice.speed || 1.0 });
     if (Voice.cancelled) { Voice.speaking = false; if(onEnd) onEnd(); return; }
-    // audio is AudioData — convert to playable blob
-    var blob = await audio.toBlob();
+    // Convert Float32Array PCM to WAV blob
+    var sr = result.sampling_rate || 24000;
+    var pcm = result.audio;
+    var wav = _pcmToWav(pcm, sr);
+    var blob = new Blob([wav], {type:'audio/wav'});
     var url = URL.createObjectURL(blob);
     var player = new Audio(url);
-    player.playbackRate = Voice.speed || 1.0;
     player.onended = function() {
       Voice.speaking = false;
       URL.revokeObjectURL(url);
       if (onEnd) onEnd();
       if (_mb) _mb.style.boxShadow = '';
     };
-    player.onerror = function() {
-      Voice.speaking = false;
-      if (onEnd) onEnd();
-    };
+    player.onerror = function() { Voice.speaking = false; if (onEnd) onEnd(); };
     Voice._kokoroPlayer = player;
     player.play();
   } catch(e) {
     console.warn('[Kokoro] speak error, falling back:', e.message);
     _speakWebSpeech(text, onEnd);
   }
+}
+
+// PCM Float32 → WAV ArrayBuffer
+function _pcmToWav(pcm, sampleRate) {
+  var len = pcm.length;
+  var buf = new ArrayBuffer(44 + len * 2);
+  var view = new DataView(buf);
+  function w(off, val, size) {
+    if (size === 4) view.setUint32(off, val, true);
+    else if (size === 2) view.setUint16(off, val, true);
+  }
+  // WAV header
+  [82,73,70,70].forEach(function(b,i){ view.setUint8(i, b); });          // RIFF
+  w(4, 36 + len*2, 4);                                                    // file size
+  [87,65,86,69,102,109,116,32].forEach(function(b,i){ view.setUint8(8+i,b); }); // WAVEfmt
+  w(16, 16, 4); w(20, 1, 2); w(22, 1, 2);                               // PCM, mono
+  w(24, sampleRate, 4); w(28, sampleRate*2, 4); w(32, 2, 2); w(34, 16, 2); // sample rate etc
+  [100,97,116,97].forEach(function(b,i){ view.setUint8(36+i,b); });      // data
+  w(40, len*2, 4);
+  // Write PCM samples
+  for (var i = 0; i < len; i++) {
+    var s = Math.max(-1, Math.min(1, pcm[i]));
+    view.setInt16(44 + i*2, s < 0 ? s*0x8000 : s*0x7FFF, true);
+  }
+  return buf;
 }
 
 function _speakWebSpeech(text, onEnd) {
