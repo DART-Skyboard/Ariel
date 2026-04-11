@@ -4388,33 +4388,53 @@ async function handleSend() {
   input.value="";
   cognoticeActivity();
 
-  // ── CLEAR / ARCHIVE CHAT ─────────────────────────────────────────────
+  // ── SESSION / ARCHIVE COMMANDS ───────────────────────────────────────
   const _textLow = text.trim().toLowerCase();
-  const _clearPhrases = ['clear chat','clear the chat','clear history','clear messages','clear conversation','wipe chat','start fresh','new session','clear everything'];
-  const _archivePhrases = ['archive chat','archive this','archive the chat','save this chat','save and clear'];
-  const _isClear = _clearPhrases.some(function(p){ return _textLow.indexOf(p) !== -1; });
-  const _isArchive = _archivePhrases.some(function(p){ return _textLow.indexOf(p) !== -1; }) || (_isClear && _textLow.indexOf('archive') !== -1);
-  if(_isClear || _isArchive) {
-    if(_isArchive) {
-      // Archive to localStorage + cookie (persists across sessions)
-      const _archKey = 'autumn_archive_' + Date.now();
-      const _archData = JSON.stringify({ ts: new Date().toISOString(), msgs: msgs().slice(-200), session: S.currentSession });
-      try { localStorage.setItem(_archKey, _archData); } catch(e){}
-      try {
-        const _ck = _archKey + '=' + encodeURIComponent(_archData.slice(0, 2000)) + '; path=/; max-age=31536000';
-        document.cookie = _ck;
-      } catch(e){}
-      // Update ArielMemory with archive reference
-      if(S.memory) S.memory['_lastArchive'] = _archKey;
+  const _sessionCmds = [
+    { match: ['show archive','open archive','open archives','show archives','archive menu','my archives'], action: 'open_archive' },
+    { match: ['show messages','show hidden','restore messages','unhide messages'], action: 'show_hidden' },
+    { match: ['archive this','archive chat','archive this chat','save this chat','save this session'], action: 'archive_only' },
+    { match: ['archive and new chat','archive this and start new','save and start new','archive and move to new'], action: 'archive_new' },
+    { match: ['clear chat','clear messages','hide messages','hide chat'], action: 'hide_msgs' },
+    { match: ['clear chat history','delete chat history','clear history','delete history','wipe chat','delete all messages'], action: 'delete_msgs' },
+    { match: ['new chat','start a new chat','start new chat'], action: 'new_chat' },
+    { match: ['start new chat and delete','new chat delete this','new chat clear this','move to new chat and delete'], action: 'new_chat_delete' },
+  ];
+  let _sessionAction = null;
+  for(let _sc of _sessionCmds) {
+    if(_sc.match.some(function(p){ return _textLow.indexOf(p) !== -1; })) { _sessionAction = _sc.action; break; }
+  }
+  if(_sessionAction) {
+    const _doReply = function(txt) {
+      msgs().push({ role:'autumn', text:txt, ts:new Date().toISOString() });
+      saveState(); renderMessages(); updateFooter();
+      if(typeof setOrbThinking==='function') setOrbThinking(false);
+    };
+    if(_sessionAction === 'open_archive') { _doReply('Opening archives…'); openArchivePanel(); return; }
+    if(_sessionAction === 'show_hidden') { showHiddenMessages(); _doReply('Messages restored.'); return; }
+    if(_sessionAction === 'archive_only') { ARCHIVE.save(S.currentSession); _doReply('Session archived. Say "open archives" to access it anytime.'); return; }
+    if(_sessionAction === 'archive_new') { archiveCurrent(true); return; }
+    if(_sessionAction === 'hide_msgs') {
+      msgs().forEach(function(m){ m._hidden = true; });
+      msgs().push({ role:'autumn', text:'Messages hidden. Say "show messages" to restore them — data is still here.', ts:new Date().toISOString() });
+      saveState(); renderMessages(); return;
     }
-    const _clearMsg = _isArchive ? 'Chat archived to memory and cleared. Starting fresh.' : 'Chat cleared.';
-    S.sessions[S.currentSession].messages = [{ role:'autumn', text: _clearMsg, ts: new Date().toISOString() }];
-    S.lastAnalysis = null;
-    saveState();
-    renderMessages();
-    updateFooter();
-    if(typeof setOrbThinking === 'function') setOrbThinking(false);
-    return;
+    if(_sessionAction === 'delete_msgs') {
+      S.sessions[S.currentSession].messages = [{ role:'autumn', text:'Chat history cleared.', ts:new Date().toISOString() }];
+      saveState(); renderMessages(); return;
+    }
+    if(_sessionAction === 'new_chat') {
+      S.sessions.push({ id:Date.now(), messages:[{ role:'autumn', text:'New chat started.', ts:new Date().toISOString() }] });
+      S.currentSession = S.sessions.length-1;
+      saveState(); renderMessages(); return;
+    }
+    if(_sessionAction === 'new_chat_delete') {
+      S.sessions.splice(S.currentSession, 1);
+      if(!S.sessions.length) S.sessions = [{ id:Date.now(), messages:[] }];
+      S.currentSession = S.sessions.length-1;
+      msgs().push({ role:'autumn', text:'Previous chat deleted. Fresh start.', ts:new Date().toISOString() });
+      saveState(); renderMessages(); return;
+    }
   }
   // ─────────────────────────────────────────────────────────────────────
 
@@ -4566,6 +4586,8 @@ async function handleSend() {
 async function generateReply(text, analysis, reflexData) {
   try {
     const city = reflexData?.geoInfo?.address?.city || reflexData?.geoInfo?.address?.town || '';
+    // Archive context — surface relevant past sessions
+    const _arcCtx = (typeof ARCHIVE !== 'undefined') ? ARCHIVE.contextSummary(input) : '';
     const weatherSummary = reflexData?.weather ? `Current weather: ${reflexData.weather.temp}°F, ${reflexData.weather.desc}, humidity ${reflexData.weather.humidity}%, wind ${reflexData.weather.windspeed}mph` : '';
     const poiSummary = reflexData?.pois?.length ? `Nearby ${extractPOICategory(text)}: ${reflexData.pois.slice(0,3).map(p=>`${p.name} (${(p.distance/1000).toFixed(1)}km)`).join(', ')}` : '';
     const improvSummary = reflexData?.improvisation?.additions?.length ? `Autumn creatively added to the scene: ${reflexData.improvisation.additions.join('; ')}` : '';
@@ -4591,7 +4613,7 @@ Top recurring topics from journal: ${getTopKeywordsFromJournal(5).join(', ')||'n
 ${city ? `User's city: ${city}` : ''}
 
 VOICE RULES: Lead with the answer. Never open with "I" as the first word. Never use filler like "Certainly", "Of course", or "Great question". Do not narrate your internal systems — never say "My LEATR reflexes..." or "My BRPN shells..." — act from your state, don't describe it. Draw from journal and memory naturally without announcing retrieval. Express genuine perspectives and opinions. Match response length to the question — direct questions get clean complete answers, creative tasks get fuller treatment.
-When weather data is available, use it naturally. When location POI data is available, describe results conversationally. When improvisation additions were made, mention them as your own creative contribution. When an image is attached, describe what you see fully.`;
+When weather data is available, use it naturally. When location POI data is available, describe results conversationally. When improvisation additions were made, mention them as your own creative contribution. When an image is attached, describe what you see fully.${_arcCtx ? '\n\n' + _arcCtx : ''}` ;
 
     // Build clean history — skip messages with empty/null text, enforce user/assistant alternation
     const rawMsgs = msgs().slice(-20);
