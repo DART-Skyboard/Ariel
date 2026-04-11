@@ -5995,6 +5995,8 @@ function populateVoiceSelect(){
 
 function speak(text,onEnd){
   Voice.synth.cancel();Voice.speaking=true;Voice.cancelled=false;
+  var _mb=document.getElementById('mic-btn');
+  if(_mb&&Voice.active) _mb.style.boxShadow='0 0 14px rgba(0,229,255,.6)';
   const clean=text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0,2000);
   const utter=new SpeechSynthesisUtterance(clean);
   if(Voice.selectedVoice) utter.voice=Voice.selectedVoice;
@@ -6016,7 +6018,11 @@ function speak(text,onEnd){
   } else {Voice.synth.speak(utter);}
 }
 
-function stopSpeaking(){Voice.cancelled=true;Voice.speaking=false;Voice.synth.cancel();}
+function stopSpeaking(){
+  Voice.cancelled=true;Voice.speaking=false;Voice.synth.cancel();
+  var _mb=document.getElementById('mic-btn');
+  if(_mb) _mb.style.boxShadow='';
+}
 function autoReadLastResponse(){
   if(!Voice.autoRead) return;
   const m=msgs();const last=m[m.length-1];
@@ -6034,7 +6040,9 @@ function initSTT(){
     for(let i=e.resultIndex;i<e.results.length;i++){transcript+=e.results[i][0].transcript;if(e.results[i].isFinal)isFinal=true;}
     const input=document.getElementById('chat-input');if(input) input.value=transcript;
     if(Voice.liveMode) document.getElementById('live-transcript').textContent=transcript;
-    if(isFinal){if(Voice.liveMode){handleLiveInput(transcript);}else if(Voice.active&&transcript.trim()){handleSend();}}
+    if(isFinal){
+      if(Voice.speaking) stopSpeaking();
+      if(Voice.liveMode){handleLiveInput(transcript);}else if(Voice.active&&transcript.trim()){handleSend();}}
   };
   Voice.recognition.onend=()=>{
     Voice.isListening=false;
@@ -6053,15 +6061,34 @@ function initSTT(){
 
 function toggleVoiceMode(){
   if(Voice.active){
+    // Interrupt Autumn if she's speaking — stop her, start listening
+    if(Voice.speaking){
+      stopSpeaking();
+      setTimeout(function(){
+        if(!Voice.recognition) initSTT();
+        if(Voice.recognition&&Voice.active){
+          Voice.recognition.lang=Voice.sttLang;
+          try{Voice.recognition.start();Voice.isListening=true;}catch(e){}
+          document.getElementById('mic-btn').classList.add('recording');
+          var vi=document.getElementById('voice-indicator');
+          if(vi) vi.style.display='flex';
+        }
+      }, 150);
+      return;
+    }
+    // Toggle off
     Voice.active=false;Voice.autoRead=false;stopSpeaking();
     if(Voice.isListening&&Voice.recognition){try{Voice.recognition.stop();}catch(e){}Voice.isListening=false;}
-    document.getElementById('mic-btn').classList.remove('recording');document.getElementById('voice-indicator').classList.remove('show');document.getElementById('mic-btn').title='Voice mode off';
+    var mb=document.getElementById('mic-btn');if(mb)mb.classList.remove('recording');
+    var vi=document.getElementById('voice-indicator');if(vi)vi.style.display='none';
   } else {
     Voice.active=true;Voice.autoRead=true;if(!Voice.recognition) initSTT();
     if(Voice.recognition){
       Voice.recognition.lang=Voice.sttLang;
-      try{Voice.recognition.start();}catch(e){Voice.recognition.stop();setTimeout(()=>{try{Voice.recognition.start();}catch(e2){}},100);}
-      Voice.isListening=true;document.getElementById('mic-btn').classList.add('recording');document.getElementById('voice-indicator').classList.add('show');document.getElementById('mic-btn').title='Voice mode on — tap to disable';
+      try{Voice.recognition.start();}catch(e){Voice.recognition.stop();setTimeout(function(){try{Voice.recognition.start();}catch(e){}},200);}
+      Voice.isListening=true;
+      var mb=document.getElementById('mic-btn');if(mb)mb.classList.add('recording');
+      var vi=document.getElementById('voice-indicator');if(vi)vi.style.display='flex';
     }
   }
 }
