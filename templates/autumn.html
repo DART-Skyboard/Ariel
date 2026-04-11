@@ -3829,35 +3829,36 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
   console.log('[LISE] Elements:', JSON.stringify(_elements));
   console.log('[LISE] Descriptor:', _descriptor);
 
-  // ── RENDER: Pollinations executor with LISE-enriched descriptor ──
-  // LISE does all the intelligence (grammar, BRPN, reference analysis, descriptor building)
-  // Pollinations renders the final image from that descriptor
-  var _encoded = encodeURIComponent(_descriptor);
-  var _model = styleInfo.model || 'flux';
-    // Extract custom dimensions from prompt if specified e.g. "4096x4096" or "wide" / "portrait"
+  // Extract custom dimensions from prompt
   var _w = 2048, _h = 2048;
-  var _dimMatch = (styleInfo.originalText||prompt).match(/(\d{3,4})\s*[x×]\s*(\d{3,4})/i);
+  var _dimMatch = (prompt).match(/(\d{3,4})\s*[x×]\s*(\d{3,4})/i);
   if (_dimMatch) { _w = parseInt(_dimMatch[1]); _h = parseInt(_dimMatch[2]); }
   else if (/\bwide\b|\blandscape\b/i.test(prompt)) { _w = 2048; _h = 1152; }
   else if (/\bportrait\b|\btall\b/i.test(prompt)) { _w = 1152; _h = 2048; }
-  else if (/\bsquare\b/i.test(prompt)) { _w = 2048; _h = 2048; }
+
+  // ── PRIMARY: LISE WebGL renderer — device GPU, zero external calls ──
+  if (typeof LISE !== 'undefined') {
+    try {
+      var _liseEls = LISE.extractElements(prompt, _analysis);
+      _liseEls.primaryTool = _elements.primaryTool || _liseEls.primaryTool;
+      _liseEls.shellDominant = _elements.shellColor === 'earthy warm ochre' ? 'geo' :
+                               _elements.shellColor === 'deep blue teal' ? 'mar' : 'aero';
+      var _liseUrl = LISE.generate(_liseEls, styleInfo, Math.min(_w, 1024));
+      if (_liseUrl) {
+        return { jobId:null, seed:_seed, model:'LISE/'+_liseEls.primaryTool+'/WebGL',
+                 prompt:_descriptor, originalPrompt:prompt, elements:_liseEls,
+                 url:_liseUrl, _pending:false };
+      }
+    } catch(lErr) { console.warn('[LISE] WebGL failed, using Pollinations:', lErr.message); }
+  }
+
+  // ── FALLBACK: Pollinations with LISE-enriched descriptor ──
+  var _encoded = encodeURIComponent(_descriptor);
+  var _model = styleInfo.model || 'flux';
   var _url = 'https://image.pollinations.ai/prompt/'+_encoded+'?width='+_w+'&height='+_h+'&model='+_model+'&seed='+_seed+'&enhance=true';
-
-  // Also run canvas synthesis in background for style overlay (async, non-blocking)
-  liseSynthesizeCanvas(_descriptor, _elements, styleInfo, 256).then(function(_cvUrl){
-    console.log('[LISE] Canvas overlay ready:', _cvUrl.length, 'chars');
-  }).catch(function(){});
-
-  return {
-    jobId: null,
-    seed: _seed,
-    model: 'LISE/'+_elements.primaryTool+'/Flux',
-    prompt: _descriptor,
-    originalPrompt: prompt,
-    elements: _elements,
-    url: _url,
-    _pending: false
-  };
+  return { jobId:null, seed:_seed, model:'LISE/'+_elements.primaryTool+'/Flux',
+           prompt:_descriptor, originalPrompt:prompt, elements:_elements,
+           url:_url, _pending:false };
 }
 
 async function pollHordeJob(jobId, maxWaitMs) {
