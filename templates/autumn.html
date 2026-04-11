@@ -3899,6 +3899,44 @@ async function pollHordeJob(jobId, maxWaitMs) {
 
 
 // ── Text-to-image pipeline ────────────────────────────────────
+// Dedicated vision analysis — identifies people, objects, scenes from attached images
+async function runVisionAnalysis(text, analysis, reflexData, imgs) {
+  var cardId = 'vis-' + Date.now();
+  var spinMsg = {role:'autumn',text:'',ts:new Date().toISOString(),id:cardId,grammarMeta:'',brpnMeta:'',contextType:'VISION',
+    imageGenCard:'<div class="img-gen-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>ANALYZING IMAGE…</div></div>'};
+  msgs().push(spinMsg);
+  renderMessages();
+
+  try {
+    var ak = typeof _getAK === 'function' ? (_getAK() || '') : '';
+    var visionBlocks = [];
+    imgs.slice(0,4).forEach(function(img){ visionBlocks.push({type:'image',source:{type:'base64',media_type:img.mimeType,data:img.base64}}); });
+    visionBlocks.push({type:'text', text: text && text.trim().length > 3 ? text :
+      'Identify and describe everything significant in this image — people, objects, text, context, setting.'});
+
+    var sysPrompt = 'You are Autumn, an AI built on LEATR by DART Meadow / Radical Deepscale. You have sharp, analytical vision. When analyzing images: identify people with confidence using visual cues — describe their appearance, style, and any contextual clues like visible names, logos, or captions that help identify them. Name any visible text or UI elements. Describe the scene and context. Be specific and direct — speak naturally and conversationally, as if telling a friend what you see. Prioritize the most significant elements. If a caption or text in the image names someone, use that. Never output internal state, log data, or metadata in your response. Respond as a natural sentence or paragraph.';
+
+    var res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true',...(ak?{'x-api-key':ak}:{})},
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1024,system:sysPrompt,messages:[{role:'user',content:visionBlocks}]}),
+      signal:AbortSignal.timeout(25000)
+    });
+    var data = await res.json();
+    var reply = data.content ? data.content.map(function(b){return b.text||'';}).join('') : 'Could not analyze image.';
+
+    var idx = msgs().findIndex(function(m){return m.id===cardId;});
+    if(idx>=0) msgs()[idx] = {role:'autumn',text:reply,ts:new Date().toISOString(),id:cardId,
+      grammarMeta:'Vision · '+imgs.length+' image'+(imgs.length>1?'s':''),brpnMeta:'',contextType:'VISION',
+      media:{videos:[],images:[],links:[],sources:[]}};
+  } catch(e) {
+    var idx2 = msgs().findIndex(function(m){return m.id===cardId;});
+    if(idx2>=0) msgs()[idx2] = {role:'autumn',text:'Vision analysis failed.',ts:new Date().toISOString(),id:cardId,grammarMeta:'',brpnMeta:'',contextType:'VISION',media:{videos:[],images:[],links:[],sources:[]}};
+  }
+  S.pendingImages = []; S.pendingImage = null;
+  renderMessages(); autoReadLastResponse(); saveState();
+}
+
 async function runImageGeneration(text, analysis, reflexData) {
   var styleInfo=extractStyleModifier(text);
   var cardId='imggen-'+Date.now();
