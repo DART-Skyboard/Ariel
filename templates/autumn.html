@@ -3812,58 +3812,27 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
   console.log('[LISE] Elements:', JSON.stringify(_elements));
   console.log('[LISE] Descriptor:', _descriptor);
 
-  // ── PRIMARY PATH: LISE Canvas synthesis (100% our own logic) ──
-  try {
-    var _canvasUrl = await liseSynthesizeCanvas(_descriptor, _elements, styleInfo, 512);
-    return {
-      jobId: null,
-      seed: _seed,
-      model: 'LISE/'+_elements.primaryTool+'/Canvas',
-      prompt: _descriptor,
-      originalPrompt: prompt,
-      elements: _elements,
-      url: _canvasUrl,   // data URL — no external executor needed
-      _pending: false
-    };
-  } catch(canvasErr) {
-    console.warn('[LISE] Canvas synthesis failed, using executor fallback:', canvasErr.message);
-  }
+  // ── RENDER: Pollinations executor with LISE-enriched descriptor ──
+  // LISE does all the intelligence (grammar, BRPN, reference analysis, descriptor building)
+  // Pollinations renders the final image from that descriptor
+  var _encoded = encodeURIComponent(_descriptor);
+  var _model = styleInfo.model || 'flux';
+  var _url = 'https://image.pollinations.ai/prompt/'+_encoded+'?width=768&height=768&model='+_model+'&seed='+_seed;
 
-  // ── FALLBACK: Stable Horde executor (LISE descriptor, external GPU) ──
-  var _hordeKey = '0000000000';
-  var _payload = JSON.stringify({
-    prompt: _descriptor,
-    params: {
-      sampler_name: 'k_euler_a',
-      cfg_scale: 7,
-      seed: String(_seed),
-      height: 512, width: 512,
-      steps: 25, n: 1, karras: true
-    },
-    nsfw: false, trusted_workers: false, r2: true,
-    models: ['stable_diffusion']
-  });
-
-  var _resp = await fetch('https://stablehorde.net/api/v2/generate/async', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','apikey':_hordeKey,'Client-Agent':'autumn-lise:1.0:radicaldeepscale.com'},
-    body: _payload,
-    signal: AbortSignal.timeout(15000)
-  });
-
-  if(!_resp.ok) throw new Error('LISE executor error: '+_resp.status);
-  var _data = await _resp.json();
-  if(!_data.id) throw new Error('LISE: no job ID');
+  // Also run canvas synthesis in background for style overlay (async, non-blocking)
+  liseSynthesizeCanvas(_descriptor, _elements, styleInfo, 256).then(function(_cvUrl){
+    console.log('[LISE] Canvas overlay ready:', _cvUrl.length, 'chars');
+  }).catch(function(){});
 
   return {
-    jobId: _data.id,
+    jobId: null,
     seed: _seed,
-    model: 'LISE/'+_elements.primaryTool,
+    model: 'LISE/'+_elements.primaryTool+'/Flux',
     prompt: _descriptor,
     originalPrompt: prompt,
     elements: _elements,
-    url: null,
-    _pending: true
+    url: _url,
+    _pending: false
   };
 }
 
