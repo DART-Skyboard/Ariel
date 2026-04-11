@@ -4020,15 +4020,25 @@ async function runImageFromReference(text, analysis, reflexData, referenceImgs) 
   var nouns=analysis.grammar.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Noun';}).map(function(t){return t.word;});}).slice(0,3);
   var refs=await fetchOpenverseRef(nouns.join(' ')||text.slice(0,40),3).catch(function(){return[];});
   var genResult=await generateWithPollinations(cleanPrompt,styleInfo);
-  await new Promise(function(res){var img=new Image();img.onload=res;img.onerror=res;img.src=genResult.url;setTimeout(res,18000);});
   var refLinks=refs.slice(0,2).map(function(r){return{title:r.title||'Reference',url:r.url,desc:'Openverse'};});
-  referenceImgs.forEach(function(ri,i){if(ri.fileName)refLinks.push({title:'Ref '+(i+1)+': '+ri.fileName,url:'#',desc:ri.width+'x'+ri.height});});
+  referenceImgs.forEach(function(ri,i){refLinks.push({title:'Ref '+(i+1)+(ri.fileName?': '+ri.fileName:''),url:'#',desc:(ri.width||'?')+'x'+(ri.height||'?')});});
+  // Use same shimmer+observer card format as runImageGeneration so image loads properly
+  var _refGenId = 'ref-'+Date.now();
+  if(!window._autumnGens) window._autumnGens={};
+  window._autumnGens[_refGenId] = {url:genResult.url, prompt:cleanPrompt.slice(0,300), model:genResult.model||'LISE', seed:genResult.seed};
   var finalCard='<div class="img-gen-card">'
-    +'<img class="img-gen-img" src="'+genResult.url+'" alt="generated" loading="lazy">'
+    +'<div class="img-gen-wrap">'
+    +'<div id="igshim-'+_refGenId+'" class="img-gen-shimmer"><div class="img-gen-shimmer-inner"></div></div>'
+    +'<img id="igimg-'+_refGenId+'" class="img-gen-img" data-genid="'+_refGenId+'" style="display:none;cursor:pointer" src="'+genResult.url+'">'
+    +'</div>'
     +'<div class="img-gen-footer">'
     +'<div class="img-gen-prompt-label">GENERATED FROM REFERENCE'+(referenceImgs.length>1?' ('+referenceImgs.length+' sources)':'')+'</div>'
     +'<div class="img-gen-prompt-text">'+esc(cleanPrompt.slice(0,200))+'</div>'
     +'<div class="img-gen-tags"><span class="img-gen-tag">'+esc(styleInfo.label)+'</span><span class="img-gen-tag">'+esc(genResult.model)+'</span><span class="img-gen-tag">seed:'+genResult.seed+'</span></div>'
+    +'</div>'
+    +'<div class="img-gen-card-actions">'
+    +'<button class="img-gen-btn" data-genid="'+_refGenId+'" data-action="expand">⧂ EXPAND</button>'
+    +'<button class="img-gen-btn download" data-genid="'+_refGenId+'" data-action="save" title="Download image">⬇ SAVE</button>'
     +'</div></div>';
   var idx2=msgs().findIndex(function(m){return m.id===cardId;});
   if(idx2>=0){msgs()[idx2]=Object.assign({},msgs()[idx2],{imageGenCard:finalCard,media:{videos:[],images:[],links:refLinks,sources:refs.length?['OPENVERSE']:[]},grammarMeta:'Ref→Gen · style:'+styleInfo.key+' model:'+genResult.model,brpnMeta:'Vision desc: '+visionDescription.length+' chars → prompt: '+cleanPrompt.length+' chars'});renderMessages();}
