@@ -3764,7 +3764,14 @@ async function handleSend() {
   }
   // ── END ATTENTIVE INTERCEPT ────────────────────────────────────────────
 
-  msgs().push({role:"user",text,ts:new Date().toISOString()});
+  // Capture any pending images before clearing
+  const _pendingImgs = (S.pendingImages && S.pendingImages.length) ? [...S.pendingImages] : [];
+  if (_pendingImgs.length) clearPendingImage();
+
+  msgs().push({
+    role:"user", text, ts:new Date().toISOString(),
+    uploadedImageThumbs: _pendingImgs.map(function(i){ return i.thumbnail; })
+  });
   S.isProcessing=true;
   renderMessages();
   pulseShells(1.5);
@@ -3773,6 +3780,34 @@ async function handleSend() {
   const analysis=processLEATR(text);
   S.lastAnalysis=analysis;
   S.contextHistory=[...S.contextHistory,text].slice(-5);
+
+  // ── Image-to-image: reference images attached + generation/iteration intent ──
+  if (_pendingImgs.length && (detectGenerationIntent(text) || detectImageIterationIntent(text))) {
+    S.pendingImages = _pendingImgs;
+    const _r0 = await autumnReflex(text,'default').catch(function(){ return {}; });
+    S.journal.push(createJournalEntry(text, analysis, _r0));
+    updateHUD(analysis);
+    S.isProcessing = false;
+    if (typeof setOrbThinking === 'function') setOrbThinking(false);
+    await runImageFromReference(text, analysis, _r0, _pendingImgs);
+    updateFooter();
+    return;
+  }
+
+  // ── Text-to-image: no image attached, generation intent detected ──
+  if (!_pendingImgs.length && detectGenerationIntent(text)) {
+    const _r1 = await autumnReflex(text,'default').catch(function(){ return {}; });
+    S.journal.push(createJournalEntry(text, analysis, _r1));
+    updateHUD(analysis);
+    S.isProcessing = false;
+    if (typeof setOrbThinking === 'function') setOrbThinking(false);
+    await runImageGeneration(text, analysis, _r1);
+    updateFooter();
+    return;
+  }
+
+  // ── Image attached but no generation intent → vision analysis ──
+  if (_pendingImgs.length) S.pendingImages = _pendingImgs;
 
   // Run full reflex pipeline
   const reflexData = await autumnReflex(text,"default");
@@ -3809,6 +3844,7 @@ async function handleSend() {
 
   S.isProcessing=false;
   if(typeof setOrbThinking==='function') setOrbThinking(false);
+  S.pendingImages = []; S.pendingImage = null;
   saveState(); renderMessages(); updateFooter();
   pulseShells(0.8);
   evolveOrb(analysis, reflexData);      // ← orb morphs with every message
