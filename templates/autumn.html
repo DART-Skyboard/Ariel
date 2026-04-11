@@ -1712,7 +1712,7 @@ const CONTEXT_REGISTRY = {
     label: "IMAGE"
   },
   IMAGE_GEN: {
-    triggers: ["generate an image","generate a picture","create an image","draw me","make me a picture","make an image","show me a picture","visualize this","render this","imagine this","paint me","create art","generate art","make it look like","show me what","create a scene","generate a scene","make a photo","illustrate"],
+    triggers: ["generate image","generate picture","generate depiction","generate concept","generate art","generate visual","generate portrait","generate rendering","create image","create depiction","create concept","create art","draw me","draw a","paint me","paint a","render me","render a","show me a picture","show me an image","depict this","depict a","concept art","visualize this","imagine this","illustrate this","make me a picture","make me an image","make art"],
     requiresLocation: false,
     apis: ["pollinations","openverse"],
     label: "IMAGEGEN"
@@ -3361,20 +3361,54 @@ function extractStyleModifier(text) {
   for(var key in IMAGE_STYLE_MAP){if(key!=='default'&&lc.indexOf(key)!==-1)return Object.assign({key:key},IMAGE_STYLE_MAP[key]);}
   return Object.assign({key:'default'},IMAGE_STYLE_MAP['default']);
 }
+// ── DART Tool Command Recognition ────────────────────────────
+// Tool commands require EXPLICIT two-word command pairs.
+// Single words in conversation do NOT fire tools.
+// This lets Autumn speak freely without accidentally triggering.
+
+var TOOL_COMMANDS = {
+  IMAGE_GEN: [
+    'generate image','generate picture','generate photo','generate scene',
+    'generate depiction','generate concept','generate portrait','generate landscape',
+    'generate art','generate visual','generate illustration','generate rendering',
+    'generate a ','create image','create picture','create depiction','create concept',
+    'create art','create visual','create illustration','create rendering',
+    'draw image','draw picture','draw me','draw a ','paint image','paint picture',
+    'paint me','paint a ','render image','render depiction','render me','render a ',
+    'make image','make picture','make art','make me a picture','make me an image',
+    'show me a picture','show me an image','show me a visual','show me a depiction',
+    'depict this','depict a ','depict the ','show a depiction','create a depiction',
+    'concept art','concept image','visualize this','visualize a ','visualize the ',
+    'imagine this','imagine a ','imagine the ',
+    'illustrate this','illustrate a ','illustrate the ',
+  ]
+};
+
 function detectGenerationIntent(text) {
-  var lc=text.toLowerCase();
-  var genWords=['generate','create','make','draw','paint','render','show me','visualize','imagine','illustrate','build me','design'];
-  var imgWords=['image','picture','photo','scene','art','illustration','painting','sketch','render','visual','drawing'];
-  var hasGen=genWords.some(function(w){return lc.indexOf(w)!==-1;});
-  var hasImg=imgWords.some(function(w){return lc.indexOf(w)!==-1;});
-  var styleKeys=Object.keys(IMAGE_STYLE_MAP).filter(function(k){return k!=='default';});
-  var hasStyle=styleKeys.some(function(k){return lc.indexOf(k)!==-1;});
-  return hasGen&&(hasImg||hasStyle);
+  var lc = text.toLowerCase();
+  var matched = TOOL_COMMANDS.IMAGE_GEN.some(function(cmd) {
+    return lc.indexOf(cmd) !== -1;
+  });
+  if(matched) return true;
+  // Style modifier + visual noun is also a strong command signal
+  var styleKeys = Object.keys(IMAGE_STYLE_MAP).filter(function(k){ return k !== 'default'; });
+  var hasStyle = styleKeys.some(function(k){ return lc.indexOf(k) !== -1; });
+  var visualNouns = ['image','picture','photo','portrait','scene','art','visual','depiction'];
+  var hasVisualNoun = visualNouns.some(function(w){ return lc.indexOf(w) !== -1; });
+  return hasStyle && hasVisualNoun;
 }
 function detectImageIterationIntent(text) {
-  var lc=text.toLowerCase();
-  var iterWords=['new version','variation','iterate','enhance','modify','change','update','make it','redo','regenerate','based on this','from this','using this','inspired by','improve','evolve','transform'];
-  return iterWords.some(function(w){return lc.indexOf(w)!==-1;});
+  var lc = text.toLowerCase();
+  var iterPairs = [
+    'new version of','make a variation','create a variation','make variation',
+    'iterate on','iterate this','enhance this image','modify this image',
+    'change this image','update this image','redo this image','redo the image',
+    'regenerate this','regenerate image','based on this image','from this image',
+    'using this image','inspired by this','improve this image','evolve this image',
+    'transform this image','make it look','new depiction','new concept',
+    'revise this image','remix this'
+  ];
+  return iterPairs.some(function(p){ return lc.indexOf(p) !== -1; });
 }
 function buildGenerationPrompt(text, analysis, styleInfo, referenceHints) {
   var nouns=analysis.grammar.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Noun';}).map(function(t){return t.word;});});
@@ -4397,7 +4431,7 @@ async function handleSend() {
     { match: ['archive and new chat','archive this and start new','save and start new','archive and move to new'], action: 'archive_new' },
     { match: ['clear chat','clear messages','hide messages','hide chat'], action: 'hide_msgs' },
     { match: ['clear chat history','delete chat history','clear history','delete history','wipe chat','delete all messages'], action: 'delete_msgs' },
-    { match: ['new chat','start a new chat','start new chat'], action: 'new_chat' },
+    { match: ['start a new chat','start new chat','open a new chat','open new chat'], action: 'new_chat' },
     { match: ['start new chat and delete','new chat delete this','new chat clear this','move to new chat and delete'], action: 'new_chat_delete' },
   ];
   let _sessionAction = null;
