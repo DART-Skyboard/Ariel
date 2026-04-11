@@ -5473,100 +5473,142 @@ function buildOrbMazeGeometry(){
 }
 
 // ── TOOL SHAPE GEOMETRY BUILDERS ───────────────────────────────────────────
+// Helper: extrude a flat set of line-segment pairs into volumetric wireframe
+// Input: array of [x,y] pairs defining line segment endpoints (flat profile)
+// Output: pts array with front face + back face + connecting struts
+function extrudeProfile(profile2d, depth) {
+  const d = depth * 0.5;
+  const pts = [];
+  // profile2d = [[x0,y0, x1,y1], ...] — one entry per segment
+  for(let i=0; i<profile2d.length; i++){
+    const [x0,y0,x1,y1] = profile2d[i];
+    // Front face segment
+    pts.push(x0,y0, d, x1,y1, d);
+    // Back face segment
+    pts.push(x0,y0,-d, x1,y1,-d);
+  }
+  // Connecting struts — only at segment endpoints that appear once (silhouette edges)
+  // Simple approach: add struts at every segment start/end point
+  const done = new Set();
+  for(let i=0; i<profile2d.length; i++){
+    const [x0,y0,x1,y1] = profile2d[i];
+    const k0=x0.toFixed(3)+','+y0.toFixed(3);
+    const k1=x1.toFixed(3)+','+y1.toFixed(3);
+    if(!done.has(k0)){ pts.push(x0,y0,d, x0,y0,-d); done.add(k0); }
+    if(!done.has(k1)){ pts.push(x1,y1,d, x1,y1,-d); done.add(k1); }
+  }
+  return pts;
+}
+
 function makeKnifeGeometry(){
-  // Knife: elongated blade + handle — built from line segments
-  const pts=[];
-  // Blade outline
-  pts.push(-0.18,0,0, 0.28,0.05,0);
-  pts.push(0.28,0.05,0, 0.32,0,0);
-  pts.push(0.32,0,0, 0.28,-0.03,0);
-  pts.push(0.28,-0.03,0, -0.18,0,0);
-  // Handle
-  pts.push(-0.18,0.05,0, -0.36,0.05,0);
-  pts.push(-0.36,0.05,0, -0.36,-0.05,0);
-  pts.push(-0.36,-0.05,0, -0.18,-0.05,0);
-  pts.push(-0.18,-0.05,0, -0.18,0.05,0);
-  // Guard
-  pts.push(-0.18,-0.08,0, -0.18,0.08,0);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  // Knife: blade + handle — volumetric box extrusion
+  const d = 0.06; // depth
+  const profile = [
+    [-0.18,0,   0.28,0.05],  // blade top
+    [0.28,0.05, 0.32,0],     // blade tip top
+    [0.32,0,    0.28,-0.03], // blade tip bottom
+    [0.28,-0.03,-0.18,0],    // blade bottom
+    [-0.18,0.05,-0.36,0.05], // handle top
+    [-0.36,0.05,-0.36,-0.05],// handle back
+    [-0.36,-0.05,-0.18,-0.05],// handle bottom
+    [-0.18,-0.05,-0.18,0.05],// handle front
+    [-0.18,-0.08,-0.18,0.08] // guard
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(extrudeProfile(profile,d),3));
   return geo;
 }
+
 function makeStickGeometry(){
-  // Walking stick / baton — cylinder outline with angled top
-  const pts=[];
-  pts.push(0,-0.3,0, 0,0.3,0); // shaft
-  pts.push(-0.04,-0.3,0, 0.04,-0.3,0); // foot
-  pts.push(-0.04,-0.3,0, -0.04,0.28,0);
-  pts.push(0.04,-0.3,0, 0.04,0.28,0);
-  // curved top (approximated)
+  // Stick: shaft + foot + curved top — volumetric
+  const d = 0.05;
+  const profile = [
+    [-0.04,-0.3, 0.04,-0.3], // foot
+    [-0.04,-0.3,-0.04,0.28], // left shaft
+    [0.04,-0.3,  0.04,0.28], // right shaft
+  ];
+  // Add arc segments for curved top
   for(let i=0;i<8;i++){
-    const a0=(i/8)*Math.PI,a1=((i+1)/8)*Math.PI;
-    pts.push(Math.cos(a0)*0.06,0.28+Math.sin(a0)*0.06,0);
-    pts.push(Math.cos(a1)*0.06,0.28+Math.sin(a1)*0.06,0);
+    const a0=(i/8)*Math.PI, a1=((i+1)/8)*Math.PI;
+    profile.push([
+      Math.cos(a0)*0.06, 0.28+Math.sin(a0)*0.06,
+      Math.cos(a1)*0.06, 0.28+Math.sin(a1)*0.06
+    ]);
   }
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(extrudeProfile(profile,d),3));
   return geo;
 }
+
 function makeHammerGeometry(){
-  // Hammer: handle + rectangular head
-  const pts=[];
-  // Handle
-  pts.push(0,-0.32,0, 0,0.18,0);
-  pts.push(-0.02,-0.32,0, 0.02,-0.32,0);
-  // Head (box)
-  pts.push(-0.14,0.14,0, 0.14,0.14,0);
-  pts.push(0.14,0.14,0, 0.14,0.28,0);
-  pts.push(0.14,0.28,0, -0.14,0.28,0);
-  pts.push(-0.14,0.28,0, -0.14,0.14,0);
-  // Side depth hints
-  pts.push(-0.14,0.14,0.05, 0.14,0.14,0.05);
-  pts.push(-0.14,0.14,0, -0.14,0.14,0.05);
-  pts.push(0.14,0.14,0, 0.14,0.14,0.05);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  // Hammer: handle + full box head — truly volumetric
+  const d = 0.12;
+  // Handle as thin box
+  const hd = 0.02;
+  const pts = [];
+  // Handle — front/back/sides
+  const hProfile = [
+    [-hd,-0.32, hd,-0.32], // handle bottom
+    [-hd,-0.32,-hd,0.14],  // handle left
+    [hd,-0.32,  hd,0.14],  // handle right
+    [-hd,0.14,  hd,0.14],  // handle top
+  ];
+  const hPts = extrudeProfile(hProfile, hd*2);
+  hPts.forEach(v=>pts.push(v));
+  // Head — full box
+  const hxL=-0.14, hxR=0.14, hyB=0.14, hyT=0.28;
+  const hProfile2 = [
+    [hxL,hyB, hxR,hyB], // head bottom
+    [hxR,hyB, hxR,hyT], // head right
+    [hxR,hyT, hxL,hyT], // head top
+    [hxL,hyT, hxL,hyB], // head left
+  ];
+  const hPts2 = extrudeProfile(hProfile2, d);
+  hPts2.forEach(v=>pts.push(v));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts,3));
   return geo;
 }
+
 function makeEnvelopeGeometry(){
-  // Envelope: rectangle with V flap lines
-  const pts=[];
-  pts.push(-0.24,-0.15,0, 0.24,-0.15,0);
-  pts.push(0.24,-0.15,0, 0.24,0.15,0);
-  pts.push(0.24,0.15,0, -0.24,0.15,0);
-  pts.push(-0.24,0.15,0, -0.24,-0.15,0);
-  // V flap
-  pts.push(-0.24,0.15,0, 0,0,0);
-  pts.push(0.24,0.15,0, 0,0,0);
-  // bottom V (seal line)
-  pts.push(-0.24,-0.15,0, 0,-0.02,0);
-  pts.push(0.24,-0.15,0, 0,-0.02,0);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  // Envelope: box body + flap ridge — volumetric
+  const d = 0.06;
+  const profile = [
+    [-0.24,-0.15, 0.24,-0.15], // bottom
+    [0.24,-0.15,  0.24,0.15],  // right
+    [0.24,0.15,  -0.24,0.15],  // top
+    [-0.24,0.15, -0.24,-0.15], // left
+    [-0.24,0.15,  0,0],        // flap left
+    [0.24,0.15,   0,0],        // flap right
+    [-0.24,-0.15, 0,-0.02],    // seal left
+    [0.24,-0.15,  0,-0.02],    // seal right
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(extrudeProfile(profile,d),3));
   return geo;
 }
+
 function makeScissorsGeometry(){
-  // Scissors: two angled blade pairs + pivot
-  const pts=[];
-  // Blade 1
-  pts.push(-0.04,0.28,0, 0.22,-0.18,0);
-  pts.push(-0.08,0.26,0, 0.19,-0.2,0);
-  // Blade 2
-  pts.push(0.04,0.28,0, -0.22,-0.18,0);
-  pts.push(0.08,0.26,0, -0.19,-0.2,0);
-  // Handles (rings approximated)
-  for(let i=0;i<8;i++){
-    const a0=(i/8)*Math.PI*2,a1=((i+1)/8)*Math.PI*2;
-    pts.push(0.12+Math.cos(a0)*0.07,-0.22+Math.sin(a0)*0.07,0);
-    pts.push(0.12+Math.cos(a1)*0.07,-0.22+Math.sin(a1)*0.07,0);
-    pts.push(-0.12+Math.cos(a0)*0.07,-0.22+Math.sin(a0)*0.07,0);
-    pts.push(-0.12+Math.cos(a1)*0.07,-0.22+Math.sin(a1)*0.07,0);
+  // Scissors: crossed blades + ring handles — volumetric
+  const d = 0.04;
+  const profile = [
+    [-0.04,0.28, 0.22,-0.18],  // blade 1 outer
+    [-0.08,0.26, 0.19,-0.2],   // blade 1 inner
+    [0.04,0.28,  -0.22,-0.18], // blade 2 outer
+    [0.08,0.26,  -0.19,-0.2],  // blade 2 inner
+    [-0.015,0,   0.015,0],     // pivot h
+    [0,-0.015,   0,0.015],     // pivot v
+  ];
+  // Ring handles
+  for(let i=0;i<10;i++){
+    const a0=(i/10)*Math.PI*2, a1=((i+1)/10)*Math.PI*2;
+    profile.push([0.12+Math.cos(a0)*0.07,-0.22+Math.sin(a0)*0.07,
+                  0.12+Math.cos(a1)*0.07,-0.22+Math.sin(a1)*0.07]);
+    profile.push([-0.12+Math.cos(a0)*0.07,-0.22+Math.sin(a0)*0.07,
+                  -0.12+Math.cos(a1)*0.07,-0.22+Math.sin(a1)*0.07]);
   }
-  // Pivot dot
-  pts.push(-0.015,0,0, 0.015,0,0);
-  pts.push(0,-0.015,0, 0,0.015,0);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(extrudeProfile(profile,d),3));
   return geo;
 }
 
