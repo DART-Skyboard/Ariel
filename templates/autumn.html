@@ -3495,7 +3495,36 @@ function buildGenerationPrompt(text, analysis, styleInfo, referenceHints) {
   var subject=subjectWords.slice(0,8).join(', ');
   if(!subject)subject=text.replace(/generate|create|make|draw|an? |the |image|picture|of|for|me/gi,'').trim().slice(0,120);
   var refNote=referenceHints&&referenceHints.length?' inspired by: '+referenceHints.slice(0,2).join(', '):'';
-  return (subject+refNote+', '+styleInfo.suffix).replace(/\s{2,}/g,' ').trim();
+
+  // ── Visual memory recall — inject Autumn's learned style preferences ──
+  var _learnedStyle = '';
+  try {
+    if (typeof S !== 'undefined' && S.memory) {
+      // Get top performing visual styles from memory
+      var _styleCounts = [];
+      Object.keys(S.memory).forEach(function(k) {
+        if (k.startsWith('visual_style_')) {
+          var _tag = k.replace('visual_style_','').replace(/_/g,' ');
+          _styleCounts.push([_tag, parseInt(S.memory[k])||0]);
+        }
+      });
+      _styleCounts.sort(function(a,b){return b[1]-a[1];});
+      var _topStyles = _styleCounts.slice(0,3).map(function(s){return s[0];});
+      if (_topStyles.length) _learnedStyle = ', ' + _topStyles.join(', ');
+
+      // Self-portrait: if asking Autumn to depict herself, recall her best self-image prompt
+      var _textLow = text.toLowerCase();
+      if ((_textLow.includes('yourself') || _textLow.includes('of you') || (_textLow.includes('autumn') && (_textLow.includes('you') || _textLow.includes('herself')))) && S.memory['autumn_self_image_last_prompt']) {
+        // Blend previous self-image style with current request
+        var _prevSelf = S.memory['autumn_self_image_last_prompt'];
+        var _prevStyle = (_prevSelf.match(/(?:space punk|neon|cyberpunk|cinematic|detailed|photorealistic)[^,]*/gi)||[]).slice(0,2).join(', ');
+        if (_prevStyle) _learnedStyle += ', ' + _prevStyle + ' [self-recalled]';
+        console.log('[LISE] Self-portrait recall: injecting style from previous self-image');
+      }
+    }
+  } catch(e) {}
+
+  return (subject + refNote + _learnedStyle + ', ' + styleInfo.suffix).replace(/\s{2,}/g,' ').trim();
 }
 async function fetchOpenverseRef(query, limit) {
   limit=limit||5;
