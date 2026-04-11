@@ -4625,6 +4625,29 @@ async function handleSend() {
     return;
   }
 
+  // ── Maze widget: check before IMAGE_GEN so "generate a cubic maze" routes correctly ──
+  if (!_pendingImgs.length && detectMazeRequest(text)) {
+    const _rm = await autumnReflex(text,'default').catch(function(){ return {}; });
+    S.lastReflex = _rm;
+    try { S.journal.push(createJournalEntry(text, analysis, _rm)); } catch(e) {}
+    try { updateHUD(analysis); } catch(e) {}
+    const _ak = typeof _getAK === 'function' ? _getAK() : '';
+    const _mazeReply = _ak ? await generateReply(text, analysis, _rm).catch(function(){ return {text:'',grammarMeta:'',brpnMeta:''}; }) : {text:'',grammarMeta:'',brpnMeta:''};
+    const msgId = 'msg-' + Date.now();
+    msgs().push({
+      role:'autumn', text:_mazeReply.text||'', ts:new Date().toISOString(), id:msgId,
+      grammarMeta:_mazeReply.grammarMeta||'', brpnMeta:_mazeReply.brpnMeta||'',
+      contextType:'MAZE', mazeHtml:_rm.mazeHtml||'', mazeWid:_rm.activeMazeWid||null,
+      media:{videos:[],images:[],links:[],sources:[]}
+    });
+    S.isProcessing=false;
+    if(typeof setOrbThinking==='function') setOrbThinking(false);
+    S.pendingImages=[]; S.pendingImage=null;
+    saveState(); renderMessages(); updateFooter();
+    autoReadLastResponse();
+    return;
+  }
+
   // ── Text-to-image: no image attached, generation intent detected ──
   if (!_pendingImgs.length && _intentLabel === 'IMAGE_GEN') {
     const _r1 = await autumnReflex(text,'default').catch(function(){ return {}; });
@@ -4801,6 +4824,7 @@ const MAZE_TRIGGERS = [
   "make me a maze","generate a maze","show me a maze","create a maze","build a maze",
   "maze please","give me a maze","maze for me","show a maze","display a maze",
   "3d maze","draw me a maze","render a maze","maze generator","a maze",
+  "cubic maze","planar maze","generate maze","make maze","new maze",
   "solve the maze","pathfind","show maze","maze tool","labyrinth"
 ];
 
@@ -8186,10 +8210,27 @@ window.ashSendToChat = function() {
 };
 
 window.ashSendMazeToChat = function() {
-  const inp = document.getElementById('chat-input');
-  if (inp) inp.value = `generate a ${_ashState.mazeMode} maze ${_ashState.mazeW}×${_ashState.mazeH}${_ashState.mazeMode==='cubic'?'×'+_ashState.mazeD:''}`;
+  // Close tools panel
   document.getElementById('tools-overlay')?.classList.remove('open');
-  setTimeout(()=>window.handleSend?.(), 100);
+  // Push user message
+  var _dim = _ashState.mazeW+'x'+_ashState.mazeH+(_ashState.mazeMode==='cubic'?'x'+_ashState.mazeD:'');
+  var _txt = 'Generate a '+_ashState.mazeMode+' maze '+_dim;
+  msgs().push({role:'user', text:_txt, ts:new Date().toISOString()});
+  // Build maze widget directly via autumnReflex
+  setTimeout(async function() {
+    var _analysis = processLEATR(_txt);
+    var _rm = await autumnReflex(_txt,'default').catch(function(){ return {}; });
+    S.lastReflex = _rm;
+    try { S.journal.push(createJournalEntry(_txt, _analysis, _rm)); } catch(e) {}
+    try { updateHUD(_analysis); } catch(e) {}
+    msgs().push({
+      role:'autumn', text:'', ts:new Date().toISOString(), id:'msg-'+Date.now(),
+      grammarMeta:'', brpnMeta:'', contextType:'MAZE',
+      mazeHtml:_rm.mazeHtml||'', mazeWid:_rm.activeMazeWid||null,
+      media:{videos:[],images:[],links:[],sources:[]}
+    });
+    saveState(); renderMessages(); updateFooter(); autoReadLastResponse();
+  }, 50);
 };
 
 function ashToast(msg) { if(typeof ideToast==='function') ideToast(msg); else console.log(msg); }
