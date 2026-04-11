@@ -3081,6 +3081,59 @@ function autumnSaveImage(genId) {
   img.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now();
 }
 
+// ── Delegated event handler for generated image cards ───────────
+document.addEventListener('DOMContentLoaded', function() {
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-action]');
+    if(!btn) {
+      var img = e.target.closest('img.img-gen-img');
+      if(img && img.dataset.genid) {
+        var g = window._autumnGens && window._autumnGens[img.dataset.genid];
+        if(g) openImgModal(g.url, g.prompt, g.model, g.seed);
+      }
+      return;
+    }
+    var id = btn.dataset.genid;
+    var action = btn.dataset.action;
+    if(!id || !action) return;
+    var g = window._autumnGens && window._autumnGens[id];
+    if(!g) return;
+    if(action === 'expand') openImgModal(g.url, g.prompt, g.model, g.seed);
+    else if(action === 'save') autumnSaveImage(id);
+  });
+});
+
+// Wire up img load/error via MutationObserver so dynamically added cards get handlers
+(function() {
+  var _imgObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if(node.nodeType !== 1) return;
+        var imgs = node.querySelectorAll ? node.querySelectorAll('img.img-gen-img') : [];
+        if(node.matches && node.matches('img.img-gen-img')) imgs = [node];
+        [].forEach.call(imgs, function(img) {
+          if(img._autumnWired) return;
+          img._autumnWired = true;
+          var id = img.dataset.genid;
+          img.onload = function() {
+            this.style.display = 'block';
+            var shim = document.getElementById('igshim-'+id);
+            if(shim) shim.style.display = 'none';
+          };
+          img.onerror = function() {
+            var shim = document.getElementById('igshim-'+id);
+            if(shim) {
+              shim.style.background = 'transparent';
+              shim.innerHTML = '<div style="padding:16px;font-family:var(--font-d);font-size:9px;color:#ff4466;letter-spacing:1px;text-align:center">GENERATION FAILED<br><span style="color:#a78bfa;font-size:8px">Try again or rephrase your prompt</span></div>';
+            }
+          };
+        });
+      });
+    });
+  });
+  _imgObserver.observe(document.body || document.documentElement, {childList:true, subtree:true});
+})();
+
 // ── Image preview modal ───────────────────────────────────────
 function openImgModal(url, prompt, model, seed) {
   var modal = document.getElementById('img-modal');
@@ -3360,16 +3413,13 @@ async function runImageGeneration(text, analysis, reflexData) {
   // No blocking preload — card renders immediately with shimmer, img loads async
   var refLinks=refs.slice(0,3).map(function(r){return{title:r.title||'Reference',url:r.url,desc:'Openverse reference'};});
   // Store result globally so buttons can reference it cleanly
-  var _genId = 'gen-'+Date.now();
+    var _genId = 'gen-'+Date.now();
   if(!window._autumnGens) window._autumnGens={};
   window._autumnGens[_genId] = {url:genResult.url, prompt:prompt.slice(0,300), model:genResult.model||'auto', seed:genResult.seed};
   var finalCard = '<div class="img-gen-card">'
-    + '<div id="igwrap-'+_genId+'" class="img-gen-wrap">'
+    + '<div class="img-gen-wrap">'
     + '<div id="igshim-'+_genId+'" class="img-gen-shimmer"><div class="img-gen-shimmer-inner"></div><div class="img-gen-shimmer-text">GENERATING…</div></div>'
-    + '<img id="igimg-'+_genId+'" class="img-gen-img" style="display:none;cursor:pointer" src="'+genResult.url+'"'
-    + ' onload="(function(el,id){el.style.display='block';var s=document.getElementById('igshim-'+id);if(s)s.style.display='none';})(this,''+_genId+'')"'
-    + ' onerror="(function(el,id){var s=document.getElementById('igshim-'+id);if(s)s.innerHTML='<div style=\"padding:20px;font-family:var(--font-d);font-size:9px;color:#ff4466;letter-spacing:1px\">GENERATION FAILED — TRY AGAIN</div>';})(this,''+_genId+'')"'
-    + ' onclick="(function(id){var g=window._autumnGens[id];if(g)openImgModal(g.url,g.prompt,g.model,g.seed);})(''+_genId+'')">'
+    + '<img id="igimg-'+_genId+'" class="img-gen-img" data-genid="'+_genId+'" style="display:none;cursor:pointer" src="'+genResult.url+'">'
     + '</div>'
     + '<div class="img-gen-footer">'
     + '<div class="img-gen-prompt-label">GENERATED PROMPT</div>'
@@ -3377,8 +3427,8 @@ async function runImageGeneration(text, analysis, reflexData) {
     + '<div class="img-gen-tags"><span class="img-gen-tag">'+esc(styleInfo.label)+'</span><span class="img-gen-tag">seed:'+genResult.seed+'</span></div>'
     + '</div>'
     + '<div class="img-gen-card-actions">'
-    + '<button class="img-gen-btn" onclick="(function(id){var g=window._autumnGens[id];if(g)openImgModal(g.url,g.prompt,g.model,g.seed);})(''+_genId+'')">⤢ EXPAND</button>'
-    + '<button class="img-gen-btn download" onclick="(function(id){autumnSaveImage(id);})(''+_genId+'')">⬇ SAVE</button>'
+    + '<button class="img-gen-btn" data-genid="'+_genId+'" data-action="expand">⤢ EXPAND</button>'
+    + '<button class="img-gen-btn download" data-genid="'+_genId+'" data-action="save">⬇ SAVE</button>'
     + '</div></div>';
   var idx=msgs().findIndex(function(m){return m.id===cardId;});
   if(idx>=0){msgs()[idx]=Object.assign({},msgs()[idx],{imageGenCard:finalCard,media:{videos:[],images:[],links:refLinks,sources:refs.length?['OPENVERSE']:[]},grammarMeta:'Generated · style:'+styleInfo.key+' model:'+genResult.model+' seed:'+genResult.seed});renderMessages();}
