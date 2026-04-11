@@ -16,6 +16,21 @@
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="module">
+// Kokoro TTS — loads once, caches in browser
+import { KokoroTTS } from 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.0/dist/kokoro.web.js';
+window._kokoroLoad = (async () => {
+  try {
+    const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-ONNX', {dtype:'q8'});
+    window._kokoroTTS = tts;
+    window._kokoroReady = true;
+    console.log('[Kokoro] TTS ready');
+  } catch(e) {
+    console.warn('[Kokoro] Failed to load, falling back to Web Speech API:', e.message);
+    window._kokoroReady = false;
+  }
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.5.0/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.0.3/dist/pako.min.js"></script>
@@ -6055,33 +6070,73 @@ function populateVoiceSelect(){
   }catch(e){}
 }
 
-function speak(text,onEnd){
-  Voice.synth.cancel();Voice.speaking=true;Voice.cancelled=false;
-  var _mb=document.getElementById('mic-btn');
-  if(_mb&&Voice.active) _mb.style.boxShadow='0 0 14px rgba(0,229,255,.6)';
-  const clean=text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0,2000);
-  const utter=new SpeechSynthesisUtterance(clean);
-  if(Voice.selectedVoice) utter.voice=Voice.selectedVoice;
-  utter.rate=Voice.speed; utter.pitch=Voice.pitch;
-  utter.onend=()=>{Voice.speaking=false;if(onEnd)onEnd();};
-  utter.onerror=()=>{Voice.speaking=false;if(onEnd)onEnd();};
-  if(clean.length>200){
-    const sentences=clean.match(/[^.!?]+[.!?]+/g)||[clean];let i=0;
-    function speakNext(){
-      if(Voice.cancelled||i>=sentences.length){Voice.speaking=false;if(onEnd)onEnd();return;}
-      const u=new SpeechSynthesisUtterance(sentences[i].trim());
-      if(Voice.selectedVoice) u.voice=Voice.selectedVoice;
-      u.rate=Voice.speed; u.pitch=Voice.pitch;
-      u.onend=()=>{i++;if(!Voice.cancelled)speakNext();else{Voice.speaking=false;if(onEnd)onEnd();}};
-      u.onerror=()=>{i++;if(!Voice.cancelled)speakNext();else{Voice.speaking=false;if(onEnd)onEnd();}};
-      Voice.synth.speak(u);
-    }
-    speakNext();
-  } else {Voice.synth.speak(utter);}
+// Kokoro voice model — af_bella = warm natural female, af_heart = softer
+var _KOKORO_VOICE = 'af_bella';
+
+async function _speakKokoro(text, onEnd) {
+  try {
+    var tts = window._kokoroTTS;
+    if (!tts) { _speakWebSpeech(text, onEnd); return; }
+    Voice.speaking = true; Voice.cancelled = false;
+    var _mb = document.getElementById('mic-btn');
+    if (_mb && Voice.active) _mb.style.boxShadow = '0 0 14px rgba(0,229,255,.6)';
+    var clean = text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0, 3000);
+    var audio = await tts.generate(clean, { voice: _KOKORO_VOICE, speed: Voice.speed || 1.0 });
+    if (Voice.cancelled) { Voice.speaking = false; if(onEnd) onEnd(); return; }
+    // audio is AudioData — convert to playable blob
+    var blob = await audio.toBlob();
+    var url = URL.createObjectURL(blob);
+    var player = new Audio(url);
+    player.playbackRate = Voice.speed || 1.0;
+    player.onended = function() {
+      Voice.speaking = false;
+      URL.revokeObjectURL(url);
+      if (onEnd) onEnd();
+      if (_mb) _mb.style.boxShadow = '';
+    };
+    player.onerror = function() {
+      Voice.speaking = false;
+      if (onEnd) onEnd();
+    };
+    Voice._kokoroPlayer = player;
+    player.play();
+  } catch(e) {
+    console.warn('[Kokoro] speak error, falling back:', e.message);
+    _speakWebSpeech(text, onEnd);
+  }
+}
+
+function _speakWebSpeech(text, onEnd) {
+  if (!Voice.synth) { Voice.speaking = false; if(onEnd) onEnd(); return; }
+  Voice.synth.cancel(); Voice.speaking = true; Voice.cancelled = false;
+  var _mb = document.getElementById('mic-btn');
+  if (_mb && Voice.active) _mb.style.boxShadow = '0 0 14px rgba(0,229,255,.6)';
+  const clean = text.replace(/<[^>]+>/g,'').replace(/\n{2,}/g,'. ').substring(0,2000);
+  const sentences = clean.match(/[^.!?]+[.!?]+/g)||[clean]; let i=0;
+  function speakNext(){
+    if(Voice.cancelled||i>=sentences.length){Voice.speaking=false;if(onEnd)onEnd();return;}
+    const u=new SpeechSynthesisUtterance(sentences[i].trim());
+    if(Voice.selectedVoice) u.voice=Voice.selectedVoice;
+    u.rate=Voice.speed; u.pitch=Voice.pitch;
+    u.onend=()=>{i++;if(!Voice.cancelled)speakNext();else{Voice.speaking=false;if(onEnd)onEnd();}};
+    u.onerror=()=>{i++;if(!Voice.cancelled)speakNext();else{Voice.speaking=false;if(onEnd)onEnd();}};
+    Voice.synth.speak(u);
+  }
+  speakNext();
+}
+
+function speak(text, onEnd) {
+  if (window._kokoroReady && window._kokoroTTS) {
+    _speakKokoro(text, onEnd);
+  } else {
+    _speakWebSpeech(text, onEnd);
+  }
 }
 
 function stopSpeaking(){
-  Voice.cancelled=true;Voice.speaking=false;Voice.synth.cancel();
+  Voice.cancelled=true;Voice.speaking=false;
+  if(Voice.synth) Voice.synth.cancel();
+  if(Voice._kokoroPlayer){Voice._kokoroPlayer.pause();Voice._kokoroPlayer.src='';Voice._kokoroPlayer=null;}
   var _mb=document.getElementById('mic-btn');
   if(_mb) _mb.style.boxShadow='';
 }
