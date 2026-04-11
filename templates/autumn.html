@@ -4468,25 +4468,41 @@ async function handleSend() {
   input.value="";
   cognoticeActivity();
 
+  // Lock UI immediately — must happen before any await
+  S.isProcessing = true;
+  if(typeof setOrbThinking==='function') setOrbThinking(true);
+  pulseShells(1.5);
+
+  // Capture pending images before anything clears them
+  const _earlyPendingImgs = (S.pendingImages && S.pendingImages.length) ? [...S.pendingImages] : [];
+
+  // Push user message and show typing indicator right away
+  msgs().push({ role:'user', text, ts:new Date().toISOString(),
+    uploadedImageThumbs: _earlyPendingImgs.map(function(i){ return i.thumbnail; }) });
+  renderMessages();
+  const _earlyTyping = document.createElement('div');
+  _earlyTyping.className = 'typing'; _earlyTyping.id = 'early-typing';
+  _earlyTyping.innerHTML = '<div class="typing-dot" style="background:var(--cyan);animation-delay:0s"></div><div class="typing-dot" style="background:var(--blue);animation-delay:.2s"></div><div class="typing-dot" style="background:var(--red);animation-delay:.4s"></div><span class="typing-lbl">thinking…</span>';
+  document.getElementById('chat-scroll')?.appendChild(_earlyTyping);
+
   // ── SEMANTIC INTENT ROUTING — classifier understands meaning, not keywords ────────────
-  const _hasPendingEarly = !!(S.pendingImages && S.pendingImages.length);
+  const _hasPendingEarly = _earlyPendingImgs.length > 0;
   const _intentLabel = await classifyIntent(text, _hasPendingEarly);
+  document.getElementById('early-typing')?.remove();
 
   const _doSessionReply = function(txt) {
     msgs().push({ role:'autumn', text:txt, ts:new Date().toISOString() });
     saveState(); renderMessages(); updateFooter();
     if(typeof setOrbThinking==='function') setOrbThinking(false);
+    S.isProcessing = false;
   };
 
   if(_intentLabel === 'CLEAR_CHAT') {
-    msgs().push({role:'user',text,ts:new Date().toISOString()});
-    renderMessages();
     msgs().forEach(function(m){ m._hidden = true; });
     msgs().push({ role:'autumn', text:'Chat window cleared. Say “show messages” any time to bring it back.', ts:new Date().toISOString() });
     saveState(); renderMessages(); S.isProcessing=false; return;
   }
   if(_intentLabel === 'DELETE_CHAT') {
-    msgs().push({role:'user',text,ts:new Date().toISOString()});
     S.sessions[S.currentSession].messages = [{ role:'autumn', text:'Chat history deleted.', ts:new Date().toISOString() }];
     saveState(); renderMessages(); S.isProcessing=false; return;
   }
@@ -4496,14 +4512,12 @@ async function handleSend() {
     saveState(); renderMessages(); S.isProcessing=false; return;
   }
   if(_intentLabel === 'ARCHIVE') {
-    msgs().push({role:'user',text,ts:new Date().toISOString()});
-    renderMessages();
     ARCHIVE.save(S.currentSession);
-    _doSessionReply('Session archived.'); S.isProcessing=false; return;
+    _doSessionReply('Session archived.'); return;
   }
   if(_intentLabel === 'SHOW_HIDDEN') {
     showHiddenMessages();
-    _doSessionReply('Messages restored.'); S.isProcessing=false; return;
+    _doSessionReply('Messages restored.'); return;
   }
 
   // ── ATTENTIVE INTERCEPT ── runs BEFORE full pipeline ─────────────────
@@ -4564,6 +4578,7 @@ async function handleSend() {
   if (_pendingImgs.length) clearPendingImage();
 
   // user message + isProcessing already set at top of handleSend
+  renderMessages();
 
   const analysis=processLEATR(text);
   S.lastAnalysis=analysis;
