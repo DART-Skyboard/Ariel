@@ -1660,6 +1660,18 @@ const CONTEXT_REGISTRY = {
     apis: ["audd","wikipedia","web_search","youtube"],
     label: "MUSIC"
   },
+  IMAGE_UPLOAD: {
+    triggers: [],
+    requiresLocation: false,
+    apis: ["claude_vision","wikipedia","web_search"],
+    label: "IMAGE"
+  },
+  IMAGE_GEN: {
+    triggers: ["generate an image","generate a picture","create an image","draw me","make me a picture","make an image","show me a picture","visualize this","render this","imagine this","paint me","create art","generate art","make it look like","show me what","create a scene","generate a scene","make a photo","illustrate"],
+    requiresLocation: false,
+    apis: ["pollinations","openverse"],
+    label: "IMAGEGEN"
+  },
   CONVERSATION: {
     triggers: [],  // default fallback
     requiresLocation: false,
@@ -3278,7 +3290,17 @@ const MUSIC_ENGINE = {
   stream: null,
   captureTimer: null,
   AUDD_TOKEN: '63cb51cf4b6789b81f1e2c05d6579e54',   // set to your AudD API token; 'test' uses free tier
-  CAPTURE_MS: 8000      // 8-second capture window
+  CAPTURE_MS: 20000,         // 20s for better coverage
+  RETRY_ATTEMPTS: 2,
+  MIN_BLOB_BYTES: 4000,
+  AUDIO_CONSTRAINTS: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: { ideal: 2 },
+    sampleRate: { ideal: 44100 }
+  },
+  _CAPTURE_MS_LABEL: '20-second capture'
 };
 
 // Genre → LEATR Natural Tool mapping (semantic assignment)
@@ -3356,7 +3378,7 @@ async function toggleMusicListen() {
 
 async function startMusicCapture() {
   try {
-    MUSIC_ENGINE.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    MUSIC_ENGINE.stream = await navigator.mediaDevices.getUserMedia({ audio: MUSIC_ENGINE.AUDIO_CONSTRAINTS||true, video: false });
     MUSIC_ENGINE.audioChunks = [];
     MUSIC_ENGINE.isListening = true;
 
@@ -3836,6 +3858,21 @@ When weather data is available, use it naturally. When location POI data is avai
     while (history.length > 0 && history[0].role === 'assistant') history.shift();
     // Cap at 10
     const trimHistory = history.slice(-10);
+
+    // Vision: if images pending, upgrade last user message to content array
+    const _vImgs = (S.pendingImages && S.pendingImages.length) ? S.pendingImages : (S.pendingImage ? [S.pendingImage] : []);
+    if(_vImgs.length > 0 && trimHistory.length > 0) {
+      const _li = trimHistory.length-1;
+      if(trimHistory[_li].role === 'user') {
+        const _tc = typeof trimHistory[_li].content==='string' ? trimHistory[_li].content : 'Analyze this image.';
+        const _cb = [];
+        _vImgs.slice(0,5).forEach(function(img){_cb.push({type:'image',source:{type:'base64',media_type:img.mimeType,data:img.base64}});});
+        const _fi = _vImgs[0];
+        const _an = _fi.analysis ? ' ['+_fi.width+'x'+_fi.height+' brightness='+_fi.analysis.brightness+']' : '';
+        _cb.push({type:'text',text:(_tc||'Analyze this image.')+_an});
+        trimHistory[_li]={role:'user',content:_cb};
+      }
+    }
 
     const ak = _getAK?.() || '';
     // 25 second timeout so the UI doesn't hang forever
