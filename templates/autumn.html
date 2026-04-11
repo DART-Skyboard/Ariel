@@ -7744,6 +7744,46 @@ function ASH_MAZE_init(canvas) {
   _ashMazeControls.maxDistance = 300;
   canvas.style.touchAction = 'none';
 
+  // Full mobile touch: pinch-to-zoom + two-finger pan
+  (function() {
+    var _t0=null, _t1=null, _pinchDist0=0, _panX0=0, _panY0=0;
+    function _dist(a,b){return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);}
+    function _mid(a,b){return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2};}
+    canvas.addEventListener('touchstart',function(e){
+      if(e.touches.length===2){
+        e.preventDefault();
+        _t0=e.touches[0]; _t1=e.touches[1];
+        _pinchDist0=_dist(_t0,_t1);
+        var m=_mid(_t0,_t1); _panX0=m.x; _panY0=m.y;
+      }
+    },{passive:false});
+    canvas.addEventListener('touchmove',function(e){
+      if(e.touches.length===2){
+        e.preventDefault();
+        var a=e.touches[0], b=e.touches[1];
+        var dist=_dist(a,b);
+        // Zoom
+        var zoomDelta=_pinchDist0/dist;
+        var cam=_ashMazeCamera, tgt=_ashMazeControls.target;
+        var dir=cam.position.clone().sub(tgt).normalize();
+        var curDist=cam.position.distanceTo(tgt);
+        var newDist=Math.max(5,Math.min(300,curDist*zoomDelta));
+        cam.position.copy(tgt).addScaledVector(dir,newDist);
+        _pinchDist0=dist;
+        // Pan
+        var m=_mid(a,b), dx=m.x-_panX0, dy=m.y-_panY0;
+        _panX0=m.x; _panY0=m.y;
+        var panScale=curDist*0.002;
+        var right=new THREE.Vector3().crossVectors(cam.getWorldDirection(new THREE.Vector3()),cam.up).normalize();
+        var up=cam.up.clone().normalize();
+        tgt.addScaledVector(right,-dx*panScale).addScaledVector(up,dy*panScale);
+        cam.position.addScaledVector(right,-dx*panScale).addScaledVector(up,dy*panScale);
+        _ashMazeControls.target.copy(tgt);
+        _ashMazeControls.update();
+      }
+    },{passive:false});
+  })();
+
   new ResizeObserver(()=>{
     const w=canvas.parentElement?.clientWidth||300, h=canvas.parentElement?.clientHeight||300;
     _ashMazeCamera.aspect=w/h; _ashMazeCamera.updateProjectionMatrix();
@@ -7795,6 +7835,10 @@ function ASH_MAZE_generate() {
     _ashDrawCubicGeometry(mazeResult, u);
   }
   _ashMazeData = {...mazeResult, u, mode};
+  // Center master group at scene origin so OrbitControls orbits the true center
+  const _bb = new THREE.Box3().setFromObject(_ashMasterGroup);
+  const _ctr = _bb.getCenter(new THREE.Vector3());
+  _ashMasterGroup.position.sub(_ctr);
   _ashDrawMarkers(u, mode);
   _ashFrameCamera();
 }
@@ -7915,11 +7959,13 @@ function _ashDrawPathNodes(list) {
 function _ashFrameCamera() {
   if (!_ashMasterGroup||!_ashMazeCamera) return;
   const box=new THREE.Box3().setFromObject(_ashMasterGroup);
-  const sz=box.getSize(new THREE.Vector3()), ctr=box.getCenter(new THREE.Vector3());
+  const sz=box.getSize(new THREE.Vector3());
   const maxD=Math.max(sz.x,sz.y,sz.z), fov=_ashMazeCamera.fov*(Math.PI/180);
   const dist=Math.abs(maxD/2/Math.tan(fov/2))*1.5;
-  _ashMazeControls.target.copy(ctr);
-  _ashMazeCamera.position.set(ctr.x+dist*.7,ctr.y+dist*.7,ctr.z+dist*.7);
+  // Target origin — maze was already centered there
+  _ashMazeControls.target.set(0,0,0);
+  _ashMazeCamera.position.set(dist*.7,dist*.7,dist*.7);
+  _ashMazeCamera.lookAt(0,0,0);
   _ashMazeControls.update();
 }
 
