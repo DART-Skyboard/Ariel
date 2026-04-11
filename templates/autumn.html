@@ -4472,55 +4472,43 @@ async function handleSend() {
   input.value="";
   cognoticeActivity();
 
-  // ── SESSION / ARCHIVE COMMANDS ───────────────────────────────────────
-  const _textLow = text.trim().toLowerCase();
-  const _sessionCmds = [
-    { match: ['show archive','open archive','open archives','show archives','archive menu','my archives'], action: 'open_archive' },
-    { match: ['show messages','show hidden','restore messages','unhide messages'], action: 'show_hidden' },
-    { match: ['archive this','archive chat','archive this chat','save this chat','save this session'], action: 'archive_only' },
-    { match: ['archive and new chat','archive this and start new','save and start new','archive and move to new'], action: 'archive_new' },
-    { match: ['clear this chat','clear the chat','clear this window','clear chat window','clear chat','clear messages','hide messages','hide chat','wipe this chat','wipe the chat','clean the chat'], action: 'hide_msgs' },
-    { match: ['clear chat history','delete chat history','clear history','delete history','wipe chat','delete all messages'], action: 'delete_msgs' },
-    { match: ['start a new chat','start new chat','open a new chat','open new chat'], action: 'new_chat' },
-    { match: ['start new chat and delete','new chat delete this','new chat clear this','move to new chat and delete'], action: 'new_chat_delete' },
-  ];
-  let _sessionAction = null;
-  for(let _sc of _sessionCmds) {
-    if(_sc.match.some(function(p){ return _textLow.indexOf(p) !== -1; })) { _sessionAction = _sc.action; break; }
+  // ── SEMANTIC INTENT ROUTING — classifier understands meaning, not keywords ────────────
+  const _hasPendingEarly = !!(S.pendingImages && S.pendingImages.length);
+  const _intentLabel = await classifyIntent(text, _hasPendingEarly);
+
+  const _doSessionReply = function(txt) {
+    msgs().push({ role:'autumn', text:txt, ts:new Date().toISOString() });
+    saveState(); renderMessages(); updateFooter();
+    if(typeof setOrbThinking==='function') setOrbThinking(false);
+  };
+
+  if(_intentLabel === 'CLEAR_CHAT') {
+    msgs().push({role:'user',text,ts:new Date().toISOString()});
+    renderMessages();
+    msgs().forEach(function(m){ m._hidden = true; });
+    msgs().push({ role:'autumn', text:'Chat window cleared. Say “show messages” any time to bring it back.', ts:new Date().toISOString() });
+    saveState(); renderMessages(); S.isProcessing=false; return;
   }
-  if(_sessionAction) {
-    const _doReply = function(txt) {
-      msgs().push({ role:'autumn', text:txt, ts:new Date().toISOString() });
-      saveState(); renderMessages(); updateFooter();
-      if(typeof setOrbThinking==='function') setOrbThinking(false);
-    };
-    if(_sessionAction === 'open_archive') { _doReply('Opening archives…'); openArchivePanel(); return; }
-    if(_sessionAction === 'show_hidden') { showHiddenMessages(); _doReply('Messages restored.'); return; }
-    if(_sessionAction === 'archive_only') { ARCHIVE.save(S.currentSession); _doReply('Session archived. Say "open archives" to access it anytime.'); return; }
-    if(_sessionAction === 'archive_new') { archiveCurrent(true); return; }
-    if(_sessionAction === 'hide_msgs') {
-      msgs().forEach(function(m){ m._hidden = true; });
-      msgs().push({ role:'autumn', text:'Messages hidden. Say "show messages" to restore them — data is still here.', ts:new Date().toISOString() });
-      saveState(); renderMessages(); return;
-    }
-    if(_sessionAction === 'delete_msgs') {
-      S.sessions[S.currentSession].messages = [{ role:'autumn', text:'Chat history cleared.', ts:new Date().toISOString() }];
-      saveState(); renderMessages(); return;
-    }
-    if(_sessionAction === 'new_chat') {
-      S.sessions.push({ id:Date.now(), messages:[{ role:'autumn', text:'New chat started.', ts:new Date().toISOString() }] });
-      S.currentSession = S.sessions.length-1;
-      saveState(); renderMessages(); return;
-    }
-    if(_sessionAction === 'new_chat_delete') {
-      S.sessions.splice(S.currentSession, 1);
-      if(!S.sessions.length) S.sessions = [{ id:Date.now(), messages:[] }];
-      S.currentSession = S.sessions.length-1;
-      msgs().push({ role:'autumn', text:'Previous chat deleted. Fresh start.', ts:new Date().toISOString() });
-      saveState(); renderMessages(); return;
-    }
+  if(_intentLabel === 'DELETE_CHAT') {
+    msgs().push({role:'user',text,ts:new Date().toISOString()});
+    S.sessions[S.currentSession].messages = [{ role:'autumn', text:'Chat history deleted.', ts:new Date().toISOString() }];
+    saveState(); renderMessages(); S.isProcessing=false; return;
   }
-  // ─────────────────────────────────────────────────────────────────────
+  if(_intentLabel === 'NEW_CHAT') {
+    S.sessions.push({ id:Date.now(), messages:[{ role:'autumn', text:'New chat started.', ts:new Date().toISOString() }] });
+    S.currentSession = S.sessions.length-1;
+    saveState(); renderMessages(); S.isProcessing=false; return;
+  }
+  if(_intentLabel === 'ARCHIVE') {
+    msgs().push({role:'user',text,ts:new Date().toISOString()});
+    renderMessages();
+    ARCHIVE.save(S.currentSession);
+    _doSessionReply('Session archived.'); S.isProcessing=false; return;
+  }
+  if(_intentLabel === 'SHOW_HIDDEN') {
+    showHiddenMessages();
+    _doSessionReply('Messages restored.'); S.isProcessing=false; return;
+  }
 
   // ── ATTENTIVE INTERCEPT ── runs BEFORE full pipeline ─────────────────
   const _attentiveIntent = checkAttentiveIntent(text);
@@ -4593,7 +4581,7 @@ async function handleSend() {
   S.contextHistory=[...S.contextHistory,text].slice(-5);
 
   // ── Image-to-image: reference images attached + generation/iteration intent ──
-  if (_pendingImgs.length && (detectGenerationIntent(text) || detectImageIterationIntent(text))) {
+  if (_pendingImgs.length && (_intentLabel === 'IMAGE_GEN' || detectImageIterationIntent(text))) {
     S.pendingImages = _pendingImgs;
     const _r0 = await autumnReflex(text,'default').catch(function(){ return {}; });
     S.journal.push(createJournalEntry(text, analysis, _r0));
@@ -4606,7 +4594,7 @@ async function handleSend() {
   }
 
   // ── Text-to-image: no image attached, generation intent detected ──
-  if (!_pendingImgs.length && detectGenerationIntent(text)) {
+  if (!_pendingImgs.length && _intentLabel === 'IMAGE_GEN') {
     const _r1 = await autumnReflex(text,'default').catch(function(){ return {}; });
     S.journal.push(createJournalEntry(text, analysis, _r1));
     updateHUD(analysis);
