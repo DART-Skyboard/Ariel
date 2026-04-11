@@ -3387,14 +3387,102 @@ async function fetchOpenverseRef(query, limit) {
     return(d.results||[]).map(function(img){return{title:img.title||'',url:img.url||'',thumb:img.thumbnail||'',tags:(img.tags||[]).slice(0,5).map(function(t){return t.name;})};});
   }catch(e){return[];}
 }
+// ── Image generation via Stable Horde (free community GPU cluster) ──
+// Anonymous key works, no signup needed. Kudos system — faster with account.
+var _HORDE_KEY = '0000000000';  // Anonymous. Replace with your key from stablehorde.net for priority.
+var _HORDE_MODELS = {
+  'default':          'stable_diffusion',
+  'ultra realistic':  'stable_diffusion_2.1',
+  'photorealistic':   'stable_diffusion_2.1',
+  'lifelike':         'stable_diffusion_2.1',
+  'cartoon':          'stable_diffusion',
+  'anime':            'Anything Diffusion',
+  'animated':         'Anything Diffusion',
+  '3d':               'stable_diffusion',
+  'fantasy':          'stable_diffusion',
+  'sci-fi':           'stable_diffusion',
+};
+
 async function generateWithPollinations(prompt, styleInfo, seed) {
+  // Kept same function name so all callers work unchanged
   var _seed = seed || Math.floor(Math.random() * 999999);
-  // Simple space-to-+ encoding only — complex encoding breaks the API
-  var safePrompt = prompt.replace(/\s+/g, '+').replace(/[^\w+\-.,!]/g, '');
-  // Omit model param — letting Pollinations auto-select avoids 500s from specific model names
-  // Only seed + dimensions are reliable params
-  var url = 'https://image.pollinations.ai/prompt/' + safePrompt + '?seed=' + _seed + '&width=768&height=768';
-  return { url: url, seed: _seed, model: 'auto', prompt: prompt };
+  var model = _HORDE_MODELS[styleInfo.key||'default'] || 'stable_diffusion';
+  
+  // Submit generation job to Stable Horde
+  var payload = JSON.stringify({
+    prompt: prompt,
+    params: {
+      sampler_name: 'k_euler_a',
+      cfg_scale: 7,
+      seed: String(_seed),
+      height: 512,
+      width: 512,
+      steps: 25,
+      n: 1,
+      karras: true
+    },
+    nsfw: false,
+    trusted_workers: false,
+    r2: true,
+    models: [model]
+  });
+  
+  var resp = await fetch('https://stablehorde.net/api/v2/generate/async', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': _HORDE_KEY,
+      'Client-Agent': 'autumn-ai:1.0:radicaldeepscale.com'
+    },
+    body: payload,
+    signal: AbortSignal.timeout(15000)
+  });
+  
+  if (!resp.ok) throw new Error('Horde submit failed: ' + resp.status);
+  var data = await resp.json();
+  var jobId = data.id;
+  if (!jobId) throw new Error('No job ID from Horde');
+  
+  // Return a promise-like object with a getUrl() method that polls for completion
+  // The card will poll and update itself
+  return {
+    jobId: jobId,
+    seed: _seed,
+    model: model,
+    prompt: prompt,
+    url: null,  // filled in after polling
+    _pending: true
+  };
+}
+
+async function pollHordeJob(jobId, maxWaitMs) {
+  maxWaitMs = maxWaitMs || 90000;
+  var start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise(function(r){ setTimeout(r, 3000); });
+    try {
+      var cr = await fetch('https://stablehorde.net/api/v2/generate/check/' + jobId, {
+        headers: {'Client-Agent': 'autumn-ai:1.0:radicaldeepscale.com'},
+        signal: AbortSignal.timeout(10000)
+      });
+      var cd = await cr.json();
+      if (cd.done) {
+        var sr = await fetch('https://stablehorde.net/api/v2/generate/status/' + jobId, {
+          headers: {'Client-Agent': 'autumn-ai:1.0:radicaldeepscale.com'},
+          signal: AbortSignal.timeout(10000)
+        });
+        var sd = await sr.json();
+        var gens = sd.generations || [];
+        if (gens.length && gens[0].img) return gens[0].img;
+        throw new Error('No image in result');
+      }
+      if (cd.faulted) throw new Error('Horde job faulted');
+    } catch(e) {
+      if (e.name === 'AbortError') continue;
+      throw e;
+    }
+  }
+  throw new Error('Horde timeout after ' + maxWaitMs + 'ms');
 }
 
 // ── Text-to-image pipeline ────────────────────────────────────
@@ -3410,7 +3498,29 @@ async function runImageGeneration(text, analysis, reflexData) {
   var refHints=refs.map(function(r){return r.tags.slice(0,3).join(' ');}).filter(Boolean);
   var prompt=buildGenerationPrompt(text,analysis,styleInfo,refHints);
   var genResult=await generateWithPollinations(prompt,styleInfo);
-  // No blocking preload — card renders immediately with shimmer, img loads async
+  // Poll Stable Horde for the image URL (async, card shows shimmer meanwhile)
+  var _imgUrl = null;
+  try {
+    if (genResult._pending && genResult.jobId) {
+      _imgUrl = await pollHordeJob(genResult.jobId, 90000);
+      genResult.url = _imgUrl;
+      window._autumnGens[_genId].url = _imgUrl;
+    } else {
+      _imgUrl = genResult.url;
+    }
+  } catch(e) {
+    _imgUrl = null;
+  }
+  // Update the img src now that we have the URL (or show error)
+  var _cardImg = document.getElementById('igimg-'+_genId);
+  if (_cardImg) {
+    if (_imgUrl) {
+      _cardImg.src = _imgUrl;
+    } else {
+      var _shim = document.getElementById('igshim-'+_genId);
+      if(_shim) _shim.innerHTML = '<div style="padding:20px;font-family:var(--font-d);font-size:9px;color:#ff4466;letter-spacing:1px;text-align:center">GENERATION FAILED<br><span style="color:#a78bfa;font-size:8px">Try again or rephrase</span></div>';
+    }
+  }
   var refLinks=refs.slice(0,3).map(function(r){return{title:r.title||'Reference',url:r.url,desc:'Openverse reference'};});
   // Store result globally so buttons can reference it cleanly
     var _genId = 'gen-'+Date.now();
@@ -3418,7 +3528,7 @@ async function runImageGeneration(text, analysis, reflexData) {
   window._autumnGens[_genId] = {url:genResult.url, prompt:prompt.slice(0,300), model:genResult.model||'auto', seed:genResult.seed};
   var finalCard = '<div class="img-gen-card">'
     + '<div class="img-gen-wrap">'
-    + '<div id="igshim-'+_genId+'" class="img-gen-shimmer"><div class="img-gen-shimmer-inner"></div><div class="img-gen-shimmer-text">GENERATING…</div></div>'
+    + '<div id="igshim-'+_genId+'" class="img-gen-shimmer"><div class="img-gen-shimmer-inner"></div><div class="img-gen-shimmer-text" id="igtext-" + _genId + ">GENERATING…</div></div>'
     + '<img id="igimg-'+_genId+'" class="img-gen-img" data-genid="'+_genId+'" style="display:none;cursor:pointer" src="'+genResult.url+'">'
     + '</div>'
     + '<div class="img-gen-footer">'
