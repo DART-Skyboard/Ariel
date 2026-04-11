@@ -770,7 +770,8 @@ select.ash-ctrl-input{cursor:pointer}
 <!-- Voice Settings Modal -->
 <!-- Image preview modal -->
 <div id="img-modal">
-  <img id="img-modal-img" src="" alt="Generated image">
+  <div id="img-modal-loading" style="color:#a78bfa;font-family:var(--font-d);font-size:11px;letter-spacing:1.5px;margin-bottom:20px">LOADING…</div>
+  <img id="img-modal-img" src="" alt="Generated image" style="display:none">
   <div id="img-modal-info">
     <div id="img-modal-prompt"></div>
     <div id="img-modal-tags"></div>
@@ -3040,18 +3041,37 @@ function growOrbParticles() {
 // ── Image preview modal ───────────────────────────────────────
 function openImgModal(url, prompt, model, seed) {
   var modal = document.getElementById('img-modal');
+  if(!modal) return;
+  // Reset state
   var img = document.getElementById('img-modal-img');
+  if(img) {
+    img.style.display = 'none';
+    img.src = '';
+  }
+  var loading = document.getElementById('img-modal-loading');
+  if(loading) loading.style.display = 'flex';
   var promptEl = document.getElementById('img-modal-prompt');
   var tagsEl = document.getElementById('img-modal-tags');
-  if(!modal||!img) return;
-  img.src = url;
-  if(promptEl) promptEl.textContent = prompt || '';
-  if(tagsEl) tagsEl.innerHTML = 
-    '<span class="img-modal-tag">'+esc(model||'flux')+'</span>' +
-    '<span class="img-modal-tag">seed:'+seed+'</span>';
   modal.classList.add('open');
-  // Close on backdrop tap
   modal.onclick = function(e){ if(e.target===modal) closeImgModal(); };
+  // Set prompt info
+  if(promptEl) promptEl.textContent = prompt || '';
+  if(tagsEl) tagsEl.innerHTML =
+    '<span class="img-modal-tag">'+(model||'flux')+'</span>' +
+    '<span class="img-modal-tag">seed:'+seed+'</span>';
+  // Load image
+  if(img) {
+    img.onload = function(){
+      this.style.display = 'block';
+      if(loading) loading.style.display = 'none';
+    };
+    img.onerror = function(){
+      if(loading) loading.textContent = 'Could not load image';
+    };
+    img.src = url;
+    // Store URL for download
+    img.dataset.genUrl = url;
+  }
 }
 function closeImgModal() {
   var modal = document.getElementById('img-modal');
@@ -3059,22 +3079,16 @@ function closeImgModal() {
 }
 function imgModalDownload() {
   var img = document.getElementById('img-modal-img');
-  if(!img||!img.src) return;
-  // Fetch and download as blob so it saves properly on mobile
-  var dlUrl = (this&&this._url) ? this._url : (img?img.src:'');
-  if(!dlUrl) return;
-  fetch(dlUrl).then(function(r){return r.blob();}).then(function(blob){
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    img.src = dlUrl;
-    a.download = 'autumn-gen-'+Date.now()+'.jpg';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(a.href);},500);
-  }).catch(function(){
-    // Fallback: open in new tab
-    window.open(img.src,'_blank');
-  });
+  var url = (img && img.dataset.genUrl) ? img.dataset.genUrl : (img ? img.src : '');
+  if(!url) return;
+  var a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.download = 'autumn-gen-' + Date.now() + '.jpg';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); }, 500);
+
 }
 
 // ── FRAX binary decoder ───────────────────────────────────────
@@ -3278,15 +3292,15 @@ async function fetchOpenverseRef(query, limit) {
   }catch(e){return[];}
 }
 async function generateWithPollinations(prompt, styleInfo, seed) {
-  var _seed=seed||Math.floor(Math.random()*999999);
-  // Note: flux-realism/flux-anime/flux-3d map to supported models
-  // nologo param causes 500s — omit it. Use turbo for speed, flux for quality.
-  var modelMap={'flux-realism':'flux','flux-anime':'flux','flux-3d':'flux','turbo':'turbo','flux':'flux'};
-  var model=modelMap[styleInfo.model||'flux']||'flux';
-  // Alternate between turbo (fast) and flux (quality) based on style
-  var useModel=(styleInfo.key&&styleInfo.key.indexOf('realistic')!==-1)?'flux':model;
-  var url='https://image.pollinations.ai/prompt/'+encodeURIComponent(prompt)+'?width=768&height=768&model='+useModel+'&seed='+_seed;
-  return{url:url,seed:_seed,model:useModel,prompt:prompt};
+  var _seed = seed || Math.floor(Math.random() * 999999);
+  // Use + encoding (spaces as +), seed only — extra params cause 500s
+  var safePrompt = prompt.replace(/\s+/g, '+').replace(/[^a-zA-Z0-9+\-_.,!]/g, function(ch){
+    return encodeURIComponent(ch);
+  });
+  // Pollinations model: flux works reliably, turbo is faster
+  var useModel = (styleInfo.key && (styleInfo.key === 'ultra realistic' || styleInfo.key === 'photorealistic' || styleInfo.key === 'lifelike')) ? 'flux' : 'turbo';
+  var url = 'https://image.pollinations.ai/prompt/' + safePrompt + '?seed=' + _seed + '&width=768&height=768&model=' + useModel;
+  return { url: url, seed: _seed, model: useModel, prompt: prompt };
 }
 
 // ── Text-to-image pipeline ────────────────────────────────────
@@ -3304,19 +3318,27 @@ async function runImageGeneration(text, analysis, reflexData) {
   var genResult=await generateWithPollinations(prompt,styleInfo);
   await new Promise(function(res){var img=new Image();img.onload=res;img.onerror=res;img.src=genResult.url;setTimeout(res,18000);});
   var refLinks=refs.slice(0,3).map(function(r){return{title:r.title||'Reference',url:r.url,desc:'Openverse reference'};});
-  var _escapedPrompt = prompt.slice(0,200).replace(/'/g,"\\'");
-  var _escapedModel = (genResult.model||'flux').replace(/'/g,"\\'");
-  var finalCard='<div class="img-gen-card">'
-    +'<img class="img-gen-img" src="'+genResult.url+'" alt="generated" loading="lazy" style="cursor:pointer" onclick="openImgModal(\''+genResult.url+'\',\''+_escapedPrompt+'\',\''+_escapedModel+'\','+genResult.seed+')">'
-    +'<div class="img-gen-footer">'
-    +'<div class="img-gen-prompt-label">GENERATED PROMPT</div>'
-    +'<div class="img-gen-prompt-text">'+esc(prompt.slice(0,200))+'</div>'
-    +'<div class="img-gen-tags"><span class="img-gen-tag">'+esc(styleInfo.label)+'</span><span class="img-gen-tag">'+esc(genResult.model)+'</span><span class="img-gen-tag">seed:'+genResult.seed+'</span></div>'
-    +'</div>'
-    +'<div class="img-gen-card-actions">'
-    +'<button class="img-gen-btn" onclick="openImgModal(\''+genResult.url+'\',\''+_escapedPrompt+'\',\''+_escapedModel+'\','+genResult.seed+')">⤢ EXPAND</button>'
-    +'<button class="img-gen-btn download" onclick="imgModalDownload.call({_url:\''+genResult.url+'\'})" >⬇ SAVE</button>'
-    +'</div></div>';
+  // Store result globally so buttons can reference it cleanly
+  var _genId = 'gen-'+Date.now();
+  if(!window._autumnGens) window._autumnGens={};
+  window._autumnGens[_genId] = {url:genResult.url, prompt:prompt.slice(0,300), model:genResult.model, seed:genResult.seed};
+  var finalCard = '<div class="img-gen-card">'
+    + '<div id="igwrap-'+_genId+'" style="min-height:200px;background:rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;position:relative">'
+    + '<div id="igload-'+_genId+'" style="font-family:var(--font-d);font-size:9px;color:#a78bfa;letter-spacing:1px;position:absolute">LOADING IMAGE…</div>'
+    + '<img id="igimg-'+_genId+'" style="width:100%;display:none;cursor:pointer" src="'+genResult.url+'"'
+    + ' onload="this.style.display=\'block\';var l=document.getElementById(\'igload-'+_genId+'\');if(l)l.style.display=\'none\'"'
+    + ' onerror="var l=document.getElementById(\'igload-'+_genId+'\');if(l)l.textContent=\'Image unavailable — try regenerating\'"'
+    + ' onclick="var g=window._autumnGens[\''+_genId+'\'];if(g)openImgModal(g.url,g.prompt,g.model,g.seed)">'
+    + '</div>'
+    + '<div class="img-gen-footer">'
+    + '<div class="img-gen-prompt-label">GENERATED PROMPT</div>'
+    + '<div class="img-gen-prompt-text">'+esc(prompt.slice(0,200))+'</div>'
+    + '<div class="img-gen-tags"><span class="img-gen-tag">'+esc(styleInfo.label)+'</span><span class="img-gen-tag">'+esc(genResult.model)+'</span><span class="img-gen-tag">seed:'+genResult.seed+'</span></div>'
+    + '</div>'
+    + '<div class="img-gen-card-actions">'
+    + '<button class="img-gen-btn" onclick="var g=window._autumnGens[\''+_genId+'\'];if(g)openImgModal(g.url,g.prompt,g.model,g.seed)">⤢ EXPAND</button>'
+    + '<button class="img-gen-btn download" onclick="var g=window._autumnGens[\''+_genId+'\'];if(g){var a=document.createElement(\'a\');a.href=g.url;a.target=\'_blank\';a.download=\'autumn-gen-'+_genId+'.jpg\';a.click()}">⬇ SAVE</button>'
+    + '</div></div>';
   var idx=msgs().findIndex(function(m){return m.id===cardId;});
   if(idx>=0){msgs()[idx]=Object.assign({},msgs()[idx],{imageGenCard:finalCard,media:{videos:[],images:[],links:refLinks,sources:refs.length?['OPENVERSE']:[]},grammarMeta:'Generated · style:'+styleInfo.key+' model:'+genResult.model+' seed:'+genResult.seed});renderMessages();}
   var commentary=await generateReply('You just generated an image with this prompt: "'+prompt.slice(0,200)+'". Style: '+styleInfo.key+'. Briefly describe what you created and why you chose these visual elements.',analysis,Object.assign({},reflexData,{contextType:'IMAGE_GEN'})).catch(function(){return{text:'',grammarMeta:'',brpnMeta:''};});
