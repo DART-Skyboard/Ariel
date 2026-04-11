@@ -650,6 +650,12 @@ select.ash-ctrl-input{cursor:pointer}
   #ash-maze-wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr}
   #ash-maze-controls{border-right:none;border-bottom:1px solid rgba(0,255,204,.08);display:grid;grid-template-columns:1fr 1fr}
 }
+
+.dbg-toggle{display:inline-block;font-size:8px;color:rgba(0,229,255,.15);cursor:pointer;padding:1px 3px;margin-top:3px;font-family:var(--font-d);letter-spacing:1px;user-select:none;vertical-align:middle}
+.dbg-toggle:hover{color:rgba(0,229,255,.45)}
+.dbg-panel{margin-top:3px;padding:5px 8px;background:rgba(0,0,0,.25);border-left:2px solid rgba(0,229,255,.1);border-radius:0 3px 3px 0}
+.dbg-line{font-size:7.5px;color:rgba(0,229,255,.22);font-family:monospace;line-height:1.7;word-break:break-all}
+.dbg-brpn{color:rgba(0,136,255,.3)!important}
 </style>
 </head>
 <body>
@@ -3092,6 +3098,12 @@ function autumnSaveImage(genId) {
 // ── Delegated event handler for generated image cards ───────────
 document.addEventListener('DOMContentLoaded', function() {
   document.addEventListener('click', function(e) {
+    var dbgBtn = e.target.closest('.dbg-toggle');
+    if(dbgBtn && dbgBtn.dataset.dbgid) {
+      var p = document.getElementById(dbgBtn.dataset.dbgid);
+      if(p) p.style.display = p.style.display === 'block' ? 'none' : 'block';
+      return;
+    }
     var btn = e.target.closest('[data-action]');
     if(!btn) {
       var img = e.target.closest('img.img-gen-img');
@@ -5223,7 +5235,7 @@ function renderMessages() {
     const lbl=m.role==="autumn"?`<div class="msg-lbl"><img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/autumn.png" alt="" style="height:14px;width:auto;vertical-align:middle;margin-right:4px;filter:drop-shadow(0 0 4px rgba(191,0,255,.3))">AUTUMN</div>`:"";
 
     // Context badge (subtle, not intrusive)
-    const ctxBadge = m.contextType && m.role==="autumn" ? `<div class="msg-ctx-badge">${m.contextType}</div>` : '';
+    const ctxBadge = '';
 
     // Weather and map widgets inline
     const weatherHtml = m.weatherHtml||'';
@@ -5232,11 +5244,20 @@ function renderMessages() {
     const mazeHtml = m.mazeHtml||'';
     const musicCardHtml = m.musicCard||'';
 
-    // Meta — now rendered SEPARATELY below bubble text, not mixed into chat content
-    const grammarMeta = m.grammarMeta ? `<div class="msg-grammar">◈ ${esc(m.grammarMeta)}</div>` : '';
-    const brpnMeta = m.brpnMeta ? `<div class="msg-grammar" style="color:rgba(0,136,255,.15)">${esc(m.brpnMeta)}</div>` : '';
-    // Fallback for old messages using legacy meta object
-    const legacyMeta = (!m.grammarMeta && m.meta) ? `<div class="msg-meta">${m.meta.elapsed?.toFixed(1)}ms | Q:${m.meta.qs?.toFixed(1)}</div>` : '';
+    // Debug metadata — hidden by default, tap ◈ to reveal
+    const _hasDebug = !!(m.grammarMeta || m.brpnMeta || m.meta);
+    const _debugContent = _hasDebug ? (
+      (m.grammarMeta ? '<div class="dbg-line">'+esc(m.grammarMeta)+'</div>' : '') +
+      (m.brpnMeta ? '<div class="dbg-line dbg-brpn">'+esc(m.brpnMeta)+'</div>' : '') +
+      (!m.grammarMeta && m.meta ? '<div class="dbg-line">'+(m.meta.elapsed?.toFixed(0)||'?')+'ms | Q:'+(m.meta.quality?.toFixed(1)||'?')+'</div>' : '')
+    ) : '';
+        const _dbgId = 'dbg-'+(m.id||Math.random().toString(36).slice(2,8));
+    const grammarMeta = (_hasDebug && m.role==='autumn') ? (
+      '<span class="dbg-toggle" data-dbgid="'+_dbgId+'">◈</span>' +
+      '<div class="dbg-panel" id="'+_dbgId+'" style="display:none">' + _debugContent + '</div>'
+    ) : '';
+    const brpnMeta = '';
+    const legacyMeta = '';
 
     let mediaHtml="";
     if(m.media){
