@@ -4624,10 +4624,17 @@ async function handleSend() {
     generateReply(text, analysis, reflexData)
   ]);
 
-  let fullReply = typeof reply === 'object' ? reply.text : reply;
-  let grammarMeta = typeof reply === 'object' ? reply.grammarMeta : '';
-  let brpnMeta = typeof reply === 'object' ? reply.brpnMeta : '';
-  if(liveData.liveText) fullReply+=liveData.liveText;
+  let fullReply = (reply && typeof reply === 'object') ? (reply.text||'') : (reply||'');
+  let grammarMeta = (reply && typeof reply === 'object') ? reply.grammarMeta : '';
+  let brpnMeta = (reply && typeof reply === 'object') ? reply.brpnMeta : '';
+  if(liveData.liveText) fullReply += liveData.liveText;
+  // If we still have nothing, it means the API call failed — skip pushing an empty bubble
+  if(!fullReply && !liveData.videos.length && !liveData.images.length) {
+    S.isProcessing=false;
+    if(typeof setOrbThinking==='function') setOrbThinking(false);
+    renderMessages(); updateFooter();
+    return;
+  }
 
   const msgId='msg-'+Date.now();
   msgs().push({
@@ -4747,10 +4754,13 @@ When weather data is available, use it naturally. When location POI data is avai
       const brpnMeta = buildBRPNMeta(analysis);
       return { text:apiReply, grammarMeta, brpnMeta };
     }
-  } catch(e){}
+    // API returned but empty content — surface error hint
+    if(data.error) return { text: 'API error: ' + (data.error.message||JSON.stringify(data.error)), grammarMeta:'', brpnMeta:'' };
+  } catch(e){ console.warn('[Autumn generateReply]', e); }
 
-  try { const _fb = await composeResponse(text, analysis, reflexData); return (_fb && _fb.text) ? _fb : null; }
-  catch(e) { return { text:buildResponse(text,analysis), grammarMeta:'', brpnMeta:'' }; }
+  // Fallback: simple conversational response so UI never goes silent
+  try { const _fb = await composeResponse(text, analysis, reflexData); if(_fb && _fb.text) return _fb; } catch(e){}
+  return { text: 'Something went wrong on my end — try again.', grammarMeta:'', brpnMeta:'' };
 }
 
 // ============================================================
