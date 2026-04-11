@@ -4461,6 +4461,28 @@ async function processMusicCapture(blob) {
   autoReadLastResponse();
 }
 
+// Semantic intent classifier
+async function classifyIntent(text, hasPendingImages) {
+  try {
+    var ak = typeof _getAK === 'function' ? (_getAK() || '') : '';
+    var res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true',...(ak?{'x-api-key':ak}:{})},
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 15,
+        system: 'Classify the user intent. Reply with ONLY one label:\nIMAGE_GEN - create/generate/make/draw/render/paint/visualize/imagine an image, picture, art, visual, scene, portrait, illustration, concept\nVISION_ANALYSIS - identify/analyze/describe/examine/read what is in an attached image or screenshot\nCLEAR_CHAT - clear/hide/clean/wipe/blank/reset/refresh the visible chat window\nDELETE_CHAT - permanently delete/erase all chat history\nNEW_CHAT - open/start/create a new chat session\nARCHIVE - save/archive the current chat session\nSHOW_HIDDEN - restore/show/unhide previously hidden messages\nCONVERSATION - anything else',
+        messages: [{role:'user', content: (hasPendingImages ? '[IMAGE ATTACHED] ' : '') + text}]
+      }),
+      signal: AbortSignal.timeout(3000)
+    });
+    var d = await res.json();
+    var label = ((d.content && d.content[0] && d.content[0].text) || 'CONVERSATION').trim().replace(/[^A-Z_]/g,'').toUpperCase();
+    var valid = ['IMAGE_GEN','VISION_ANALYSIS','CLEAR_CHAT','DELETE_CHAT','NEW_CHAT','ARCHIVE','SHOW_HIDDEN','CONVERSATION'];
+    return valid.indexOf(label) !== -1 ? label : 'CONVERSATION';
+  } catch(e) { return 'CONVERSATION'; }
+}
+
 async function handleSend() {
   const input=document.getElementById("chat-input");
   const text=input.value.trim();
