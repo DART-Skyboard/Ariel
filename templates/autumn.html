@@ -4388,6 +4388,36 @@ async function handleSend() {
   input.value="";
   cognoticeActivity();
 
+  // ── CLEAR / ARCHIVE CHAT ─────────────────────────────────────────────
+  const _textLow = text.trim().toLowerCase();
+  const _clearPhrases = ['clear chat','clear the chat','clear history','clear messages','clear conversation','wipe chat','start fresh','new session','clear everything'];
+  const _archivePhrases = ['archive chat','archive this','archive the chat','save this chat','save and clear'];
+  const _isClear = _clearPhrases.some(function(p){ return _textLow.indexOf(p) !== -1; });
+  const _isArchive = _archivePhrases.some(function(p){ return _textLow.indexOf(p) !== -1; }) || (_isClear && _textLow.indexOf('archive') !== -1);
+  if(_isClear || _isArchive) {
+    if(_isArchive) {
+      // Archive to localStorage + cookie (persists across sessions)
+      const _archKey = 'autumn_archive_' + Date.now();
+      const _archData = JSON.stringify({ ts: new Date().toISOString(), msgs: msgs().slice(-200), session: S.currentSession });
+      try { localStorage.setItem(_archKey, _archData); } catch(e){}
+      try {
+        const _ck = _archKey + '=' + encodeURIComponent(_archData.slice(0, 2000)) + '; path=/; max-age=31536000';
+        document.cookie = _ck;
+      } catch(e){}
+      // Update ArielMemory with archive reference
+      if(S.memory) S.memory['_lastArchive'] = _archKey;
+    }
+    const _clearMsg = _isArchive ? 'Chat archived to memory and cleared. Starting fresh.' : 'Chat cleared.';
+    S.sessions[S.currentSession].messages = [{ role:'autumn', text: _clearMsg, ts: new Date().toISOString() }];
+    S.lastAnalysis = null;
+    saveState();
+    renderMessages();
+    updateFooter();
+    if(typeof setOrbThinking === 'function') setOrbThinking(false);
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────
+
   // ── ATTENTIVE INTERCEPT ── runs BEFORE full pipeline ─────────────────
   const _attentiveIntent = checkAttentiveIntent(text);
   if (_attentiveIntent) {
