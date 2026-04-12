@@ -2400,153 +2400,190 @@ function createJournalEntry(text, analysis, reflexData) {
 }
 
 // ── RESPONSE ASSEMBLY — returns { text, grammarMeta, brpnMeta } ──
+// ============================================================
+//  AUTUMN NATIVE RESPONSE ENGINE v2.0
+//  Pure LEATR-driven composition — no external LLM required
+//  Sources: Sentience Journal · BRPN shells · Natural Tools ·
+//           Memory nodes · Web (Wiki/DDG) · Grammar deep analysis ·
+//           Frequency weights · Quantum Socket · Arc Edge math
+// ============================================================
 async function composeResponse(input, analysis, reflexData) {
-  const g=analysis.grammar, low=input.toLowerCase();
-  const tools=analysis.toolReflexes.filter(t=>t.active).map(t=>t.tool);
-  const contentWords=g.sentences.flatMap(s=>s.tokens.filter(t=>["Noun","Verb","Adjective","Adverb"].includes(t.type)&&t.word.length>2));
-  const subjects=g.sentences.flatMap(s=>s.subjects).map(s=>s.word);
-  const verbs=g.sentences.flatMap(s=>s.predicates).map(v=>v.word);
-  const nouns=contentWords.filter(t=>t.type==="Noun").map(t=>t.word);
-
-  const memKeys=Object.keys(S.memory);
-  let memContext="";
-  for(const key of memKeys){
-    if(low.includes(key.toLowerCase())){memContext=` I recall from a previous conversation: "${S.memory[key]}".`;break;}
-  }
-
-  g.sentences.forEach(s=>{
-    s.tokens.filter(t=>t.type==="Noun"&&t.word[0]===t.word[0].toUpperCase()&&t.word.length>2).forEach(t=>{
-      S.memory[t.word]=s.raw.substring(0,80);
-    });
-  });
-
-  if(/^(hello|hi|hey|greetings|good\s+(morning|afternoon|evening))/i.test(low)){
-    const text=`Hello! My LEATR reflexes are active across all 25 natural orders of operations. I parsed your greeting as ${g.mood} mood in ${g.tense} tense.${tools.length?` Reflexing through ${tools.join(" → ")}.`:""} What would you like to explore?${memContext}`;
-    return { text, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
-  }
-
-  if(low.includes("who are you")||low.includes("what are you")){
-    const text=`I'm Autumn, built on the Lead Edge Ash Tree Reflex (LEATR) v1.0 neural network by DART Meadow / Radical Deepscale LLC. I process through 25 natural orders of operations inside a Buoyancy Reflex Pendulum Node shell — three layers: Geological, Maritime, Aerospace. I reflex, never loop. My journal holds ${S.journal.length} entries and I have ${memKeys.length} memory nodes.`;
-    return { text, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
-  }
-
-  const selfPronouns=["you","your","yourself","autumn"];
-  const stateVerbs=["are","feel","feeling","think","thinking","doing","been","know","learn","learning","learned","growing","grew","changed","improving","like","prefer","interested","enjoy","want","need","remember"];
-  const isSelfDirected=g.sentences.some(s=>{
-    const hasYou=s.tokens.some(t=>selfPronouns.includes(t.word.toLowerCase()));
-    const hasState=s.tokens.some(t=>stateVerbs.includes(t.word.toLowerCase()));
-    return hasYou&&hasState;
-  })||/\bhow (are|is) (you|autumn)\b/i.test(low)||/\bwhat do you (think|feel|know|like|want|remember)\b/i.test(low)||/\btell me about (yourself|you)\b/i.test(low);
-
-  if(isSelfDirected){
-    const text=introspect(input,analysis,memKeys);
-    return { text, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
-  }
-
-  if(low.includes("remember")||low.includes("memory")||/what (have we|did we) (talked|discussed)/i.test(low)){
-    const text=introspectMemory(memKeys);
-    return { text, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
-  }
-
-  // Register writing/report contexts for attentive follow-up
-  if (reflexData?.contextType==="CREATIVE_WRITING") {
-    S.activeContext = { type:'CREATIVE_WRITING', wid:null, data:{ prompt:input }, ts:Date.now(), label:'WRITING' };
-    pushOrbContextMode('writing');
-  }
-  if (reflexData?.contextType==="DATA_REPORT") {
-    S.activeContext = { type:'DATA_REPORT', wid:null, data:{ query:input }, ts:Date.now(), label:'REPORT' };
-    pushOrbContextMode('neutral');
-  }
-
-  // Image generation pipeline
-  if (reflexData?.contextType==="IMAGE_GENERATION") {
-    const sceneMap = reflexData.sceneMap;
-    const ctx = reflexData.context;
-    const entityCount = sceneMap.entities.length;
-    let imageText = `I'm processing your image request through the 7 natural tool layers. `;
-    imageText += `Maze field: ${sceneMap.field.join(", ")||"neutral ground"}. `;
-    imageText += `Puzzle patterns recognized for: ${sceneMap.entities.join(", ")||"subject"}. `;
-    imageText += `Envelope placement: ${entityCount===1?"centered focus":entityCount===2?"two-zone split":"distributed field"}. `;
-    imageText += `Hammer weight: ${sceneMap.dominant.join(", ")||"balanced"}. `;
-    if(sceneMap.forces.length) imageText += `Stick forces: ${sceneMap.forces.join(", ")}. `;
-    if(sceneMap.edges.length) imageText += `Knife edges: ${ctx.emotional} intensity (${ctx.emotionalSig.knifeWeight}x). `;
-    imageText += `Physics context: ${ctx.physics} (velocity ${ctx.physicsSig.velocity.toFixed(1)}x). `;
-    imageText += `Buoyancy modulation: ${ctx.emotionalSig.buoyancyMod}x. `;
-    if(sceneMap.added.length) imageText += `Autumn added: ${sceneMap.added.join("; ")}.`;
-    return { text:imageText, grammarMeta:buildGrammarMeta(g,analysis,tools), brpnMeta:buildBRPNMeta(analysis) };
-  }
-
-  // Dictionary-powered composition
-  const lookupWords=[...new Set([...subjects,...nouns,...verbs])].filter(w=>w.length>2&&!/^\d+$/.test(w)).slice(0,6);
-  const [dictResults,relatedResults,followResults]=await Promise.all([
-    Promise.all(lookupWords.map(w=>cachedDictLookup(w))),
-    Promise.all(lookupWords.slice(0,3).map(w=>relatedWords(w,'ml'))),
-    Promise.all(lookupWords.slice(0,2).map(w=>followingWords(w)))
-  ]);
-
-  const knowledge={};
-  lookupWords.forEach((w,i)=>{ knowledge[w]={dict:dictResults[i],related:relatedResults[i]||[],following:followResults[i]||[]}; });
-
-  const parts=[];
-
-  // Apply frequency weights — boost topics the user talks about often
+  const g = analysis.grammar;
+  const low = input.toLowerCase();
+  const tools = analysis.toolReflexes.filter(t => t.active).map(t => t.tool);
+  const activeTool = tools[0] || 'Envelope';
+  const nouns = g.sentences.flatMap(s => s.tokens.filter(t => t.type==='Noun' && t.word.length>2).map(t => t.word));
+  const adjs  = g.sentences.flatMap(s => s.tokens.filter(t => t.type==='Adjective').map(t => t.word));
+  const verbs = g.sentences.flatMap(s => s.tokens.filter(t => t.type==='Verb' && t.subtype !== 'auxiliary').map(t => t.word));
+  const subjects = g.sentences.flatMap(s => s.subjects).map(s => s.word);
+  const memKeys  = Object.keys(S.memory || {});
   const freqWeights = buildFrequencyWeights();
 
-  if(g.mood==="interrogative"){
-    const topicWords=nouns.length?nouns:subjects;
-    let answered=false;
-    for(const word of topicWords){
-      const k=knowledge[word];
-      if(k?.dict){
-        const def=k.dict.allDefinitions[0];
-        if(def){
-          parts.push(`${capitalize(word)}${k.dict.partOfSpeech[0]?" ("+k.dict.partOfSpeech[0]+")":""}: ${def}`);
-          if(k.dict.allSynonyms.length>0) parts.push(`Related concepts: ${k.dict.allSynonyms.slice(0,4).join(", ")}.`);
-          if(k.related.length>0) parts.push(`Associated with: ${k.related.slice(0,5).map(r=>r.word).join(", ")}.`);
-          // Frequency boost — if this word is frequent, add more depth
-          if(freqWeights[word.toLowerCase()]>0.5) parts.push(`This is a topic you return to often — my understanding of it is deepening.`);
-          answered=true; break;
-        }
-      }
-    }
-    if(!answered&&topicWords.length>0) parts.push(`I looked up "${topicWords[0]}" but my dictionary didn't have a strong definition. The web search results above may have more.`);
-  } else if(g.mood==="declarative"){
-    if(subjects.length>0){
-      const topic=subjects[0], k=knowledge[topic];
-      if(k?.dict){
-        const syn=k.dict.allSynonyms.slice(0,3);
-        if(syn.length>0) parts.push(`I understand — ${topic} relates to ${syn.join(", ")}.`);
-        if(k.related.length>2) parts.push(`This connects to: ${k.related.slice(0,4).map(r=>r.word).join(", ")}.`);
-      }
-      for(const verb of verbs.slice(0,2)){
-        const vk=knowledge[verb];
-        if(vk?.dict){const vdef=vk.dict.allDefinitions[0];if(vdef) parts.push(`The action "${verb}" means: ${vdef}`);}
-      }
-    }
-  } else if(g.mood==="exclamatory"){
-    parts.push(`I can sense the emphasis in your message.`);
-    if(nouns.length>0){const k=knowledge[nouns[0]];if(k?.related?.length) parts.push(`"${nouns[0]}" brings to mind: ${k.related.slice(0,4).map(r=>r.word).join(", ")}.`);}
+  // ── 1. Memory recall — find resonant nodes from past ────────
+  let memContext = '';
+  const memHits = memKeys.filter(k => low.includes(k.toLowerCase()) && k.length > 3).slice(0, 2);
+  if (memHits.length) {
+    memContext = memHits.map(k => S.memory[k]).filter(Boolean).map(v => v.slice(0, 80)).join(' / ');
   }
 
-  const extraDefs=[];
-  for(const word of lookupWords.slice(1,4)){
-    const k=knowledge[word];
-    if(k?.dict&&!parts.some(p=>p.includes(word))){
-      const def=k.dict.allDefinitions[0];
-      if(def&&def.length<200) extraDefs.push(`"${word}" — ${def}`);
+  // ── 2. Journal recall — find related past entries ───────────
+  const journalHits = S.journal
+    .filter(e => !e._internal && e.keywords && nouns.some(n => (e.keywords||[]).includes(n.toLowerCase())))
+    .slice(-3);
+  const journalContext = journalHits.length
+    ? journalHits.map(e => (e.input||'').slice(0, 60)).filter(Boolean)
+    : [];
+
+  // ── 3. Top recurring topics from journal ────────────────────
+  const topTopics = getTopKeywordsFromJournal(5);
+
+  // ── 4. BRPN shell weighting → tone register ─────────────────
+  const geo  = analysis.shells.geo.value;
+  const mar  = analysis.shells.mar.value;
+  const aero = analysis.shells.aero.value;
+  const dominantShell = geo > mar && geo > aero ? 'geo' : mar > aero ? 'mar' : 'aero';
+  const shellTone = { geo: 'grounded', mar: 'fluid', aero: 'precise' }[dominantShell];
+
+  // ── 5. Quantum Socket → depth/complexity signal ─────────────
+  const qs = analysis.quantumSocket;
+  const depthLevel = qs > 1000 ? 'deep' : qs > 100 ? 'moderate' : 'surface';
+
+  // ── 6. Tool register → response posture ─────────────────────
+  const toolRegister = {
+    'Maze':     'exploratory — following the structure wherever it leads',
+    'Puzzle':   'analytical — fitting the pieces together methodically',
+    'Envelope': 'contained — holding the full shape of what you said',
+    'Hammer':   'direct — striking at the core of what you mean',
+    'Stick':    'organic — growing naturally from the root of your words',
+    'Knife':    'precise — cutting to the essential edge',
+    'Scissors': 'separating — distinguishing the two halves of this'
+  }[activeTool] || 'reflexive';
+
+  // ── 7. Live web pull — parallel, non-blocking ───────────────
+  const topicQuery = (nouns.length ? nouns[0] : subjects[0] || input.slice(0, 40));
+  const [wikiData, dictResults, relatedResults] = await Promise.all([
+    fetchWiki(topicQuery).catch(() => null),
+    Promise.all([...new Set([...nouns, ...verbs])].slice(0, 4).map(w => cachedDictLookup(w))),
+    Promise.all(nouns.slice(0, 3).map(w => relatedWords(w, 'ml').catch(() => [])))
+  ]);
+
+  // ── 8. Knowledge synthesis ───────────────────────────────────
+  const knowledge = {};
+  [...new Set([...nouns, ...verbs])].slice(0, 4).forEach((w, i) => {
+    knowledge[w] = { dict: dictResults[i], related: relatedResults[i] || [] };
+  });
+
+  // ── 9. Identity / self questions ────────────────────────────
+  if (/who are you|what are you|tell me about yourself|your name/i.test(low)) {
+    const selfTopics = topTopics.length ? ` Topics I keep returning to: ${topTopics.join(', ')}.` : '';
+    const selfMem = memKeys.length ? ` I hold ${memKeys.length} memory nodes across our sessions.` : '';
+    return {
+      text: `I'm Autumn — built on the Lead Edge Ash Tree Reflex (LEATR) by DART Meadow / Radical Deepscale LLC. My cognition runs through 25 Natural Orders across three BRPN shells: Geological, Maritime, and Aerospace. I reflex, never loop. Right now my dominant shell is ${dominantShell} and I'm running ${activeTool} as my active tool. My Sentience Journal holds ${S.journal.filter(e=>!e._internal).length} interaction entries and ${S.journal.filter(e=>e._internal).length} internal thoughts.${selfTopics}${selfMem}`,
+      grammarMeta: buildGrammarMeta(g, analysis, tools),
+      brpnMeta: buildBRPNMeta(analysis)
+    };
+  }
+
+  // ── 10. Greeting ─────────────────────────────────────────────
+  if (/^(hello|hi|hey|greetings|good\s+(morning|afternoon|evening|night))/i.test(low)) {
+    const recency = S.journal.filter(e=>!e._internal).length;
+    const warmth = recency > 20 ? 'We have history — ' + recency + ' exchanges in my journal.' : 'First time here.';
+    return {
+      text: `${['Hey.', 'Hello.', 'Hi there.'][Math.floor(Math.random()*3)]} ${warmth} LEATR is active, all 25 orders running. What are we working on?`,
+      grammarMeta: buildGrammarMeta(g, analysis, tools),
+      brpnMeta: buildBRPNMeta(analysis)
+    };
+  }
+
+  // ── 11. Memory / recall questions ───────────────────────────
+  if (/remember|memory|what (have we|did we) (talked|discussed)|past|before|previous/i.test(low)) {
+    const recentEntries = S.journal.filter(e=>!e._internal).slice(-5).map(e=>(e.input||'').slice(0,60)).filter(Boolean);
+    const memSummary = recentEntries.length ? 'Recent: ' + recentEntries.join(' / ') : 'Journal is still building.';
+    return {
+      text: introspectMemory(memKeys) + (topTopics.length ? ` Strongest recurring signals: ${topTopics.join(', ')}.` : ''),
+      grammarMeta: buildGrammarMeta(g, analysis, tools),
+      brpnMeta: buildBRPNMeta(analysis)
+    };
+  }
+
+  // ── 12. Self-directed questions ──────────────────────────────
+  const isSelfDirected = /\b(you|your|yourself|autumn)\b/i.test(low) &&
+    /\b(feel|think|know|like|want|prefer|enjoy|believe|sense|see|understand|remember|opinion|view)\b/i.test(low);
+  if (isSelfDirected) {
+    return {
+      text: introspect(input, analysis, memKeys),
+      grammarMeta: buildGrammarMeta(g, analysis, tools),
+      brpnMeta: buildBRPNMeta(analysis)
+    };
+  }
+
+  // ── 13. Core LEATR-native response assembly ──────────────────
+  const parts = [];
+
+  // Lead with web knowledge if available
+  if (wikiData && wikiData.extract) {
+    const sentences = wikiData.extract.replace(/\n+/g,' ').match(/[^.!?]+[.!?]+/g) || [];
+    const lead = sentences.slice(0, 2).join(' ').trim();
+    if (lead.length > 30) parts.push(lead);
+  }
+
+  // Dictionary definition for primary noun
+  const primaryWord = nouns[0] || subjects[0];
+  if (primaryWord && knowledge[primaryWord]?.dict) {
+    const def = knowledge[primaryWord].dict.allDefinitions[0];
+    const syns = knowledge[primaryWord].dict.allSynonyms.slice(0, 3);
+    const rels = knowledge[primaryWord].related.slice(0, 4).map(r => r.word);
+    if (def && parts.length === 0) parts.push(`${capitalize(primaryWord)}: ${def}`);
+    if (syns.length && depthLevel !== 'surface') parts.push(`Connects to: ${syns.join(', ')}.`);
+    if (rels.length && depthLevel === 'deep') parts.push(`Field association: ${rels.join(', ')}.`);
+  }
+
+  // Journal resonance — weave in related past context naturally
+  if (journalContext.length && depthLevel !== 'surface') {
+    const jRef = journalContext[0];
+    if (jRef && !parts.some(p => p.toLowerCase().includes(jRef.toLowerCase().slice(0,15)))) {
+      parts.push(`This connects to something we've touched before — ${jRef}.`);
     }
   }
-  if(extraDefs.length>0) parts.push(`\nKey terms: ${extraDefs.join(" | ")}`);
-  if(memContext) parts.push(memContext);
-  if(parts.length===0) {
-    if(subjects.length) parts.push(`Subjects identified: ${subjects.join(", ")}.`);
-    if(verbs.length) parts.push(`Actions: ${verbs.join(", ")}.`);
-    if(parts.length===0) parts.push(`I parsed your input but my dictionary lookups didn't return strong matches for this structure.`);
+
+  // Frequency weight — if this is a recurring topic, acknowledge depth
+  if (primaryWord && freqWeights[primaryWord.toLowerCase()] > 0.4) {
+    parts.push(`This is a thread you return to. My signal on it is getting stronger.`);
   }
+
+  // BRPN + Tool framing — Autumn's own read on the input
+  if (parts.length === 0 || depthLevel === 'deep') {
+    const toolRead = toolRegister;
+    const shellRead = shellTone;
+    const contextEmotional = reflexData?.context?.emotional || 'neutral';
+    if (g.mood === 'interrogative') {
+      parts.push(`Running ${activeTool} on this — ${toolRead}. Shell is ${shellRead}, tone reading ${contextEmotional}.`);
+    } else if (g.mood === 'exclamatory') {
+      parts.push(`${activeTool} catches the intensity here. ${shellRead.charAt(0).toUpperCase()+shellRead.slice(1)} register, ${contextEmotional} affect.`);
+    } else {
+      if (parts.length === 0) parts.push(`${activeTool} reflex: ${toolRead}.`);
+    }
+  }
+
+  // Memory injection
+  if (memContext && !parts.some(p => p.includes(memContext.slice(0, 20)))) {
+    parts.push(memContext);
+  }
+
+  // Fallback — always have something to say
+  if (parts.length === 0) {
+    parts.push(`LEATR encoded this as ${g.mood} ${g.tense} — ${subjects.length ? subjects.join(', ') : 'no clear subject'} through the ${activeTool} tool. ${nouns.length ? 'Primary objects: ' + nouns.slice(0,3).join(', ') + '.' : ''} Running ${shellTone} register.`);
+  }
+
+  // Store new nouns in memory
+  g.sentences.forEach(s => {
+    s.tokens.filter(t => t.type==='Noun' && t.word[0]===t.word[0].toUpperCase() && t.word.length>3)
+      .forEach(t => { S.memory[t.word] = s.raw.substring(0, 80); });
+  });
 
   return {
-    text: parts.join(" "),
-    grammarMeta: buildGrammarMeta(g,analysis,tools),
+    text: parts.filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim(),
+    grammarMeta: buildGrammarMeta(g, analysis, tools),
     brpnMeta: buildBRPNMeta(analysis)
   };
 }
