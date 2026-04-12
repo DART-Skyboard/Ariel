@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Mantis Radar · DART Meadow</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00e5ff;--red:#ff3366;--dim:#3a5a6a;--bg:#020e18;--bg2:#061628;--text:#c8e6f0;--border:rgba(0,229,255,.12)}
+body{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;overflow:hidden;height:100dvh;display:flex;flex-direction:column}
+#hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:rgba(2,14,28,.95);border-bottom:1px solid var(--border);flex-shrink:0;gap:8px;flex-wrap:wrap}
+#hdr-logo{display:flex;align-items:center;gap:8px}
+#hdr-logo img{width:32px;height:32px;border-radius:4px}
+#hdr-title{font-size:13px;letter-spacing:2px;color:var(--cyan);text-transform:uppercase}
+#hdr-tabs{display:flex;gap:4px}
+.tab-btn{background:transparent;border:1px solid var(--border);color:var(--dim);padding:5px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:9px;letter-spacing:1px;transition:all .2s}
+.tab-btn.active{background:rgba(0,229,255,.12);border-color:var(--cyan);color:var(--cyan)}
+#stats-bar{display:flex;gap:12px;align-items:center;padding:4px 14px;background:rgba(0,0,0,.4);border-bottom:1px solid var(--border);font-size:9px;letter-spacing:1px;flex-shrink:0;overflow-x:auto;white-space:nowrap}
+.stat{color:var(--dim)}.stat span{color:var(--cyan)}
+#main{flex:1;position:relative;overflow:hidden}
+#globe-canvas{width:100%;height:100%;display:block}
+/* ADS-B map tab */
+#adsb-tab{position:absolute;inset:0;display:none;flex-direction:column;background:var(--bg)}
+#adsb-tab.show{display:flex}
+#adsb-map{flex:1;position:relative;overflow:hidden;background:#06111e}
+.ac-dot{position:absolute;transform:translate(-50%,-50%);cursor:pointer;transition:transform .3s;z-index:10}
+.ac-dot:hover{z-index:20}
+.ac-icon{font-size:16px;line-height:1;filter:drop-shadow(0 0 4px rgba(0,229,255,.6))}
+.ac-label{font-size:7px;color:var(--cyan);letter-spacing:.5px;text-align:center;white-space:nowrap;margin-top:1px}
+#ac-tooltip{position:fixed;background:rgba(2,14,28,.95);border:1px solid var(--cyan);border-radius:6px;padding:8px 10px;font-size:10px;color:var(--text);pointer-events:none;z-index:100;display:none;max-width:200px;line-height:1.7}
+#ac-tooltip.show{display:block}
+/* Satellite list overlay */
+#sat-panel{position:absolute;right:0;top:0;bottom:0;width:220px;background:rgba(2,14,28,.92);border-left:1px solid var(--border);overflow-y:auto;padding:8px;font-size:9px;transform:translateX(100%);transition:transform .3s;z-index:50}
+#sat-panel.open{transform:translateX(0)}
+#sat-panel-toggle{position:absolute;right:8px;top:8px;z-index:51;background:rgba(0,229,255,.1);border:1px solid var(--border);color:var(--cyan);padding:4px 8px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:9px;letter-spacing:1px}
+.sat-item{padding:4px 0;border-bottom:1px solid rgba(0,229,255,.05);cursor:pointer;color:var(--dim);transition:color .15s}
+.sat-item:hover,.sat-item.focused{color:var(--cyan)}
+.sat-item .sat-name{color:var(--text);font-size:9px}
+.sat-item .sat-coords{color:var(--dim);font-size:8px}
+/* Legend */
+#legend{position:absolute;bottom:8px;left:8px;background:rgba(2,14,28,.8);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:8px;line-height:2;letter-spacing:.5px}
+#legend-title{color:var(--cyan);margin-bottom:4px;letter-spacing:1px}
+.leg-row{display:flex;align-items:center;gap:6px;color:var(--dim)}
+/* Status */
+#status{position:absolute;top:8px;left:8px;background:rgba(2,14,28,.8);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:8px;color:var(--cyan);letter-spacing:1px}
+</style>
+</head>
+<body>
+
+<div id="hdr">
+  <div id="hdr-logo">
+    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/mn.png" alt="MR" onerror="this.style.display='none'">
+    <span id="hdr-title">◈ MANTIS RADAR</span>
+  </div>
+  <div id="hdr-tabs">
+    <button class="tab-btn active" onclick="showTab('globe')">🌐 GLOBE</button>
+    <button class="tab-btn" onclick="showTab('adsb')">✈ AIRCRAFT</button>
+  </div>
+  <div style="font-size:8px;color:var(--dim);letter-spacing:.5px">© 2026 DART MEADOW</div>
+</div>
+
+<div id="stats-bar">
+  <div class="stat">SATELLITES <span id="stat-sat">—</span></div>
+  <div class="stat">AIRCRAFT <span id="stat-ac">—</span></div>
+  <div class="stat">ISS <span id="stat-iss">—</span></div>
+  <div class="stat">REFRESH <span id="stat-refresh">—</span></div>
+  <div class="stat" id="stat-error" style="color:#ff4466;display:none">⚠ <span id="stat-err-msg"></span></div>
+</div>
+
+<div id="main">
+  <canvas id="globe-canvas"></canvas>
+  <div id="status">LOADING…</div>
+  <button id="sat-panel-toggle" onclick="document.getElementById('sat-panel').classList.toggle('open')">SAT LIST</button>
+  <div id="sat-panel"><div id="sat-list"></div></div>
+  <div id="legend">
+    <div id="legend-title">◈ LEGEND</div>
+    <div class="leg-row"><span>🛰</span> Satellite</div>
+    <div class="leg-row"><span>🚀</span> ISS / Station</div>
+    <div class="leg-row"><span>✈</span> Commercial</div>
+    <div class="leg-row"><span>🚁</span> Helicopter</div>
+    <div class="leg-row"><span>🛩</span> Small/GA</div>
+    <div class="leg-row"><span>🪖</span> Military</div>
+    <div class="leg-row"><span>🛸</span> Drone/UAV</div>
+  </div>
+  <div id="adsb-tab">
+    <div id="adsb-map"></div>
+    <div id="ac-tooltip"></div>
+  </div>
+</div>
+
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.165.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.165.0/examples/jsm/"}}</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── satellite.js via CDN ──────────────────────────────────────
+const satjs = await import('https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.es.js');
+const { twoline2satrec, propagate, gstime, eciToGeodetic, degreesLong, degreesLat } = satjs;
+
+// ── Scene setup ───────────────────────────────────────────────
+const canvas = document.getElementById('globe-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+camera.position.set(0, 0, 2.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 1.3; controls.maxDistance = 8;
+
+// ── Globe ─────────────────────────────────────────────────────
+const globeGeo = new THREE.SphereGeometry(1, 64, 64);
+const globeMat = new THREE.MeshPhongMaterial({
+  color: 0x062236, emissive: 0x001122, shininess: 15,
+  wireframe: false, transparent: true, opacity: 0.95
+});
+const globe = new THREE.Mesh(globeGeo, globeMat);
+scene.add(globe);
+
+// Grid lines
+const gridGeo = new THREE.SphereGeometry(1.001, 36, 18);
+const gridMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, wireframe: true, transparent: true, opacity: 0.04 });
+scene.add(new THREE.Mesh(gridGeo, gridMat));
+
+// Atmosphere glow
+const atmGeo = new THREE.SphereGeometry(1.06, 32, 32);
+const atmMat = new THREE.MeshBasicMaterial({ color: 0x0066aa, transparent: true, opacity: 0.08, side: THREE.BackSide });
+scene.add(new THREE.Mesh(atmGeo, atmMat));
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x223344, 1.5));
+const sun = new THREE.DirectionalLight(0xffeedd, 2);
+sun.position.set(5, 3, 5);
+scene.add(sun);
+scene.add(new THREE.PointLight(0x00e5ff, 0.3, 10));
+
+// Stars
+const starGeo = new THREE.BufferGeometry();
+const starVerts = [];
+for (let i = 0; i < 3000; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 80 + Math.random() * 20;
+  starVerts.push(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
+}
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVerts, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.15, transparent: true, opacity: 0.7 })));
+
+// ── Satellite dot pool ────────────────────────────────────────
+const SAT_COLORS = {
+  iss: 0xff4400, stations: 0xff6600, weather: 0x00ccff,
+  gps: 0x00ff88, active: 0x00e5ff, default: 0x6699aa
+};
+const satDots = new Map(); // name → mesh
+
+function latLonToXYZ(lat, lon, r = 1.02) {
+  const phi = (90 - lat) * Math.PI / 180;
+  const theta = (lon + 180) * Math.PI / 180;
+  return new THREE.Vector3(
+    -r * Math.sin(phi) * Math.cos(theta),
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+function getSatDot(name, color) {
+  if (satDots.has(name)) return satDots.get(name);
+  const geo = new THREE.SphereGeometry(0.006, 6, 6);
+  const mat = new THREE.MeshBasicMaterial({ color: color || SAT_COLORS.default });
+  const mesh = new THREE.Mesh(geo, mat);
+  scene.add(mesh);
+  satDots.set(name, mesh);
+  return mesh;
+}
+
+// ── TLE data from CelesTrak ───────────────────────────────────
+let satRecords = [];
+let issRecord = null;
+
+async function fetchTLEs() {
+  const groups = [
+    { url: 'https://celestrak.org/GATT/format=2/query=iss', color: SAT_COLORS.iss },
+    { url: 'https://celestrak.org/GATT/format=2/query=stations', color: SAT_COLORS.stations },
+    { url: 'https://celestrak.org/GATT/format=2/query=gps-ops', color: SAT_COLORS.gps },
+    { url: 'https://celestrak.org/GATT/format=2/query=weather', color: SAT_COLORS.weather },
+    { url: 'https://celestrak.org/GATT/format=2/query=active&count=80', color: SAT_COLORS.active },
+  ];
+
+  const CORS_PROXIES = [
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://thingproxy.freeboard.io/fetch/${u}`,
+  ];
+
+  let allSats = [];
+  for (const grp of groups) {
+    let text = null;
+    for (const proxy of CORS_PROXIES) {
+      try {
+        const r = await fetch(proxy(grp.url), { signal: AbortSignal.timeout(10000) });
+        if (r.ok) { text = await r.text(); break; }
+      } catch(e) {}
+    }
+    if (!text) continue;
+    // Parse TLE format (3-line sets)
+    const lines = text.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    for (let i = 0; i < lines.length - 2; i += 3) {
+      if (lines[i+1].startsWith('1 ') && lines[i+2].startsWith('2 ')) {
+        try {
+          const rec = twoline2satrec(lines[i+1], lines[i+2]);
+          const entry = { name: lines[i], rec, color: grp.color };
+          allSats.push(entry);
+          if (lines[i].includes('ISS') || lines[i].includes('ZARYA')) issRecord = entry;
+        } catch(e) {}
+      }
+    }
+  }
+  satRecords = allSats;
+  document.getElementById('stat-sat').textContent = satRecords.length;
+  updateSatList();
+  setStatus(`${satRecords.length} satellites tracked`);
+}
+
+function updateSatPositions() {
+  const now = new Date();
+  const gmst = gstime(now);
+  satRecords.forEach(({ name, rec, color }) => {
+    try {
+      const pv = propagate(rec, now);
+      if (!pv.position) return;
+      const geo = eciToGeodetic(pv.position, gmst);
+      const lat = degreesLat(geo.latitude);
+      const lon = degreesLong(geo.longitude);
+      const alt = geo.height / 6371 + 1.01; // normalized
+      const dot = getSatDot(name, color);
+      dot.position.copy(latLonToXYZ(lat, lon, alt));
+    } catch(e) {}
+  });
+  if (issRecord) {
+    try {
+      const pv = propagate(issRecord.rec, now);
+      if (pv.position) {
+        const gmst2 = gstime(now);
+        const geo = eciToGeodetic(pv.position, gmst2);
+        const lat = degreesLat(geo.latitude).toFixed(1);
+        const lon = degreesLong(geo.longitude).toFixed(1);
+        document.getElementById('stat-iss').textContent = `${lat}°, ${lon}°`;
+      }
+    } catch(e) {}
+  }
+}
+
+function updateSatList() {
+  const now = new Date();
+  const gmst = gstime(now);
+  const items = satRecords.slice(0, 80).map(({ name, rec }) => {
+    try {
+      const pv = propagate(rec, now);
+      if (!pv.position) return '';
+      const geo = eciToGeodetic(pv.position, gmst);
+      const lat = degreesLat(geo.latitude).toFixed(1);
+      const lon = degreesLong(geo.longitude).toFixed(1);
+      return `<div class="sat-item" onclick="focusSat('${name.replace(/'/g,"\\'")}')">
+        <div class="sat-name">${name}</div>
+        <div class="sat-coords">${lat}° / ${lon}°</div>
+      </div>`;
+    } catch(e) { return ''; }
+  }).join('');
+  document.getElementById('sat-list').innerHTML = items || '<div style="color:var(--dim);padding:8px">No data</div>';
+}
+
+window.focusSat = function(name) {
+  const dot = satDots.get(name);
+  if (!dot) return;
+  const dir = dot.position.clone().normalize();
+  camera.position.copy(dir.multiplyScalar(2.5));
+  controls.target.copy(new THREE.Vector3(0,0,0));
+  controls.update();
+};
+
+// ── ADS-B aircraft via OpenSky ────────────────────────────────
+let aircraftData = [];
+
+// Aircraft type → icon mapping
+function getAircraftIcon(cat, callsign) {
+  const cs = (callsign || '').toUpperCase().trim();
+  // Military callsign prefixes
+  if (/^(AF|USAF|NAV|RCH|REACH|EVAC|PAT|GHOST|BONE|HAWK|EAGLE)/.test(cs)) return '🪖';
+  // Emergency
+  if (/^(LIFE|MED|HEMS|AIR1|RESCUE)/.test(cs)) return '🚑';
+  
+  // Category codes from OpenSky
+  switch(cat) {
+    case 1: return '✈';  // No info
+    case 2: return '🛩'; // Light <15500lbs
+    case 3: return '✈';  // Small 15500-75000lbs
+    case 4: return '✈';  // Large 75000-300000lbs
+    case 5: return '🪖'; // High vortex large (747 size)
+    case 6: return '✈';  // Heavy >300000lbs
+    case 7: return '✈';  // High performance (>5g & 400kts+)
+    case 8: return '🚁'; // Rotorcraft / Helicopter
+    case 9: return '🛸'; // Glider / Sailplane
+    case 10: return '🎈'; // Lighter than air / Balloon
+    case 11: return '🪂'; // Parachutist / Skydiver
+    case 12: return '🛩'; // Ultralight
+    case 13: return '🛸'; // UAV / Drone
+    case 14: return '🚀'; // Space / Transatmospheric
+    case 15: return '🛩'; // Surface vehicle — emergency
+    case 16: return '🚗'; // Surface vehicle — service
+    case 17: return '🏔'; // Fixed ground obstacle
+    default: return '✈';
+  }
+}
+
+function getAircraftLabel(cat) {
+  const labels = {
+    1:'UNKNOWN', 2:'LIGHT', 3:'SMALL', 4:'LARGE', 5:'HEAVY',
+    6:'SUPER HEAVY', 7:'HIGH PERF', 8:'HELICOPTER', 9:'GLIDER',
+    10:'BALLOON', 11:'SKYDIVER', 12:'ULTRALIGHT', 13:'DRONE',
+    14:'SPACECRAFT', 15:'EMERGENCY VEH', 16:'SERVICE VEH',
+  };
+  return labels[cat] || 'AIRCRAFT';
+}
+
+async function fetchAircraft() {
+  try {
+    // OpenSky Network — no auth needed for live traffic (limited)
+    const r = await fetch('https://opensky-network.org/api/states/all?extended=1', {
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error('OpenSky ' + r.status);
+    const d = await r.json();
+    if (!d || !d.states) throw new Error('No states data');
+    aircraftData = (d.states || []).filter(s => s[5] != null && s[6] != null); // must have lon/lat
+    document.getElementById('stat-ac').textContent = aircraftData.length;
+    renderAircraftMap();
+  } catch(e) {
+    // Fallback: ADS-B Exchange (public endpoint)
+    try {
+      const r2 = await fetch('https://api.adsb.lol/v2/ladd', { signal: AbortSignal.timeout(10000) });
+      if (r2.ok) {
+        const d2 = await r2.json();
+        aircraftData = (d2.ac || []).filter(a => a.lat && a.lon);
+        document.getElementById('stat-ac').textContent = aircraftData.length;
+        renderAircraftMap(true); // mark as lol format
+      }
+    } catch(e2) {
+      setError('Aircraft: ' + e2.message.slice(0,30));
+    }
+  }
+}
+
+function renderAircraftMap(lolFormat = false) {
+  const container = document.getElementById('adsb-map');
+  const W = container.offsetWidth || window.innerWidth;
+  const H = container.offsetHeight || (window.innerHeight - 80);
+
+  // Remove old dots
+  container.querySelectorAll('.ac-dot').forEach(el => el.remove());
+
+  const maxDots = 300;
+  const slice = aircraftData.slice(0, maxDots);
+
+  slice.forEach(s => {
+    let lat, lon, callsign, cat, alt, vel;
+    if (lolFormat) {
+      lat = s.lat; lon = s.lon;
+      callsign = s.flight || s.r || '';
+      cat = s.category ? parseInt(s.category, 16) : 1;
+      alt = s.alt_baro; vel = s.gs;
+    } else {
+      // OpenSky format: [icao24, callsign, origin_country, time_position, last_contact,
+      //  longitude, latitude, baro_altitude, on_ground, velocity, heading, vert_rate,
+      //  sensors, geo_altitude, squawk, spi, position_source, category]
+      callsign = (s[1] || '').trim();
+      lon = s[5]; lat = s[6];
+      alt = s[7]; vel = s[9];
+      cat = s[17] || 1;
+    }
+
+    if (!lat || !lon) return;
+
+    // Mercator projection
+    const x = ((lon + 180) / 360) * W;
+    const y = ((90 - lat) / 180) * H;
+
+    const icon = getAircraftIcon(cat, callsign);
+    const typeLabel = getAircraftLabel(cat);
+
+    const dot = document.createElement('div');
+    dot.className = 'ac-dot';
+    dot.style.left = x + 'px';
+    dot.style.top = y + 'px';
+    dot.innerHTML = `<div class="ac-icon">${icon}</div><div class="ac-label">${callsign.slice(0,6)}</div>`;
+
+    dot.onmouseenter = dot.ontouchstart = (e) => {
+      const tip = document.getElementById('ac-tooltip');
+      tip.innerHTML = `<b style="color:var(--cyan)">${icon} ${callsign || 'UNKNOWN'}</b><br>
+        Type: ${typeLabel}<br>
+        Lat: ${lat.toFixed(2)}° Lon: ${lon.toFixed(2)}<br>
+        Alt: ${alt ? Math.round(alt)+'m' : '—'}<br>
+        Speed: ${vel ? Math.round(vel)+' m/s' : '—'}`;
+      const rect = e.target.getBoundingClientRect();
+      tip.style.left = (rect.left + 20) + 'px';
+      tip.style.top = rect.top + 'px';
+      tip.classList.add('show');
+    };
+    dot.onmouseleave = dot.ontouchend = () => {
+      document.getElementById('ac-tooltip').classList.remove('show');
+    };
+
+    container.appendChild(dot);
+  });
+}
+
+// ── Tab switching ─────────────────────────────────────────────
+window.showTab = function(tab) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', (i===0&&tab==='globe')||(i===1&&tab==='adsb')));
+  const adsbEl = document.getElementById('adsb-tab');
+  if (tab === 'adsb') {
+    adsbEl.classList.add('show');
+    // Position adsb-tab correctly
+    adsbEl.style.position = 'absolute';
+    adsbEl.style.inset = '0';
+    if (aircraftData.length === 0) fetchAircraft();
+    else renderAircraftMap();
+  } else {
+    adsbEl.classList.remove('show');
+  }
+};
+
+// ── Status helpers ────────────────────────────────────────────
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+function setError(msg) {
+  const el = document.getElementById('stat-error');
+  el.style.display = '';
+  document.getElementById('stat-err-msg').textContent = msg;
+  setTimeout(() => { el.style.display = 'none'; }, 8000);
+}
+
+// ── Resize ────────────────────────────────────────────────────
+function resize() {
+  const W = canvas.parentElement.offsetWidth;
+  const H = canvas.parentElement.offsetHeight;
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Animation loop ────────────────────────────────────────────
+let frame = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  globe.rotation.y += 0.0008;
+  // Update sat positions every 2s worth of frames
+  frame++;
+  if (frame % 120 === 0 && satRecords.length > 0) updateSatPositions();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ── Refresh timer ─────────────────────────────────────────────
+let nextRefresh = 60;
+setInterval(() => {
+  nextRefresh--;
+  document.getElementById('stat-refresh').textContent = nextRefresh + 's';
+  if (nextRefresh <= 0) {
+    nextRefresh = 60;
+    fetchTLEs();
+    if (aircraftData.length > 0) fetchAircraft();
+  }
+}, 1000);
+
+// ── Initial data load ─────────────────────────────────────────
+setStatus('Fetching TLE data...');
+fetchTLEs().catch(e => setError('TLE: ' + e.message));
+fetchAircraft().catch(() => {});
+
+</script>
+</body>
+</html>
