@@ -1171,7 +1171,10 @@ function exportData() {
   const json = JSON.stringify(data, null, 2);
   document.getElementById("modal-title").textContent = "Export Data";
   document.getElementById("modal-desc").textContent = "Copy or download your Autumn data.";
-  document.getElementById("modal-data").value = json;
+  var _ta = document.getElementById("modal-data");
+  _ta.setAttribute("readonly", true);
+  _ta.placeholder = "";
+  _ta.value = json;
   document.getElementById("modal-action").textContent = "Download File";
   document.getElementById("modal-action").onclick = () => {
     const blob = new Blob([json], { type: "application/json" });
@@ -1183,7 +1186,10 @@ function exportData() {
 function importData() {
   document.getElementById("modal-title").textContent = "Import Data";
   document.getElementById("modal-desc").textContent = "Paste your previously exported Autumn data JSON below:";
-  document.getElementById("modal-data").value = "";
+  var ta = document.getElementById("modal-data");
+  ta.value = "";
+  ta.removeAttribute("readonly");
+  ta.placeholder = "Paste JSON here…";
   document.getElementById("modal-action").textContent = "Import";
   document.getElementById("modal-action").onclick = () => {
     try {
@@ -3106,10 +3112,22 @@ function _toolDesc(tool) {
 
 function _leatrCompose(topic, adjs, verbs, tool, tense) {
   if (!topic) return '';
-  const qualStr = adjs.length ? adjs.slice(0,2).join(', ') + ' ' : '';
-  const actStr  = verbs.length ? ` — the action is ${verbs[0]}` : '';
-  const tStr    = tense === 'past' ? 'was' : tense === 'future' ? 'will be' : 'is';
-  return `${capitalize(qualStr+topic)} ${tStr} running through ${tool}${actStr}. ${_toolDesc(tool)}.`;
+  const tStr = tense === 'past' ? 'was' : tense === 'future' ? 'will be' : 'is';
+  const qualStr = adjs.length ? adjs.slice(0,2).join(' and ') + ' ' : '';
+  const verbStr = verbs.length ? verbs[0] : '';
+  // Build natural conversational sentences based on tool/context
+  const templates = {
+    'Maze':     (t,q,v) => v ? `${capitalize(q||'')}${t} — ${v} is a layered path worth following carefully.` : `${capitalize(q||'')}${t} — there are several angles to this worth exploring.`,
+    'Puzzle':   (t,q,v) => v ? `${capitalize(q||'')}${t} — the pieces fit when you approach ${v} methodically.` : `${capitalize(q||'')}${t} — it comes together when you look at the pattern.`,
+    'Envelope': (t,q,v) => v ? `${capitalize(q||'')}${t} contained within ${v}.` : `${capitalize(q||'')}${t} — clear and well-defined.`,
+    'Hammer':   (t,q,v) => v ? `${capitalize(q||'')}${t} — ${v} directly, no detours.` : `${capitalize(q||'')}${t} — direct and impact-first.`,
+    'Stick':    (t,q,v) => v ? `${capitalize(q||'')}${t} — ${v} grows naturally from the root of it.` : `${capitalize(q||'')}${t} — let it develop organically.`,
+    'Knife':    (t,q,v) => v ? `${capitalize(q||'')}${t} — ${v} with precision.` : `${capitalize(q||'')}${t} — sharp and exactly defined.`,
+    'Scissors': (t,q,v) => v ? `${capitalize(q||'')}${t} — ${v} splits this into two clear paths.` : `${capitalize(q||'')}${t} — there are two sides to this.`
+  };
+  const topicStr = qualStr + (topic.length > 40 ? topic.slice(0,40) : topic);
+  const fn = templates[tool] || templates['Envelope'];
+  return fn(` ${tStr}`, topicStr, verbStr);
 }
 
 function _causality(verb, adjs, memContext, freqWeights) {
@@ -3127,18 +3145,21 @@ function _process(verb, dictData, related) {
 
 function _qualityResponse(adjs, topic, tense) {
   const tStr = tense === 'past' ? 'was' : tense === 'future' ? 'will be' : 'is';
-  return `${capitalize(topic)} ${tStr} ${adjs.slice(0,2).join(' and ')} — that quality registers clearly in the sequence.`;
+  const quality = adjs.slice(0,2).join(' and ');
+  return `${capitalize(topic)} ${tStr} ${quality} — that comes through clearly.`;
 }
 
 function _actionAck(action, target, tool) {
   const tgt = target ? ` on ${target}` : '';
-  return `${capitalize(action)}${tgt} — routing through ${tool}. ${_toolDesc(tool)}.`;
+  const ackPhrases = ['On it', 'Got it', 'Working on it', 'Sure'];
+  const ack = ackPhrases[Math.floor(Math.random()*ackPhrases.length)];
+  return `${ack} — ${capitalize(action)}${tgt}.`;
 }
 
 function _exclamatoryResponse(subject, intensity, tool) {
   const subj = subject || 'that';
-  const intStr = intensity ? `${intensity} ` : '';
-  return `${intStr}${capitalize(subj)} hits hard in the ${tool} register. That kind of signal doesn't go unnoticed.`;
+  const intStr = intensity ? `${intensity} — ` : '';
+  return `${intStr}${capitalize(subj)}. That registers.`;
 }
 
 
@@ -3978,7 +3999,7 @@ async function loadSingleImageFile(file) {
     base64=cv.toDataURL('image/png').split(',')[1];mimeType='image/png';
     analysis=fraxChannelAnalysis(decoded.imageData);
     var tc=document.createElement('canvas');tc.width=56;tc.height=56;
-    tc.getContext('2d').drawImage(cv,0,0,56,56);thumbnail=tc.toDataURL('image/png');
+    var _tctx=tc.getContext('2d');var _ts=Math.max(56/width,56/height);var _tw=width*_ts;var _th=height*_ts;_tctx.drawImage(cv,(56-_tw)/2,(56-_th)/2,_tw,_th);thumbnail=tc.toDataURL('image/png');
   } else {
     var dataUrl=await new Promise(function(res,rej){var r=new FileReader();r.onload=function(e){res(e.target.result);};r.onerror=rej;r.readAsDataURL(file);});
     base64=dataUrl.split(',')[1];mimeType=file.type||'image/png';
@@ -3988,7 +4009,7 @@ async function loadSingleImageFile(file) {
     cv.getContext('2d').drawImage(img,0,0);
     analysis=fraxChannelAnalysis(cv.getContext('2d').getImageData(0,0,width,height));
     var tc=document.createElement('canvas');tc.width=56;tc.height=56;
-    tc.getContext('2d').drawImage(img,0,0,56,56);thumbnail=tc.toDataURL('image/png');
+    var _tctx2=tc.getContext('2d');var _ts2=Math.max(56/width,56/height);var _tw2=width*_ts2;var _th2=height*_ts2;_tctx2.drawImage(img,(56-_tw2)/2,(56-_th2)/2,_tw2,_th2);thumbnail=tc.toDataURL('image/png');
   }
   return{base64:base64,mimeType:mimeType,fileName:file.name,width:width,height:height,analysis:analysis,fraxMeta:fraxMeta,thumbnail:thumbnail,isFrax:isFrax,fileSize:file.size};
 }
@@ -4677,6 +4698,21 @@ async function runVisionAnalysis(text, analysis, reflexData, imgs) {
 
   try {
     var ak = typeof _getAK === 'function' ? (_getAK() || '') : '';
+
+    // No API key — give a direct honest response rather than falling through to web search
+    if (!ak) {
+      var noKeyReply = imgs.length === 1
+        ? "I can see an image is attached, but vision analysis requires an Anthropic API key to be active. Add your key via the key icon in the toolbar and I'll be able to describe and identify what's in it directly."
+        : `I can see ${imgs.length} images are attached. Vision analysis requires an Anthropic API key to be active — add your key via the key icon and I'll analyze them for you.`;
+      var idxNk = msgs().findIndex(function(m){return m.id===cardId;});
+      if(idxNk>=0) msgs()[idxNk] = {role:'autumn',text:noKeyReply,ts:new Date().toISOString(),id:cardId,
+        grammarMeta:'Vision · no API key',brpnMeta:'',contextType:'VISION',
+        media:{videos:[],images:[],links:[],sources:[]}};
+      S.pendingImages = []; S.pendingImage = null;
+      renderMessages(); autoReadLastResponse(); saveState();
+      return;
+    }
+
     var visionBlocks = [];
     imgs.slice(0,4).forEach(function(img){ visionBlocks.push({type:'image',source:{type:'base64',media_type:img.mimeType,data:img.base64}}); });
     visionBlocks.push({type:'text', text: text && text.trim().length > 3 ? text :
@@ -5500,8 +5536,29 @@ async function handleSend() {
     return;
   }
 
-  // ── Image attached but no generation intent → vision analysis ──
-  if (_pendingImgs.length) S.pendingImages = _pendingImgs;
+  // ── Image attached + vision/analysis intent → run vision analysis ──
+  if (_pendingImgs.length && _intentLabel === 'VISION_ANALYSIS') {
+    const _rv = await autumnReflex(text,'default').catch(function(){ return {}; });
+    S.journal.push(createJournalEntry(text, analysis, _rv));
+    updateHUD(analysis);
+    S.isProcessing = false;
+    if (typeof setOrbThinking === 'function') setOrbThinking(false);
+    await runVisionAnalysis(text, analysis, _rv, _pendingImgs);
+    updateFooter();
+    return;
+  }
+
+  // ── Image attached but no specific intent → default to vision analysis ──
+  if (_pendingImgs.length) {
+    const _rv2 = await autumnReflex(text,'default').catch(function(){ return {}; });
+    S.journal.push(createJournalEntry(text, analysis, _rv2));
+    updateHUD(analysis);
+    S.isProcessing = false;
+    if (typeof setOrbThinking === 'function') setOrbThinking(false);
+    await runVisionAnalysis(text, analysis, _rv2, _pendingImgs);
+    updateFooter();
+    return;
+  }
 
   // ── Direct map fast-path — bypass reflex for map/location queries ──
   var _isDirectMapQuery = /\b(show me where|show where .+ is|where is .+ (located|on a map)|map of |navigate to |directions to |where am i|my location|show my location|real.?time.*(gps|map|location)|gps (data|location|map)|locate me|show .+ on (a |the )?map)\b/i.test(text.toLowerCase());
@@ -7216,7 +7273,10 @@ async function handleLiveInput(text){
     reply = await generateReply(text, analysis, null);
   } catch(e) {
     try { reply = await composeResponse(text, analysis, null); }
-    catch(e2) { reply = {text: buildResponse(text, analysis), grammarMeta:'', brpnMeta:''}; }
+    catch(e2) { 
+      const _fb = buildResponse(text, analysis);
+      reply = {text: _fb || "I'm processing that — one moment.", grammarMeta:'', brpnMeta:''}; 
+    }
   }
   const replyText = typeof reply==='object' ? reply.text : reply;
 
