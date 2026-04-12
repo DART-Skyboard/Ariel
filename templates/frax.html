@@ -395,15 +395,9 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
           <label for="usc-face" style="font-size:9px;color:var(--text2);letter-spacing:1px;cursor:pointer">FACE ENHANCE (plus/general only)</label>
         </div>
 
-        <!-- File pick + Upload -->
-        <input type="file" id="usc-file-input" accept=".png,.jpg,.jpeg,.webp,.bmp" style="display:none" onchange="uscFileChosen(this)">
-        <div class="btn-grid" style="margin-bottom:8px">
-          <button class="btn btn-ghost btn-full" onclick="document.getElementById('usc-file-input').click()">📂 Choose Image</button>
-          <button class="btn btn-pink btn-full" id="usc-upload-btn" onclick="uscUpload()" disabled>⬆ Upscale</button>
-        </div>
-
-        <!-- Chosen file name -->
-        <div id="usc-filename" style="font-size:8px;color:var(--text3);margin-bottom:6px;word-break:break-all;min-height:12px"></div>
+        <!-- Canvas image status + Upscale button -->
+        <div id="usc-canvas-status" style="font-size:9px;color:var(--text3);margin-bottom:8px;padding:6px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);letter-spacing:.5px">No image loaded — upload an image in the Converter first</div>
+        <button class="btn btn-pink btn-full" id="usc-upload-btn" onclick="uscUpload()" disabled style="margin-bottom:8px">⬆ Upscale Canvas Image</button>
 
         <!-- Progress / status -->
         <div id="usc-status" class="status-line" style="color:var(--pink)"></div>
@@ -418,11 +412,7 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
         <!-- Download button (shown when ready) -->
         <button class="btn btn-pink btn-full" id="usc-dl-btn" onclick="uscDownload()" style="display:none;margin-top:8px">⬇ Download Upscaled Image</button>
 
-        <!-- Also-use-current-image shortcut -->
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-          <button class="btn btn-ghost btn-full" onclick="uscUseCanvas()" id="usc-canvas-btn" style="font-size:9px">🖼 Use Current Canvas Image</button>
-          <div style="font-size:8px;color:var(--text3);margin-top:4px;letter-spacing:.5px">Exports the active canvas and sends it for upscaling</div>
-        </div>
+        <!-- Canvas image is used automatically -->
       </div></div>
     </div>
 
@@ -587,6 +577,7 @@ function showImagePreview(imgData,info){
     card.onclick=()=>{row.querySelectorAll('.ch-card').forEach(c=>c.classList.remove('active'));card.classList.add('active');if(ch.off===-2)pv.getContext('2d').putImageData(imgData,0,0);else pv.getContext('2d').drawImage(tc,0,0)};
     row.appendChild(card);
   });
+  uscSyncCanvas();
 }
 function exportImageAsFrax(){if(!currentImageData)return;const c=parseInt(document.getElementById('compress-mode').value),b=parseInt(document.getElementById('bit-depth').value);const bl=encodeFrax(currentImageData,{compression:c,bitDepth:b});const n='image_'+currentImageData.width+'x'+currentImageData.height+'.frax';download(bl,n);setStatus('img-status',`Exported ${n} (${(bl.size/1024).toFixed(1)} KB)`)}
 function exportImageAs(fmt){if(!currentImageData)return;const c=document.createElement('canvas');c.width=currentImageData.width;c.height=currentImageData.height;c.getContext('2d').putImageData(currentImageData,0,0);const m={jpeg:'image/jpeg',webp:'image/webp',bmp:'image/bmp',png:'image/png'}[fmt]||'image/png';c.toBlob(b=>{if(!b){setStatus('img-status',fmt.toUpperCase()+' not supported');return}download(b,`image.${fmt}`);setStatus('img-status',`Exported ${fmt.toUpperCase()} (${(b.size/1024).toFixed(1)} KB)`)},m,.95)}
@@ -646,6 +637,7 @@ function clearImage(){
   document.getElementById('channel-row').innerHTML='';
   document.getElementById('img-info').innerHTML='';
   setStatus('img-status','');
+  uscSyncCanvas();
 }
 
 // Wiring (original drop zones still work)
@@ -691,7 +683,6 @@ document.getElementById('usc-client-id').addEventListener('change', function() {
   if (this.value.trim().length >= 8) localStorage.setItem('frax_usc_client_id', this.value.trim());
 });
 
-let uscChosenFile = null;
 let uscResultUrl  = null;
 let uscResultName = null;
 
@@ -709,19 +700,31 @@ function uscProgress(pct) {
   bar.style.width = pct + '%';
 }
 
-function uscFileChosen(input) {
-  const file = input.files[0];
-  if (!file) return;
-  uscChosenFile = file;
-  document.getElementById('usc-filename').textContent = '📎 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
-  document.getElementById('usc-upload-btn').disabled = false;
-  document.getElementById('usc-dl-btn').style.display = 'none';
-  uscStatus('Ready — tap Upscale to process', 'var(--text2)');
+// Sync upscaler button state with canvas — called whenever image loads or clears
+function uscSyncCanvas() {
+  const btn = document.getElementById('usc-upload-btn');
+  const status = document.getElementById('usc-canvas-status');
+  if (currentImageData) {
+    btn.disabled = false;
+    if (status) status.textContent = '🖼 Canvas ready: ' + currentImageData.width + '×' + currentImageData.height + ' px — tap Upscale';
+    if (status) status.style.color = 'var(--text2)';
+  } else {
+    btn.disabled = true;
+    if (status) status.textContent = 'No image loaded — upload an image in the Converter first';
+    if (status) status.style.color = 'var(--text3)';
+  }
 }
 
 async function uscUpload() {
   const clientId = uscGetId();
-  if (!uscChosenFile) { uscStatus('No file selected'); return; }
+  if (!currentImageData) { uscStatus('No image on canvas — load one in the Converter first'); return; }
+
+  // Export currentImageData to PNG blob
+  const _c = document.createElement('canvas');
+  _c.width = currentImageData.width; _c.height = currentImageData.height;
+  _c.getContext('2d').putImageData(currentImageData, 0, 0);
+  const uscChosenFile = await new Promise(res => _c.toBlob(res, 'image/png'));
+  if (!uscChosenFile) { uscStatus('Canvas export failed'); return; }
 
   const scale  = document.getElementById('usc-scale').value;
   const model  = document.getElementById('usc-model').value;
@@ -735,7 +738,7 @@ async function uscUpload() {
 
   try {
     const fd = new FormData();
-    fd.append('image', uscChosenFile, uscChosenFile.name);
+    fd.append('image', uscChosenFile, 'canvas_' + currentImageData.width + 'x' + currentImageData.height + '.png');
     fd.append('scale', scale);
     fd.append('model', model);
     if (faceEn) fd.append('fx', '');
@@ -840,27 +843,8 @@ function uscDownload() {
   a.click();
 }
 
-// Export the current canvas image and queue it for upscaling
-function uscUseCanvas() {
-  const canvas = document.getElementById('img-preview');
-  if (!canvas || canvas.width === 0) {
-    uscStatus('No image loaded in canvas yet', '#ffc93c');
-    // Scroll/open upscaler card
-    document.getElementById('upscaler-card').classList.add('open');
-    return;
-  }
-  canvas.toBlob(function(blob) {
-    if (!blob) { uscStatus('Canvas export failed'); return; }
-    const file = new File([blob], 'canvas_export.png', { type: 'image/png' });
-    uscChosenFile = file;
-    document.getElementById('usc-filename').textContent = '🖼 canvas_export.png (' + (blob.size / 1024).toFixed(1) + ' KB)';
-    document.getElementById('usc-upload-btn').disabled = false;
-    document.getElementById('upscaler-card').classList.add('open');
-    uscStatus('Canvas image loaded — tap Upscale', 'var(--text2)');
-    // Scroll the upscaler card into view
-    document.getElementById('upscaler-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, 'image/png');
-}
+
+
 
 
 </script>
