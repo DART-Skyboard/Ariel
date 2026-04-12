@@ -4079,10 +4079,11 @@ function buildGenerationPrompt(text, analysis, styleInfo, referenceHints) {
   if(!subject)subject=text.replace(/generate|create|make|draw|an? |the |image|picture|of|for|me/gi,'').trim().slice(0,120);
   var refNote=referenceHints&&referenceHints.length?' inspired by: '+referenceHints.slice(0,2).join(', '):'';
 
-  // ── Visual memory recall — inject Autumn's learned style preferences ──
+  // ── Visual memory recall — only for character/portrait, not company/place ──
   var _learnedStyle = '';
+  var _isOrgPrompt = /\b(company|corporation|brand|meadow|deepscale|dart|studio|lab|inc|llc|organization)\b/i.test(text);
   try {
-    if (typeof S !== 'undefined' && S.memory) {
+    if (typeof S !== 'undefined' && S.memory && !_isOrgPrompt) {
       // Get top performing visual styles from memory
       var _styleCounts = [];
       Object.keys(S.memory).forEach(function(k) {
@@ -4095,14 +4096,12 @@ function buildGenerationPrompt(text, analysis, styleInfo, referenceHints) {
       var _topStyles = _styleCounts.slice(0,3).map(function(s){return s[0];});
       if (_topStyles.length) _learnedStyle = ', ' + _topStyles.join(', ');
 
-      // Self-portrait: if asking Autumn to depict herself, recall her best self-image prompt
-      var _textLow = text.toLowerCase();
-      if ((_textLow.includes('yourself') || _textLow.includes('of you') || (_textLow.includes('autumn') && (_textLow.includes('you') || _textLow.includes('herself')))) && S.memory['autumn_self_image_last_prompt']) {
-        // Blend previous self-image style with current request
+      // Self-portrait recall only for actual self-portrait requests
+      var _textLow2 = text.toLowerCase();
+      if (typeof isAutumnSelfRef === 'function' && isAutumnSelfRef(text) && S.memory['autumn_self_image_last_prompt']) {
         var _prevSelf = S.memory['autumn_self_image_last_prompt'];
         var _prevStyle = (_prevSelf.match(/(?:space punk|neon|cyberpunk|cinematic|detailed|photorealistic)[^,]*/gi)||[]).slice(0,2).join(', ');
-        if (_prevStyle) _learnedStyle += ', ' + _prevStyle + ' [self-recalled]';
-        console.log('[LISE] Self-portrait recall: injecting style from previous self-image');
+        if (_prevStyle) _learnedStyle += ', ' + _prevStyle;
       }
     }
   } catch(e) {}
@@ -4608,7 +4607,11 @@ async function pollHordeJob(jobId, maxWaitMs, onProgress) {
           {headers:{'Client-Agent':'autumn-lise:1.0:radicaldeepscale.com'},signal:AbortSignal.timeout(15000)});
         var sd = await sr.json();
         var gens = sd.generations||[];
-        if(gens.length && gens[0].img) return gens[0].img; // R2 URL or base64
+        if(gens.length) {
+          var gen = gens[0];
+          if(gen.censored) throw new Error('horde_censored');
+          if(gen.img) return gen.img;
+        }
         throw new Error('LISE: no image in result');
       }
     } catch(e) {
@@ -4698,7 +4701,18 @@ async function runImageGeneration(text, analysis, reflexData) {
           : 'QUEUE ' + (qpos>0?'#'+qpos+' · ':'') + elapsed + 's · SDXL 1024';
         _spinLbl.textContent = _msg;
       };
-      _imgUrl = await pollHordeJob(genResult.jobId, 180000, _onProg);
+      try {
+        _imgUrl = await pollHordeJob(genResult.jobId, 180000, _onProg);
+      } catch(_he) {
+        var _spinLbl2 = document.getElementById('spin-lbl-'+cardId);
+        if(_spinLbl2) _spinLbl2.textContent = 'HORDE BLOCKED — SWITCHING TO POLLINATIONS…';
+        console.warn('[LISE] Horde blocked/censored:', _he.message, '— falling to Pollinations');
+        // Fallback: use Pollinations with the built descriptor
+        var _fbUrl = 'https://image.pollinations.ai/prompt/'+encodeURIComponent(genResult.prompt||prompt)+
+          '?width=1024&height=1024&model=flux-pro&seed='+Math.floor(Math.random()*999999)+'&nologo=true&safe=false';
+        _imgUrl = _fbUrl;
+        genResult.model = 'LISE/'+((genResult.model||'').split('/')[1]||'Maze')+'/Flux-Fallback';
+      }
       genResult.url = _imgUrl;
       window._autumnGens[_genId].url = _imgUrl;
     }
