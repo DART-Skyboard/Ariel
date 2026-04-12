@@ -2503,6 +2503,226 @@ function createJournalEntry(text, analysis, reflexData) {
 //           Memory nodes · Web (Wiki/DDG) · Grammar deep analysis ·
 //           Frequency weights · Quantum Socket · Arc Edge math
 // ============================================================
+// ============================================================
+//  AUTUMN LINGUISTIC ENGINE — Grammar-driven response assembly
+//  Uses: Datamuse API (semantic field) + Free Dictionary API
+//        + LanguageTool (grammar rules) + LEATR grammar parser
+//  No stored arrays — looks up everything live from the same
+//  sources a fluent speaker uses, just faster.
+// ============================================================
+
+// ── Datamuse semantic field lookup ───────────────────────────
+// Returns the full semantic neighborhood of a word:
+// synonyms, antonyms, adjectives that describe it,
+// verbs it commonly occurs with, words that follow it
+async function getSemanticField(word) {
+  if (!word || word.length < 2) return {};
+  var enc = encodeURIComponent(word);
+  var jobs = [
+    fetch('https://api.datamuse.com/words?rel_syn='+enc+'&max=8', {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]),  // synonyms
+    fetch('https://api.datamuse.com/words?rel_ant='+enc+'&max=6', {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]),  // antonyms
+    fetch('https://api.datamuse.com/words?rel_jjb='+enc+'&max=8', {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]), // adjectives for noun
+    fetch('https://api.datamuse.com/words?rel_jja='+enc+'&max=6', {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]), // nouns for adjective
+    fetch('https://api.datamuse.com/words?ml='+enc+'&max=10',     {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]), // means like
+    fetch('https://api.datamuse.com/words?rel_trg='+enc+'&max=8', {signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>[]) // triggered by (associated concepts)
+  ];
+  var results = await Promise.all(jobs);
+  return {
+    synonyms:    results[0].map(function(w){return w.word;}),
+    antonyms:    results[1].map(function(w){return w.word;}),
+    descriptors: results[2].map(function(w){return w.word;}),
+    nouns:       results[3].map(function(w){return w.word;}),
+    meansLike:   results[4].map(function(w){return w.word;}),
+    associated:  results[5].map(function(w){return w.word;})
+  };
+}
+
+// ── Grammar-driven sentence assembly ─────────────────────────
+// Takes the user's grammatical pattern and assembles a direct
+// complementary response using their semantic field
+async function assembleLinguisticResponse(input, analysis, reflexData) {
+  var g       = analysis.grammar;
+  var mood    = g.mood    || 'declarative';
+  var tense   = g.tense   || 'present';
+  var tools   = analysis.toolReflexes.filter(function(t){return t.active;}).map(function(t){return t.tool;});
+  var tool    = tools[0] || 'Envelope';
+
+  // Extract grammatical components
+  var nouns   = g.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Noun'&&t.word.length>2;}).map(function(t){return t.word;});});
+  var verbs   = g.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Verb'&&t.subtype!=='auxiliary';}).map(function(t){return t.word;});});
+  var adjs    = g.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Adjective';}).map(function(t){return t.word;});});
+  var adverbs = g.sentences.flatMap(function(s){return s.tokens.filter(function(t){return t.type==='Adverb';}).map(function(t){return t.word;});});
+  var subjects= g.sentences.flatMap(function(s){return s.subjects.map(function(s2){return s2.word;});});
+
+  // Primary content words — what the message is actually about
+  var contentWords = [].concat(nouns, verbs, adjs).filter(function(w){
+    return w && w.length > 3 && !/^(this|that|they|them|their|there|here|have|been|will|would|could|should|which|what|when|where|just|also|only|very|much|more|some|many|most|other|than|then|well|even|back|such|each|both|its|our|your|his|her|the|and|but|for|nor|yet|so|at|by|in|of|to|up|as|on|do|if|it|is|am|are|was|were|be|has|had|did|will|can|may|might|shall|must|ought)$/i.test(w);
+  });
+  var primary = contentWords[0] || subjects[0] || input.slice(0,20);
+
+  // ── Get semantic fields for top content words in parallel ───
+  var lookupWords = [].concat(
+    [].concat(nouns).slice(0,2),
+    [].concat(verbs).slice(0,1),
+    [].concat(adjs).slice(0,1)
+  ).filter(function(w,i,a){return w&&w.length>3&&a.indexOf(w)===i;}).slice(0,4);
+
+  var dictJobs  = lookupWords.map(function(w){return cachedDictLookup(w).catch(function(){return null;});});
+  var fieldJobs = lookupWords.map(function(w){return getSemanticField(w);});
+  var allResults = await Promise.all(dictJobs.concat(fieldJobs));
+
+  var dictResults  = allResults.slice(0, lookupWords.length);
+  var fieldResults = allResults.slice(lookupWords.length);
+
+  // Build vocabulary map: word → {def, synonyms, descriptors, associated, antonyms}
+  var vocab = {};
+  lookupWords.forEach(function(w, i) {
+    var d = dictResults[i];
+    var f = fieldResults[i];
+    vocab[w] = {
+      def:         d ? (d.allDefinitions||[])[0] : null,
+      partOfSpeech:d ? (d.partOfSpeech||[])[0]  : null,
+      synonyms:    f ? f.synonyms    : [],
+      antonyms:    f ? f.antonyms    : [],
+      descriptors: f ? f.descriptors : [],
+      nouns:       f ? f.nouns       : [],
+      associated:  f ? f.associated  : [],
+      meansLike:   f ? f.meansLike   : []
+    };
+  });
+
+  // ── Sentence construction — mirror the input pattern ─────────
+  // Response sentence structure maps to input mood:
+  //   Interrogative  → Declarative answer (provides information)
+  //   Declarative    → Declarative acknowledgement + expansion
+  //   Imperative     → Confirmatory / action declarative
+  //   Exclamatory    → Emphatic declarative
+
+  var sentence = '';
+  var vWord = vocab[primary] || {};
+  var def   = vWord.def || null;
+  var syns  = (vWord.synonyms    || []).slice(0,3);
+  var descs = (vWord.descriptors || []).slice(0,3);
+  var assoc = (vWord.associated  || []).slice(0,4);
+  var ants  = (vWord.antonyms    || []).slice(0,2);
+  var ml    = (vWord.meansLike   || []).slice(0,3);
+
+  // Tense helper
+  function tenseVerb(v, t) {
+    if (!v) return 'is';
+    if (t === 'past')   return 'was';
+    if (t === 'future') return 'will be';
+    return 'is';
+  }
+
+  if (mood === 'interrogative') {
+    var qWord = (input.match(/^(who|what|where|when|why|which|how)/i)||[])[0]||'';
+
+    if (/^what\s+is\s+(your\s+)?(name|identity)/i.test(input.toLowerCase())) {
+      return 'Autumn.';
+    }
+
+    if (qWord.toLowerCase() === 'why') {
+      // Causal response — reason why using associated concepts
+      var cause = assoc.length ? assoc[0] : (syns[0] || primary);
+      var effect = assoc[1] || (ml[0] || adjs[0] || 'that state');
+      sentence = capitalize(primary) + ' ' + tenseVerb('is', tense) + ' ' + effect + ' because of the ' + cause + ' in this pattern.';
+      if (descs.length) sentence += ' The ' + descs[0] + ' quality is what drives it.';
+
+    } else if (qWord.toLowerCase() === 'how') {
+      // Process response — method/mechanism
+      if (def) {
+        sentence = capitalize(primary) + ': ' + def;
+      } else {
+        var method = syns.length ? syns.slice(0,2).join(' and ') : 'direct analysis';
+        sentence = capitalize(primary) + ' works through ' + method + '.';
+      }
+      if (assoc.length) sentence += ' Connected to: ' + assoc.slice(0,3).join(', ') + '.';
+
+    } else {
+      // What/who/where/which — define and expand
+      if (def) {
+        sentence = capitalize(primary) + ': ' + def;
+        if (syns.length)  sentence += ' Similar to: ' + syns.slice(0,2).join(', ') + '.';
+        if (assoc.length) sentence += ' Associated with: ' + assoc.slice(0,3).join(', ') + '.';
+      } else if (syns.length || assoc.length) {
+        var field = [].concat(syns, assoc).slice(0,4).join(', ');
+        sentence = capitalize(primary) + ' — ' + field + '.';
+      } else {
+        sentence = capitalize(primary) + ' ' + tenseVerb('is', tense) + ' the active pattern here.';
+      }
+    }
+
+  } else if (mood === 'declarative') {
+    // Acknowledge what was stated, expand with semantic depth
+    if (def && syns.length) {
+      sentence = capitalize(primary) + ' — ' + syns.slice(0,2).join(', ') + '.';
+      if (descs.length) sentence += ' ' + capitalize(descs[0]) + ' by nature.';
+    } else if (def) {
+      sentence = def.charAt(0).toUpperCase() + def.slice(1) + '.';
+    } else if (syns.length) {
+      sentence = capitalize(primary) + ' — ' + syns.join(', ') + '.';
+    }
+    // Add the complementary dimension — what goes with this
+    if (assoc.length && sentence) {
+      sentence += ' That connects to ' + assoc.slice(0,2).join(' and ') + '.';
+    }
+    // Verb enrichment
+    var primaryVerb = verbs[0];
+    if (primaryVerb && vocab[primaryVerb] && vocab[primaryVerb].def) {
+      var vd = vocab[primaryVerb].def;
+      if (vd && vd.length < 100) sentence += ' "' + primaryVerb + '" — ' + vd;
+    }
+
+  } else if (mood === 'imperative') {
+    var action = verbs[0] || primary;
+    var target = nouns[1] || nouns[0] || '';
+    sentence = capitalize(action) + (target?' on '+target:'') + '.';
+    if (syns.length) sentence += ' — ' + syns.slice(0,2).join(', ') + '.';
+
+  } else if (mood === 'exclamatory') {
+    var emph = adverbs[0] || adjs[0] || '';
+    sentence = (emph ? capitalize(emph) + ' — ' : '') + capitalize(primary) + '.';
+    if (descs.length) sentence += ' ' + capitalize(descs[0]) + '.';
+    if (assoc.length) sentence += ' Pulls in: ' + assoc.slice(0,2).join(', ') + '.';
+  }
+
+  // ── Fallback — always produce something from the pattern ─────
+  if (!sentence || sentence.length < 8) {
+    sentence = capitalize(primary || input.slice(0,20)) + ' — ';
+    sentence += (syns.length ? syns.slice(0,2).join(', ') : (assoc.slice(0,2).join(', ')||'pattern noted')) + '.';
+  }
+
+  return sentence.replace(/\s{2,}/g, ' ').trim();
+}
+
+// ── LanguageTool grammar check on Autumn's output ────────────
+async function validateGrammar(text) {
+  try {
+    var resp = await fetch('https://api.languagetool.org/v2/check', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'text='+encodeURIComponent(text)+'&language=en-US',
+      signal: AbortSignal.timeout(4000)
+    });
+    var data = await resp.json();
+    // Apply grammar suggestions — only clear, high-confidence fixes
+    var corrected = text;
+    var matches = (data.matches||[]).filter(function(m){
+      return m.rule && m.rule.category && m.rule.category.id !== 'STYLE'
+             && m.replacements && m.replacements.length > 0
+             && m.rule.issueType === 'misspelling';
+    });
+    // Apply in reverse order to preserve offsets
+    matches.slice().reverse().forEach(function(m) {
+      if (m.replacements && m.replacements[0]) {
+        corrected = corrected.slice(0, m.offset) + m.replacements[0].value + corrected.slice(m.offset + m.length);
+      }
+    });
+    return corrected;
+  } catch(e) { return text; }
+}
+
 async function composeResponse(input, analysis, reflexData) {
   const g = analysis.grammar;
   const low = input.toLowerCase();
@@ -2660,10 +2880,26 @@ async function composeResponse(input, analysis, reflexData) {
     .filter(t => t.type==='Noun' && t.word[0]===t.word[0].toUpperCase() && t.word.length>3)
     .forEach(t => { S.memory[t.word] = s.raw.substring(0,80); }));
 
-  // ── Fallback — always have something direct ───────────────────
-  if (!parts.length) parts.push(_leatrCompose(primaryWord||input.slice(0,40), adjs, verbs, activeTool, tense));
+  // ── Primary path: full linguistic assembly via Datamuse + Dictionary ──
+  // If parts is still empty OR we want the richest possible response,
+  // run the full linguistic engine on the input
+  if (!parts.length) {
+    try {
+      var _lingResp = await assembleLinguisticResponse(input, analysis, reflexData);
+      if (_lingResp && _lingResp.length > 5) {
+        // Grammar-validate Autumn's output before sending
+        var _validated = await validateGrammar(_lingResp).catch(function(){ return _lingResp; });
+        return _reply(_validated, g, analysis, tools);
+      }
+    } catch(e) { console.warn('[Autumn linguistic engine]', e.message); }
+    // Last resort — pure LEATR encode
+    parts.push(_leatrCompose(primaryWord||input.slice(0,40), adjs, verbs, activeTool, tense));
+  }
 
-  return _reply(parts.filter(Boolean).join(' ').replace(/\s{2,}/g,' ').trim(), g, analysis, tools);
+  // Run assembled parts through grammar validator
+  var _assembled = parts.filter(Boolean).join(' ').replace(/\s{2,}/g,' ').trim();
+  try { _assembled = await validateGrammar(_assembled); } catch(e) {}
+  return _reply(_assembled, g, analysis, tools);
 }
 
 // ── Response assembly helpers ────────────────────────────────
