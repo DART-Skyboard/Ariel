@@ -2572,7 +2572,7 @@ async function composeResponse(input, analysis, reflexData) {
   });
 
   // ── 9. Identity / self questions ────────────────────────────
-  if (/who are you|what are you|tell me about yourself|your name|what do you look like|describe yourself|your appearance/i.test(low)) {
+  if (/who are you|what are you|tell me about yourself|your name|what is your name|what('s| is) your name|what do you look like|describe yourself|your appearance|are you autumn|is your name/i.test(low)) {
     const selfTopics = topTopics.length ? ` Topics I keep returning to: ${topTopics.join(', ')}.` : '';
     const selfMem = memKeys.length ? ` I hold ${memKeys.length} memory nodes across our sessions.` : '';
     const _id = typeof AUTUMN_IDENTITY !== 'undefined' ? AUTUMN_IDENTITY : null;
@@ -2801,6 +2801,9 @@ function detectIntent(text){
   if(/\b(show me( a| some)? (picture|photo|image)|picture of|photos? of|images? of|what does .+ look like|show me what|gallery of)\b/.test(lc))return'image';
   if(/\b(latest|recent|today|breaking|news|current events|happening now|this week|2025|2026)\b/.test(lc))return'news';
   if(/\bhow (to|do i|can i|do you|does one)\b/.test(lc))return'howto';
+  // Self-directed "what" questions are personal, not factual web lookups
+  if(/^what (is your|are you|do you|can you|is autumn|does autumn)\b/.test(lc))return'personal';
+  if(/^who (are you|is autumn)\b/.test(lc))return'personal';
   if(/^(who|what|where|when|why|which|how)\b/.test(lc))return'factual';
   return'general';
 }
@@ -5147,15 +5150,19 @@ IDENTITY: You are Autumn. When the user refers to "Autumn" or "you" they mean yo
     }
     // API returned but empty content — surface error hint
     if(data.error) {
-      // API error — fall through to native composeResponse instead of showing raw error
+      // API error — fall through to native composeResponse silently
       console.warn('[Autumn] API error:', data.error.message||data.error.type);
-      // Don't return error text — let it fall through to composeResponse below
+      throw new Error('api_error_fallback'); // triggers catch → composeResponse
     }
   } catch(e){ console.warn('[Autumn generateReply]', e); }
 
-  // Fallback: simple conversational response so UI never goes silent
-  try { const _fb = await composeResponse(text, analysis, reflexData); if(_fb && _fb.text) return _fb; } catch(e){}
-  return { text: 'Something went wrong on my end — try again.', grammarMeta:'', brpnMeta:'' };
+  // Fallback: always use Autumn's native engine — never show error text to user
+  try {
+    const _fb = await composeResponse(text, analysis, reflexData);
+    if(_fb && _fb.text) return _fb;
+  } catch(e) { console.warn('[Autumn] composeResponse failed:', e.message); }
+  // Last resort — build from LEATR grammar directly
+  return { text: buildResponse(text, analysis), grammarMeta:'', brpnMeta:'' };
 }
 
 // ============================================================
