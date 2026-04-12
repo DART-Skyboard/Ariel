@@ -223,6 +223,26 @@ header{height:52px;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--bo
 .hdr-btns::-webkit-scrollbar{display:none}
 .hdr-btn{background:transparent;border:1px solid var(--border);color:var(--dim);padding:5px 10px;border-radius:4px;cursor:pointer;font-family:var(--font-d);font-size:.5rem;letter-spacing:1px;transition:all .2s;flex-shrink:0;white-space:nowrap}
 .hdr-btn:hover{color:var(--cyan);border-color:var(--cyan)}
+/* ── Backdrop opacity toggle pill ── */
+#scrim-toggle{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(2,10,20,.55);
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:20px;padding:3px 8px 3px 4px;
+  cursor:pointer;flex-shrink:0;
+  font-family:var(--font-d);font-size:.42rem;letter-spacing:1px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  transition:border-color .25s,box-shadow .25s;
+  white-space:nowrap}
+#scrim-toggle:hover{box-shadow:0 0 10px var(--st-color,#00d4ff)}
+#st-dot{
+  width:22px;height:22px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.38rem;font-family:var(--font-d);letter-spacing:.5px;font-weight:700;
+  background:var(--st-color,#00d4ff);
+  box-shadow:0 0 8px var(--st-color,#00d4ff),0 0 18px var(--st-color,#00d4ff);
+  color:#000;transition:background .3s,box-shadow .3s}
+#st-label{color:var(--st-color,#00d4ff);transition:color .3s;line-height:1}
 #main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;position:relative;z-index:1}
 /* BRPN 3D region */
 #brpn-region{height:220px;flex-shrink:0;position:relative;border-bottom:1px solid var(--border);overflow:hidden;cursor:grab}
@@ -801,8 +821,12 @@ select.ash-ctrl-input{cursor:pointer}
   src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/autumn.mp4"
   autoplay loop muted playsinline
   style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2;pointer-events:none"></video>
-<!-- Dark scrim so interface remains readable -->
-<div style="position:fixed;inset:0;background:rgba(2,10,20,0.72);z-index:-1;pointer-events:none"></div>
+<!-- Frosted glass scrim — opacity/blur controlled by JS -->
+<div id="vid-scrim" style="position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:rgba(2,10,20,0.20);
+  backdrop-filter:blur(6px) saturate(1.4);
+  -webkit-backdrop-filter:blur(6px) saturate(1.4);
+  transition:background .4s ease,backdrop-filter .4s ease,-webkit-backdrop-filter .4s ease"></div>
 
 <div class="ov ov-grid"></div>
 
@@ -849,6 +873,11 @@ select.ash-ctrl-input{cursor:pointer}
     <div class="logo-sub">LEATR v2.1</div>
   </a>
   <div class="hdr-btns">
+    <!-- Backdrop opacity cycle toggle -->
+    <button id="scrim-toggle" onclick="cycleScrim()" title="Cycle backdrop opacity">
+      <div id="st-dot">80%</div>
+      <span id="st-label">FROST</span>
+    </button>
     <button class="hdr-btn" onclick="openVoiceSettings()" title="Voice settings">VOICE</button>
     <button class="hdr-btn" onclick="openLiveMode()" title="Live conversation">LIVE</button>
     <button class="hdr-btn" onclick="exportData()" title="Export data">EXPORT</button>
@@ -9482,6 +9511,49 @@ window.bindToolsCrypto    = bindToolsCrypto;
 
 // Auto-load defs on page load
 ashLoadDefs();
+
+// ── Backdrop scrim opacity cycle ──────────────────────────────────────────
+(function(){
+  // Levels: [label, dotText, bgRgba, blurPx, color]
+  const LEVELS = [
+    { label:'FROST',  dot:'80%', bg:'rgba(2,10,20,0.20)', blur:6,  color:'#7ecfff' },  // frost blue  — default
+    { label:'CLEAR',  dot:'50%', bg:'rgba(2,10,20,0.50)', blur:4,  color:'#ffffff' },  // white
+    { label:'HAZE',   dot:'50%', bg:'rgba(2,10,20,0.50)', blur:10, color:'#ffe040' },  // yellow
+    { label:'DUSK',   dot:'30%', bg:'rgba(2,10,20,0.70)', blur:14, color:'#ff4aac' },  // neon pink
+    { label:'DEEP',   dot:'15%', bg:'rgba(2,10,20,0.85)', blur:20, color:'#39ff6e' },  // neon green
+    { label:'VOID',   dot:'0%',  bg:'rgba(2,10,20,0.97)', blur:0,  color:'#ffffff' },  // opaque white
+  ];
+  let idx = 0;
+
+  function applyLevel(l){
+    const scrim = document.getElementById('vid-scrim');
+    const dot   = document.getElementById('st-dot');
+    const lbl   = document.getElementById('st-label');
+    const btn   = document.getElementById('scrim-toggle');
+    if (!scrim||!dot||!lbl||!btn) return;
+    scrim.style.background = l.bg;
+    scrim.style.backdropFilter = `blur(${l.blur}px) saturate(1.4)`;
+    scrim.style.webkitBackdropFilter = `blur(${l.blur}px) saturate(1.4)`;
+    dot.textContent  = l.dot;
+    dot.style.background  = l.color;
+    dot.style.boxShadow   = `0 0 8px ${l.color},0 0 18px ${l.color}`;
+    lbl.textContent  = l.label;
+    lbl.style.color  = l.color;
+    btn.style.setProperty('--st-color', l.color);
+    btn.style.borderColor = l.color+'44';
+    btn.style.boxShadow   = `0 0 8px ${l.color}44`;
+  }
+
+  window.cycleScrim = function(){
+    idx = (idx + 1) % LEVELS.length;
+    applyLevel(LEVELS[idx]);
+  };
+
+  // Init on DOM ready
+  document.addEventListener('DOMContentLoaded', function(){
+    applyLevel(LEVELS[0]);
+  });
+})();
 
 </script>
 
