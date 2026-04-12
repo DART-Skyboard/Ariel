@@ -3930,34 +3930,87 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
   else if (/\b21.?9\b|\bultrawide\b/.test(_pLow))             { _w = 2560; _h = 1080; }
   else if (/\b1.?1\b|\bsquare\b/.test(_pLow))                { _w = 2048; _h = 2048; }
 
-  // ── PRIMARY: Pollinations diffusion renderer with LISE-enriched descriptor ──
+  // ── Clamp dimensions to Stable Horde SDXL max (1024) keeping aspect ratio ──
+  var _hordeMax = 1024;
+  var _aspect = _w / _h;
+  var _hw, _hh;
+  if (_aspect >= 1) { _hw = _hordeMax; _hh = Math.round(_hordeMax / _aspect); }
+  else              { _hh = _hordeMax; _hw = Math.round(_hordeMax * _aspect); }
+  // SDXL requires dimensions divisible by 64
+  _hw = Math.round(_hw / 64) * 64;
+  _hh = Math.round(_hh / 64) * 64;
+  _hw = Math.max(512, Math.min(_hw, _hordeMax));
+  _hh = Math.max(512, Math.min(_hh, _hordeMax));
+
+  // ── PRIMARY: Stable Horde — free community GPUs, genuine 1024×1024 SDXL ──
+  try {
+    var _hordeBody = JSON.stringify({
+      prompt: _descriptor + ' ### watermark, blurry, low quality, cropped',
+      params: {
+        width: _hw, height: _hh,
+        steps: 28, cfg_scale: 7.5,
+        sampler_name: 'k_dpmpp_2m',
+        n: 1, karras: true
+      },
+      models: ['AlbedoBase XL (SDXL)'],
+      r2: true, shared: false, slow_workers: true,
+      nsfw: false, censor_nsfw: false
+    });
+    var _hordeResp = await fetch('https://stablehorde.net/api/v2/generate/async', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': '0000000000',
+        'Client-Agent': 'autumn-lise:1.0:radicaldeepscale.com'
+      },
+      body: _hordeBody,
+      signal: AbortSignal.timeout(15000)
+    });
+    if (_hordeResp.ok) {
+      var _hordeData = await _hordeResp.json();
+      if (_hordeData.id) {
+        console.log('[LISE] Stable Horde job submitted:', _hordeData.id, _hw+'x'+_hh);
+        return { jobId: _hordeData.id, seed: _seed,
+                 model: 'LISE/'+_elements.primaryTool+'/SDXL-1024',
+                 prompt: _descriptor, originalPrompt: prompt,
+                 elements: _elements, url: null, _pending: true,
+                 _dims: _hw+'x'+_hh };
+      }
+    }
+  } catch(e) { console.warn('[LISE] Stable Horde submit failed, using Pollinations:', e.message); }
+
+  // ── FALLBACK: Pollinations (768 cap but instant) ──
   var _encoded = encodeURIComponent(_descriptor);
-  var _model = styleInfo.model || 'flux';
-  // flux-pro supports higher resolutions than base flux
-  // enhance=true forces 768 fixed processing — removed so full dims are honored
-  var _model = styleInfo.model || 'flux-pro';
-  var _url = 'https://image.pollinations.ai/prompt/'+_encoded+'?width='+_w+'&height='+_h+'&model='+_model+'&seed='+_seed+'&nologo=true&safe=false';
-  return { jobId:null, seed:_seed, model:'LISE/'+_elements.primaryTool+'/Flux',
+  var _url = 'https://image.pollinations.ai/prompt/'+_encoded+'?width='+_w+'&height='+_h+'&model=flux-pro&seed='+_seed+'&nologo=true&safe=false';
+  return { jobId:null, seed:_seed, model:'LISE/'+_elements.primaryTool+'/Flux-768',
            prompt:_descriptor, originalPrompt:prompt, elements:_elements,
            url:_url, _pending:false };
 }
 
-async function pollHordeJob(jobId, maxWaitMs) {
-  maxWaitMs = maxWaitMs || 120000;
+async function pollHordeJob(jobId, maxWaitMs, onProgress) {
+  maxWaitMs = maxWaitMs || 180000;
   var start = Date.now();
+  var pollInterval = 4000;
   while(Date.now()-start < maxWaitMs) {
-    await new Promise(function(r){ setTimeout(r,4000); });
+    await new Promise(function(r){ setTimeout(r, pollInterval); });
     try {
       var cr = await fetch('https://stablehorde.net/api/v2/generate/check/'+jobId,
         {headers:{'Client-Agent':'autumn-lise:1.0:radicaldeepscale.com'},signal:AbortSignal.timeout(10000)});
       var cd = await cr.json();
-      if(cd.faulted) throw new Error('LISE executor faulted');
+      if(cd.faulted) throw new Error('SDXL render faulted — retrying with fallback');
+      // Report progress to shimmer
+      if(onProgress) {
+        var _elapsed = Math.round((Date.now()-start)/1000);
+        var _pos = cd.queue_position || 0;
+        var _pct = cd.waiting===0 ? 100 : Math.min(95, Math.round((1 - cd.waiting/Math.max(cd.waiting,1))*100));
+        onProgress(_pos, _elapsed, cd.processing||0);
+      }
       if(cd.done) {
         var sr = await fetch('https://stablehorde.net/api/v2/generate/status/'+jobId,
-          {headers:{'Client-Agent':'autumn-lise:1.0:radicaldeepscale.com'},signal:AbortSignal.timeout(10000)});
+          {headers:{'Client-Agent':'autumn-lise:1.0:radicaldeepscale.com'},signal:AbortSignal.timeout(15000)});
         var sd = await sr.json();
         var gens = sd.generations||[];
-        if(gens.length && gens[0].img) return gens[0].img;
+        if(gens.length && gens[0].img) return gens[0].img; // R2 URL or base64
         throw new Error('LISE: no image in result');
       }
     } catch(e) {
@@ -3965,7 +4018,7 @@ async function pollHordeJob(jobId, maxWaitMs) {
       throw e;
     }
   }
-  throw new Error('LISE executor timeout');
+  throw new Error('SDXL render timeout — falling back to Pollinations');
 }
 
 
@@ -4012,7 +4065,7 @@ async function runVisionAnalysis(text, analysis, reflexData, imgs) {
 async function runImageGeneration(text, analysis, reflexData) {
   var styleInfo=extractStyleModifier(text);
   var cardId='imggen-'+Date.now();
-  var spinHtml='<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div>GENERATING · '+styleInfo.label+'…</div></div>';
+  var spinHtml='<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div><span id="spin-lbl-'+cardId+'">RENDERING SDXL · '+styleInfo.label+'…</span></div></div>';
   var genMsg={role:'autumn',text:'',ts:new Date().toISOString(),id:cardId,grammarMeta:'',brpnMeta:'',contextType:'IMAGE_GEN',imageGenCard:spinHtml};
   msgs().push(genMsg);renderMessages();
   var g=analysis.grammar;
@@ -4025,12 +4078,19 @@ async function runImageGeneration(text, analysis, reflexData) {
   var _imgUrl = null;
   try {
     if (genResult.url && !genResult._pending) {
-      // Canvas synthesis: already have the data URL
       _imgUrl = genResult.url;
       window._autumnGens[_genId].url = _imgUrl;
     } else if (genResult._pending && genResult.jobId) {
-      // Horde fallback: poll for completion
-      _imgUrl = await pollHordeJob(genResult.jobId, 90000);
+      // Stable Horde SDXL — poll with live progress updates in shimmer
+      var _spinLbl = document.getElementById('spin-lbl-'+cardId);
+      var _onProg = function(qpos, elapsed, processing) {
+        if (!_spinLbl) return;
+        var _msg = processing > 0
+          ? 'RENDERING · ' + (genResult._dims||'1024×1024') + ' · ' + elapsed + 's'
+          : 'QUEUE ' + (qpos>0?'#'+qpos+' · ':'') + elapsed + 's · SDXL 1024';
+        _spinLbl.textContent = _msg;
+      };
+      _imgUrl = await pollHordeJob(genResult.jobId, 180000, _onProg);
       genResult.url = _imgUrl;
       window._autumnGens[_genId].url = _imgUrl;
     }
