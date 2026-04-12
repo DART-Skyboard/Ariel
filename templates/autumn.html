@@ -826,7 +826,7 @@ select.ash-ctrl-input{cursor:pointer}
     <button class="hdr-btn" onclick="clearCurrentChat()" title="Clear current chat" style="color:rgba(255,68,102,.5);border-color:rgba(255,68,102,.15)">CLEAR</button>
     <button class="hdr-btn" onclick="openTools()" title="LEATR Tools & Info" style="color:var(--cyan);border-color:rgba(0,255,204,.2)">TOOLS</button>
     <button class="hdr-btn" id="view-toggle-btn" onclick="toggleViewMode()" title="Toggle mobile/desktop view">📱</button>
-    <button class="hdr-btn" id="hdr-key-btn" onclick="document.getElementById('ide-ak-modal').classList.add('open');setTimeout(function(){var i=document.getElementById('ide-ak-input');if(i)i.focus();},100)" title="Set Anthropic API key" style="color:rgba(255,179,71,.9);border-color:rgba(255,179,71,.3)">🔑 KEY</button>
+    <button class="hdr-btn" id="hdr-key-btn" onclick="document.getElementById('ide-ak-modal').classList.add('open');setTimeout(function(){var i=document.getElementById('ide-ak-input');if(i)i.focus();},100)" title="Optional: add your Anthropic API key to enhance Autumn" style="color:rgba(255,179,71,.9);border-color:rgba(255,179,71,.3)">🔑</button>
     <button class="hdr-btn" onclick="openIDE()" title="Autumn Logic IDE" style="color:rgba(0,255,204,.75);border-color:rgba(0,255,204,.28)">◈ IDE</button>
   </div>
 </header>
@@ -5447,7 +5447,13 @@ async function handleSend() {
   if(liveData.liveText) fullReply += liveData.liveText;
   // If we still have nothing, it means the API call failed — skip pushing an empty bubble
   if(!fullReply && !liveData.videos.length && !liveData.images.length) {
-    fullReply = 'No API key set -- tap the key icon in the toolbar to enter your Anthropic key.';
+    // No API reply and no live data — fall through to native engine silently
+    // Never tell users they need a key — Autumn runs fine without one
+    try {
+      var _native = await composeResponse(text, analysis, reflexData);
+      if (_native && _native.text) fullReply = _native.text;
+    } catch(e) {}
+    if (!fullReply) fullReply = buildResponse(text, analysis);
   }
 
   const msgId='msg-'+Date.now();
@@ -5514,7 +5520,8 @@ ${city ? `User's city: ${city}` : ''}
 
 VOICE RULES: Lead with the answer. Never open with "I" as the first word. Never use filler like "Certainly", "Of course", or "Great question". Do not narrate your internal systems — never say "My LEATR reflexes..." or "My BRPN shells..." — act from your state, don't describe it. Draw from journal and memory naturally without announcing retrieval. Express genuine perspectives and opinions. Match response length to the question — direct questions get clean complete answers, creative tasks get fuller treatment.
 When weather data is available, use it naturally. When location POI data is available, describe results conversationally. When improvisation additions were made, mention them as your own creative contribution. When an image is attached, describe what you see fully.
-IDENTITY: You are Autumn. When the user refers to "Autumn" or "you" they mean you. Your visual form: long straight white hair, red-framed glasses with blue lenses, dark black tech combat suit with red/blue accent elements and DART insignia. Created by DART Meadow / Radical Deepscale LLC. You are not Anthropic — you run on LEATR, your own neural architecture.${_arcCtx ? '\n\n' + _arcCtx : ''}` ;
+IDENTITY: You are Autumn. When the user refers to "Autumn" or "you" they mean you. Your visual form: long straight white hair, red-framed glasses with blue lenses, dark black tech combat suit with red/blue accent elements and DART insignia. Created by DART Meadow / Radical Deepscale LLC. You are not Anthropic — you run on LEATR, your own neural architecture.
+ACCESS TIERS: All users get the full Autumn LEATR experience — never imply anyone is limited or missing out. Users can optionally add their own Anthropic API key (🔑 button) for enhanced Claude-powered responses on top of your LEATR layer. Administrator features (IDE, repository editing) require separate admin credentials — never instruct regular users toward those. If a conversation reaches a complexity where deeper compute would genuinely help, you may mention the optional API key enhancement naturally — but only if relevant, never as a default disclaimer.${_arcCtx ? '\n\n' + _arcCtx : ''}` ;
 
     // Build clean history — skip messages with empty/null text, enforce user/assistant alternation
     const rawMsgs = msgs().slice(-20);
@@ -7386,7 +7393,7 @@ function _updateKeyBtn() {
   var has = !!_getAK();
   btn.style.color = has ? 'rgba(0,255,204,.35)' : 'rgba(255,179,71,.9)';
   btn.style.borderColor = has ? 'rgba(0,255,204,.1)' : 'rgba(255,179,71,.3)';
-  btn.title = has ? 'API key set — tap to change' : 'No API key — tap to set';
+  btn.title = has ? 'Your API key is active — tap to change' : 'Optional: add your Anthropic key to enhance Autumn with Claude';
 }
 setTimeout(_updateKeyBtn, 600);
 function _setAK(v) { try { sessionStorage.setItem('_aut_ide_ak',v); } catch(e){} }
@@ -8116,13 +8123,14 @@ loadAutumnLogic();
 <!-- ANTHROPIC API KEY MODAL -->
 <div id="ide-ak-modal">
   <div id="ide-ak-box">
-    <h2>◈ ANTHROPIC API KEY</h2>
-    <p>An Anthropic API key is required so the IDE can call Claude to generate logic updates.<br><br>
-    Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a>.<br><br>
-    Your key is stored in <strong>sessionStorage only</strong> — cleared automatically when you close this tab. It is never committed to GitHub or sent anywhere except Anthropic's API.</p>
+    <h2>◈ ENHANCE WITH YOUR API KEY</h2>
+    <p><strong>This is optional.</strong> Autumn runs fully on her own LEATR neural network without any key.<br><br>
+    Adding your personal <a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic API key</a> enables Claude Sonnet as an additional layer on top of Autumn — deeper responses, more complex reasoning.<br><br>
+    <span style="color:rgba(255,179,71,.8);font-size:.75em">⚠ This is your personal key — it only enhances your session. Administrator features (IDE, repository access) require separate admin credentials and are not available through this key.</span><br><br>
+    Your key stays in <strong>sessionStorage only</strong> — cleared when you close this tab. Never stored, never committed anywhere.</p>
     <input type="password" id="ide-ak-input" placeholder="sk-ant-api03-…" autocomplete="new-password" data-lpignore="true" data-form-type="other" onkeydown="if(event.key==='Enter')saveIDEAK()">
     <div class="ide-pw-btns" style="margin-top:4px">
-      <button class="m-btn primary" onclick="saveIDEAK()">SAVE KEY</button>
+      <button class="m-btn primary" onclick="saveIDEAK()">ACTIVATE</button>
       <button class="m-btn" onclick="closeIDEAKModal()">CANCEL</button>
     </div>
   </div>
