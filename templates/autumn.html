@@ -4476,7 +4476,21 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
     var _refResp = await fetch('https://api.openverse.org/v1/images/?q='+encodeURIComponent(_refQuery)+'&page_size=4&license_type=all', {signal:AbortSignal.timeout(6000)});
     if(_refResp.ok) {
       var _refData = await _refResp.json();
-      _refs = (_refData.results||[]).map(function(r){ return (r.tags||[]).slice(0,5).map(function(t){ return t.name; }).join(' ') + ' ' + (r.title||''); });
+      // Filter tags — only keep visually descriptive terms, not metadata/identifiers/names
+      var _stopTags = /\b(\d{4}|project|center|research|foundation|http|www|com|org|jpg|png|file|upload|commons|wiki|flickr|photo|image|picture|id|null|undefined|stock|getty|shutterstock|alamy|adobe|creative|license|attribution|copyright|rights|reserved|public|domain|free|open|source|version|release|\d+px|composite|depicting|showing|featuring)\b/i;
+      var _visualTags = ['color', 'light', 'dark', 'texture', 'style', 'art', 'design', 'portrait', 'landscape', 'abstract', 'realistic', 'detail', 'vivid', 'sharp', 'dramatic', 'cinematic', 'natural', 'urban', 'outdoor', 'indoor', 'close', 'wide', 'night', 'day', 'warm', 'cool', 'bright', 'shadow', 'aerial', 'macro'];
+      _refs = (_refData.results||[]).map(function(r) {
+        var _cleanTags = (r.tags||[])
+          .map(function(t){ return t.name; })
+          .filter(function(t){
+            return t && t.length > 2 && t.length < 20
+              && !_stopTags.test(t)
+              && !/[0-9]{3,}/.test(t)
+              && !/[A-Z]{3,}/.test(t); // no all-caps identifiers
+          })
+          .slice(0, 4);
+        return _cleanTags.join(' ');
+      }).filter(function(s){ return s.length > 3; });
     }
   } catch(e) {}
 
@@ -4524,7 +4538,7 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
   // ── PRIMARY: Stable Horde — free community GPUs, genuine 1024×1024 SDXL ──
   try {
     var _hordeBody = JSON.stringify({
-      prompt: _descriptor + ' ### watermark, blurry, low quality, cropped',
+      prompt: _descriptor + ' ### watermark, blurry, low quality, cropped, text, logo, watermark, signature',
       params: {
         width: _hw, height: _hh,
         steps: 28, cfg_scale: 7.5,
@@ -4533,7 +4547,8 @@ async function generateWithPollinations(prompt, styleInfo, seed) {
       },
       models: ['AlbedoBase XL (SDXL)'],
       r2: true, shared: false, slow_workers: true,
-      nsfw: false, censor_nsfw: false
+      nsfw: true,        // route to all workers — they can still render clean content
+      censor_nsfw: false // don't censor the output
     });
     var _hordeResp = await fetch('https://stablehorde.net/api/v2/generate/async', {
       method: 'POST',
