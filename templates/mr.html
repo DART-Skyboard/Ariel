@@ -182,12 +182,13 @@ let satRecords = [];
 let issRecord = null;
 
 async function fetchTLEs() {
+  // ── CelesTrak GP API (updated 2024 — gp.php?GROUP= format) ──
   const groups = [
-    { url: 'https://celestrak.org/GATT/format=2/query=iss', color: SAT_COLORS.iss },
-    { url: 'https://celestrak.org/GATT/format=2/query=stations', color: SAT_COLORS.stations },
-    { url: 'https://celestrak.org/GATT/format=2/query=gps-ops', color: SAT_COLORS.gps },
-    { url: 'https://celestrak.org/GATT/format=2/query=weather', color: SAT_COLORS.weather },
-    { url: 'https://celestrak.org/GATT/format=2/query=active&count=80', color: SAT_COLORS.active },
+    { url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=TLE', color: SAT_COLORS.iss },
+    { url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=TLE', color: SAT_COLORS.weather },
+    { url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=TLE', color: SAT_COLORS.gps },
+    { url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=TLE', color: SAT_COLORS.active },
+    { url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=TLE', color: SAT_COLORS.default },
   ];
 
   const CORS_PROXIES = [
@@ -214,7 +215,7 @@ async function fetchTLEs() {
           const rec = twoline2satrec(lines[i+1], lines[i+2]);
           const entry = { name: lines[i], rec, color: grp.color };
           allSats.push(entry);
-          if (lines[i].includes('ISS') || lines[i].includes('ZARYA')) issRecord = entry;
+          if (/ISS|ZARYA|TIANGONG|CSS|NAUKA/i.test(lines[i])) issRecord = entry;
         } catch(e) {}
       }
     }
@@ -285,137 +286,193 @@ window.focusSat = function(name) {
 // ── ADS-B aircraft via OpenSky ────────────────────────────────
 let aircraftData = [];
 
-// Aircraft type → icon mapping
-function getAircraftIcon(cat, callsign) {
+// Aircraft type → icon mapping (richer detection)
+function getAircraftIcon(cat, callsign, type_code) {
   const cs = (callsign || '').toUpperCase().trim();
-  // Military callsign prefixes
-  if (/^(AF|USAF|NAV|RCH|REACH|EVAC|PAT|GHOST|BONE|HAWK|EAGLE)/.test(cs)) return '🪖';
-  // Emergency
-  if (/^(LIFE|MED|HEMS|AIR1|RESCUE)/.test(cs)) return '🚑';
-  
-  // Category codes from OpenSky
-  switch(cat) {
-    case 1: return '✈';  // No info
-    case 2: return '🛩'; // Light <15500lbs
-    case 3: return '✈';  // Small 15500-75000lbs
-    case 4: return '✈';  // Large 75000-300000lbs
-    case 5: return '🪖'; // High vortex large (747 size)
-    case 6: return '✈';  // Heavy >300000lbs
-    case 7: return '✈';  // High performance (>5g & 400kts+)
-    case 8: return '🚁'; // Rotorcraft / Helicopter
-    case 9: return '🛸'; // Glider / Sailplane
-    case 10: return '🎈'; // Lighter than air / Balloon
-    case 11: return '🪂'; // Parachutist / Skydiver
-    case 12: return '🛩'; // Ultralight
-    case 13: return '🛸'; // UAV / Drone
-    case 14: return '🚀'; // Space / Transatmospheric
-    case 15: return '🛩'; // Surface vehicle — emergency
-    case 16: return '🚗'; // Surface vehicle — service
-    case 17: return '🏔'; // Fixed ground obstacle
+  const tc = (type_code || '').toUpperCase().trim();
+
+  // ── Callsign-based special types ────────────────────────────
+  if (/^(LIFE|MED|HEMS|AIR1|AIR2|RESCUE|MEDEVAC|MERCY)/.test(cs)) return '🚑'; // air ambulance
+  if (/^(AF\d|USAF|RCH|REACH|EVAC|PAT\d|GHOST|BONE|HAWK|EAGLE|VIPER|COBRA|RAPTOR|DARKSTAR|LOBO)/.test(cs)) return '🪖'; // military
+  if (/^(NASA|N[0-9]|SPACE)/.test(cs) && !/^N[0-9]{5}/.test(cs)) return '🚀'; // NASA
+  if (/^(BLOCKED|MNRVA|SNTRY|EXEC)/.test(cs)) return '🛡'; // blocked/gov
+
+  // ── ICAO type code detection ─────────────────────────────────
+  // Drones / UAV
+  if (/^(GLO|PRIM|MQ|RQ|X47|MALE|HALE|SCAN|PRED|REAP|GOBA)/.test(tc)) return '🛸';
+  // Helicopters (H = helicopter family in ICAO type codes)
+  if (/^H/.test(tc) || /^(EC\d|AS\d|AW\d|S-\d|R22|R44|R66|B2\d|B47|CH4|CH5|UH\d|AH\d|OH\d|HH\d|SH\d|MH\d|NH\d|SA\d)/.test(tc)) return '🚁';
+  // Tiltrotor
+  if (/^(V22|BA60)/.test(tc)) return '🚁';
+  // Blimps / balloons
+  if (/^(LZ|DL8|TCOM|GZ2)/.test(tc)) return '🎈';
+  // Gliders
+  if (/^(G|ASH|DG\d|LS\d|ASW|AS1|PIK|SZD|DIS|PH\d)/.test(tc)) return '🛩';
+  // Amphibians / floatplanes
+  if (/^(DHC2|DHC3|BE18|G21|LA4|LAKE|SEAB)/.test(tc)) return '🛥';
+  // Supersonic / military jets
+  if (/^(F1\d|F2\d|F35|FA18|A10|B1|B2|B52|SR71|U2|E3|E8|RC135|P8|C17|C5|KC|KE3)/.test(tc)) return '🪖';
+  // Business jets
+  if (/^(C25|C56|GLF|GULF|CL3|CL6|FA7|FA8|LJ\d|PC24|E55|E50|BE40|H25|HA4)/.test(tc)) return '🛩';
+  // Turboprops / regional
+  if (/^(ATR|DH8|E120|SF3|SF34|JS3|SWM|PAY|PC12|TBM|SR2|DA4|DA5|C208)/.test(tc)) return '🛩';
+
+  // ── OpenSky category fallback ────────────────────────────────
+  switch(parseInt(cat) || 0) {
+    case 2:  return '🛩';  // Light <15500 lbs
+    case 3:  return '✈';   // Small
+    case 4:  return '✈';   // Large
+    case 5:  return '✈';   // High-vortex large
+    case 6:  return '✈';   // Heavy
+    case 7:  return '⚡';   // High-performance (>5g / >400kts)
+    case 8:  return '🚁';  // Rotorcraft
+    case 9:  return '🛩';  // Glider
+    case 10: return '🎈';  // Lighter than air
+    case 11: return '🪂';  // Parachutist
+    case 12: return '🛩';  // Ultralight
+    case 13: return '🛸';  // UAV/Drone
+    case 14: return '🚀';  // Space/transatmospheric
+    case 15: return '🚒';  // Surface emergency
+    case 16: return '🚗';  // Surface service
+    case 17: return '📡';  // Ground obstacle
     default: return '✈';
   }
 }
 
-function getAircraftLabel(cat) {
+function getAircraftLabel(cat, type_code) {
+  const tc = (type_code || '').toUpperCase();
+  if (/^H/.test(tc)) return 'HELICOPTER';
+  if (/^(MQ|RQ|GLO|PRED)/.test(tc)) return 'DRONE/UAV';
   const labels = {
-    1:'UNKNOWN', 2:'LIGHT', 3:'SMALL', 4:'LARGE', 5:'HEAVY',
+    1:'UNKNOWN', 2:'LIGHT AC', 3:'SMALL AC', 4:'LARGE AC', 5:'HEAVY AC',
     6:'SUPER HEAVY', 7:'HIGH PERF', 8:'HELICOPTER', 9:'GLIDER',
-    10:'BALLOON', 11:'SKYDIVER', 12:'ULTRALIGHT', 13:'DRONE',
+    10:'BALLOON', 11:'SKYDIVER', 12:'ULTRALIGHT', 13:'DRONE/UAV',
     14:'SPACECRAFT', 15:'EMERGENCY VEH', 16:'SERVICE VEH',
   };
-  return labels[cat] || 'AIRCRAFT';
+  return labels[parseInt(cat)] || 'AIRCRAFT';
 }
 
-async function fetchAircraft() {
-  try {
-    // OpenSky Network — no auth needed for live traffic (limited)
-    const r = await fetch('https://opensky-network.org/api/states/all?extended=1', {
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!r.ok) throw new Error('OpenSky ' + r.status);
-    const d = await r.json();
-    if (!d || !d.states) throw new Error('No states data');
-    aircraftData = (d.states || []).filter(s => s[5] != null && s[6] != null); // must have lon/lat
-    document.getElementById('stat-ac').textContent = aircraftData.length;
-    renderAircraftMap();
-  } catch(e) {
-    // Fallback: ADS-B Exchange (public endpoint)
-    try {
-      const r2 = await fetch('https://api.adsb.lol/v2/ladd', { signal: AbortSignal.timeout(10000) });
-      if (r2.ok) {
-        const d2 = await r2.json();
-        aircraftData = (d2.ac || []).filter(a => a.lat && a.lon);
-        document.getElementById('stat-ac').textContent = aircraftData.length;
-        renderAircraftMap(true); // mark as lol format
-      }
-    } catch(e2) {
-      setError('Aircraft: ' + e2.message.slice(0,30));
-    }
-  }
-}
-
-function renderAircraftMap(lolFormat = false) {
+function renderAircraftMap(fmt = 'lol') {
   const container = document.getElementById('adsb-map');
   const W = container.offsetWidth || window.innerWidth;
   const H = container.offsetHeight || (window.innerHeight - 80);
 
-  // Remove old dots
   container.querySelectorAll('.ac-dot').forEach(el => el.remove());
 
-  const maxDots = 300;
+  const maxDots = 400;
   const slice = aircraftData.slice(0, maxDots);
 
   slice.forEach(s => {
-    let lat, lon, callsign, cat, alt, vel;
-    if (lolFormat) {
-      lat = s.lat; lon = s.lon;
-      callsign = s.flight || s.r || '';
-      cat = s.category ? parseInt(s.category, 16) : 1;
-      alt = s.alt_baro; vel = s.gs;
+    let lat, lon, callsign, cat, alt, vel, hdg, type_code;
+
+    if (fmt === 'opensky') {
+      callsign  = (s[1] || '').trim();
+      lon       = s[5]; lat = s[6];
+      alt       = s[7]; vel = s[9]; hdg = s[10];
+      cat       = s[17] || 1;
+      type_code = '';
     } else {
-      // OpenSky format: [icao24, callsign, origin_country, time_position, last_contact,
-      //  longitude, latitude, baro_altitude, on_ground, velocity, heading, vert_rate,
-      //  sensors, geo_altitude, squawk, spi, position_source, category]
-      callsign = (s[1] || '').trim();
-      lon = s[5]; lat = s[6];
-      alt = s[7]; vel = s[9];
-      cat = s[17] || 1;
+      // adsb.lol / adsb.fi format
+      lat       = s.lat; lon = s.lon;
+      callsign  = (s.flight || s.r || s.hex || '').trim();
+      cat       = s.category ? parseInt(s.category, 16) : 0;
+      alt       = s.alt_baro || s.alt_geom;
+      vel       = s.gs;
+      hdg       = s.track;
+      type_code = s.t || s.type || '';
     }
 
-    if (!lat || !lon) return;
+    if (lat == null || lon == null) return;
 
-    // Mercator projection
     const x = ((lon + 180) / 360) * W;
     const y = ((90 - lat) / 180) * H;
 
-    const icon = getAircraftIcon(cat, callsign);
-    const typeLabel = getAircraftLabel(cat);
+    const icon  = getAircraftIcon(cat, callsign, type_code);
+    const label = getAircraftLabel(cat, type_code);
+
+    // Rotate icon if we have heading
+    const rot = hdg != null ? `transform:rotate(${hdg}deg)` : '';
 
     const dot = document.createElement('div');
     dot.className = 'ac-dot';
     dot.style.left = x + 'px';
-    dot.style.top = y + 'px';
-    dot.innerHTML = `<div class="ac-icon">${icon}</div><div class="ac-label">${callsign.slice(0,6)}</div>`;
+    dot.style.top  = y + 'px';
+    dot.innerHTML  = `<div class="ac-icon" style="${rot}">${icon}</div><div class="ac-label">${callsign.slice(0,7)}</div>`;
 
-    dot.onmouseenter = dot.ontouchstart = (e) => {
+    const showTip = (e) => {
       const tip = document.getElementById('ac-tooltip');
+      const altFt = alt ? Math.round(alt * 3.28084) + ' ft' : '—';
+      const spdKt = vel ? Math.round(vel * 1.94384) + ' kts' : '—';
       tip.innerHTML = `<b style="color:var(--cyan)">${icon} ${callsign || 'UNKNOWN'}</b><br>
-        Type: ${typeLabel}<br>
-        Lat: ${lat.toFixed(2)}° Lon: ${lon.toFixed(2)}<br>
-        Alt: ${alt ? Math.round(alt)+'m' : '—'}<br>
-        Speed: ${vel ? Math.round(vel)+' m/s' : '—'}`;
-      const rect = e.target.getBoundingClientRect();
-      tip.style.left = (rect.left + 20) + 'px';
-      tip.style.top = rect.top + 'px';
+        Type: ${label}${type_code ? ' ('+type_code+')' : ''}<br>
+        Lat: ${lat.toFixed(2)}° Lon: ${lon.toFixed(2)}°<br>
+        Alt: ${altFt} | Speed: ${spdKt}${hdg != null ? '<br>Hdg: '+Math.round(hdg)+'°' : ''}`;
+      const px = e.touches ? e.touches[0].clientX : e.clientX;
+      const py = e.touches ? e.touches[0].clientY : e.clientY;
+      tip.style.left = (px + 16) + 'px';
+      tip.style.top  = (py - 10) + 'px';
       tip.classList.add('show');
     };
-    dot.onmouseleave = dot.ontouchend = () => {
-      document.getElementById('ac-tooltip').classList.remove('show');
-    };
+    dot.addEventListener('mouseenter', showTip);
+    dot.addEventListener('touchstart', showTip, { passive: true });
+    dot.addEventListener('mouseleave', () => document.getElementById('ac-tooltip').classList.remove('show'));
+    dot.addEventListener('touchend',   () => document.getElementById('ac-tooltip').classList.remove('show'));
 
     container.appendChild(dot);
   });
 }
+  // ── Primary: ADS-B Exchange / adsb.lol (free, no auth, CORS-friendly) ──
+  // OpenSky anonymous access was deprecated March 2025 — no longer works
+  try {
+    const r = await fetch('https://api.adsb.lol/v2/ladd', {
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error('adsb.lol ' + r.status);
+    const d = await r.json();
+    if (!d || !d.ac) throw new Error('No ac array');
+    aircraftData = d.ac.filter(a => a.lat != null && a.lon != null);
+    document.getElementById('stat-ac').textContent = aircraftData.length;
+    renderAircraftMap('lol');
+    return;
+  } catch(e) {
+    setError('Primary AC: ' + e.message.slice(0, 30));
+  }
+
+  // ── Fallback: adsb.fi public API ──
+  try {
+    const r2 = await fetch('https://api.adsb.fi/v1/flights', {
+      signal: AbortSignal.timeout(12000)
+    });
+    if (r2.ok) {
+      const d2 = await r2.json();
+      // adsb.fi returns { flights: [...] }
+      const arr = d2.flights || d2.ac || [];
+      aircraftData = arr.filter(a => a.lat != null && a.lon != null);
+      document.getElementById('stat-ac').textContent = aircraftData.length;
+      renderAircraftMap('lol');
+      return;
+    }
+  } catch(e2) {}
+
+  // ── Last resort: OpenSky (works only if user has pre-March-2025 account) ──
+  try {
+    const r3 = await fetch('https://opensky-network.org/api/states/all?extended=1', {
+      signal: AbortSignal.timeout(15000)
+    });
+    if (r3.ok) {
+      const d3 = await r3.json();
+      if (d3 && d3.states) {
+        aircraftData = d3.states.filter(s => s[5] != null && s[6] != null);
+        document.getElementById('stat-ac').textContent = aircraftData.length;
+        renderAircraftMap('opensky');
+        return;
+      }
+    }
+  } catch(e3) {}
+
+  setError('All aircraft sources failed');
+}
+
 
 // ── Tab switching ─────────────────────────────────────────────
 window.showTab = function(tab) {
