@@ -2423,12 +2423,13 @@ async function autumnReflex(userInput, userId="default") {
       if (ctxType.type==="LOCATION_POI") {
         const category = extractPOICategory(userInput);
         poiData = await searchNearby(locationData, category);
-        const mapId = 'leaflet-map-'+Date.now();
-        mapHtml = `<div class="map-widget"><div class="map-header">◈ OPENSTREETMAP · ${category.toUpperCase()} NEAR YOU</div><div class="map-container" id="${mapId}"></div><div class="map-poi-list">${renderPOIList(poiData)}</div></div>`;
-        // Schedule map render after DOM insert
-        setTimeout(()=>{
+        const mapId = 'osm-'+Date.now();
+        const infoId = 'osmi-'+mapId;
+        mapHtml = buildOSMWidget(mapId, infoId, category+' near you', locationData, poiData||[])
+                + '<div class="map-poi-list">'+renderPOIList(poiData||[])+'</div>';
+        setTimeout(function(){
           if (locationData) renderMapWidget(mapId, locationData, poiData||[]);
-        }, 200);
+        }, 100);
         S.activeContext = { type:'LOCATION_POI', wid:mapId, data:{ category, pois:poiData, coords:locationData }, ts:Date.now(), label:'MAP' };
         pushOrbContextMode('location');
       }
@@ -3268,6 +3269,9 @@ async function liveQuery(userText, reflexData){
     else if(['factual','general','howto','news'].includes(intent)){jobs.wiki=fetchWiki(cleanQ);jobs.ddg=fetchDDG(cleanQ)}
     if(intent==='news'){jobs.news=fetchNews(cleanQ);jobs.reddit=fetchReddit(cleanQ)}
     if(intent==='general'){jobs.reddit=fetchReddit(cleanQ)}
+    if(/\b(show me where|where is|map of|locate|navigate to|directions to|how.+get to|find on map|take me to)\b/i.test(userText)){
+      jobs.geoplace = geocodePlace(cleanQ).catch(function(){return null;});
+    }
     if(['video','howto'].includes(intent)){jobs.videos=fetchYT(cleanQ,6)}
     if(intent==='image'){jobs.images=fetchImages(cleanQ,6);jobs.wiki=jobs.wiki||fetchWiki(cleanQ)}
     if(intent==='factual'){jobs.videos=fetchYT(cleanQ,4)}
@@ -3282,7 +3286,14 @@ async function liveQuery(userText, reflexData){
   if(data.reddit?.length){links.push(...data.reddit.slice(0,2).map(r=>({title:r.title,url:r.url,desc:r.desc})));sources.push('REDDIT')}
   if(data.news?.length){data.news.forEach(i=>links.push({title:i.title,url:i.url,desc:i.desc}));sources.push('GDELT','HN')}
   if(data.videos?.length){liveText+=`\n\n◈ Found ${data.videos.length} video${data.videos.length>1?'s':''} for you:`;sources.push('YOUTUBE')}
-  return{liveText,videos:(data.videos||[]).filter(safeVideo).slice(0,6),images:(data.images||[]).filter(safeImg).slice(0,6),links:links.slice(0,5),sources:[...new Set(sources)]};
+  var placeMapHtml='';
+  if(data.geoplace&&data.geoplace.lat){
+    const gpId='osm-'+Date.now(),gpInfoId='osmi-'+gpId;
+    placeMapHtml=buildOSMWidget(gpId,gpInfoId,data.geoplace.name,{lat:data.geoplace.lat,lon:data.geoplace.lon,zoom:10},[]);
+    setTimeout(function(){renderMapWidget(gpId,{lat:data.geoplace.lat,lon:data.geoplace.lon,zoom:10},[]);},300);
+    sources.push('OPENSTREETMAP');
+  }
+  return{liveText,placeMapHtml,videos:(data.videos||[]).filter(safeVideo).slice(0,6),images:(data.images||[]).filter(safeImg).slice(0,6),links:links.slice(0,5),sources:[...new Set(sources)]};
 }
 
 // Media card renderers
@@ -5511,6 +5522,7 @@ async function handleSend() {
   // Only append web data for non-personal queries
   var _liveIntent = detectIntent(text);
   if(liveData.liveText && _liveIntent !== 'personal') fullReply += liveData.liveText;
+  var _placeMapHtml = (liveData.placeMapHtml && _liveIntent !== 'personal') ? liveData.placeMapHtml : '';
   var _placeMapHtml = (liveData.placeMapHtml && _liveIntent !== 'personal') ? liveData.placeMapHtml : '';
   // If we still have nothing, it means the API call failed — skip pushing an empty bubble
   if(!fullReply && !liveData.videos.length && !liveData.images.length) {
