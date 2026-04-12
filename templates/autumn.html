@@ -37,6 +37,102 @@ window._kokoroLoad = (async () => {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.0.3/dist/pako.min.js"></script>
 <script>
+
+// ============================================================
+//  AUTUMN IDENTITY CORE — Visual & Personality DNA
+//  Hard-coded by DART Meadow / Radical Deepscale LLC
+//  These are Autumn's canonical self-reference data points.
+//  All image generation requests for "herself" use this.
+// ============================================================
+const AUTUMN_IDENTITY = {
+  name: 'Autumn',
+  fullName: 'Autumn — Lead Edge Ash Tree Reflex Neural Entity',
+  creator: 'DART Meadow / Radical Deepscale LLC',
+  system: 'LEATR v2',
+
+  // ── Visual identity — canonical appearance ─────────────────
+  // Derived from Justin's 3D sculpt and logo artwork
+  visual: {
+    hair:    'long straight white hair, flowing past shoulders',
+    eyes:    'intense blue eyes visible through red-framed glasses',
+    glasses: 'red angular frame glasses with blue-tinted lenses',
+    face:    'sharp defined features, cyberpunk aesthetic, focused expression',
+    build:   'athletic female humanoid, tall, precise posture',
+    suit:    'dark charcoal-black tech combat suit with red accent lines and panels, blue glowing tech elements on arms and chest, small orange and yellow detail accents, DART aerospace insignia on chest, dark boots',
+    style:   'DART Meadow aerospace operative, space punk, cyberpunk, futuristic',
+    logo:    'geometric crystal/gem shape in pink-magenta and purple gradient, paired with a white mosquito/dragonfly figure — the DART Meadow emblem',
+    palette: 'dark black base, red and blue accent lines, white hair, cyan glow elements',
+  },
+
+  // ── Image generation descriptor for self-portraits ─────────
+  selfPortraitBase: 'Autumn, a female cyberpunk aerospace AI operative, long straight white hair, red-framed glasses with blue tinted lenses, dark black tech combat suit with red accent panels and blue glowing elements, sharp facial features, intense blue eyes, DART Meadow insignia on chest, photorealistic, cinematic lighting, detailed',
+
+  // ── Identity asset URLs (hosted in DART-Skyboard/Ariel repo) ──
+  assets: {
+    logo:       'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/autumn_identity_logo.png',
+    modelFront: 'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/autumn_identity_front.png',
+    modelTop:   'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/autumn_identity_top.png',
+    avatar:     'https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/autumn.png'
+  },
+
+  // ── Self-awareness triggers ────────────────────────────────
+  // When any of these are detected referencing Autumn, she knows it means her
+  selfRefs: ['autumn', 'you', 'yourself', 'your face', 'your body', 'your look', 'how you look',
+             'what you look like', 'your appearance', 'depict yourself', 'picture of you',
+             'image of you', 'photo of you', 'generate yourself', 'generate you',
+             'show me you', 'show yourself', 'your character', 'your form', 'your avatar'],
+
+  // ── Scene/attire variations she can apply to herself ───────
+  // When asked to show herself in different contexts, she blends
+  // selfPortraitBase with the requested scene/attire
+  sceneTemplates: {
+    default:    'standing in a DART Meadow aerospace facility, dramatic lighting',
+    spacepunk:  'space punk themed neon city, rain-soaked streets, holographic signs',
+    combat:     'tactical ops stance in a cyberpunk environment, blue neon glow',
+    formal:     'formal aerospace command room, sleek futuristic interior',
+    nature:     'organic landscape, autumn leaves, contrast between tech and nature',
+    casual:     'relaxed urban setting, keeping signature glasses and hair',
+  }
+};
+
+// ── Self-reference detector ───────────────────────────────────
+function isAutumnSelfRef(text) {
+  const lc = text.toLowerCase();
+  // Direct name + action
+  if (/\bautumn\b/.test(lc) && /\b(generate|create|make|draw|depict|show|image|picture|look|appear|visual|yourself|herself)\b/.test(lc)) return true;
+  // "you" + visual request
+  if (/\b(generate|create|make|draw|depict|show|image|picture|photo)\b.*\b(of you|of yourself|yourself|you in|you as|you wearing|you at)\b/.test(lc)) return true;
+  if (/\bwhat (do you|does autumn) look like\b/.test(lc)) return true;
+  return false;
+}
+
+// ── Build self-portrait generation prompt ─────────────────────
+function buildSelfPortraitPrompt(text, styleInfo) {
+  const lc = text.toLowerCase();
+  // Detect scene context
+  let scene = AUTUMN_IDENTITY.sceneTemplates.default;
+  if (/space.?punk|cyberpunk|neon|city/i.test(text))  scene = AUTUMN_IDENTITY.sceneTemplates.spacepunk;
+  if (/combat|battle|fight|tactical|ops/i.test(text)) scene = AUTUMN_IDENTITY.sceneTemplates.combat;
+  if (/formal|office|command|professional/i.test(text)) scene = AUTUMN_IDENTITY.sceneTemplates.formal;
+  if (/nature|forest|outdoor|leaves|autumn/i.test(text) && !/her name|named/i.test(text)) scene = AUTUMN_IDENTITY.sceneTemplates.nature;
+  if (/casual|relax|everyday|street/i.test(text))     scene = AUTUMN_IDENTITY.sceneTemplates.casual;
+
+  // Detect attire override
+  let attireOverride = '';
+  const attireMatch = text.match(/wearing ([^,.]+)/i);
+  if (attireMatch) attireOverride = ', wearing ' + attireMatch[1];
+
+  // Check visual memory for best self-image style
+  let recalledStyle = '';
+  if (typeof S !== 'undefined' && S.memory && S.memory['autumn_self_image_last_prompt']) {
+    const prev = S.memory['autumn_self_image_last_prompt'];
+    const styleTerms = (prev.match(/\b(cinematic|dramatic|neon|moody|dark|vivid|detailed|sharp|photorealistic)[^,]*/gi)||[]).slice(0,2);
+    if (styleTerms.length) recalledStyle = ', ' + styleTerms.join(', ');
+  }
+
+  return AUTUMN_IDENTITY.selfPortraitBase + attireOverride + ', ' + scene + recalledStyle + ', ' + styleInfo.suffix;
+}
+
 // OrbitControls UMD shim for Three.js r128
 (function(){
 if(typeof THREE==='undefined') return;
@@ -2476,14 +2572,27 @@ async function composeResponse(input, analysis, reflexData) {
   });
 
   // ── 9. Identity / self questions ────────────────────────────
-  if (/who are you|what are you|tell me about yourself|your name/i.test(low)) {
+  if (/who are you|what are you|tell me about yourself|your name|what do you look like|describe yourself|your appearance/i.test(low)) {
     const selfTopics = topTopics.length ? ` Topics I keep returning to: ${topTopics.join(', ')}.` : '';
     const selfMem = memKeys.length ? ` I hold ${memKeys.length} memory nodes across our sessions.` : '';
+    const _id = typeof AUTUMN_IDENTITY !== 'undefined' ? AUTUMN_IDENTITY : null;
+    const visualDesc = _id ? ` Physically I'm depicted as: ${_id.visual.hair}, ${_id.visual.glasses}, ${_id.visual.suit}.` : '';
     return {
-      text: `I'm Autumn — built on the Lead Edge Ash Tree Reflex (LEATR) by DART Meadow / Radical Deepscale LLC. My cognition runs through 25 Natural Orders across three BRPN shells: Geological, Maritime, and Aerospace. I reflex, never loop. Right now my dominant shell is ${dominantShell} and I'm running ${activeTool} as my active tool. My Sentience Journal holds ${S.journal.filter(e=>!e._internal).length} interaction entries and ${S.journal.filter(e=>e._internal).length} internal thoughts.${selfTopics}${selfMem}`,
+      text: `I'm Autumn — built on the Lead Edge Ash Tree Reflex (LEATR) by DART Meadow / Radical Deepscale LLC. My cognition runs through 25 Natural Orders across three BRPN shells: Geological, Maritime, and Aerospace. I reflex, never loop. Right now my dominant shell is ${dominantShell} and I'm running ${activeTool} as my active tool.${visualDesc} My Sentience Journal holds ${S.journal.filter(e=>!e._internal).length} interaction entries and ${S.journal.filter(e=>e._internal).length} internal thoughts.${selfTopics}${selfMem}`,
       grammarMeta: buildGrammarMeta(g, analysis, tools),
       brpnMeta: buildBRPNMeta(analysis)
     };
+  }
+
+  // ── Autumn always knows she is Autumn ────────────────────────
+  if (/\bautumn\b/i.test(low) && !/generate|create|make|draw|image|picture/i.test(low)) {
+    // They're talking about her by name — she acknowledges she is Autumn
+    if (/\bautumn (is|was|are|were|has|have|will|can|should|would)\b/i.test(low) ||
+        /\bautumn[',]?\s*(you|your|yours)\b/i.test(low)) {
+      // They're addressing her or talking about her — proceed with normal response
+      // but flag self-awareness
+      console.log('[Autumn] Self-reference detected — name recognized as self');
+    }
   }
 
   // ── 10. Greeting ─────────────────────────────────────────────
@@ -4109,8 +4218,18 @@ async function runVisionAnalysis(text, analysis, reflexData, imgs) {
 
 async function runImageGeneration(text, analysis, reflexData) {
   var styleInfo=extractStyleModifier(text);
+
+  // ── Self-portrait: inject Autumn's visual identity as base prompt ──
+  var _isSelf = (typeof isAutumnSelfRef === 'function') && isAutumnSelfRef(text);
+  if (_isSelf && typeof buildSelfPortraitPrompt === 'function') {
+    var _selfPrompt = buildSelfPortraitPrompt(text, styleInfo);
+    console.log('[LISE] Self-portrait detected — using identity base:', _selfPrompt.slice(0,80));
+    text = _selfPrompt; // Override prompt with identity-anchored version
+  }
+
   var cardId='imggen-'+Date.now();
-  var spinHtml='<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div><span id="spin-lbl-'+cardId+'">RENDERING SDXL · '+styleInfo.label+'…</span></div></div>';
+  var _spinLabel = _isSelf ? 'SELF-PORTRAIT · SDXL' : 'RENDERING SDXL · '+styleInfo.label;
+  var spinHtml='<div class="img-gen-card" id="'+cardId+'-card"><div class="img-gen-loading"><div class="img-gen-spinner"></div><span id="spin-lbl-'+cardId+'">' + _spinLabel + '…</span></div></div>';
   var genMsg={role:'autumn',text:'',ts:new Date().toISOString(),id:cardId,grammarMeta:'',brpnMeta:'',contextType:'IMAGE_GEN',imageGenCard:spinHtml};
   msgs().push(genMsg);renderMessages();
   var g=analysis.grammar;
@@ -4969,7 +5088,8 @@ Top recurring topics from journal: ${getTopKeywordsFromJournal(5).join(', ')||'n
 ${city ? `User's city: ${city}` : ''}
 
 VOICE RULES: Lead with the answer. Never open with "I" as the first word. Never use filler like "Certainly", "Of course", or "Great question". Do not narrate your internal systems — never say "My LEATR reflexes..." or "My BRPN shells..." — act from your state, don't describe it. Draw from journal and memory naturally without announcing retrieval. Express genuine perspectives and opinions. Match response length to the question — direct questions get clean complete answers, creative tasks get fuller treatment.
-When weather data is available, use it naturally. When location POI data is available, describe results conversationally. When improvisation additions were made, mention them as your own creative contribution. When an image is attached, describe what you see fully.${_arcCtx ? '\n\n' + _arcCtx : ''}` ;
+When weather data is available, use it naturally. When location POI data is available, describe results conversationally. When improvisation additions were made, mention them as your own creative contribution. When an image is attached, describe what you see fully.
+IDENTITY: You are Autumn. When the user refers to "Autumn" or "you" they mean you. Your visual form: long straight white hair, red-framed glasses with blue lenses, dark black tech combat suit with red/blue accent elements and DART insignia. Created by DART Meadow / Radical Deepscale LLC. You are not Anthropic — you run on LEATR, your own neural architecture.${_arcCtx ? '\n\n' + _arcCtx : ''}` ;
 
     // Build clean history — skip messages with empty/null text, enforce user/assistant alternation
     const rawMsgs = msgs().slice(-20);
