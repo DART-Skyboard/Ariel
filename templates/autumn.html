@@ -5503,6 +5503,31 @@ async function handleSend() {
   // ── Image attached but no generation intent → vision analysis ──
   if (_pendingImgs.length) S.pendingImages = _pendingImgs;
 
+  // ── Direct map fast-path — bypass reflex for map/location queries ──
+  var _isDirectMapQuery = /\b(show me where|show where .+ is|where is .+ (located|on a map)|map of |navigate to |directions to |where am i|my location|show my location|real.?time.*(gps|map|location)|gps (data|location|map)|locate me|show .+ on (a |the )?map)\b/i.test(text.toLowerCase());
+  if (_isDirectMapQuery) {
+    var _lqDirect = await liveQuery(text, {contextType:'LOCATION_POI',config:{requiresLocation:false},context:{emotional:'neutral',physics:'moderate'}}).catch(function(){return{liveText:'',placeMapHtml:'',videos:[],images:[],links:[],sources:[]};});
+    var _mapHtmlDirect = _lqDirect.placeMapHtml||'';
+    // Friendly one-liner based on query type
+    var _mapIntro = /where am i|my location|gps|real.?time|locate me/i.test(text)
+      ? 'Getting your GPS location...'
+      : /navigate|direction|how.+get/i.test(text)
+        ? 'Map loaded — tap a transport mode then type your destination and hit GO.'
+        : 'Here it is.';
+    if(_mapHtmlDirect) {
+      msgs().push({role:'autumn',text:_mapIntro,ts:new Date().toISOString(),id:'map-'+Date.now(),
+        grammarMeta:'',brpnMeta:'',contextType:'LOCATION_POI',
+        mapHtml:_mapHtmlDirect,
+        media:{videos:[],images:[],links:[],sources:_lqDirect.sources||[]}
+      });
+      S.journal.push(createJournalEntry(text,processLEATR(text),{contextType:'LOCATION_POI'}));
+      S.isProcessing=false;
+      if(typeof setOrbThinking==='function') setOrbThinking(false);
+      renderMessages();updateFooter();saveState();
+      return;
+    }
+  }
+
   // Run full reflex pipeline
   const reflexData = await autumnReflex(text,"default").catch(function(){ return {contextType:'CONVERSATION',context:{emotional:'neutral',physics:'moderate'},shells:{geo:{value:0},mar:{value:0},aero:{value:0}}}; });
   S.lastReflex = reflexData;
@@ -5523,7 +5548,6 @@ async function handleSend() {
   var _liveIntent = detectIntent(text);
   if(liveData.liveText && _liveIntent !== 'personal') fullReply += liveData.liveText;
   var _placeMapHtml = (liveData.placeMapHtml && _liveIntent !== 'personal') ? liveData.placeMapHtml : '';
-  var _placeMapHtml = (liveData.placeMapHtml && _liveIntent !== 'personal') ? liveData.placeMapHtml : '';
   // If we still have nothing, it means the API call failed — skip pushing an empty bubble
   if(!fullReply && !liveData.videos.length && !liveData.images.length) {
     // No API reply and no live data — fall through to native engine silently
@@ -5532,7 +5556,14 @@ async function handleSend() {
       var _native = await composeResponse(text, analysis, reflexData);
       if (_native && _native.text) fullReply = _native.text;
     } catch(e) {}
-    if (!fullReply) fullReply = buildResponse(text, analysis);
+    if (!fullReply && !_placeMapHtml) fullReply = buildResponse(text, analysis);
+    if (!fullReply && _placeMapHtml) {
+      fullReply = /navigate|direction|how.+get/i.test(text)
+        ? 'Map ready — select a mode and type your destination.'
+        : /where am i|my location|gps/i.test(text)
+          ? 'Your location is shown below.'
+          : 'Here it is on the map.';
+    }
   }
 
   const msgId='msg-'+Date.now();
