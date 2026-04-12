@@ -2461,8 +2461,10 @@ async function composeResponse(input, analysis, reflexData) {
 
   // ── 7. Live web pull — parallel, non-blocking ───────────────
   const topicQuery = (nouns.length ? nouns[0] : subjects[0] || input.slice(0, 40));
+  // Only fetch wiki for clearly factual/informational queries, not personal ones
+  const _isPersonal = /^(hi|hello|hey|how are you|how do you|what are you|who are you|tell me about yourself|how\'s|you doing|you feeling|thank|thanks)/i.test(low) || low.length < 25;
   const [wikiData, dictResults, relatedResults] = await Promise.all([
-    fetchWiki(topicQuery).catch(() => null),
+    _isPersonal ? Promise.resolve(null) : fetchWiki(topicQuery).catch(() => null),
     Promise.all([...new Set([...nouns, ...verbs])].slice(0, 4).map(w => cachedDictLookup(w))),
     Promise.all(nouns.slice(0, 3).map(w => relatedWords(w, 'ml').catch(() => [])))
   ]);
@@ -2681,6 +2683,11 @@ async function fetchReddit(q){try{const r=await ft(`https://www.reddit.com/searc
 
 function detectIntent(text){
   const lc=text.toLowerCase().trim();
+  // Personal / conversational — never fetch web data for these
+  if(/^(hi|hello|hey|howdy|greetings|good\s+(morning|afternoon|evening|night))\b/.test(lc))return'personal';
+  if(/\b(how are you|how do you feel|how's it going|what's up|you doing|you feeling|are you ok|you alright|tell me about yourself|who are you|what are you)\b/.test(lc))return'personal';
+  if(/\b(thank|thanks|appreciate|great job|well done|nice work|love you|miss you|good job)\b/.test(lc))return'personal';
+  if(/\b(yes|no|ok|okay|sure|alright|got it|i see|i know|makes sense|understood|cool|awesome|nice|wow|interesting|really|actually)\b/.test(lc)&&lc.length<40)return'personal';
   if(/\b(show me( a| some)? video|play( a| the)? video|youtube|watch( a| the)? video|music video|trailer for|clip of|video of|videos? about)\b/.test(lc))return'video';
   if(/\b(show me( a| some)? (picture|photo|image)|picture of|photos? of|images? of|what does .+ look like|show me what|gallery of)\b/.test(lc))return'image';
   if(/\b(latest|recent|today|breaking|news|current events|happening now|this week|2025|2026)\b/.test(lc))return'news';
@@ -2701,7 +2708,8 @@ async function liveQuery(userText, reflexData){
   } else if(reflexData?.contextType==="LOCATION_POI"){
     // POI handled by map widget
   } else {
-    if(['factual','general','howto','news'].includes(intent)){jobs.wiki=fetchWiki(cleanQ);jobs.ddg=fetchDDG(cleanQ)}
+    if(intent==='personal'){/* personal/conversational — no web fetch needed */}
+    else if(['factual','general','howto','news'].includes(intent)){jobs.wiki=fetchWiki(cleanQ);jobs.ddg=fetchDDG(cleanQ)}
     if(intent==='news'){jobs.news=fetchNews(cleanQ);jobs.reddit=fetchReddit(cleanQ)}
     if(intent==='general'){jobs.reddit=fetchReddit(cleanQ)}
     if(['video','howto'].includes(intent)){jobs.videos=fetchYT(cleanQ,6)}
@@ -5018,7 +5026,11 @@ When weather data is available, use it naturally. When location POI data is avai
       return { text:apiReply, grammarMeta, brpnMeta };
     }
     // API returned but empty content — surface error hint
-    if(data.error) return { text: 'API error: ' + (data.error.message||JSON.stringify(data.error)), grammarMeta:'', brpnMeta:'' };
+    if(data.error) {
+      // API error — fall through to native composeResponse instead of showing raw error
+      console.warn('[Autumn] API error:', data.error.message||data.error.type);
+      // Don't return error text — let it fall through to composeResponse below
+    }
   } catch(e){ console.warn('[Autumn generateReply]', e); }
 
   // Fallback: simple conversational response so UI never goes silent
@@ -6508,18 +6520,52 @@ document.getElementById('live-orb').onclick=liveTalk;
 
 async function handleLiveInput(text){
   if(!text.trim()){document.getElementById('live-status').textContent='TAP ORB TO TALK';return;}
-  document.getElementById('live-status').textContent='REFLEXING...';document.getElementById('live-orb').classList.remove('listening');pulseShells(2);
-  const analysis=processLEATR(text);S.lastAnalysis=analysis;updateHUD(analysis);
-  msgs().push({role:"user",text,ts:new Date().toISOString()});
-  S.journal.push(createJournalEntry(text,analysis,null));
+  document.getElementById('live-status').textContent='REFLEXING...';
+  document.getElementById('live-orb').classList.remove('listening');
+  pulseShells(2);
+
+  const analysis=processLEATR(text);
+  S.lastAnalysis=analysis;
+  updateHUD(analysis);
+
+  // ── Bridge to chat: image gen / maze / tools get queued into main chat ──
+  const _intentLive = classifyIntentLocal(text, false);
+  if (_intentLive === 'IMAGE_GEN' || detectMazeRequest(text) || _intentLive === 'CLEAR_CHAT' || _intentLive === 'NEW_CHAT') {
+    // Close live mode and route through main chat pipeline
+    document.getElementById('live-status').textContent = 'ROUTING TO CHAT…';
+    speak('On it — check the chat window.', function() {
+      closeLiveMode();
+      // Push the command into chat input and fire handleSend
+      var _inp = document.getElementById('chat-input');
+      if (_inp) { _inp.value = text; handleSend(); }
+    });
+    return;
+  }
+
+  msgs().push({role:'user', text, ts:new Date().toISOString()});
+  S.journal.push(createJournalEntry(text, analysis, null));
+
   let reply;
-  try{reply=await generateReply(text,analysis,null);}catch(e){try{reply=await composeResponse(text,analysis,null);}catch(e2){reply={text:buildResponse(text,analysis),grammarMeta:'',brpnMeta:''};}}
+  try {
+    reply = await generateReply(text, analysis, null);
+  } catch(e) {
+    try { reply = await composeResponse(text, analysis, null); }
+    catch(e2) { reply = {text: buildResponse(text, analysis), grammarMeta:'', brpnMeta:''}; }
+  }
   const replyText = typeof reply==='object' ? reply.text : reply;
-  msgs().push({role:"autumn",text:replyText,ts:new Date().toISOString(),meta:{elapsed:analysis.elapsed,qs:analysis.quantumSocket}});
-  saveState();updateFooter();renderMessages();
-  document.getElementById('live-response').textContent=replyText.substring(0,500);
-  document.getElementById('live-status').textContent='SPEAKING...';document.getElementById('live-orb').classList.add('speaking');pulseShells(1.2);
-  speak(replyText,()=>{document.getElementById('live-orb').classList.remove('speaking');document.getElementById('live-status').textContent='TAP ORB TO TALK';});
+
+  msgs().push({role:'autumn', text:replyText, ts:new Date().toISOString(),
+    meta:{elapsed:analysis.elapsed, qs:analysis.quantumSocket}});
+  saveState(); updateFooter(); renderMessages();
+
+  document.getElementById('live-response').textContent = replyText.substring(0,500);
+  document.getElementById('live-status').textContent = 'SPEAKING...';
+  document.getElementById('live-orb').classList.add('speaking');
+  pulseShells(1.2);
+  speak(replyText, function() {
+    document.getElementById('live-orb').classList.remove('speaking');
+    document.getElementById('live-status').textContent = 'TAP ORB TO TALK';
+  });
 }
 
 // ============================================================
