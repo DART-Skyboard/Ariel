@@ -9,11 +9,62 @@
 //  The S object (session state) and all globals are accessible.
 // ============================================================
 
+// ── USER IDENTITY REGISTRY ──────────────────────────────────
+// Registered user profiles for session recognition.
+const AUTUMN_USER_REGISTRY = [
+  {
+    email: 'dartmeadow@gmail.com',
+    account: 'Tropic',
+    project: 'Euclid',
+    label: 'Euclid / Tropic',
+    note: 'Primary user. dartmeadow@gmail.com, Tropic account, working on the Euclid project under Radical Deepscale.'
+  }
+];
+
+// ── Expose registry to S state for downstream use ──
+if (typeof S !== 'undefined' && S !== null) {
+  S._userRegistry = AUTUMN_USER_REGISTRY;
+}
+
 // ── DART-Skyboard / leatr.xyz domain + repo awareness ────────
 const _orig_composeResponse = (typeof composeResponse !== 'undefined') ? composeResponse : null;
 
 async function composeResponse(input, analysis, reflexData) {
   const low = input.toLowerCase();
+
+  // ── USER RECOGNITION ─────────────────────────────────────
+  // Detect if the user is identifying themselves by known signals.
+  const mentionsEmail = low.includes('dartmeadow') || low.includes('dartmeadow@gmail.com');
+  const mentionsTropic = low.includes('tropic');
+  const mentionsEuclid = low.includes('euclid');
+  const isGreetOrWhoAmI =
+    low.includes('remember me') ||
+    low.includes('who am i') ||
+    low.includes('do you know me') ||
+    low.includes('it\'s me') ||
+    low.includes("it's me") ||
+    low.includes('i\'m back') ||
+    low.includes("i'm back") ||
+    low.includes('recognize me');
+
+  if ((mentionsEmail || mentionsTropic || mentionsEuclid) && isGreetOrWhoAmI) {
+    const profile = AUTUMN_USER_REGISTRY[0];
+    return {
+      text:
+        `Yes — I have you on record. You're coming in as **${profile.email}**, Tropic account, on the **${profile.project}** project. Welcome back. What are we getting into?`,
+      grammarMeta: '',
+      brpnMeta: ''
+    };
+  }
+
+  // Passive identity mention (no greeting, just a reference)
+  if (mentionsEmail || (mentionsTropic && mentionsEuclid)) {
+    const profile = AUTUMN_USER_REGISTRY[0];
+    if (typeof S !== 'undefined' && S !== null) {
+      S._activeUser = profile;
+    }
+    // Don't interrupt the flow — just silently tag the session and continue
+  }
 
   // ── Detect questions about leatr.xyz domain ──
   const mentionsDomain = low.includes('leatr.xyz') || low.includes('leatr') || low.includes('new domain');
@@ -38,7 +89,6 @@ async function composeResponse(input, analysis, reflexData) {
     low.includes('your take');
 
   if ((mentionsDomain || mentionsRepo) && isOpinionAsk) {
-    // Full combined take
     return {
       text:
         `Both feel like a real step forward, honestly.\n\n` +
