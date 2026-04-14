@@ -9,8 +9,39 @@
 //  The S object (session state) and all globals are accessible.
 // ============================================================
 
+// ── ⚠️  COMMIT SAFETY NOTICE ────────────────────────────────
+//
+//  THIS FILE CONTAINS PERSONALLY IDENTIFIABLE INFORMATION (PII).
+//  Before committing to a PUBLIC repository, you MUST:
+//
+//  1. Remove or replace AUTUMN_USER_REGISTRY entries below.
+//     The following fields are sensitive and will be publicly
+//     visible in git history if committed as-is:
+//
+//       • email:   'dartmeadow@gmail.com'
+//       • account: 'Tropic'
+//       • project: 'Euclid'
+//
+//  2. Options for safe handling:
+//     a) Move AUTUMN_USER_REGISTRY to a private config file
+//        that is listed in .gitignore.
+//     b) Replace real values with placeholders before pushing:
+//        email: '[REDACTED]', account: '[REDACTED]', etc.
+//     c) Use environment variables or a server-side auth layer
+//        instead of hardcoding identity data in client JS.
+//
+//  3. Remember: even if you delete the data in a future commit,
+//     git history retains it. Use `git filter-repo` or
+//     BFG Repo-Cleaner to scrub history if it was ever pushed.
+//
+//  The IDE does NOT automatically strip this data on commit.
+//  You are responsible for reviewing this file before pushing.
+//
+// ────────────────────────────────────────────────────────────
+
 // ── USER IDENTITY REGISTRY ──────────────────────────────────
 // Registered user profiles for session recognition.
+// ⚠️  SEE COMMIT SAFETY NOTICE ABOVE BEFORE PUSHING TO PUBLIC REPO.
 const AUTUMN_USER_REGISTRY = [
   {
     email: 'dartmeadow@gmail.com',
@@ -25,6 +56,28 @@ const AUTUMN_USER_REGISTRY = [
 if (typeof S !== 'undefined' && S !== null) {
   S._userRegistry = AUTUMN_USER_REGISTRY;
 }
+
+// ── COMMIT SAFETY RUNTIME CHECK ─────────────────────────────
+// Fires a console warning if sensitive fields are detected,
+// as a reminder during development sessions.
+(function _commitSafetyCheck() {
+  const sensitivePatterns = [
+    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/  // email pattern
+  ];
+  let flagged = false;
+  AUTUMN_USER_REGISTRY.forEach(function(entry) {
+    sensitivePatterns.forEach(function(pattern) {
+      if (pattern.test(entry.email || '')) flagged = true;
+    });
+  });
+  if (flagged) {
+    console.warn(
+      '[autumn-logic.js] ⚠️  COMMIT SAFETY: AUTUMN_USER_REGISTRY contains real email addresses and personal data. ' +
+      'Do NOT commit this file to a public repository without redacting or externalizing this data. ' +
+      'See the COMMIT SAFETY NOTICE at the top of this file.'
+    );
+  }
+})();
 
 // ── DART-Skyboard / leatr.xyz domain + repo awareness ────────
 const _orig_composeResponse = (typeof composeResponse !== 'undefined') ? composeResponse : null;
