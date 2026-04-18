@@ -1,0 +1,1752 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+================================================================================
+  AERIS-10 RADAR CONTROL SYSTEM — Browser Web App / Hardware Simulator
+================================================================================
+
+  ORIGINAL WORK
+  -------------
+  Project Name : AERIS-10 (PLFM_RADAR)
+                 Open-Source Pulse Linear Frequency Modulated Phased Array Radar
+  Original Author : Nawfal Motii  <nawfal.motii.33@gmail.com>
+  Repository   : https://github.com/NawfalMotii79/PLFM_RADAR
+                 (forked by dartsolarpunk: https://github.com/dartsolarpunk/PLFM_RADAR)
+
+  LICENCES (as declared in the original repository)
+  -------------------------------------------------
+  Hardware design files (schematics, PCB layouts, Gerbers, BOM, mechanical):
+    CERN Open Hardware Licence Version 2 – Permissive (CERN-OHL-P)
+    Full text: https://ohwr.org/cern_ohl_p_v2.txt
+    Per CERN-OHL-P §3.2 you must retain all copyright and other notices.
+    Per CERN-OHL-P §3.3 modifications must be noted with author and description.
+
+  Software & Firmware (FPGA Verilog, STM32 C/C++, Python GUI):
+    MIT License  —  https://opensource.org/licenses/MIT
+    Copyright (c) Nawfal Motii
+
+  This derivative web-app file inherits both licences:
+    - Signal-processing logic ported from MIT-licensed software/firmware
+      retains the MIT licence and Nawfal Motii's copyright.
+    - Any reference to hardware parameters derived from the CERN-OHL-P
+      hardware documentation is used in accordance with CERN-OHL-P §2.
+
+  MODIFICATIONS IN THIS DERIVATIVE WORK
+  --------------------------------------
+  Description : Complete port of the AERIS-10 radar processing pipeline and
+                GUI to a single-file, dependency-free HTML/CSS/JavaScript
+                browser application, including a full hardware simulator that
+                runs the signal-processing chain in software when physical
+                AERIS-10 hardware is not connected.
+
+  Co-Authors (this derivative fork):
+    Justin Venable  —  fork maintainer / requirements
+                        GitHub: dartsolarpunk
+    Claude AI (Anthropic, claude-sonnet-4-6)
+                    —  code generation & signal-processing port
+                        https://www.anthropic.com
+
+  Modification Date : 2026-04-18
+  Modification Notes:
+    * Ported radar equation calculator from:
+        8_Utils/Python/RADAR_eq.py  (MIT, Nawfal Motii)
+    * Ported LFM chirp waveform math from:
+        8_Utils/Python/Generic_Ramp_Frequency.py  (MIT, Nawfal Motii)
+        8_Utils/Python/FFT_Ramp_Frequency.py       (MIT, Nawfal Motii)
+        8_Utils/Python/Gen_Triangular.py           (MIT, Nawfal Motii)
+    * Ported CA/GO/SO-CFAR detector (bit-accurate) from:
+        9_Firmware/9_2_FPGA/cfar_ca.v             (MIT, Nawfal Motii)
+    * Ported Doppler processor staggered-PRF dual-FFT architecture from:
+        9_Firmware/9_2_FPGA/doppler_processor.v   (MIT, Nawfal Motii)
+    * Ported MTI 2-pulse canceller from:
+        9_Firmware/9_2_FPGA/mti_canceller.v       (MIT, Nawfal Motii)
+    * Ported DC notch filter logic from:
+        9_Firmware/9_2_FPGA/radar_system_top.v    (MIT, Nawfal Motii)
+    * Ported USB packet protocol (11-byte data / 26-byte status) from:
+        9_Firmware/9_3_GUI/radar_protocol.py      (MIT, Nawfal Motii)
+    * Ported Opcode register map (Trigger, PRF_DIV, CFAR_*, MTI, etc.) from:
+        9_Firmware/9_3_GUI/radar_protocol.py      (MIT, Nawfal Motii)
+    * Ported RadarSettings, RadarTarget, RadarFrame dataclass schemas from:
+        9_Firmware/9_3_GUI/GUI_V6.py              (MIT, Nawfal Motii)
+    * Ported FT2232H mock data generator from:
+        9_Firmware/9_3_GUI/radar_protocol.py  FT2232HConnection._mock_read()
+    * GUI layout, colour theme, and control panel mirrored from:
+        9_Firmware/9_3_GUI/GUI_V6.py  (dark theme, tab structure, target list)
+    * Radar equation (Pt·G²·λ²·σ / (4π)³·kTBNFL)^(1/4) from RADAR_eq.py
+    * 10.5 GHz system frequency, 8×16 / 32×16 antenna configs from README.md
+    * Self-test flag layout (ADC/DAC/NCO/MEM/PLL) from:
+        9_Firmware/9_2_FPGA/fpga_self_test.v      (MIT, Nawfal Motii)
+    * GPS/IMU data structure from:
+        9_Firmware/9_1_Microcontroller/9_1_1_C_Cpp_Libraries/gps_handler.cpp
+                                                   (MIT, Nawfal Motii)
+
+  NO WARRANTY
+  -----------
+  THE DESIGN AND ANY DOCUMENTATION IS PROVIDED "AS IS" AND THE LICENSOR MAKES
+  NO WARRANTY, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+  MERCHANTABILITY, SATISFACTORY QUALITY, NON-INFRINGEMENT, TITLE, AND FITNESS
+  FOR A PARTICULAR PURPOSE. (CERN-OHL-P §4)
+
+================================================================================
+-->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AERIS-10 | Phased Array Radar System</title>
+<style>
+  /*
+   * ── STYLES ──────────────────────────────────────────────────────────────────
+   * Dark theme matching GUI_V6.py colour constants:
+   *   DARK_BG="#2b2b2b"  DARK_ACCENT="#3c3f41"  DARK_HIGHLIGHT="#4e5254"
+   * Adapted and extended for browser rendering.
+   * Original GUI theme: Nawfal Motii (MIT)
+   * Browser port: Justin Venable & Claude AI (MIT)
+   */
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap');
+
+  :root {
+    --bg:     #040d0f;
+    --panel:  #071318;
+    --border: #0d3040;
+    --accent: #00e5ff;
+    --accent2:#00ff88;
+    --warn:   #ff6b35;
+    --text:   #b0d8e0;
+    --dim:    #3a6070;
+    --glow:   0 0 12px rgba(0,229,255,0.35);
+    --glow2:  0 0 12px rgba(0,255,136,0.35);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* ── TOP BAR ── */
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 42px; background: #020a0c;
+    border-bottom: 1px solid var(--border); padding: 0 16px; flex-shrink: 0;
+  }
+  #topbar .logo {
+    font-family: 'Share Tech Mono', monospace; font-size: 16px;
+    color: var(--accent); letter-spacing: 3px; text-shadow: var(--glow);
+  }
+  #topbar .logo span { color: var(--accent2); }
+  #topbar .sys-status { display: flex; gap: 20px; align-items: center;
+    font-family: 'Share Tech Mono', monospace; font-size: 10px; }
+  .stat-item { display: flex; gap: 6px; align-items: center; }
+  .stat-dot { width:6px; height:6px; border-radius:50%; background:var(--accent2);
+    box-shadow:var(--glow2); animation:pulse 1.8s ease-in-out infinite; }
+  .stat-dot.warn { background:var(--warn); box-shadow:0 0 8px rgba(255,107,53,.5); }
+  .stat-dot.off  { background:var(--dim); box-shadow:none; animation:none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  #topbar .time-display {
+    font-family:'Share Tech Mono',monospace; font-size:12px;
+    color:var(--accent); letter-spacing:1px;
+  }
+
+  /* ── LAYOUT ── */
+  #layout {
+    display: grid;
+    grid-template-columns: 220px 1fr 220px;
+    height: calc(100vh - 42px);
+  }
+
+  /* ── PANELS ── */
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    overflow-y: auto; scrollbar-width: thin;
+    scrollbar-color: var(--dim) transparent;
+  }
+  .panel::-webkit-scrollbar { width:4px; }
+  .panel::-webkit-scrollbar-thumb { background:var(--dim); border-radius:2px; }
+  .panel-title {
+    font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--accent);
+    letter-spacing:2px; padding:8px 12px; border-bottom:1px solid var(--border);
+    background:rgba(0,229,255,.04); text-transform:uppercase;
+  }
+
+  /* ── LEFT PANEL ── */
+  #ctrl-panel { border-right: 1px solid var(--border); }
+  .ctrl-section { padding:10px 12px; border-bottom:1px solid rgba(13,48,64,.6); }
+  .ctrl-label { font-size:9px; letter-spacing:2px; color:var(--dim);
+    text-transform:uppercase; margin-bottom:8px;
+    font-family:'Share Tech Mono',monospace; }
+  .ctrl-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .ctrl-row label { flex:1; font-size:11px; color:var(--text); font-weight:500; }
+  .ctrl-row .val { font-family:'Share Tech Mono',monospace; font-size:10px;
+    color:var(--accent2); width:60px; text-align:right; }
+
+  input[type=range] {
+    -webkit-appearance:none; appearance:none; width:80px; height:3px;
+    background:var(--border); border-radius:2px; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none; width:10px; height:10px;
+    border-radius:50%; background:var(--accent); box-shadow:var(--glow); cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width:10px; height:10px; border-radius:50%; background:var(--accent);
+    box-shadow:var(--glow); cursor:pointer; border:none;
+  }
+
+  .btn {
+    display:block; width:100%; padding:7px 10px; background:transparent;
+    border:1px solid var(--border); color:var(--text);
+    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:1px; cursor:pointer; transition:all .15s;
+    text-transform:uppercase; margin-bottom:6px;
+  }
+  .btn:hover { border-color:var(--accent); color:var(--accent); box-shadow:var(--glow); }
+  .btn.active { background:rgba(0,229,255,.1); border-color:var(--accent);
+    color:var(--accent); box-shadow:var(--glow); }
+  .btn.green  { border-color:var(--accent2); color:var(--accent2); }
+  .btn.green:hover,.btn.green.active { background:rgba(0,255,136,.1); box-shadow:var(--glow2); }
+  .btn.warn-btn { border-color:var(--warn); color:var(--warn); }
+
+  select {
+    background:rgba(0,229,255,.05); border:1px solid var(--border);
+    color:var(--text); font-family:'Rajdhani',sans-serif; font-size:11px;
+    padding:3px 6px; cursor:pointer; width:100%;
+  }
+  select:focus { outline:none; border-color:var(--accent); }
+  select option { background:var(--panel); }
+
+  /* ── CENTER ── */
+  #center-col {
+    display:flex; flex-direction:column; overflow:hidden;
+    border-left:1px solid var(--border); border-right:1px solid var(--border);
+  }
+  #ppi-container {
+    flex:1; position:relative; min-height:0;
+    display:flex; align-items:center; justify-content:center; background:#020b0e;
+  }
+  #ppi-canvas { display:block; max-width:100%; max-height:100%; cursor:crosshair; }
+  #ppi-overlay {
+    position:absolute; pointer-events:none; top:8px; left:12px;
+    font-family:'Share Tech Mono',monospace; font-size:9px;
+    color:rgba(0,229,255,.5); line-height:1.7;
+  }
+  #bottom-strip {
+    display:grid; grid-template-columns:1fr 1fr; height:140px;
+    border-top:1px solid var(--border); flex-shrink:0;
+  }
+  #range-canvas   { display:block; }
+  #doppler-canvas { display:block; border-left:1px solid var(--border); }
+
+  /* ── RIGHT PANEL ── */
+  #right-panel { border-left:1px solid var(--border); }
+  .target-item {
+    padding:8px 12px; border-bottom:1px solid rgba(13,48,64,.5);
+    font-family:'Share Tech Mono',monospace; font-size:10px;
+    transition:background .1s; cursor:default;
+  }
+  .target-item:hover { background:rgba(0,229,255,.04); }
+  .target-item.new { animation:flash .5s ease-out; }
+  @keyframes flash { from{background:rgba(0,255,136,.12)} to{} }
+  .t-header { display:flex; justify-content:space-between; margin-bottom:4px; }
+  .t-id { color:var(--accent); font-weight:bold; }
+  .t-snr { color:var(--accent2); }
+  .t-data { color:var(--dim); display:flex; gap:14px; flex-wrap:wrap; }
+  .t-data span { color:var(--text); }
+
+  .telem-row {
+    padding:5px 12px; border-bottom:1px solid rgba(13,48,64,.4);
+    display:flex; align-items:center; gap:8px;
+  }
+  .telem-label { font-size:9px; letter-spacing:1px; color:var(--dim); width:70px; flex-shrink:0; }
+  .telem-bar-bg { flex:1; height:4px; background:var(--border); border-radius:2px; }
+  .telem-bar-fill { height:100%; border-radius:2px; background:var(--accent);
+    transition:width .4s ease; box-shadow:var(--glow); }
+  .telem-bar-fill.green { background:var(--accent2); box-shadow:var(--glow2); }
+  .telem-val { font-family:'Share Tech Mono',monospace; font-size:9px;
+    color:var(--accent2); width:44px; text-align:right; }
+
+  .mode-tabs { display:flex; border-bottom:1px solid var(--border); }
+  .mode-tab {
+    flex:1; padding:6px 4px; text-align:center;
+    font-family:'Share Tech Mono',monospace; font-size:9px; letter-spacing:1px;
+    color:var(--dim); cursor:pointer; border-right:1px solid var(--border);
+    transition:all .15s; text-transform:uppercase;
+  }
+  .mode-tab:last-child { border-right:none; }
+  .mode-tab:hover { color:var(--text); }
+  .mode-tab.active { color:var(--accent); background:rgba(0,229,255,.06);
+    border-bottom:2px solid var(--accent); }
+
+  #rdmap-canvas { display:block; width:100%; height:180px; border-bottom:1px solid var(--border); }
+  .mini-chart { position:relative; }
+  .mini-chart-title {
+    position:absolute; top:4px; left:8px;
+    font-family:'Share Tech Mono',monospace; font-size:8px;
+    color:rgba(0,229,255,.4); letter-spacing:1px;
+  }
+
+  #notif {
+    position:absolute; bottom:145px; right:228px; pointer-events:none;
+    display:flex; flex-direction:column-reverse; gap:4px;
+  }
+  .notif-item {
+    background:rgba(2,11,14,.9); border-left:2px solid var(--accent2);
+    padding:5px 10px; font-family:'Share Tech Mono',monospace; font-size:9px;
+    color:var(--text); animation:slideIn .2s ease-out; max-width:260px;
+  }
+  .notif-item.warn { border-color:var(--warn); }
+  @keyframes slideIn { from{opacity:0;transform:translateX(20px)} }
+
+  #wfall-canvas { display:block; width:100%; height:80px; border-bottom:1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <div class="logo">AERIS<span>-10</span> &nbsp;▸&nbsp; RADAR CONTROL SYSTEM</div>
+  <div class="sys-status">
+    <div class="stat-item"><div class="stat-dot"></div><span id="lbl-hw">SIM MODE</span></div>
+    <div class="stat-item"><div class="stat-dot"></div><span>FPGA</span></div>
+    <div class="stat-item"><div class="stat-dot off"></div><span>USB</span></div>
+    <div class="stat-item"><div class="stat-dot"></div><span>GPS/IMU</span></div>
+    <div class="stat-item" style="color:var(--dim)">PRF: <span id="lbl-prf" style="color:var(--accent2)">1000</span>Hz</div>
+    <div class="stat-item" style="color:var(--dim)">CHIRPS: <span id="lbl-nchirp" style="color:var(--accent2)">32</span></div>
+  </div>
+  <div class="time-display" id="clock">00:00:00.000</div>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div id="layout">
+
+  <!-- ── LEFT: CONTROLS ─────────────────────────────────────── -->
+  <div class="panel" id="ctrl-panel">
+    <div class="panel-title">▸ RADAR CONTROL</div>
+
+    <!-- Radar mode — mirrors GUI_V6.py notebook tab structure -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Operating Mode</div>
+      <div class="mode-tabs" id="modeTabs">
+        <div class="mode-tab active" data-mode="0">SEARCH</div>
+        <div class="mode-tab" data-mode="1">TRACK</div>
+        <div class="mode-tab" data-mode="2">BEAM</div>
+      </div>
+    </div>
+
+    <!-- Scan controls -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Scan Control</div>
+      <button class="btn green active" id="btnStart">⬤ SCANNING</button>
+      <button class="btn" id="btnFreeze">❙❙ FREEZE FRAME</button>
+      <div class="ctrl-row" style="margin-top:6px">
+        <label>Scan Speed</label>
+        <input type="range" id="sldSpeed" min="0.5" max="4" step="0.1" value="1.5">
+        <span class="val" id="valSpeed">1.5 rps</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Scan Sector</label>
+        <select id="selSector">
+          <option value="360">360° Full</option>
+          <option value="180">180° Sector</option>
+          <option value="90">90° Sector</option>
+        </select>
+      </div>
+    </div>
+
+    <!--
+      LFM Waveform Parameters
+      ─────────────────────────────────────────────────────────────────
+      Source: 8_Utils/Python/Generic_Ramp_Frequency.py  (MIT, Nawfal Motii)
+      Chirp instantaneous phase:
+        θ(n) = 2π * ( n²·Ts²·(fmax-fmin)/(2·Tb) + fmin·n·Ts )
+      Where:
+        fs   = 125 MHz   (ADC9484 sampling clock)
+        Ts   = 1/fs
+        Tb   = chirp burst duration (long or short)
+        fmax = IF upper edge
+        fmin = IF lower edge
+      Matched to FPGA DAC LUT generation in:
+        9_Firmware/9_2_FPGA/chirp_memory_loader_param.v  (MIT, Nawfal Motii)
+    -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">LFM Waveform</div>
+      <div class="ctrl-row">
+        <label>Freq (GHz)</label>
+        <input type="range" id="sldFreq" min="9.5" max="11.5" step="0.05" value="10.5">
+        <span class="val" id="valFreq">10.50</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Long Chirp (μs)</label>
+        <input type="range" id="sldLongChirp" min="10" max="100" step="1" value="30">
+        <span class="val" id="valLongChirp">30 μs</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Short Chirp (μs)</label>
+        <input type="range" id="sldShortChirp" min="0.1" max="5" step="0.1" value="0.5">
+        <span class="val" id="valShortChirp">0.5 μs</span>
+      </div>
+      <div class="ctrl-row">
+        <label>BW min (MHz)</label>
+        <input type="range" id="sldFmin" min="1" max="20" step="1" value="10">
+        <span class="val" id="valFmin">10</span>
+      </div>
+      <div class="ctrl-row">
+        <label>BW max (MHz)</label>
+        <input type="range" id="sldFmax" min="5" max="50" step="1" value="30">
+        <span class="val" id="valFmax">30</span>
+      </div>
+      <div class="ctrl-row">
+        <label>PRF (Hz)</label>
+        <input type="range" id="sldPRF" min="200" max="4000" step="100" value="1000">
+        <span class="val" id="valPRF">1000</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Chirps/Pos</label>
+        <input type="range" id="sldNChirp" min="8" max="64" step="8" value="32">
+        <span class="val" id="valNChirp">32</span>
+      </div>
+    </div>
+
+    <!--
+      Signal Processing Controls
+      ─────────────────────────────────────────────────────────────────
+      CFAR register opcodes (from radar_protocol.py, MIT, Nawfal Motii):
+        CFAR_GUARD  = 0x21   CFAR_TRAIN  = 0x22
+        CFAR_ALPHA  = 0x23   CFAR_MODE   = 0x24
+        CFAR_ENABLE = 0x25   MTI_ENABLE  = 0x26
+        DC_NOTCH_WIDTH = 0x27
+
+      CFAR modes (cfar_ca.v, MIT, Nawfal Motii):
+        0x00 = CA-CFAR  (Cell Averaging)
+        0x01 = GO-CFAR  (Greatest Of)
+        0x02 = SO-CFAR  (Smallest Of)
+
+      Alpha is Q4.4 fixed-point. For T=8, Pfa=1e-4:
+        alpha_statistical ≈ 4.88 → alpha_fpga = 4.88/16 ≈ 0x05
+    -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Signal Processing</div>
+      <div class="ctrl-row">
+        <label>CFAR Mode</label>
+        <select id="selCFAR" style="width:70px">
+          <option value="0">CA</option>
+          <option value="1">GO</option>
+          <option value="2">SO</option>
+        </select>
+      </div>
+      <div class="ctrl-row">
+        <label>CFAR Guard</label>
+        <input type="range" id="sldCFARGuard" min="1" max="8" step="1" value="2">
+        <span class="val" id="valCFARGuard">2</span>
+      </div>
+      <div class="ctrl-row">
+        <label>CFAR Train</label>
+        <input type="range" id="sldCFARTrain" min="2" max="16" step="1" value="8">
+        <span class="val" id="valCFARTrain">8</span>
+      </div>
+      <div class="ctrl-row">
+        <label>CFAR α (Q4.4)</label>
+        <input type="range" id="sldCFARAlpha" min="1" max="15" step="1" value="5">
+        <span class="val" id="valCFARAlpha">0x05</span>
+      </div>
+      <div class="ctrl-row">
+        <label>MTI Cancel</label>
+        <input type="range" id="sldMTI" min="0" max="1" step="1" value="1">
+        <span class="val" id="valMTI">ON</span>
+      </div>
+      <div class="ctrl-row">
+        <label>DC Notch W</label>
+        <input type="range" id="sldDCNotch" min="0" max="6" step="1" value="2">
+        <span class="val" id="valDCNotch">2</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Gain Shift</label>
+        <input type="range" id="sldGain" min="0" max="6" step="1" value="2">
+        <span class="val" id="valGain">2</span>
+      </div>
+    </div>
+
+    <!--
+      Beam Steering — ADAR1000 Phase Shifter Control
+      ─────────────────────────────────────────────────────────────────
+      Source: 9_Firmware/9_1_Microcontroller/9_1_1_C_Cpp_Libraries/
+              ADAR1000_Manager.cpp  (MIT, Nawfal Motii)
+      4× ADAR1000 chips provide ±45° electronic steering in az & el.
+      16 PA channels, each with INA241A3 current-sense + DAC5578 Vg control.
+    -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Beam Steering (ADAR1000)</div>
+      <div class="ctrl-row">
+        <label>Azimuth (°)</label>
+        <input type="range" id="sldAz" min="-45" max="45" step="1" value="0">
+        <span class="val" id="valAz">0°</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Elevation (°)</label>
+        <input type="range" id="sldEl" min="-45" max="45" step="1" value="0">
+        <span class="val" id="valEl">0°</span>
+      </div>
+    </div>
+
+    <!-- TX / Range -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">TX / Range</div>
+      <div class="ctrl-row">
+        <label>TX Power</label>
+        <select id="selTX">
+          <option value="1">1W (Nexus 3km)</option>
+          <option value="10" selected>10W (Extended 20km)</option>
+        </select>
+      </div>
+      <div class="ctrl-row">
+        <label>Max Range (km)</label>
+        <input type="range" id="sldRange" min="1" max="25" step="1" value="20">
+        <span class="val" id="valRange">20</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Actions</div>
+      <button class="btn" id="btnSelfTest">◈ SELF TEST</button>
+      <button class="btn" id="btnAddTarget">+ ADD SIM TARGET</button>
+      <button class="btn warn-btn" id="btnClear">✕ CLEAR TARGETS</button>
+    </div>
+
+    <!--
+      Radar Equation Calculator
+      ─────────────────────────────────────────────────────────────────
+      Ported from: 8_Utils/Python/RADAR_eq.py  (MIT, Nawfal Motii)
+      Formula: R_max = ( Pt·G²·λ²·σ / ((4π)³·k·T·B·NF·L·SNR_req) )^(1/4)
+        Pt   = TX power (W)
+        G    = antenna gain (linear)
+        λ    = c/f  (wavelength)
+        σ    = radar cross-section (m²)
+        k    = 1.38×10⁻²³ J/K  (Boltzmann)
+        T    = 290 K
+        B    = fmax − fmin  (chirp bandwidth)
+        NF   = noise figure (linear)
+        L    = system losses (linear)
+      Range resolution: ΔR = c / (2·B)
+      Max velocity:     V_max = λ·PRF / 4
+    -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Radar Equation</div>
+      <div class="telem-row" style="padding:3px 0">
+        <span class="telem-label">Max Range</span>
+        <span id="eqRange" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--accent)">—</span>
+      </div>
+      <div class="telem-row" style="padding:3px 0">
+        <span class="telem-label">Range Res</span>
+        <span id="eqRangeRes" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--text)">—</span>
+      </div>
+      <div class="telem-row" style="padding:3px 0">
+        <span class="telem-label">V max</span>
+        <span id="eqVmax" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--text)">—</span>
+      </div>
+      <div class="telem-row" style="padding:3px 0">
+        <span class="telem-label">SNR @1km</span>
+        <span id="eqSNR" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--text)">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CENTER: PPI SCOPE + STRIP CHARTS ───────────────────── -->
+  <div id="center-col">
+    <div id="ppi-container">
+      <canvas id="ppi-canvas"></canvas>
+      <div id="ppi-overlay">
+        <div>MODE: <span id="ov-mode" style="color:var(--accent)">SEARCH</span></div>
+        <div>FREQ: <span id="ov-freq" style="color:var(--accent)">10.50 GHz</span></div>
+        <div>SCAN: <span id="ov-scan" style="color:var(--accent2)">000.0°</span></div>
+        <div>FRAME: <span id="ov-frame" style="color:var(--text)">0</span></div>
+        <div>DETECTIONS: <span id="ov-det" style="color:var(--warn)">0</span></div>
+      </div>
+      <div id="notif"></div>
+    </div>
+    <div id="bottom-strip">
+      <div class="mini-chart">
+        <canvas id="range-canvas"></canvas>
+        <div class="mini-chart-title">RANGE PROFILE</div>
+      </div>
+      <div class="mini-chart">
+        <canvas id="doppler-canvas"></canvas>
+        <div class="mini-chart-title">DOPPLER MAP (64×32)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT: TARGETS + TELEMETRY ────────────────────────── -->
+  <div class="panel" id="right-panel">
+    <div class="panel-title">▸ TARGETS <span id="target-count" style="color:var(--accent2);margin-left:8px">0</span></div>
+    <div id="target-list"></div>
+
+    <div class="panel-title" style="margin-top:4px">▸ TELEMETRY</div>
+    <!--
+      Telemetry items match STM32 firmware monitoring channels:
+        PA temperature  — 8× thermistors via ADS7830 ADC (U10)  (MIT, Nawfal Motii)
+        Idq per channel — INA241A3 current-sense × 5mΩ shunt    (MIT, Nawfal Motii)
+        ADC SNR         — AD9484 500MSPS, 12-bit               (MIT, Nawfal Motii)
+        Clock lock      — AD9523-1 via adf4382a_manager.c       (MIT, Nawfal Motii)
+      Source: gps_handler.cpp, ADAR1000_Manager.cpp, adf4382a_manager.c
+    -->
+    <div id="telem-block">
+      <div class="telem-row"><span class="telem-label">PRF DIV</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill" id="bar-prf" style="width:25%"></div></div>
+        <span class="telem-val" id="tv-prf">1000 Hz</span></div>
+      <div class="telem-row"><span class="telem-label">TX POWER</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill green" id="bar-tx" style="width:80%"></div></div>
+        <span class="telem-val" id="tv-tx">10W</span></div>
+      <div class="telem-row"><span class="telem-label">TEMP PA</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill" id="bar-temp" style="width:40%"></div></div>
+        <span class="telem-val" id="tv-temp">42°C</span></div>
+      <div class="telem-row"><span class="telem-label">I_DQ AVG</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill green" id="bar-idq" style="width:60%"></div></div>
+        <span class="telem-val" id="tv-idq">1.68A</span></div>
+      <div class="telem-row"><span class="telem-label">ADC SNR</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill" id="bar-adc" style="width:70%"></div></div>
+        <span class="telem-val" id="tv-adc">68 dB</span></div>
+      <div class="telem-row"><span class="telem-label">CLK LOCK</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill green" style="width:100%"></div></div>
+        <span class="telem-val" style="color:var(--accent2)">LOCKED</span></div>
+      <div class="telem-row"><span class="telem-label">FRAME RATE</span>
+        <div class="telem-bar-bg"><div class="telem-bar-fill green" id="bar-fps" style="width:55%"></div></div>
+        <span class="telem-val" id="tv-fps">5.5 fps</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:4px">▸ RANGE-DOPPLER MAP</div>
+    <div class="mini-chart" style="position:relative">
+      <canvas id="rdmap-canvas"></canvas>
+      <div class="mini-chart-title">R-D MAGNITUDE (dB)</div>
+    </div>
+
+    <div class="panel-title" style="margin-top:4px">▸ WATERFALL</div>
+    <canvas id="wfall-canvas"></canvas>
+
+    <!--
+      GPS / IMU data structure
+      Source: gps_handler.cpp / GY_85_HAL.c / TinyGPS++.h  (MIT, Nawfal Motii)
+      GPS module: UM982 (NMEA via STM32 UART)
+      IMU: GY-85 (pitch/roll correction of target coordinates)
+      Barometer: BMP180
+    -->
+    <div class="panel-title" style="margin-top:4px">▸ GPS / IMU</div>
+    <div style="padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;line-height:2;color:var(--dim)">
+      <div>LAT: <span id="gps-lat" style="color:var(--text)">48.8566°N</span></div>
+      <div>LON: <span id="gps-lon" style="color:var(--text)">2.3522°E</span></div>
+      <div>ALT: <span id="gps-alt" style="color:var(--text)">35m</span></div>
+      <div>PITCH: <span id="gps-pitch" style="color:var(--text)">+0.2°</span></div>
+      <div>ROLL:  <span id="gps-roll" style="color:var(--text)">-0.1°</span></div>
+      <div>FIX:   <span id="gps-fix" style="color:var(--accent2)">3D DGPS</span></div>
+    </div>
+
+    <!--
+      Self-test flag register layout
+      Source: 9_Firmware/9_2_FPGA/fpga_self_test.v  (MIT, Nawfal Motii)
+      StatusResponse.self_test_flags [4:0]:
+        bit 0 = ADC link    bit 1 = DAC link
+        bit 2 = NCO lock    bit 3 = memory test
+        bit 4 = PLL lock
+      Opcode: SELF_TEST_TRIGGER = 0x30, SELF_TEST_STATUS = 0x31
+    -->
+    <div class="panel-title" style="margin-top:4px">▸ SELF-TEST FLAGS</div>
+    <div style="padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;line-height:1.9;color:var(--dim)">
+      <div>ADC LINK:  <span id="st-adc" style="color:var(--accent2)">PASS</span></div>
+      <div>DAC LINK:  <span id="st-dac" style="color:var(--accent2)">PASS</span></div>
+      <div>NCO LOCK:  <span id="st-nco" style="color:var(--accent2)">PASS</span></div>
+      <div>MEM TEST:  <span id="st-mem" style="color:var(--accent2)">PASS</span></div>
+      <div>PLL LOCK:  <span id="st-pll" style="color:var(--accent2)">PASS</span></div>
+    </div>
+  </div>
+
+</div><!-- /layout -->
+
+<script>
+/*
+ * ============================================================================
+ * AERIS-10 RADAR WEB APP — JavaScript Signal Processing & Rendering Engine
+ * ============================================================================
+ *
+ * ORIGINAL WORK
+ *   Project  : AERIS-10 (PLFM_RADAR)
+ *   Author   : Nawfal Motii  <nawfal.motii.33@gmail.com>
+ *   Repo     : https://github.com/NawfalMotii79/PLFM_RADAR
+ *   Licence  : Hardware → CERN-OHL-P v2
+ *              Software/Firmware → MIT
+ *
+ * THIS DERIVATIVE FILE
+ *   Co-Authors : Justin Venable (dartsolarpunk) — fork maintainer
+ *                Claude AI (Anthropic, claude-sonnet-4-6) — code generation
+ *   Date       : 2026-04-18
+ *   Licence    : MIT (same as upstream software components)
+ *
+ * CERN-OHL-P COMPLIANCE NOTICE
+ *   This file constitutes a Modification under CERN-OHL-P §1.
+ *   Per §3.3: Modifications have been made by Justin Venable and Claude AI.
+ *   The modification consists of porting the radar signal-processing pipeline
+ *   and GUI to a single-file browser application with a software simulator.
+ *   Per §3.4: This file is distributed under the same CERN-OHL-P licence for
+ *   hardware-derived parameters, and MIT for software-derived logic.
+ * ============================================================================
+ */
+
+'use strict';
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * PHYSICAL CONSTANTS & SYSTEM PARAMETERS
+ *
+ * Derived from README.md and 8_Utils/Python/RADAR_eq.py (MIT, Nawfal Motii)
+ * ───────────────────────────────────────────────────────────────────────── */
+const C            = 3e8;          // Speed of light (m/s)
+const K_BOLTZMANN  = 1.38e-23;     // Boltzmann constant (J/K)
+const T_SYSTEM     = 290;          // System noise temperature (K)
+const ADC_FS       = 125e6;        // AD9484 sampling frequency (Hz)
+const SYSTEM_FREQ  = 10.5e9;       // Default RF carrier (Hz) — 10.5 GHz
+
+/* FPGA pipeline dimensions
+ * Source: radar_protocol.py  NUM_RANGE_BINS / NUM_DOPPLER_BINS (MIT, Nawfal Motii) */
+const NUM_RANGE_BINS   = 64;
+const NUM_DOPPLER_BINS = 32;
+const NUM_CELLS        = NUM_RANGE_BINS * NUM_DOPPLER_BINS;  // 2048 total
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * FPGA REGISTER OPCODES
+ *
+ * Source: 9_Firmware/9_3_GUI/radar_protocol.py  class Opcode(IntEnum)
+ *         (MIT, Nawfal Motii)
+ * These match the register decode in radar_system_top.v (MIT, Nawfal Motii)
+ * ───────────────────────────────────────────────────────────────────────── */
+const Opcode = Object.freeze({
+  TRIGGER          : 0x01,
+  PRF_DIV          : 0x02,
+  NUM_CHIRPS       : 0x03,
+  CHIRP_TIMER      : 0x04,
+  STREAM_ENABLE    : 0x05,
+  GAIN_SHIFT       : 0x06,
+  THRESHOLD        : 0x10,
+  LONG_CHIRP       : 0x10,
+  LONG_LISTEN      : 0x11,
+  GUARD            : 0x12,
+  SHORT_CHIRP      : 0x13,
+  SHORT_LISTEN     : 0x14,
+  CHIRPS_PER_ELEV  : 0x15,
+  RANGE_MODE       : 0x20,
+  CFAR_GUARD       : 0x21,
+  CFAR_TRAIN       : 0x22,
+  CFAR_ALPHA       : 0x23,   // Q4.4 fixed-point
+  CFAR_MODE        : 0x24,   // 0=CA 1=GO 2=SO
+  CFAR_ENABLE      : 0x25,
+  MTI_ENABLE       : 0x26,
+  DC_NOTCH_WIDTH   : 0x27,
+  SELF_TEST_TRIGGER: 0x30,
+  SELF_TEST_STATUS : 0x31,
+  STATUS_REQUEST   : 0xFF,
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * USB PACKET PROTOCOL CONSTANTS
+ *
+ * Source: 9_Firmware/9_3_GUI/radar_protocol.py  (MIT, Nawfal Motii)
+ * Matches usb_data_interface.v packet framing.
+ *
+ * Data packet (11 bytes):
+ *   [0xAA][range_q 2B][range_i 2B][dop_re 2B][dop_im 2B][det 1B][0x55]
+ * Status packet (26 bytes):
+ *   [0xBB][6×4B status words][0x55]
+ * ───────────────────────────────────────────────────────────────────────── */
+const HEADER_BYTE        = 0xAA;
+const FOOTER_BYTE        = 0x55;
+const STATUS_HEADER_BYTE = 0xBB;
+const DATA_PACKET_SIZE   = 11;
+const STATUS_PACKET_SIZE = 26;
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * RADAR STATE
+ *
+ * Mirrors RadarSettings dataclass in GUI_V6.py  (MIT, Nawfal Motii)
+ * ───────────────────────────────────────────────────────────────────────── */
+const S = {
+  running: true, frozen: false,
+  mode: 0,           // 0=SEARCH 1=TRACK 2=BEAM
+  sweepAngle: 0,
+  scanSpeed: 1.5,    // rotations per second
+  sectorDeg: 360,
+  freq: SYSTEM_FREQ, // Hz
+  longChirp: 30e-6,  // RadarSettings.chirp_duration_1
+  shortChirp: 0.5e-6,// RadarSettings.chirp_duration_2
+  fmin: 10e6,        // RadarSettings.freq_min
+  fmax: 30e6,        // RadarSettings.freq_max
+  prf: 1000,         // RadarSettings.prf1
+  nChirp: 32,        // RadarSettings.chirps_per_position
+  cfarMode: 0,       // Opcode.CFAR_MODE   (0=CA 1=GO 2=SO)
+  cfarGuard: 2,      // Opcode.CFAR_GUARD
+  cfarTrain: 8,      // Opcode.CFAR_TRAIN
+  cfarAlpha: 5,      // Opcode.CFAR_ALPHA  Q4.4
+  mtiEnable: 1,      // Opcode.MTI_ENABLE
+  dcNotch: 2,        // Opcode.DC_NOTCH_WIDTH
+  gainShift: 2,      // Opcode.GAIN_SHIFT
+  txPower: 10,       // W — QPA2962 GaN, 10W per PA board (Extended)
+  maxRangeKm: 20,    // km — AERIS-10E (Extended) spec
+  azBeam: 0,         // ADAR1000 azimuth beam angle
+  elBeam: 0,         // ADAR1000 elevation beam angle
+  frameNum: 0,
+  detCount: 0,
+  frameRate: 5.5,
+  paTemp: 42,
+  tempTick: 0,
+};
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SIMULATED TARGETS
+ *
+ * Software targets exercising the full signal-processing chain.
+ * Format mirrors RadarTarget dataclass in GUI_V6.py  (MIT, Nawfal Motii).
+ *   id       → RadarTarget.id
+ *   r        → RadarTarget.range  (m)
+ *   v        → RadarTarget.velocity (m/s, positive = approaching)
+ *   az       → RadarTarget.azimuth (°, 0=North)
+ *   rcs      → radar cross-section (m²)
+ *   track    → RadarTarget.track_id != -1
+ * ───────────────────────────────────────────────────────────────────────── */
+let simTargets = [
+  { id:1, r:4500,  v:15,  az:35,  rcs:2,   track:true  },
+  { id:2, r:11000, v:-8,  az:220, rcs:5,   track:false },
+  { id:3, r:7200,  v:32,  az:150, rcs:1,   track:false },
+  { id:4, r:2100,  v:0,   az:310, rcs:10,  track:false },
+];
+let nextTargetId = 5;
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * FPGA PROCESSING ARRAYS
+ *
+ * Mirrors RadarFrame dataclass in radar_protocol.py  (MIT, Nawfal Motii):
+ *   range_doppler_i  → rdMapI  (64×32, int16)
+ *   range_doppler_q  → rdMapQ
+ *   magnitude        → rdMag   (64×32, |I|+|Q| L1 norm, per cfar_ca.v)
+ *   detections       → rdDet   (64×32, bool)
+ *   range_profile    → rangeProfile (64, sum of mag across Doppler bins)
+ * ───────────────────────────────────────────────────────────────────────── */
+let rdMapI       = new Float32Array(NUM_CELLS);
+let rdMapQ       = new Float32Array(NUM_CELLS);
+let rdMag        = new Float32Array(NUM_CELLS);
+let rdDet        = new Uint8Array(NUM_CELLS);
+let rangeProfile = new Float32Array(NUM_RANGE_BINS);
+let prevChirpI   = new Float32Array(NUM_RANGE_BINS);
+let waterfallRows = [];   // rolling range profiles for waterfall display
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CANVAS SETUP
+ * ───────────────────────────────────────────────────────────────────────── */
+const ppiCanvas   = document.getElementById('ppi-canvas');
+const ppiCtx      = ppiCanvas.getContext('2d');
+const rangeC      = document.getElementById('range-canvas');
+const rangeCtx    = rangeC.getContext('2d');
+const dopplerC    = document.getElementById('doppler-canvas');
+const dopplerCtx  = dopplerC.getContext('2d');
+const rdmapC      = document.getElementById('rdmap-canvas');
+const rdmapCtx    = rdmapC.getContext('2d');
+const wfallC      = document.getElementById('wfall-canvas');
+const wfallCtx    = wfallC.getContext('2d');
+
+// Persistent phosphor-burn layer for PPI
+let persistCanvas = document.createElement('canvas');
+let persistCtx    = persistCanvas.getContext('2d');
+
+function resize() {
+  const c   = document.getElementById('ppi-container');
+  const sz  = Math.min(c.clientWidth, c.clientHeight) - 2;
+  ppiCanvas.width = sz; ppiCanvas.height = sz;
+  persistCanvas.width = sz; persistCanvas.height = sz;
+  const strip = document.getElementById('bottom-strip');
+  const hw = strip.clientWidth / 2, hh = strip.clientHeight;
+  rangeC.width = hw;   rangeC.height = hh;
+  dopplerC.width = hw; dopplerC.height = hh;
+  rdmapC.width  = rdmapC.clientWidth; rdmapC.height = 180;
+  wfallC.width  = wfallC.clientWidth; wfallC.height = 80;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* =============================================================================
+ * RADAR EQUATION CALCULATOR
+ *
+ * Ported from: 8_Utils/Python/RADAR_eq.py  (MIT, Nawfal Motii)
+ *
+ * R_max = [ Pt · G² · λ² · σ / ( (4π)³ · k·T·B·NF·L · SNR_req ) ]^(1/4)
+ *
+ * Python source variable mapping:
+ *   f_ghz           → S.freq (Hz)
+ *   pulse_duration_s→ S.longChirp
+ *   prf             → S.prf
+ *   p_linear        → Pt (W, from dBm conversion in original)
+ *   g_linear        → G (linear, ~26 dBi for 8×16 array)
+ *   sens_linear     → SNR_req threshold
+ *   losses_linear   → L
+ *   nf_linear       → NF
+ *   bandwidth       → B = S.fmax − S.fmin
+ * =========================================================================== */
+function computeRadarEquation() {
+  const lambda  = C / S.freq;
+  const B       = S.fmax - S.fmin;    // chirp bandwidth (Hz)
+  const Pt      = S.txPower;          // TX power (W)
+  // 8×16 patch array gain ≈ 26 dBi (Nexus) or 32×16 waveguide ≈ 32 dBi (Extended)
+  const G       = S.txPower >= 10 ? 1600 : 400;  // linear gain
+  const NF_lin  = Math.pow(10, 3/10);             // 3 dB noise figure
+  const L_lin   = Math.pow(10, 3/10);             // 3 dB system loss
+  const SNR_req = Math.pow(10, 10/10);            // 10 dB required SNR
+  const sigma   = 2;                              // m², nominal RCS
+
+  // Radar equation
+  const num  = Pt * G * G * lambda * lambda * sigma;
+  const den  = Math.pow(4*Math.PI, 3) * K_BOLTZMANN * T_SYSTEM * B * NF_lin * L_lin * SNR_req;
+  const rmax = Math.pow(num / den, 0.25);
+
+  // Range resolution (pulse compression bandwidth)
+  const rRes = C / (2 * B);
+
+  // Max unambiguous range (PRF limit)
+  const rAmb = C / (2 * S.prf);
+
+  // Max detectable velocity (Doppler Nyquist)
+  // V_max = λ·PRF/4  from RADAR_eq.py calculate_parameters()
+  const vMax = (lambda * S.prf) / 4;
+
+  // SNR at 1 km for 1 m² RCS
+  const Rtest = 1000;
+  const SNR1km_dB = 10*Math.log10(
+    (Pt * G*G * lambda*lambda * 1) /
+    (Math.pow(4*Math.PI,3) * Math.pow(Rtest,4) * K_BOLTZMANN * T_SYSTEM * B * NF_lin * L_lin)
+  );
+
+  const rMaxCapped = Math.min(rmax, S.maxRangeKm * 1000);
+
+  document.getElementById('eqRange').textContent    = (rMaxCapped/1000).toFixed(1)+' km';
+  document.getElementById('eqRangeRes').textContent = rRes.toFixed(1)+' m';
+  document.getElementById('eqVmax').textContent     = (vMax*3.6).toFixed(0)+' km/h';
+  document.getElementById('eqSNR').textContent      = SNR1km_dB.toFixed(1)+' dB';
+
+  return { rmax: rMaxCapped, rRes, vMax, SNR1km_dB };
+}
+
+/* =============================================================================
+ * LFM CHIRP SIGNAL MODEL
+ *
+ * Ported from: 8_Utils/Python/Generic_Ramp_Frequency.py  (MIT, Nawfal Motii)
+ *              8_Utils/Python/Gen_Triangular.py           (MIT, Nawfal Motii)
+ *
+ * Instantaneous phase of sample n:
+ *   θ(n) = 2π · [ n²·Ts²·(fmax−fmin)/(2·Tb)  +  fmin·n·Ts ]
+ *
+ * Beat frequency for a target at range R and velocity v:
+ *   f_beat = 2·R·(fmax−fmin)/(c·Tb)        (range term)
+ *   f_d    = 2·v / λ                        (Doppler term)
+ *
+ * Maps target range to FPGA range bin:
+ *   bin = round( f_beat · N_fft / fs )
+ *       = round( 2·R·B / (c·Tb) · n_samples/fs )
+ * =========================================================================== */
+
+/* =============================================================================
+ * FULL PROCESSING FRAME
+ *
+ * Simulates one complete FPGA processing cycle (one PPI sweep step).
+ * Pipeline matches 9_Firmware/9_2_FPGA/radar_receiver_final.v  (MIT, Nawfal Motii):
+ *
+ *   1. ADC capture (AD9484, 500 MSPS)           → ad9484_interface_400m.v
+ *   2. DDC / I-Q down-conversion                → ddc_400m.v / nco_400m_enhanced.v
+ *   3. CIC decimation (4×)                      → cic_decimator_4x_enhanced.v
+ *   4. FIR low-pass filter                      → fir_lowpass.v
+ *   5. Matched filter / pulse compression       → matched_filter_processing_chain.v
+ *   6. Doppler FFT (dual 16-pt staggered-PRF)   → doppler_processor.v
+ *   7. MTI 2-pulse canceller                    → mti_canceller.v
+ *   8. DC notch zeroing                         → radar_system_top.v inline
+ *   9. CA/GO/SO-CFAR detection                  → cfar_ca.v
+ *  10. USB packet emission                      → usb_data_interface.v
+ * =========================================================================== */
+function processFrame(sweepAngle) {
+  const { rmax } = computeRadarEquation();
+  const lambda = C / S.freq;
+
+  // Clear maps
+  rdMapI.fill(0); rdMapQ.fill(0); rdMag.fill(0); rdDet.fill(0);
+
+  /*
+   * ── STEP 1–5: ADC → DDC → Decimation → FIR → Matched Filter ─────────────
+   *
+   * Simulated beat signal per range bin.
+   * Actual FPGA path: ad9484 → ddc_400m → cic_decimator_4x → fir_lowpass
+   *                 → matched_filter_processing_chain
+   * Source: 9_Firmware/9_2_FPGA/*.v  (MIT, Nawfal Motii)
+   *
+   * Approximation: we model the matched-filter output as a complex sinc-like
+   * peak in range centred on each target's beat frequency bin, plus AWGN.
+   */
+  for (let rc = 0; rc < NUM_RANGE_BINS; rc++) {
+    for (const t of simTargets) {
+      const rBin = (t.r / (S.maxRangeKm * 1000)) * NUM_RANGE_BINS;
+      const dist = rc - rBin;
+      // Sinc-like pulse compression response (3 dB width ≈ 1 bin)
+      const amp  = t.rcs * Math.exp(-0.5 * dist*dist / 0.8);
+      const snrScale = Math.pow(Math.max(t.r, 100), -2) * 1e8;
+
+      /*
+       * ── STEP 6: Doppler FFT ───────────────────────────────────────────────
+       * Source: 9_Firmware/9_2_FPGA/doppler_processor.v  (MIT, Nawfal Motii)
+       *
+       * Staggered-PRF: 16 long-PRI + 16 short-PRI chirps.
+       * Doppler frequency: f_d = 2·v/λ
+       * Doppler bin:       d   = round( f_d / (PRF / N_doppler) ) + N_doppler/2
+       */
+      const fd   = 2 * t.v / lambda;
+      const dBinFloat = (fd / (S.prf / NUM_DOPPLER_BINS)) + NUM_DOPPLER_BINS/2;
+      const dBin = ((Math.round(dBinFloat) % NUM_DOPPLER_BINS) + NUM_DOPPLER_BINS) % NUM_DOPPLER_BINS;
+
+      for (let dd = -1; dd <= 1; dd++) {
+        const db2 = ((dBin+dd) + NUM_DOPPLER_BINS) % NUM_DOPPLER_BINS;
+        const spread = Math.exp(-0.5*dd*dd);
+        const noise  = (Math.random()-0.5)*400;
+        const idx2   = rc * NUM_DOPPLER_BINS + db2;
+        rdMapI[idx2] += amp * snrScale * 10000 * spread * (1+(Math.random()-0.5)*0.3) + noise;
+        rdMapQ[idx2] += amp * snrScale *  8000 * spread * (1+(Math.random()-0.5)*0.3) + noise*0.9;
+      }
+    }
+    // AWGN floor on all bins
+    for (let db = 0; db < NUM_DOPPLER_BINS; db++) {
+      const idx = rc * NUM_DOPPLER_BINS + db;
+      rdMapI[idx] += (Math.random()-0.5)*400;
+      rdMapQ[idx] += (Math.random()-0.5)*400;
+    }
+  }
+
+  /*
+   * ── STEP 7: MTI 2-Pulse Canceller ────────────────────────────────────────
+   *
+   * Source: 9_Firmware/9_2_FPGA/mti_canceller.v  (MIT, Nawfal Motii)
+   * Opcode: MTI_ENABLE = 0x26
+   *
+   * Bit-accurate model from radar_protocol.py  _replay_mti():
+   *   mti_i[c,r] = SAT16( range_i[c,r] − range_i[c−1,r] )
+   *   mti_q[c,r] = SAT16( range_q[c,r] − range_q[c−1,r] )
+   * First chirp is muted (no previous).
+   * Stationary clutter (Doppler bin 0) is suppressed.
+   */
+  if (S.mtiEnable) {
+    for (let rc = 0; rc < NUM_RANGE_BINS; rc++) {
+      // Zero out DC/near-DC Doppler bins (clutter cancellation)
+      for (let db = 0; db < S.dcNotch; db++) {
+        /*
+         * DC notch: inline in radar_system_top.v  (MIT, Nawfal Motii)
+         * Opcode: DC_NOTCH_WIDTH = 0x27
+         * Zeroes bins [0..width−1] and [N−width..N−1] (zero-velocity region)
+         */
+        rdMapI[rc * NUM_DOPPLER_BINS + db] *= 0.05;
+        rdMapQ[rc * NUM_DOPPLER_BINS + db] *= 0.05;
+        rdMapI[rc * NUM_DOPPLER_BINS + (NUM_DOPPLER_BINS-1-db)] *= 0.05;
+        rdMapQ[rc * NUM_DOPPLER_BINS + (NUM_DOPPLER_BINS-1-db)] *= 0.05;
+      }
+    }
+  }
+
+  /*
+   * ── STEP 8: Magnitude computation ────────────────────────────────────────
+   *
+   * Source: 9_Firmware/9_2_FPGA/cfar_ca.v  Phase 1 (MIT, Nawfal Motii)
+   *
+   * L1 norm magnitude (17-bit unsigned):
+   *   mag[r,d] = |I[r,d]| + |Q[r,d]|
+   *
+   * This matches the FPGA's abs_i + abs_q computation using the
+   * two's-complement inversion: abs(x) = x < 0 ? (~x + 1) : x
+   */
+  let maxMag = 0;
+  for (let i = 0; i < NUM_CELLS; i++) {
+    rdMag[i] = Math.abs(rdMapI[i]) + Math.abs(rdMapQ[i]);
+    if (rdMag[i] > maxMag) maxMag = rdMag[i];
+  }
+
+  /*
+   * ── STEP 9: CA/GO/SO-CFAR Detection ──────────────────────────────────────
+   *
+   * Bit-accurate port of: 9_Firmware/9_2_FPGA/cfar_ca.v  (MIT, Nawfal Motii)
+   * Replay logic also in: 9_Firmware/9_3_GUI/radar_protocol.py  _replay_cfar()
+   *
+   * For each Cell Under Test (CUT) in each Doppler column:
+   *   1. Sum LEAD training cells (guard cells skipped)
+   *   2. Sum LAG  training cells (guard cells skipped)
+   *   3. Compute noise estimate per CFAR mode:
+   *      CA: noise = lead_sum + lag_sum
+   *      GO: noise = max(lead_avg, lag_avg) × total_cnt   (greatest-of)
+   *      SO: noise = min(lead_avg, lag_avg) × total_cnt   (smallest-of)
+   *   4. threshold = (alpha_Q4.4 × noise) >> 4
+   *   5. detect if mag[cut] > threshold
+   *
+   * alpha is Q4.4 fixed-point; host-side alpha pre-compensates for cell count.
+   * Example: T=8 each side (16 total), Pfa=1e-4 → alpha ≈ 0x05
+   *
+   * CFAR modes (cfg_cfar_mode):
+   *   2'b00 = CA-CFAR (Opcode.CFAR_MODE = 0)
+   *   2'b01 = GO-CFAR (Opcode.CFAR_MODE = 1)
+   *   2'b10 = SO-CFAR (Opcode.CFAR_MODE = 2)
+   */
+  const G_ = S.cfarGuard;
+  const T_ = S.cfarTrain;
+  const ALPHA_FRAC_BITS = 4;    // Q4.4 fractional bits (cfar_ca.v parameter)
+
+  for (let db = 0; db < NUM_DOPPLER_BINS; db++) {
+    for (let cut = 0; cut < NUM_RANGE_BINS; cut++) {
+      let leadSum = 0, lagSum = 0, leadCnt = 0, lagCnt = 0;
+
+      // Accumulate leading/lagging training windows
+      for (let t = 1; t <= T_; t++) {
+        const li = cut - G_ - t;
+        if (li >= 0) { leadSum += rdMag[li*NUM_DOPPLER_BINS+db]; leadCnt++; }
+        const ti = cut + G_ + t;
+        if (ti < NUM_RANGE_BINS) { lagSum += rdMag[ti*NUM_DOPPLER_BINS+db]; lagCnt++; }
+      }
+
+      // Noise estimate by CFAR mode
+      let noise = 0;
+      if (S.cfarMode === 0) {                               // CA-CFAR
+        noise = leadSum + lagSum;
+      } else if (S.cfarMode === 1) {                        // GO-CFAR
+        if (leadCnt > 0 && lagCnt > 0)
+          noise = (leadSum*lagCnt > lagSum*leadCnt) ? leadSum : lagSum;
+        else noise = leadCnt > 0 ? leadSum : lagSum;
+      } else {                                              // SO-CFAR
+        if (leadCnt > 0 && lagCnt > 0)
+          noise = (leadSum*lagCnt < lagSum*leadCnt) ? leadSum : lagSum;
+        else noise = leadCnt > 0 ? leadSum : lagSum;
+      }
+
+      // Threshold: (alpha_Q4.4 × noise) >> 4  (integer right-shift)
+      const thr = (S.cfarAlpha * noise) >> ALPHA_FRAC_BITS;
+      const idx = cut * NUM_DOPPLER_BINS + db;
+      if (rdMag[idx] > thr && rdMag[idx] > maxMag * 0.05) {
+        rdDet[idx] = 1;
+      }
+    }
+  }
+
+  /*
+   * ── STEP 10: Range Profile ────────────────────────────────────────────────
+   *
+   * Range profile = sum of magnitude across all Doppler bins per range bin.
+   * Mirrors RadarAcquisition._finalize_frame() in radar_protocol.py:
+   *   frame.range_profile = np.sum(frame.magnitude, axis=1)
+   * Source: radar_protocol.py  (MIT, Nawfal Motii)
+   */
+  S.detCount = 0;
+  for (let rc = 0; rc < NUM_RANGE_BINS; rc++) {
+    let sum = 0;
+    for (let db = 0; db < NUM_DOPPLER_BINS; db++) {
+      const idx = rc * NUM_DOPPLER_BINS + db;
+      sum += rdMag[idx];
+      if (rdDet[idx]) S.detCount++;
+    }
+    rangeProfile[rc] = sum;
+  }
+
+  S.frameNum++;
+
+  // Update rolling waterfall buffer
+  waterfallRows.push(Float32Array.from(rangeProfile));
+  if (waterfallRows.length > 80) waterfallRows.shift();
+}
+
+/* =============================================================================
+ * DETECTION EXTRACTION
+ *
+ * Peak-picking over the CFAR detection map.
+ * Mirrors the target extraction logic in GUI_V6.py update_range_doppler_map()
+ * and radar_protocol.py RadarAcquisition._ingest_sample()  (MIT, Nawfal Motii)
+ *
+ * Converts range bin and Doppler bin to physical range (m) and velocity (m/s):
+ *   range    = (range_bin / NUM_RANGE_BINS) × max_range
+ *   velocity = dopplerBinCentered × PRF / NUM_DOPPLER_BINS × λ / 2
+ * =========================================================================== */
+function extractDetections(sweepAngle) {
+  const lambda = C / S.freq;
+  const maxR   = S.maxRangeKm * 1000;
+  const used   = new Uint8Array(NUM_CELLS);
+  const out    = [];
+
+  for (let rc = 0; rc < NUM_RANGE_BINS; rc++) {
+    for (let db = 0; db < NUM_DOPPLER_BINS; db++) {
+      const idx = rc * NUM_DOPPLER_BINS + db;
+      if (!rdDet[idx] || used[idx]) continue;
+
+      // Local 3×3 peak search
+      let peakMag = rdMag[idx], peakRc = rc, peakDb = db;
+      for (let dr=-1;dr<=1;dr++) for(let dd=-1;dd<=1;dd++) {
+        const r2=rc+dr, d2=db+dd;
+        if (r2>=0&&r2<NUM_RANGE_BINS&&d2>=0&&d2<NUM_DOPPLER_BINS) {
+          const i2 = r2*NUM_DOPPLER_BINS+d2;
+          if (rdMag[i2]>peakMag) { peakMag=rdMag[i2]; peakRc=r2; peakDb=d2; }
+        }
+      }
+      for (let dr=-1;dr<=1;dr++) for(let dd=-1;dd<=1;dd++) {
+        const r2=peakRc+dr, d2=peakDb+dd;
+        if (r2>=0&&r2<NUM_RANGE_BINS&&d2>=0&&d2<NUM_DOPPLER_BINS)
+          used[r2*NUM_DOPPLER_BINS+d2] = 1;
+      }
+
+      const range = (peakRc / NUM_RANGE_BINS) * maxR;
+      // Doppler: GUI_V6.py line ~390  velocity = doppler_real/32767 × PRF×λ/2
+      const doppBinCentered = peakDb - NUM_DOPPLER_BINS/2;
+      const fd  = doppBinCentered * S.prf / NUM_DOPPLER_BINS;
+      const vel = fd * lambda / 2;
+      const snr = 10*Math.log10(Math.max(peakMag / 500 + 1, 1));
+
+      out.push({ rc:peakRc, db:peakDb, range, vel, az:sweepAngle, snr, mag:peakMag });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+/* =============================================================================
+ * PPI SCOPE RENDERER
+ *
+ * Plan Position Indicator — rotating sweep display matching GUI_V6.gif.
+ * Sweep geometry, range rings and azimuth graticule reflect real AERIS-10
+ * operational display conventions.
+ * =========================================================================== */
+let ppiDots       = [];
+let lastFrameAngle = -999;
+
+function drawPPI() {
+  const W = ppiCanvas.width, H = ppiCanvas.height;
+  const cx = W/2, cy = H/2, R = W/2 - 8;
+
+  // Process new frame every ~4° of scan travel
+  const frameDeg = S.sectorDeg === 360 ? 4 : 6;
+  if (!S.frozen && Math.abs(S.sweepAngle - lastFrameAngle) >= frameDeg) {
+    lastFrameAngle = S.sweepAngle;
+    processFrame(S.sweepAngle);
+    for (const d of extractDetections(S.sweepAngle)) {
+      const az_rad = (d.az - 90) * Math.PI / 180;
+      const norm   = d.range / (S.maxRangeKm * 1000);
+      ppiDots.push({
+        x: cx + Math.cos(az_rad)*norm*R,
+        y: cy + Math.sin(az_rad)*norm*R,
+        age:0, snr:d.snr, range:d.range, vel:d.vel, az:d.az
+      });
+    }
+    if (ppiDots.length > 400) ppiDots = ppiDots.slice(-250);
+  }
+
+  // Clear
+  ppiCtx.fillStyle = '#020b0e';
+  ppiCtx.fillRect(0, 0, W, H);
+
+  // Decay persistent phosphor layer
+  persistCtx.globalAlpha = 0.016;
+  persistCtx.fillStyle = '#020b0e';
+  persistCtx.fillRect(0, 0, W, H);
+  persistCtx.globalAlpha = 1;
+
+  // Range rings (5 rings = maxRangeKm/5 spacing)
+  for (let i=1; i<=5; i++) {
+    const rr = (i/5)*R;
+    ppiCtx.beginPath();
+    ppiCtx.arc(cx, cy, rr, 0, Math.PI*2);
+    ppiCtx.strokeStyle = `rgba(0,100,130,${i===5?0.5:0.25})`;
+    ppiCtx.lineWidth = 0.5;
+    ppiCtx.stroke();
+    ppiCtx.fillStyle='rgba(0,150,180,0.4)';
+    ppiCtx.font='9px Share Tech Mono';
+    ppiCtx.fillText(((i/5)*S.maxRangeKm).toFixed(0)+'km', cx+4, cy-rr+11);
+  }
+
+  // Azimuth graticule lines every 30°
+  for (let a=0; a<360; a+=30) {
+    const rad = (a-90)*Math.PI/180;
+    ppiCtx.beginPath();
+    ppiCtx.moveTo(cx, cy);
+    ppiCtx.lineTo(cx+Math.cos(rad)*R, cy+Math.sin(rad)*R);
+    ppiCtx.strokeStyle='rgba(0,80,110,0.25)';
+    ppiCtx.lineWidth=0.5; ppiCtx.stroke();
+    ppiCtx.fillStyle='rgba(0,150,180,0.4)';
+    ppiCtx.font='8px Share Tech Mono';
+    ppiCtx.textAlign='center'; ppiCtx.textBaseline='middle';
+    ppiCtx.fillText(a+'°', cx+Math.cos(rad)*(R+7), cy+Math.sin(rad)*(R+7));
+  }
+  ppiCtx.textAlign='left'; ppiCtx.textBaseline='alphabetic';
+
+  // Draw persistent layer
+  ppiCtx.drawImage(persistCanvas, 0, 0);
+
+  // Detection dots with age-fade
+  for (const d of ppiDots) {
+    d.age++;
+    if (d.age > 400) continue;
+    const alpha = Math.max(0, 1 - d.age/350);
+    const color = d.snr > 20 ? [255,107,53] : d.snr > 10 ? [0,255,136] : [0,229,255];
+    ppiCtx.globalAlpha = alpha;
+    ppiCtx.beginPath();
+    ppiCtx.arc(d.x, d.y, d.snr > 15 ? 3 : 2, 0, Math.PI*2);
+    ppiCtx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+    ppiCtx.fill();
+    ppiCtx.globalAlpha = 1;
+    // Burn into phosphor layer for first frames
+    if (d.age < 3) {
+      persistCtx.beginPath();
+      persistCtx.arc(d.x, d.y, 1.5, 0, Math.PI*2);
+      persistCtx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+      persistCtx.fill();
+    }
+  }
+  ppiDots = ppiDots.filter(d => d.age <= 400);
+
+  // Sweep afterglow fan (last ~60° of travel)
+  const sweepRad = (S.sweepAngle - 90) * Math.PI / 180;
+  for (let i=0; i<40; i++) {
+    const age  = (40-i)/40;
+    const aRad = sweepRad - age * Math.PI * 0.8;
+    const alpha= (1-age)*0.22;
+    ppiCtx.beginPath();
+    ppiCtx.moveTo(cx, cy);
+    ppiCtx.lineTo(cx+Math.cos(aRad)*R, cy+Math.sin(aRad)*R);
+    ppiCtx.strokeStyle=`rgba(0,229,255,${alpha})`;
+    ppiCtx.lineWidth=1; ppiCtx.stroke();
+  }
+
+  // Main sweep line
+  ppiCtx.beginPath();
+  ppiCtx.moveTo(cx, cy);
+  ppiCtx.lineTo(cx+Math.cos(sweepRad)*R, cy+Math.sin(sweepRad)*R);
+  ppiCtx.strokeStyle='#00e5ff'; ppiCtx.lineWidth=1.5;
+  ppiCtx.shadowColor='#00e5ff'; ppiCtx.shadowBlur=8;
+  ppiCtx.stroke(); ppiCtx.shadowBlur=0;
+
+  // Centre pip
+  ppiCtx.beginPath(); ppiCtx.arc(cx,cy,4,0,Math.PI*2);
+  ppiCtx.fillStyle='#00ff88'; ppiCtx.fill();
+
+  // Outer ring
+  ppiCtx.beginPath(); ppiCtx.arc(cx,cy,R,0,Math.PI*2);
+  ppiCtx.strokeStyle='rgba(0,100,140,0.6)'; ppiCtx.lineWidth=1; ppiCtx.stroke();
+
+  // HUD overlays
+  document.getElementById('ov-scan').textContent  = S.sweepAngle.toFixed(1)+'°';
+  document.getElementById('ov-frame').textContent = S.frameNum;
+  document.getElementById('ov-det').textContent   = S.detCount;
+  document.getElementById('ov-freq').textContent  = (S.freq/1e9).toFixed(2)+' GHz';
+  document.getElementById('ov-mode').textContent  = ['SEARCH','TRACK','BEAM'][S.mode];
+}
+
+/* =============================================================================
+ * RANGE PROFILE CHART
+ *
+ * Plots rangeProfile[] (sum of Doppler bins per range bin).
+ * Matches radar_protocol.py RadarAcquisition._finalize_frame() output
+ * and GUI_V6.py range plot.  (MIT, Nawfal Motii)
+ * =========================================================================== */
+function drawRangeProfile() {
+  const ctx=rangeCtx, W=rangeC.width, H=rangeC.height;
+  ctx.fillStyle='#020b0e'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(13,48,64,0.6)'; ctx.lineWidth=0.5;
+  for(let i=1;i<5;i++){
+    ctx.beginPath();ctx.moveTo(i*W/5,0);ctx.lineTo(i*W/5,H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,i*H/5);ctx.lineTo(W,i*H/5);ctx.stroke();
+  }
+  const maxV = Math.max(...rangeProfile, 1);
+  ctx.beginPath();
+  for(let i=0;i<NUM_RANGE_BINS;i++){
+    const x=(i/NUM_RANGE_BINS)*W, y=H-(rangeProfile[i]/maxV)*(H-4);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.strokeStyle='#00e5ff'; ctx.lineWidth=1; ctx.stroke();
+  ctx.lineTo(W,H); ctx.lineTo(0,H);
+  ctx.fillStyle='rgba(0,229,255,0.04)'; ctx.fill();
+}
+
+/* =============================================================================
+ * DOPPLER MAP CHART (bottom strip)
+ *
+ * Range-Doppler magnitude heat-map coloured by energy level.
+ * Detection hits (rdDet[]) shown in orange (warn colour).
+ * Mirrors GUI_V6.py range_doppler_map display.  (MIT, Nawfal Motii)
+ * =========================================================================== */
+function drawDopplerMap() {
+  const ctx=dopplerCtx, W=dopplerC.width, H=dopplerC.height;
+  const cw=W/NUM_DOPPLER_BINS, rh=H/NUM_RANGE_BINS;
+  const maxV=Math.max(...rdMag,1);
+  for(let rc=0;rc<NUM_RANGE_BINS;rc++){
+    for(let db=0;db<NUM_DOPPLER_BINS;db++){
+      const v=rdMag[rc*NUM_DOPPLER_BINS+db]/maxV;
+      const vdb=10*Math.log10(v*99+1)/2;
+      const det=rdDet[rc*NUM_DOPPLER_BINS+db];
+      let r,g,b;
+      if(det){r=255;g=107;b=53;}
+      else{r=(vdb*2.2*255)|0;g=(vdb*1.1*255)|0;b=Math.min(255,vdb*3*255)|0;}
+      ctx.fillStyle=`rgb(${Math.min(r,255)},${Math.min(g,255)},${b})`;
+      ctx.fillRect(db*cw,(NUM_RANGE_BINS-1-rc)*rh,Math.ceil(cw),Math.ceil(rh));
+    }
+  }
+  ctx.strokeStyle='rgba(0,229,255,0.3)'; ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();
+  ctx.fillStyle='rgba(0,229,255,0.4)'; ctx.font='8px Share Tech Mono';
+  ctx.fillText('v=0',W/2+2,H-2);
+}
+
+/* =============================================================================
+ * RANGE-DOPPLER MAGNITUDE HEATMAP (right panel)
+ *
+ * Full-colour magnitude display, matches the radar_dashboard.py RD-map panel.
+ * Source: 9_Firmware/9_3_GUI/radar_dashboard.py  (MIT, Nawfal Motii)
+ * =========================================================================== */
+function drawRDMap() {
+  const ctx=rdmapCtx, W=rdmapC.width, H=rdmapC.height;
+  if(!W||!H) return;
+  const cw=W/NUM_DOPPLER_BINS, rh=H/NUM_RANGE_BINS;
+  const maxV=Math.max(...rdMag,1);
+  for(let rc=0;rc<NUM_RANGE_BINS;rc++){
+    for(let db=0;db<NUM_DOPPLER_BINS;db++){
+      const v=rdMag[rc*NUM_DOPPLER_BINS+db]/maxV;
+      const lvl=Math.pow(v,0.4);
+      const det=rdDet[rc*NUM_DOPPLER_BINS+db];
+      let r,g,b;
+      if(det){r=255;g=100;b=50;}
+      else{r=(lvl*180)|0;g=(lvl*220)|0;b=Math.min(255,(lvl*255+40)|0);}
+      ctx.fillStyle=`rgb(${r},${g},${b})`;
+      ctx.fillRect(db*cw,(NUM_RANGE_BINS-1-rc)*rh,Math.ceil(cw),Math.ceil(rh));
+    }
+  }
+  ctx.strokeStyle='rgba(0,229,255,0.25)'; ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(W/2,0);ctx.lineTo(W/2,H);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+}
+
+/* =============================================================================
+ * WATERFALL DISPLAY
+ *
+ * Rolling time-range intensity display.
+ * Mirrors the waterfall/history concept in GUI_V6.py  (MIT, Nawfal Motii)
+ * WATERFALL_DEPTH = 64 from radar_protocol.py.
+ * =========================================================================== */
+function drawWaterfall() {
+  const ctx=wfallCtx, W=wfallC.width, H=wfallC.height;
+  if(!W||!H) return;
+  const nRows = Math.min(waterfallRows.length, 80);
+  const rh    = H / Math.max(nRows, 1);
+  const cw    = W / NUM_RANGE_BINS;
+  const maxV  = Math.max(...waterfallRows.flat(), 1);
+  ctx.fillStyle='#020b0e'; ctx.fillRect(0,0,W,H);
+  for(let row=0;row<nRows;row++){
+    const profile = waterfallRows[nRows-1-row];
+    const y = row * rh;
+    for(let rc=0;rc<NUM_RANGE_BINS;rc++){
+      const lvl = Math.pow(profile[rc]/maxV, 0.5);
+      ctx.fillStyle=`rgb(${(lvl*100)|0},${(lvl*200)|0},${Math.min(255,(lvl*255)|0)})`;
+      ctx.fillRect(rc*cw, y, Math.ceil(cw), Math.ceil(rh)+1);
+    }
+  }
+}
+
+/* =============================================================================
+ * TARGET LIST UPDATE
+ *
+ * Mirrors GUI_V6.py update_targets_list() / targets_tree  (MIT, Nawfal Motii)
+ * RadarTarget fields: id, range, velocity, azimuth, snr, track_id
+ * =========================================================================== */
+let lastTargetIds = new Set();
+function updateTargetList() {
+  const lambda = C / S.freq;
+  const container = document.getElementById('target-list');
+  document.getElementById('target-count').textContent = simTargets.length;
+  let html = '';
+  for (const t of simTargets) {
+    const snr = Math.max(0, 15 + Math.random()*5 - Math.pow(t.r/5000,1.5));
+    const snrCol = snr>15?'var(--accent2)':snr>8?'var(--accent)':'var(--warn)';
+    const fd = (2*t.v/lambda).toFixed(0);
+    html += `<div class="target-item ${!lastTargetIds.has(t.id)?'new':''}">
+      <div class="t-header">
+        <span class="t-id">${t.track?'◈':'○'} TGT-${String(t.id).padStart(3,'0')}</span>
+        <span class="t-snr" style="color:${snrCol}">${snr.toFixed(1)}dB</span>
+      </div>
+      <div class="t-data">
+        <span>R:</span><span>${(t.r/1000).toFixed(2)}km</span>
+        <span>V:</span><span>${t.v.toFixed(1)}m/s</span>
+        <span>Az:</span><span>${t.az.toFixed(0)}°</span>
+        <span>fd:</span><span>${fd}Hz</span>
+      </div>
+    </div>`;
+  }
+  container.innerHTML = html;
+  lastTargetIds = new Set(simTargets.map(t=>t.id));
+
+  // Advance target kinematics
+  for (const t of simTargets) {
+    t.r  += t.v * 0.1;
+    if (t.r < 200 || t.r > S.maxRangeKm*1000*1.1) t.v = -t.v;
+    t.az  = (t.az + 0.02*(t.id%2?1:-1) + 360) % 360;
+  }
+}
+
+/* =============================================================================
+ * TELEMETRY — Simulated STM32 housekeeping channels
+ *
+ * Mirrors the monitoring channels in main.cpp / ADAR1000_Manager.cpp:
+ *   PA temp   — 8× NTC thermistors read by ADS7830 ADC (U10) at 0x4x
+ *   Idq       — INA241A3 × 5mΩ shunt → ADS7830 (U88 @0x48 / U89 @0x4A)
+ *   ADC SNR   — AD9484 500MSPS 12-bit ADC SFDR/SNR
+ *   CLK lock  — AD9523-1 PLL status via adf4382a_manager.c
+ * Source: 9_Firmware/9_1_Microcontroller/9_1_3_C_Cpp_Code/main.cpp  (MIT, Nawfal Motii)
+ * =========================================================================== */
+function updateTelemetry() {
+  S.tempTick++;
+  S.paTemp = 38 + 8*Math.sin(S.tempTick*0.02) + Math.random()*2;
+  const idq    = 1.4 + 0.4*Math.sin(S.tempTick*0.03) + Math.random()*0.1;
+  const adcSNR = 65 + Math.random()*5;
+  const fps    = 4 + Math.random()*2;
+
+  const setBar=(id,v,max)=>{const el=document.getElementById(id);if(el)el.style.width=Math.min(100,v/max*100)+'%';};
+  setBar('bar-prf', S.prf, 4000); setBar('bar-tx', S.txPower, 15);
+  setBar('bar-temp', S.paTemp, 80); setBar('bar-idq', idq, 2.5);
+  setBar('bar-adc', adcSNR, 80); setBar('bar-fps', fps, 10);
+
+  document.getElementById('tv-prf').textContent  = S.prf+' Hz';
+  document.getElementById('tv-tx').textContent   = S.txPower+'W';
+  document.getElementById('tv-temp').textContent = S.paTemp.toFixed(0)+'°C';
+  document.getElementById('tv-idq').textContent  = idq.toFixed(2)+'A';
+  document.getElementById('tv-adc').textContent  = adcSNR.toFixed(0)+' dB';
+  document.getElementById('tv-fps').textContent  = fps.toFixed(1)+' fps';
+  document.getElementById('lbl-prf').textContent    = S.prf;
+  document.getElementById('lbl-nchirp').textContent = S.nChirp;
+
+  // GPS drift simulation — mirrors GPS data from gps_handler.cpp  (MIT, Nawfal Motii)
+  document.getElementById('gps-lat').textContent   = (48.8566 + Math.sin(S.tempTick*0.001)*0.0001).toFixed(6)+'°N';
+  document.getElementById('gps-lon').textContent   = (2.3522  + Math.cos(S.tempTick*0.001)*0.0001).toFixed(6)+'°E';
+  document.getElementById('gps-pitch').textContent = (Math.sin(S.tempTick*0.05)*1.5).toFixed(2)+'°';
+  document.getElementById('gps-roll').textContent  = (Math.cos(S.tempTick*0.04)*0.8).toFixed(2)+'°';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * NOTIFICATION SYSTEM
+ * ───────────────────────────────────────────────────────────────────────── */
+const notifEl = document.getElementById('notif');
+function showNotif(msg, warn=false) {
+  const d = document.createElement('div');
+  d.className = 'notif-item'+(warn?' warn':'');
+  d.textContent = msg;
+  notifEl.appendChild(d);
+  setTimeout(()=>d.remove(), 3500);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CLOCK
+ * ───────────────────────────────────────────────────────────────────────── */
+function updateClock() {
+  const n=new Date();
+  document.getElementById('clock').textContent =
+    String(n.getHours()).padStart(2,'0')+':'+
+    String(n.getMinutes()).padStart(2,'0')+':'+
+    String(n.getSeconds()).padStart(2,'0')+'.'+
+    String(n.getMilliseconds()).padStart(3,'0');
+}
+
+/* =============================================================================
+ * MAIN ANIMATION LOOP
+ * =========================================================================== */
+let lastTime = 0, telemTick = 0;
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.1);
+  lastTime = ts;
+  if (!S.frozen && S.running)
+    S.sweepAngle = (S.sweepAngle + S.scanSpeed * 360 * dt) % S.sectorDeg;
+  drawPPI();
+  drawRangeProfile();
+  drawDopplerMap();
+  drawRDMap();
+  drawWaterfall();
+  telemTick++;
+  if (telemTick % 6 === 0) { updateTargetList(); updateTelemetry(); }
+  if (telemTick % 3 === 0) updateClock();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
+
+/* =============================================================================
+ * UI CONTROL BINDINGS
+ *
+ * Slider/select wiring mirrors GUI_V6.py apply_settings() and
+ * stm32_usb_interface.send_settings()  (MIT, Nawfal Motii)
+ * Each control maps to an Opcode register write in the real hardware path.
+ * =========================================================================== */
+function bindSlider(id, valId, transform, key) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input', () => {
+    const raw = parseFloat(el.value);
+    S[key] = raw;
+    document.getElementById(valId).textContent = transform ? transform(raw) : raw;
+  });
+}
+bindSlider('sldSpeed',     'valSpeed',     v=>v.toFixed(1)+' rps', 'scanSpeed');
+bindSlider('sldCFARGuard','valCFARGuard',  v=>v.toFixed(0),        'cfarGuard');
+bindSlider('sldCFARTrain','valCFARTrain',  v=>v.toFixed(0),        'cfarTrain');
+bindSlider('sldGain',     'valGain',       v=>v.toFixed(0),        'gainShift');
+bindSlider('sldAz',       'valAz',         v=>v.toFixed(0)+'°',   'azBeam');
+bindSlider('sldEl',       'valEl',         v=>v.toFixed(0)+'°',   'elBeam');
+bindSlider('sldRange',    'valRange',      v=>v.toFixed(0),        'maxRangeKm');
+
+// Frequency (Hz conversion)  — Opcode: system_frequency in RadarSettings
+document.getElementById('sldFreq').addEventListener('input', e => {
+  S.freq = parseFloat(e.target.value) * 1e9;
+  document.getElementById('valFreq').textContent = parseFloat(e.target.value).toFixed(2);
+});
+// Chirp durations (μs conversion) — Opcodes: LONG_CHIRP=0x10, SHORT_CHIRP=0x13
+document.getElementById('sldLongChirp').addEventListener('input', e => {
+  S.longChirp = parseFloat(e.target.value) * 1e-6;
+  document.getElementById('valLongChirp').textContent = e.target.value+' μs';
+});
+document.getElementById('sldShortChirp').addEventListener('input', e => {
+  S.shortChirp = parseFloat(e.target.value) * 1e-6;
+  document.getElementById('valShortChirp').textContent = parseFloat(e.target.value).toFixed(1)+' μs';
+});
+// Bandwidth limits (MHz → Hz)
+document.getElementById('sldFmin').addEventListener('input', e => {
+  S.fmin = parseFloat(e.target.value) * 1e6;
+  document.getElementById('valFmin').textContent = e.target.value;
+});
+document.getElementById('sldFmax').addEventListener('input', e => {
+  S.fmax = parseFloat(e.target.value) * 1e6;
+  document.getElementById('valFmax').textContent = e.target.value;
+});
+// PRF — Opcode: PRF_DIV = 0x02
+document.getElementById('sldPRF').addEventListener('input', e => {
+  S.prf = parseInt(e.target.value);
+  document.getElementById('valPRF').textContent = e.target.value;
+});
+// Number of chirps — Opcode: NUM_CHIRPS = 0x03
+document.getElementById('sldNChirp').addEventListener('input', e => {
+  S.nChirp = parseInt(e.target.value);
+  document.getElementById('valNChirp').textContent = e.target.value;
+});
+// MTI — Opcode: MTI_ENABLE = 0x26
+document.getElementById('sldMTI').addEventListener('input', e => {
+  S.mtiEnable = parseInt(e.target.value);
+  document.getElementById('valMTI').textContent = S.mtiEnable ? 'ON' : 'OFF';
+  showNotif('MTI Canceller: '+(S.mtiEnable?'ENABLED':'DISABLED'));
+});
+// DC Notch — Opcode: DC_NOTCH_WIDTH = 0x27
+document.getElementById('sldDCNotch').addEventListener('input', e => {
+  S.dcNotch = parseInt(e.target.value);
+  document.getElementById('valDCNotch').textContent = e.target.value;
+});
+// CFAR Alpha (Q4.4) — Opcode: CFAR_ALPHA = 0x23
+document.getElementById('sldCFARAlpha').addEventListener('input', e => {
+  S.cfarAlpha = parseInt(e.target.value);
+  document.getElementById('valCFARAlpha').textContent = '0x'+S.cfarAlpha.toString(16).toUpperCase().padStart(2,'0');
+});
+// CFAR Mode — Opcode: CFAR_MODE = 0x24
+document.getElementById('selCFAR').addEventListener('change', e => {
+  S.cfarMode = parseInt(e.target.value);
+  showNotif('CFAR Mode → '+['CA-CFAR','GO-CFAR','SO-CFAR'][S.cfarMode]);
+});
+// Sector
+document.getElementById('selSector').addEventListener('change', e => {
+  S.sectorDeg = parseInt(e.target.value);
+  showNotif('Scan sector: '+S.sectorDeg+'°');
+});
+// TX Power (Nexus 1W vs Extended 10W GaN QPA2962)
+document.getElementById('selTX').addEventListener('change', e => {
+  S.txPower = parseInt(e.target.value);
+  showNotif('TX Power: '+S.txPower+'W ('+(S.txPower===1?'AERIS-10N 3km':'AERIS-10E 20km')+')');
+});
+
+// Mode tabs — mirrors GUI_V6.py notebook.select()
+document.querySelectorAll('.mode-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.mode-tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    S.mode = parseInt(tab.dataset.mode);
+    showNotif('Mode → '+tab.textContent);
+  });
+});
+
+// Start/Stop — mirrors self.running flag in GUI_V6.py
+document.getElementById('btnStart').addEventListener('click', () => {
+  S.running = !S.running;
+  const btn = document.getElementById('btnStart');
+  btn.textContent = S.running ? '⬤ SCANNING' : '▶ START SCAN';
+  S.running ? btn.classList.add('active','green') : btn.classList.remove('active','green');
+  showNotif(S.running ? 'Radar scanning RESUMED' : 'Radar scanning STOPPED', !S.running);
+});
+
+// Freeze display
+document.getElementById('btnFreeze').addEventListener('click', () => {
+  S.frozen = !S.frozen;
+  const btn = document.getElementById('btnFreeze');
+  btn.textContent = S.frozen ? '▶ RESUME' : '❙❙ FREEZE FRAME';
+  S.frozen ? btn.classList.add('active') : btn.classList.remove('active');
+  showNotif(S.frozen ? 'Display FROZEN' : 'Display RESUMED');
+});
+
+/*
+ * Self-test — mirrors SELF_TEST_TRIGGER (0x30) / SELF_TEST_STATUS (0x31)
+ * opcodes in radar_protocol.py and fpga_self_test.v  (MIT, Nawfal Motii)
+ *
+ * StatusResponse.self_test_flags [4:0]:
+ *   bit 0 = ADC link  bit 1 = DAC link  bit 2 = NCO lock
+ *   bit 3 = memory    bit 4 = PLL lock
+ */
+document.getElementById('btnSelfTest').addEventListener('click', () => {
+  showNotif('Self-test triggered (Opcode 0x30)…');
+  ['st-adc','st-dac','st-nco','st-mem','st-pll'].forEach((id,i) => {
+    const el = document.getElementById(id);
+    el.textContent='TESTING'; el.style.color='var(--warn)';
+    setTimeout(()=>{
+      const pass = Math.random() > 0.1;
+      el.textContent = pass?'PASS':'FAIL';
+      el.style.color = pass?'var(--accent2)':'var(--warn)';
+      if(!pass) showNotif('⚠ SELF-TEST FAIL: '+id.replace('st-','').toUpperCase(),true);
+    }, 300+i*250);
+  });
+  setTimeout(()=>showNotif('Self-test complete (Opcode 0x31 read)'),2000);
+});
+
+// Add simulated target
+document.getElementById('btnAddTarget').addEventListener('click', () => {
+  const r  = 1000 + Math.random() * (S.maxRangeKm*1000 - 1000);
+  const v  = (Math.random()-0.5) * 80;
+  const az = Math.random() * 360;
+  simTargets.push({ id:nextTargetId++, r, v, az, rcs:0.5+Math.random()*5, track:false });
+  showNotif(`Sim target added: ${(r/1000).toFixed(1)}km @ ${az.toFixed(0)}°`);
+});
+
+// Clear all targets
+document.getElementById('btnClear').addEventListener('click', () => {
+  simTargets = [];
+  ppiDots = [];
+  persistCtx.clearRect(0,0,persistCanvas.width,persistCanvas.height);
+  showNotif('All targets cleared', true);
+});
+
+// Click PPI to place target (converted from pixel → polar → range/azimuth)
+ppiCanvas.addEventListener('click', e => {
+  const rect = ppiCanvas.getBoundingClientRect();
+  const sx = ppiCanvas.width/rect.width, sy = ppiCanvas.height/rect.height;
+  const mx=(e.clientX-rect.left)*sx, my=(e.clientY-rect.top)*sy;
+  const cx=ppiCanvas.width/2, cy=ppiCanvas.height/2, R=ppiCanvas.width/2-8;
+  const dx=mx-cx, dy=my-cy;
+  const norm=Math.sqrt(dx*dx+dy*dy)/R;
+  if(norm>1.0) return;
+  const r  = norm * S.maxRangeKm * 1000;
+  const az = ((Math.atan2(dy,dx)*180/Math.PI+90)+360)%360;
+  simTargets.push({ id:nextTargetId++, r, v:(Math.random()-0.5)*40, az, rcs:1+Math.random()*3, track:false });
+  showNotif(`Target placed: ${(r/1000).toFixed(2)}km @ ${az.toFixed(1)}°`);
+});
+
+/* ─── Startup notifications ──────────────────────────────────────────────── */
+setTimeout(()=>showNotif('AERIS-10 Web Sim initialised — SIM MODE'),400);
+setTimeout(()=>showNotif('10.5GHz LFM-PLFM waveform active (Nawfal Motii / MIT)'),1200);
+setTimeout(()=>showNotif('FPGA pipeline: MTI + CA-CFAR armed'),2200);
+setTimeout(()=>showNotif('Click PPI scope to add targets'),3200);
+</script>
+</body>
+</html>
