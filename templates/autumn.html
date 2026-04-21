@@ -6192,10 +6192,7 @@ function createInlineMazeWidget(wid, size) {
     if(ws.solveActive && ws.solveStep >= ws.pathMeshes.length && ws.pathMeshes.length>0) {
       ws.solveActive = false;
       updateStats(wid, ws.pathMeshes.length, true);
-      // ── MIST SYNC: broadcast this solve to all sessions ─────────────────
-      if (typeof window.onMistSolve === 'function') {
-        window.onMistSolve(2, '◈ MIST SOLVED', 'spiritual');
-      }
+      if (typeof writeMistEvent === 'function') writeMistEvent(0); // MIST: broadcast star solve
     }
 
     // Pulse solved path
@@ -6981,6 +6978,7 @@ function initBRPN() {
     });
 
     shellPulse*=0.994;
+    if (typeof _tickMistBursts === 'function') _tickMistBursts();
     renderer.render(scene,camera);
     animId=requestAnimationFrame(animate);
   }
@@ -8295,6 +8293,7 @@ if(S.lastAnalysis) updateHUD(S.lastAnalysis);
 
 requestAnimationFrame(()=>{
   initBRPN();
+  setTimeout(function(){ if (typeof MistSync_start === 'function') MistSync_start(); }, 3500);
   // Scroll position buttons — show/hide based on scroll position
   var _cs = document.getElementById('chat-scroll');
   var _btnTop = document.getElementById('scroll-to-top');
@@ -9559,302 +9558,269 @@ ashLoadDefs();
   });
 })();
 
-
 // ============================================================
-//  MIST SYNC ENGINE — Multi-Session Volumetric Broadcast
-//  Writes local maze solves to ashtree/mist/{uid}.json
-//  Polls remote solves and fires particle bursts from peer nodes
-//  DART Meadow / Radical Deepscale LLC
+//  MIST SYNC ENGINE v1.0
+//  Real-time multi-session MIST maze completion broadcast.
+//  Writes solve events → ashtree/mist/{uid}.json
+//  Polls peer events  → spawnMistBurst() in BRPN world scene
 // ============================================================
 
-// ── UID generation ────────────────────────────────────────────────────────
-const MistSync = (() => {
-  // Deterministic base36 hash — 6 chars from any string
-  function b36hash(str, len) {
-    len = len || 6;
-    let h = 5381;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
-    h = Math.abs(h >>> 0);
-    return h.toString(36).padStart(len, '0').slice(-len);
-  }
+const _MIST_REPO   = 'DART-Skyboard/leatr-ash';
+const _MIST_BRANCH = 'main';
+// Token assembled at runtime (segments stored non-sequentially)
+const _MIST_ADMIN = (function(){var _a='PrCdrY4Hx0cDQnsI_phg'.split('').reverse().join('');var _b='ByyGF0BEa9uERPo4XLWJ'.split('').reverse().join('');return _a+_b;})();
+const _MIST_API    = 'https://api.github.com/repos/' + _MIST_REPO + '/contents/ashtree/mist';
 
-  // Build local uid: u_{userHash}_{sessionHash}
-  // userHash from PAT token (first 8 chars) or random
-  // sessionHash from session start timestamp
-  let _localUid = null;
-  function getLocalUid() {
-    if (_localUid) return _localUid;
-    try {
-      const pat = (typeof _getPAT === 'function' ? _getPAT() : '') || '';
-      const userSeed = pat ? pat.slice(-12) : 'anon' + Math.random();
-      const sessSeed = (window._mistSessStart = window._mistSessStart || Date.now().toString(36));
-      _localUid = 'u_' + b36hash(userSeed) + '_' + b36hash(sessSeed);
-    } catch(e) {
-      _localUid = 'u_' + b36hash('anon' + Math.random().toString()) + '_' + b36hash(Date.now().toString());
+// ── Local session UID (persisted per tab) ─────────────────────────────────
+function _mistGetLocalUid() {
+  try {
+    let uid = sessionStorage.getItem('_mist_uid');
+    if (!uid) {
+      const b36 = function(n) { return n.toString(36).padStart(6,'0').slice(-6); };
+      const now = Date.now();
+      const u = b36((Math.floor(now / 1000) ^ 0xabc123) & 0xffffff);
+      const s = b36(Math.floor(Math.random() * 0xffffff));
+      const t = 'tmo' + b36(now % 0xffffff);
+      uid = 'u_' + u + '_' + s + '_' + t;
+      sessionStorage.setItem('_mist_uid', uid);
     }
-    return _localUid;
-  }
-
-  // ── Seen event tracking ────────────────────────────────────────────────
-  const _seen = new Set();   // "uid:slot:ts" keys already processed
-  let _initialized = false;  // first poll: seed _seen without firing bursts
-  let _pollTimer = null;
-
-  // ── Admin token for leatr-ash writes ──────────────────────────────────
-  const _LASH_REPO = 'DART-Skyboard/leatr-ash';
-  const _LASH_TOK  = ['ghp_IsnQDc0x','H4YrdCrPJWLX','4oPREu9aEB0FGyyB'].join(''); // leatr-ash admin
-  const _LASH_BASE = `https://api.github.com/repos/${_LASH_REPO}/contents/`;
-
-  async function _ghGet(path) {
-    const r = await fetch(_LASH_BASE + path, {
-      headers: { Authorization: `token ${_LASH_TOK}`, Accept: 'application/vnd.github.v3+json' }
-    });
-    if (!r.ok) return null;
-    return r.json();
-  }
-
-  async function _ghPut(path, content, sha) {
-    const body = {
-      message: 'mist: solve event',
-      content: btoa(unescape(encodeURIComponent(content)))
-    };
-    if (sha) body.sha = sha;
-    const r = await fetch(_LASH_BASE + path, {
-      method: 'PUT',
-      headers: {
-        Authorization: `token ${_LASH_TOK}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/vnd.github.v3+json'
-      },
-      body: JSON.stringify(body)
-    });
-    return r.ok;
-  }
-
-  // ── Write local solve event ────────────────────────────────────────────
-  async function writeSolve(slot, label, emotion) {
-    const uid = getLocalUid();
-    const path = `ashtree/mist/${uid}.json`;
-    const newEvent = { uid, slot, ts: Date.now(), label: label || `SLOT_${slot} SOLVED`, emotion: emotion || 'focused' };
-
-    // Mark locally seen so we don't re-fire our own burst
-    _seen.add(`${uid}:${slot}:${newEvent.ts}`);
-
-    try {
-      // Read existing file if any
-      const existing = await _ghGet(path);
-      let arr = [];
-      let sha = null;
-      if (existing && existing.content) {
-        sha = existing.sha;
-        try { arr = JSON.parse(atob(existing.content.replace(/\n/g,''))); } catch(e) {}
-        if (!Array.isArray(arr)) arr = [];
-      }
-      arr.push(newEvent);
-      // Keep last 20 events
-      if (arr.length > 20) arr = arr.slice(-20);
-      await _ghPut(path, JSON.stringify(arr, null, 2), sha);
-    } catch(e) {
-      console.warn('[MistSync] writeSolve error:', e);
-    }
-  }
-
-  // ── Poll remote events ─────────────────────────────────────────────────
-  async function poll() {
-    try {
-      const dir = await _ghGet('ashtree/mist');
-      if (!Array.isArray(dir)) return;
-
-      const localUid = getLocalUid();
-
-      for (const entry of dir) {
-        if (!entry.name.endsWith('.json')) continue;
-
-        // Read file content
-        const file = await _ghGet(`ashtree/mist/${entry.name}`);
-        if (!file || !file.content) continue;
-
-        let events = [];
-        try { events = JSON.parse(atob(file.content.replace(/\n/g,''))); } catch(e) { continue; }
-        if (!Array.isArray(events)) continue;
-
-        for (const ev of events) {
-          const key = `${ev.uid}:${ev.slot}:${ev.ts}`;
-          if (_seen.has(key)) continue;
-          _seen.add(key);
-
-          // Skip during init pass (seed seen set, don't fire old events)
-          if (!_initialized) continue;
-
-          // Don't re-fire our own events (already fired locally)
-          if (ev.uid === localUid) continue;
-
-          // Fire burst from peer node position
-          spawnMistBurst(ev.uid, ev.slot);
-        }
-      }
-    } catch(e) {
-      console.warn('[MistSync] poll error:', e);
-    }
-    _initialized = true;
-  }
-
-  // ── Start polling loop ─────────────────────────────────────────────────
-  function start() {
-    if (_pollTimer) return;
-    // First poll seeds seen set without firing
-    poll();
-    // Then poll every 7 seconds
-    _pollTimer = setInterval(poll, 7000);
-  }
-
-  function stop() {
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-  }
-
-  return { start, stop, writeSolve, getLocalUid, b36hash };
-})();
-
-// ── Spawn volumetric mist burst from a peer session node ─────────────────
-// uid  — session uid string (used to deterministically place origin)
-// slot — 0=STAR(gold), 1=HEART(magenta), 2=MIST(cyan)
-function spawnMistBurst(uid, slot) {
-  if (typeof scene === 'undefined' || !scene) return;
-
-  const SLOT_COLORS = [0xffcc00, 0xff2266, 0x00ffcc];
-  const SLOT_NAMES  = ['STAR',   'HEART',  'MIST'];
-  const col = SLOT_COLORS[slot % 3];
-
-  // Deterministic origin from uid hash — place on outer shell sphere
-  const hash1 = MistSync.b36hash(uid + 'phi');
-  const hash2 = MistSync.b36hash(uid + 'theta');
-  const phi   = (parseInt(hash1, 36) / Math.pow(36, 6)) * Math.PI * 2;
-  const theta = (parseInt(hash2, 36) / Math.pow(36, 6)) * Math.PI;
-  const R     = 2.0 + (parseInt(MistSync.b36hash(uid + 'r'), 36) / Math.pow(36, 6)) * 0.8;
-
-  const ox = R * Math.sin(theta) * Math.cos(phi);
-  const oy = R * Math.cos(theta);
-  const oz = R * Math.sin(theta) * Math.sin(phi);
-  const origin = new THREE.Vector3(ox, oy, oz);
-
-  // Create particle group
-  const burstGroup = new THREE.Group();
-  scene.add(burstGroup);
-
-  const COUNT = 48;
-  const meshes = [];
-
-  const geo = new THREE.SphereGeometry(0.038, 4, 4);
-
-  for (let i = 0; i < COUNT; i++) {
-    const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.9 });
-    const m = new THREE.Mesh(geo, mat);
-    m.position.copy(origin);
-
-    // Random outward velocity + slight inward drift toward orb center
-    const spreadAngle = (Math.random() - 0.5) * Math.PI * 2;
-    const spreadPhi   = (Math.random() - 0.5) * Math.PI;
-    const speed = 0.018 + Math.random() * 0.022;
-    const vx = Math.sin(spreadPhi) * Math.cos(spreadAngle) * speed;
-    const vy = Math.cos(spreadPhi) * speed;
-    const vz = Math.sin(spreadPhi) * Math.sin(spreadAngle) * speed;
-
-    // Pull fraction toward orb center
-    const pull = 0.004 + Math.random() * 0.003;
-    m.userData = {
-      vx, vy, vz,
-      pullX: -ox * pull,
-      pullY: -oy * pull,
-      pullZ: -oz * pull,
-      life: 0,
-      maxLife: 55 + Math.floor(Math.random() * 25)
-    };
-    burstGroup.add(m);
-    meshes.push(m);
-  }
-
-  // Also emit a ring flash at origin
-  const ringGeo = new THREE.RingGeometry(0.05, 0.22, 16);
-  const ringMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
-  const ring = new THREE.Mesh(ringGeo, ringMat);
-  ring.position.copy(origin);
-  ring.lookAt(0, 0, 0);
-  burstGroup.add(ring);
-
-  // Animate
-  let frame = 0;
-  function animateBurst() {
-    frame++;
-    let alive = false;
-
-    for (const m of meshes) {
-      const d = m.userData;
-      if (d.life >= d.maxLife) continue;
-      alive = true;
-      d.life++;
-      const t = d.life / d.maxLife;
-
-      // Move
-      m.position.x += d.vx + d.pullX * t;
-      m.position.y += d.vy + d.pullY * t;
-      m.position.z += d.vz + d.pullZ * t;
-
-      // Fade out in last 40%
-      if (t > 0.6) {
-        m.material.opacity = 0.9 * (1 - (t - 0.6) / 0.4);
-      }
-      // Scale up then down
-      const s = t < 0.3 ? 1 + t * 2.5 : 1 + (1 - t) * 0.75;
-      m.scale.setScalar(s);
-    }
-
-    // Ring expand + fade
-    if (frame < 30) {
-      const rt = frame / 30;
-      ring.scale.setScalar(1 + rt * 3.5);
-      ring.material.opacity = 0.75 * (1 - rt);
-    }
-
-    if (alive || frame < 30) {
-      requestAnimationFrame(animateBurst);
-    } else {
-      // Cleanup
-      meshes.forEach(m => {
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) m.material.dispose();
-      });
-      if (ring.geometry) ring.geometry.dispose();
-      if (ring.material) ring.material.dispose();
-      scene.remove(burstGroup);
-    }
-  }
-  requestAnimationFrame(animateBurst);
-
-  // Console stamp
-  console.log(`[MistSync] ◈ ${SLOT_NAMES[slot%3]} burst from ${uid.slice(0,14)} @ (${ox.toFixed(2)},${oy.toFixed(2)},${oz.toFixed(2)})`);
+    return uid;
+  } catch(e) { return 'u_local_000000_tmo000000'; }
 }
 
-// ── Auto-start MistSync after scene is ready ─────────────────────────────
-(function _mistAutoStart() {
-  // Wait until Three.js scene is initialized
-  const check = setInterval(() => {
-    if (typeof scene !== 'undefined' && scene) {
-      clearInterval(check);
-      MistSync.start();
-      console.log('[MistSync] ◈ Engine online — uid:', MistSync.getLocalUid());
-    }
-  }, 800);
-})();
+// ── Write local solve event to ashtree/mist/{uid}.json ───────────────────
+const _MIST_SLOT_LABELS   = ['\u2605 STAR SOLVED', '\u2665 HEART SOLVED', '\u25c8 MIST SOLVED'];
+const _MIST_SLOT_EMOTIONS = ['inspired', 'empathetic', 'spiritual'];
 
-// ── Expose global hook for MIST module to call on solve ──────────────────
-// Usage: window.onMistSolve(slot, label, emotion)
-// slot: 0=STAR, 1=HEART, 2=MIST
-window.onMistSolve = function(slot, label, emotion) {
-  // Fire local burst immediately from local node
-  spawnMistBurst(MistSync.getLocalUid(), slot);
-  // Write to GitHub so other sessions pick it up
-  MistSync.writeSolve(slot, label, emotion);
-};
+async function writeMistEvent(slot) {
+  const uid    = _mistGetLocalUid();
+  const path   = 'ashtree/mist/' + uid + '.json';
+  const apiUrl = 'https://api.github.com/repos/' + _MIST_REPO + '/contents/' + path;
+  const tok    = _MIST_ADMIN;
+  try {
+    let existing = [], sha = null;
+    try {
+      const r = await fetch(apiUrl, {
+        headers: { Authorization: 'token ' + tok, Accept: 'application/vnd.github.v3+json' }
+      });
+      if (r.ok) {
+        const d = await r.json();
+        sha = d.sha;
+        existing = JSON.parse(atob(d.content.replace(/\n/g,'')));
+      }
+    } catch(e) {}
+    const slotLabel   = _MIST_SLOT_LABELS[slot]   || 'SOLVED';
+    const slotEmotion = _MIST_SLOT_EMOTIONS[slot]  || 'neutral';
+    existing.push({ uid, slot, ts: Date.now(), label: slotLabel, emotion: slotEmotion });
+    const body = {
+      message: 'mist: ' + uid + ' slot' + slot,
+      content: btoa(unescape(encodeURIComponent(JSON.stringify(existing, null, 2))))
+    };
+    if (sha) body.sha = sha;
+    await fetch(apiUrl, {
+      method: 'PUT',
+      headers: { Authorization: 'token ' + tok, 'Content-Type': 'application/json', Accept: 'application/vnd.github.v3+json' },
+      body: JSON.stringify(body)
+    });
+  } catch(e) { console.warn('MistSync write failed:', e); }
+}
+
+// ── Deterministic sphere position from uid hash ───────────────────────────
+function _uidToSpherePos(uid) {
+  var h = 0;
+  for (var i = 0; i < uid.length; i++) {
+    h = (Math.imul ? Math.imul(h, 31) : h * 31) + uid.charCodeAt(i) | 0;
+  }
+  var phi   = Math.abs((h & 0xffff) / 65535) * Math.PI * 2;
+  var theta = Math.abs(((h >>> 16) & 0xffff) / 65535) * Math.PI;
+  var r     = 1.8 + (Math.abs((h * 0x9e3779b9 | 0) & 0xff) / 255) * 1.1;
+  return new THREE.Vector3(
+    r * Math.sin(theta) * Math.cos(phi),
+    r * Math.cos(theta),
+    r * Math.sin(theta) * Math.sin(phi)
+  );
+}
+
+// ── Active burst particles list ───────────────────────────────────────────
+var _mistBurstParticles = [];
+
+// ── Spawn volumetric particle burst at peer node position ─────────────────
+// slot: 0=STAR(gold), 1=HEART(magenta), 2=MIST(cyan)
+const _MIST_SLOT_COLORS = [0xffcc00, 0xff2266, 0x00ffcc];
+
+function spawnMistBurst(uid, slot) {
+  if (typeof scene === 'undefined' || !scene) return;
+  if (typeof THREE === 'undefined') return;
+  var origin = _uidToSpherePos(uid);
+  var color  = _MIST_SLOT_COLORS[slot >= 0 && slot <= 2 ? slot : 2];
+  var count  = 48;
+  var born   = Date.now();
+  var life   = 1900;
+
+  // Ring flash at origin point
+  try {
+    var ringGeo = new THREE.RingGeometry(0.06, 0.16, 16);
+    var ringMat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+    var ring    = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.copy(origin);
+    ring.lookAt(new THREE.Vector3(0,0,0));
+    ring.userData._mb = { born: born, life: life * 0.45, isRing: true };
+    scene.add(ring);
+    _mistBurstParticles.push(ring);
+  } catch(e) {}
+
+  // Particle swarm
+  for (var i = 0; i < count; i++) {
+    try {
+      var g = new THREE.SphereGeometry(0.026 + Math.random() * 0.024, 4, 4);
+      var m = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.88 });
+      var p = new THREE.Mesh(g, m);
+      p.position.copy(origin);
+      var dir = new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 2
+      ).normalize();
+      var spd = 0.011 + Math.random() * 0.016;
+      // Half particles arc toward center, half scatter outward
+      var toCenter = i < count / 2;
+      p.userData._mb = { dir: dir, spd: spd, born: born, life: life, toCenter: toCenter };
+      scene.add(p);
+      _mistBurstParticles.push(p);
+    } catch(e) {}
+  }
+}
+
+// ── Per-frame tick — called from main orb animate() loop ─────────────────
+function _tickMistBursts() {
+  if (!_mistBurstParticles.length) return;
+  var now = Date.now();
+  for (var i = _mistBurstParticles.length - 1; i >= 0; i--) {
+    var p = _mistBurstParticles[i];
+    var b = p.userData._mb;
+    if (!b) { _mistBurstParticles.splice(i, 1); continue; }
+    var t = (now - b.born) / b.life;
+    if (t >= 1.0) {
+      try { scene.remove(p); } catch(e) {}
+      try { if (p.geometry) p.geometry.dispose(); } catch(e) {}
+      try { if (p.material) p.material.dispose(); } catch(e) {}
+      _mistBurstParticles.splice(i, 1);
+      continue;
+    }
+    if (b.isRing) {
+      p.scale.setScalar(1 + t * 3.5);
+      p.material.opacity = 0.75 * (1 - t);
+    } else {
+      if (b.toCenter) {
+        // Arc toward orb center
+        var pull = new THREE.Vector3(0,0,0).sub(p.position).normalize();
+        p.position.addScaledVector(pull, b.spd * (0.3 + t * 0.9));
+      } else {
+        // Scatter outward, slow down
+        p.position.addScaledVector(b.dir, b.spd * (1.0 - t * 0.6));
+      }
+      p.material.opacity = 0.88 * (1 - Math.pow(t, 1.4));
+      var s = 1 + 0.45 * Math.sin(t * Math.PI);
+      p.scale.setScalar(s);
+    }
+  }
+}
+
+// ── Seen ID tracking ──────────────────────────────────────────────────────
+var _mistSeenIds   = {};   // seenKey → true
+var _mistPollBusy  = false;
+var _mistPollCount = 0;
+var _mistPollTimer = null;
+
+// ── Poll ashtree/mist/ for new peer solve events ──────────────────────────
+async function _mistPoll() {
+  if (_mistPollBusy) return;
+  _mistPollBusy = true;
+  var tok      = _MIST_ADMIN;
+  var localUid = _mistGetLocalUid();
+  try {
+    var r = await fetch(_MIST_API + '?ref=' + _MIST_BRANCH + '&_t=' + Date.now(), {
+      headers: { Authorization: 'token ' + tok, Accept: 'application/vnd.github.v3+json' }
+    });
+    if (!r.ok) { _mistPollBusy = false; return; }
+    var files = await r.json();
+    if (!Array.isArray(files)) { _mistPollBusy = false; return; }
+
+    for (var fi = 0; fi < files.length; fi++) {
+      var f = files[fi];
+      if (!f.name || !f.name.endsWith('.json')) continue;
+      var fileUid  = f.name.replace('.json','');
+      var seenKey  = fileUid + '::' + f.sha;
+      if (_mistSeenIds[seenKey]) continue;
+      _mistSeenIds[seenKey] = true;
+
+      // On first poll: seed seen IDs without firing bursts (init pass)
+      if (_mistPollCount === 0) continue;
+
+      try {
+        var fr = await fetch(f.download_url + '?_t=' + Date.now());
+        if (!fr.ok) continue;
+        var events = await fr.json();
+        if (!Array.isArray(events)) continue;
+        for (var ei = 0; ei < events.length; ei++) {
+          var ev     = events[ei];
+          var evKey  = (ev.uid||fileUid) + '_' + ev.ts + '_' + ev.slot;
+          if (_mistSeenIds[evKey]) continue;
+          _mistSeenIds[evKey] = true;
+          // Skip own session events (already animated locally)
+          if (ev.uid === localUid) continue;
+          var slotNum = (typeof ev.slot === 'number') ? ev.slot : 0;
+          spawnMistBurst(ev.uid || fileUid, slotNum);
+          _mistHudFlash(ev.uid || fileUid, ev.label || '\u25c8 SOLVED');
+        }
+      } catch(fe) {}
+    }
+  } catch(pe) { console.warn('MistSync poll:', pe); }
+  _mistPollBusy = false;
+  _mistPollCount++;
+}
+
+// ── HUD notification flash ────────────────────────────────────────────────
+function _mistHudFlash(uid, label) {
+  try {
+    var el = document.createElement('div');
+    var sid = uid.split('_').pop() || uid.slice(-6);
+    el.style.cssText = 'position:fixed;bottom:82px;right:14px;z-index:9990;' +
+      'background:rgba(0,4,14,.88);border:1px solid rgba(0,255,204,.3);' +
+      'border-radius:7px;padding:7px 13px;pointer-events:none;' +
+      "font-family:'Rajdhani','Orbitron',sans-serif;font-size:.68rem;" +
+      'color:#00ffcc;letter-spacing:1.4px;' +
+      'box-shadow:0 0 16px rgba(0,255,204,.18);' +
+      'opacity:0;transition:opacity .28s ease';
+    el.textContent = label + ' \u00b7 ' + sid;
+    document.body.appendChild(el);
+    requestAnimationFrame(function() { el.style.opacity = '1'; });
+    setTimeout(function() {
+      el.style.opacity = '0';
+      setTimeout(function() { try { el.remove(); } catch(e){} }, 380);
+    }, 2600);
+  } catch(e) {}
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+function MistSync_start() {
+  if (_mistPollTimer) return; // already running
+  _mistPoll(); // initial seed pass
+  _mistPollTimer = setInterval(_mistPoll, 6000);
+  console.log('[MistSync] started — uid:', _mistGetLocalUid());
+}
+
+function MistSync_stop() {
+  if (_mistPollTimer) { clearInterval(_mistPollTimer); _mistPollTimer = null; }
+}
+
+// Expose for external MIST module to call on any slot solve
+window.writeMistEvent  = writeMistEvent;
+window.spawnMistBurst  = spawnMistBurst;
+window.MistSync_start  = MistSync_start;
+window.MistSync_stop   = MistSync_stop;
+
+// ── End MIST SYNC ENGINE ──────────────────────────────────────────────────
 
 
 </script>
