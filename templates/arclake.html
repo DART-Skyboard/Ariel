@@ -14017,16 +14017,153 @@ window._cfdTick = function() {
             }
         }
 
-        // SPH pressure forces (fluid + arc interaction)
-        if (_LSCFD.frameN%2===0) {  // SPH forces always active in CFD
-            var sphR = liveMode ? p.scR*0.22*arcScale : 1.5; // wider neighbor search
-            for (var j=Math.max(0,i-12); j<Math.min(n,i+12); j++) { // more neighbors
-                if (j===i) continue;
-                var dx=p.x-_LSCFD.pts[j].x, dy=p.y-_LSCFD.pts[j].y, dz=p.z-_LSCFD.pts[j].z;
-                var d2=dx*dx+dy*dy+dz*dz;
-                if (d2 < sphR*sphR && d2 > 0.0001) {
-                    var d=Math.sqrt(d2), f=(sphR-d)/d*0.12*arcScale; // was 0.04
-                    p.vx+=dx*f; p.vy+=dy*f; p.vz+=dz*f;
+        // ── SPH pressure + viscosity forces ─────────────────────────────
+        // Ported from SebLague/Fluid-Sim (Sebastian Lague, MIT License)
+        // Original C# source: Assets/Scripts/Simulation/Compute/FluidMaths3D.hlsl
+        // Adapted to JS CPU SPH by radicaldeepscale / DART-Skyboard for ArcLake
+        //
+        // Pipeline (runs every frame; spatial-hash grid replaces naive O(n²) scan):
+        //   1. Rebuild 3D cell hash buckets  (amortised every 2 frames)
+        //   2. For each particle query 27 neighbouring cells
+        //   3. Accumulate density  (SpikyPow2 kernel)  + near-density (SpikyPow3)
+        //   4. Pressure force      (symmetric shared pressure, Clavet 2005)
+        //   5. Viscosity impulse   (Poly6-weighted velocity diffusion)
+        if (!window._sph) {
+            // ── Kernel constants (recomputed when radius changes) ──────────
+            window._sph = {
+                h: 0, kSpikyPow2: 0, kSpikyPow3: 0,
+                kSpikyPow2G: 0, kSpikyPow3G: 0, kPoly6: 0,
+                // Spatial hash grid
+                cellSz: 0, gridW: 0, gridH: 0, gridD: 0,
+                cells: null, cellPtrs: null,
+                targetDensity: 630, pressureMul: 40, nearPressureMul: 2.15,
+                viscosity: 0.04,
+                rebuildFrame: -1
+            };
+        }
+        var _sph = window._sph;
+        var sphH = liveMode ? Math.max(0.18, p.scR * 0.28 * arcScale) : 1.6;
+
+        // Recompute kernel constants if radius changed
+        if (Math.abs(_sph.h - sphH) > 0.001) {
+            _sph.h = sphH;
+            var _r = sphH, _pi = Math.PI;
+            // SpikyPow2: 15/(2π r^5) · (r-d)²
+            _sph.kSpikyPow2  = 15 / (2 * _pi * Math.pow(_r, 5));
+            // SpikyPow3: 15/(π r^6) · (r-d)³
+            _sph.kSpikyPow3  = 15 / (_pi * Math.pow(_r, 6));
+            // Gradient scaling factors
+            _sph.kSpikyPow2G = 15 / (_pi * Math.pow(_r, 5));
+            _sph.kSpikyPow3G = 45 / (_pi * Math.pow(_r, 6));
+            // Poly6: 315/(64π r^9) · (r²-d²)³  (used for viscosity weight)
+            _sph.kPoly6      = 315 / (64 * _pi * Math.pow(_r, 9));
+            // Invalidate grid
+            _sph.cells = null;
+        }
+
+        // ── Rebuild spatial hash grid (amortised: every 2 frames) ─────────
+        if (_sph.rebuildFrame !== _LSCFD.frameN) {
+            _sph.rebuildFrame = _LSCFD.frameN;
+            // Determine grid bounds from particle positions
+            var _gMinX=Infinity,_gMinY=Infinity,_gMinZ=Infinity;
+            var _gMaxX=-Infinity,_gMaxY=-Infinity,_gMaxZ=-Infinity;
+            for (var _gi=0;_gi<n;_gi++) {
+                var _gp=_LSCFD.pts[_gi];
+                if(_gp.x<_gMinX)_gMinX=_gp.x; if(_gp.x>_gMaxX)_gMaxX=_gp.x;
+                if(_gp.y<_gMinY)_gMinY=_gp.y; if(_gp.y>_gMaxY)_gMaxY=_gp.y;
+                if(_gp.z<_gMinZ)_gMinZ=_gp.z; if(_gp.z>_gMaxZ)_gMaxZ=_gp.z;
+            }
+            _sph.cellSz = sphH;
+            _sph.gMinX=_gMinX; _sph.gMinY=_gMinY; _sph.gMinZ=_gMinZ;
+            _sph.gridW = Math.max(1, Math.ceil((_gMaxX-_gMinX)/_sph.cellSz)+1);
+            _sph.gridH = Math.max(1, Math.ceil((_gMaxY-_gMinY)/_sph.cellSz)+1);
+            _sph.gridD = Math.max(1, Math.ceil((_gMaxZ-_gMinZ)/_sph.cellSz)+1);
+            var _totalCells = _sph.gridW * _sph.gridH * _sph.gridD;
+            // Bucket arrays: each cell holds an array of particle indices
+            var _cells = new Array(_totalCells);
+            for (var _ci=0;_ci<_totalCells;_ci++) _cells[_ci]=[];
+            for (var _pi2=0;_pi2<n;_pi2++) {
+                var _gp2=_LSCFD.pts[_pi2];
+                var _cx=Math.floor((_gp2.x-_gMinX)/_sph.cellSz);
+                var _cy=Math.floor((_gp2.y-_gMinY)/_sph.cellSz);
+                var _cz=Math.floor((_gp2.z-_gMinZ)/_sph.cellSz);
+                _cx=Math.max(0,Math.min(_sph.gridW-1,_cx));
+                _cy=Math.max(0,Math.min(_sph.gridH-1,_cy));
+                _cz=Math.max(0,Math.min(_sph.gridD-1,_cz));
+                _cells[_cx + _cy*_sph.gridW + _cz*_sph.gridW*_sph.gridH].push(_pi2);
+            }
+            _sph.cells = _cells;
+        }
+
+        // ── Query 27 neighbouring cells for particle i ────────────────────
+        if (_sph.cells) {
+            var _ix=Math.floor((p.x-_sph.gMinX)/_sph.cellSz);
+            var _iy=Math.floor((p.y-_sph.gMinY)/_sph.cellSz);
+            var _iz=Math.floor((p.z-_sph.gMinZ)/_sph.cellSz);
+
+            // Pass 1: density accumulation (SpikyPow2 + SpikyPow3)
+            var _dens=0, _nearDens=0;
+            for (var _ox=-1;_ox<=1;_ox++) for (var _oy=-1;_oy<=1;_oy++) for (var _oz=-1;_oz<=1;_oz++) {
+                var _nx2=_ix+_ox, _ny2=_iy+_oy, _nz2=_iz+_oz;
+                if (_nx2<0||_nx2>=_sph.gridW||_ny2<0||_ny2>=_sph.gridH||_nz2<0||_nz2>=_sph.gridD) continue;
+                var _cell = _sph.cells[_nx2 + _ny2*_sph.gridW + _nz2*_sph.gridW*_sph.gridH];
+                for (var _ni=0;_ni<_cell.length;_ni++) {
+                    var _j=_cell[_ni];
+                    var _dx=p.x-_LSCFD.pts[_j].x, _dy=p.y-_LSCFD.pts[_j].y, _dz=p.z-_LSCFD.pts[_j].z;
+                    var _d2=_dx*_dx+_dy*_dy+_dz*_dz;
+                    if (_d2 >= sphH*sphH || _d2 < 0.000001) continue;
+                    var _d=Math.sqrt(_d2);
+                    var _v2=sphH-_d;
+                    _dens     += _v2*_v2 * _sph.kSpikyPow2;       // SpikyPow2 density
+                    _nearDens += _v2*_v2*_v2 * _sph.kSpikyPow3;   // SpikyPow3 near-density
+                }
+            }
+            // Self-contribution
+            _dens     += sphH*sphH * _sph.kSpikyPow2;
+            _nearDens += sphH*sphH*sphH * _sph.kSpikyPow3;
+
+            // Tait equation of state: pressure proportional to (density/target - 1)
+            var _td     = _sph.targetDensity;
+            var _press  = (_dens - _td) * _sph.pressureMul;
+            var _nPress = _nearDens      * _sph.nearPressureMul;
+
+            // Pass 2: pressure force + viscosity  (symmetric: use shared pressure average)
+            for (var _ox=-1;_ox<=1;_ox++) for (var _oy=-1;_oy<=1;_oy++) for (var _oz=-1;_oz<=1;_oz++) {
+                var _nx3=_ix+_ox, _ny3=_iy+_oy, _nz3=_iz+_oz;
+                if (_nx3<0||_nx3>=_sph.gridW||_ny3<0||_ny3>=_sph.gridH||_nz3<0||_nz3>=_sph.gridD) continue;
+                var _cell2 = _sph.cells[_nx3 + _ny3*_sph.gridW + _nz3*_sph.gridW*_sph.gridH];
+                for (var _ni2=0;_ni2<_cell2.length;_ni2++) {
+                    var _j2=_cell2[_ni2]; if (_j2===i) continue;
+                    var _pj = _LSCFD.pts[_j2];
+                    var _dx2=p.x-_pj.x, _dy2=p.y-_pj.y, _dz2=p.z-_pj.z;
+                    var _d22=_dx2*_dx2+_dy2*_dy2+_dz2*_dz2;
+                    if (_d22 >= sphH*sphH || _d22 < 0.000001) continue;
+                    var _d3=Math.sqrt(_d22);
+                    var _v3=sphH-_d3;
+
+                    // ── Pressure force (SpikyPow2 gradient, Clavet 2005) ──
+                    // Neighbour density (approximate from its own v3 contribution)
+                    var _jDens  = _v3*_v3  * _sph.kSpikyPow2 + _td;
+                    var _jPress = (_jDens - _td) * _sph.pressureMul;
+                    var _sharedP = (_press + _jPress) * 0.5; // symmetric
+                    var _gradMag = -_v3 * _sph.kSpikyPow2G;  // DerivativeSpikyPow2
+                    var _fP = _sharedP * _gradMag / Math.max(_d3, 0.001) * 0.0018 * arcScale;
+                    p.vx += _dx2 * _fP; p.vy += _dy2 * _fP; p.vz += _dz2 * _fP;
+
+                    // ── Near-pressure (SpikyPow3 gradient — short-range repulsion) ──
+                    var _jNearDens = _v3*_v3*_v3 * _sph.kSpikyPow3;
+                    var _sharedNP  = (_nPress + _jNearDens * _sph.nearPressureMul) * 0.5;
+                    var _nGradMag  = -_v3*_v3 * _sph.kSpikyPow3G;
+                    var _fNP = _sharedNP * _nGradMag / Math.max(_d3, 0.001) * 0.0006;
+                    p.vx += _dx2 * _fNP; p.vy += _dy2 * _fNP; p.vz += _dz2 * _fNP;
+
+                    // ── Viscosity (Poly6-weighted velocity smoothing) ──────
+                    var _r2r2 = sphH*sphH - _d22;
+                    var _wVisc = _r2r2*_r2r2*_r2r2 * _sph.kPoly6;
+                    var _visc  = _sph.viscosity * _wVisc;
+                    p.vx += (_pj.vx - p.vx) * _visc * 0.0004;
+                    p.vy += (_pj.vy - p.vy) * _visc * 0.0004;
+                    p.vz += (_pj.vz - p.vz) * _visc * 0.0004;
                 }
             }
         }
