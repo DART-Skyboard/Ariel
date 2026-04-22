@@ -2,2132 +2,1379 @@
 <html lang="en">
 <head>
 <!--
-  ╔══════════════════════════════════════════════════════════════════╗
-  ║  SPH OCEAN SIMULATOR — ADVANCED VOLUMETRIC & SSFR EDITION        ║
-  ╠══════════════════════════════════════════════════════════════════╣
-  ║  KERNEL MATHEMATICS & DIFFUSE LOGIC                              ║
-  ║  Ported from: SebLague/Fluid-Sim (Sebastian Lague)               ║
-  ║  Repository : https://github.com/SebLague/Fluid-Sim              ║
-  ║  License    : MIT                                                ║
-  ║                                                                  ║
-  ║  PHYSICS REFERENCES                                              ║
-  ║  Clavet, Beaudoin, Poulin (2005) — Viscoelastic SPH              ║
-  ║  Ihmsen et al. (2012)  — Diffuse particle foam/spray/bubbles     ║
-  ║                                                                  ║
-  ║  ARCLAKE INTEGRATION / TRUE 3D ENGINE                            ║
-  ║  Author     : Justin / DART-Skyboard                             ║
-  ║                                                                  ║
-  ║  LATEST ENGINE UPGRADES:                                         ║
-  ║  - ALL PRESETS DEFAULT TO 1.0 EARTH GRAVITY                      ║
-  ║  - RESTORED: Fully functional, repeatable Scene Mode Buttons     ║
-  ║  - UNMINIFIED: Complete, expanded, readable source code          ║
-  ║  - Brightened Daytime Sky Environment & Lighting                 ║
-  ║  - Flipped Pan/Orbit Y-Axis for Touch and Mouse                  ║
-  ║  - UI Layout fixed (Stir Tool safely positioned)                 ║
-  ║  - Dynamic Particle Allocation (1,024 -> 600,000 scale)          ║
-  ║  - Bulletproof Spawn Logic (Fixes the boundary collapse)         ║
-  ║  - Explicit Particle Size Controls (1.0 to 20.0 bounds)          ║
-  ║  - Advanced Diffuse Physics (Local fluid velocity sampling)      ║
-  ║  - SSFR Beer-Lambert Transmission & Raymarch Approximations      ║
-  ╚══════════════════════════════════════════════════════════════════╝
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║  ARCLAKE · SPH OCEAN · 3D — RADICAL DEEPSCALE EDITION               ║
+  ╠══════════════════════════════════════════════════════════════════════╣
+  ║  SPH PHYSICS ENGINE                                                  ║
+  ║  Kernel Mathematics: SebLague/Fluid-Sim (MIT License)               ║
+  ║  Reference: github.com/SebLague/Fluid-Sim                           ║
+  ║                                                                      ║
+  ║  DIFFUSE PARTICLE SYSTEM (Foam / Spray / Bubbles)                   ║
+  ║  Ihmsen et al. (2012) — "Unified spray, foam and bubbles for        ║
+  ║  particle-based fluids"                                              ║
+  ║  Trapped-Air criterion: v_diff = Σ ||v_ij|| (1 - v̂ij · x̂ij) W    ║
+  ║  Cylinder spawn volume per fluid particle (Fig.3, Ihmsen 2012)     ║
+  ║  Bubble buoyancy, spray drag, foam fluid-coupling (see shader imgs) ║
+  ║                                                                      ║
+  ║  VISUAL PIPELINE                                                     ║
+  ║  MeshPhysicalMaterial transmission/IOR ocean rendering              ║
+  ║  Per-particle colour: pressure / velocity / KE / diffuse debug      ║
+  ║  Additive-blended foam billboards with lifetime fade                ║
+  ║                                                                      ║
+  ║  ARCLAKE INTEGRATION                                                 ║
+  ║  Author : Justin / DART-Skyboard · Radical Deepscale LLC            ║
+  ║  Domain : radicaldeepscale.com                                       ║
+  ╚══════════════════════════════════════════════════════════════════════╝
 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>SPH Ocean 3D — Scalable Volumetric</title>
+<title>ArcLake · SPH Ocean · 3D</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet">
-
 <style>
-/* ═══════════════════════════════════════════════════════════════════════
-   DESIGN TOKENS & RESET
-   ═══════════════════════════════════════════════════════════════════════ */
+/* ── TOKENS ─────────────────────────────────────────────────────────── */
 :root {
-  --cyan:      #00e5ff;
-  --magenta:   #ff00c8;
-  --amber:     #ffb300;
-  --green:     #39ff7a;
-  --ocean:     #0a4060;
-  --bg:        #87CEEB; /* Bright Sky Blue */
-  --panel:     rgba(2, 8, 18, 0.88);
-  --border:    rgba(0, 229, 255, 0.22);
-  --border-hi: rgba(0, 229, 255, 0.60);
-  --text:      #b8d4e0;
-  --dim:       #6a8ca0;
-  --mono-size: clamp(9px, 2vw, 11px);
-  --ctrl-size: clamp(9px, 2.1vw, 11px);
-  --title-size:clamp(11px, 2.6vw, 14px);
+  --c:   #00e5ff;
+  --v:   #c800ff;
+  --a:   #ffb300;
+  --g:   #39ff7a;
+  --bg:  #06101a;
+  --pnl: rgba(4,10,22,0.92);
+  --b0:  rgba(0,229,255,0.14);
+  --b1:  rgba(0,229,255,0.55);
+  --txt: #9bbfd0;
+  --dim: #4a6a7a;
+  --ms:  clamp(9px,2vw,11px);
+  --cs:  clamp(9px,2.1vw,11px);
+  --ts:  clamp(11px,2.6vw,14px);
 }
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--txt);
+  font-family:'Rajdhani',sans-serif;font-weight:300;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  touch-action:none}
+#c{position:fixed;top:0;left:0;width:100%;height:100%;display:block;will-change:transform;z-index:1}
+/* scanline grain */
+body::after{content:'';position:fixed;inset:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.025) 2px,rgba(0,0,0,0.025) 4px);
+  pointer-events:none;z-index:900}
 
-*, *::before, *::after { 
-  margin: 0; 
-  padding: 0; 
-  box-sizing: border-box; 
-  -webkit-tap-highlight-color: transparent; 
-}
+/* ── HUD GRID ──────────────────────────────────────────────────────── */
+#hud{position:fixed;inset:0;pointer-events:none;z-index:100;
+  display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:1fr}
+#top{grid-row:1;display:flex;align-items:flex-start;justify-content:space-between;
+  padding:14px 14px 0;padding-top:calc(14px + env(safe-area-inset-top));gap:8px;
+  pointer-events:none;background:linear-gradient(to bottom,rgba(3,8,18,.9) 0%,transparent 100%)}
+#mid{grid-row:2;position:relative;pointer-events:none;overflow:hidden}
+#bot{grid-row:3;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 14px 14px;padding-bottom:calc(14px + env(safe-area-inset-bottom));gap:8px;
+  pointer-events:none;background:linear-gradient(to top,rgba(3,8,18,.9) 0%,transparent 100%)}
 
-html, body {
-  width: 100%; 
-  height: 100%; 
-  overflow: hidden;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Rajdhani', sans-serif;
-  font-weight: 300;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  touch-action: none;
-}
+/* ── TITLE ─────────────────────────────────────────────────────────── */
+#title{pointer-events:none;flex-shrink:0}
+#title h1{font-family:'Share Tech Mono',monospace;font-size:var(--ts);color:var(--c);
+  letter-spacing:.1em;text-shadow:0 0 20px rgba(0,229,255,.8);line-height:1.25;white-space:nowrap}
+#title .sub{font-size:clamp(7px,1.7vw,9px);color:var(--txt);letter-spacing:.06em;margin-top:3px;
+  font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55vw}
 
-#three-canvas {
-  position: fixed; 
-  top: 0; 
-  left: 0; 
-  width: 100%; 
-  height: 100%;
-  display: block; 
-  will-change: transform; 
-  transform: translateZ(0);
-  z-index: 1;
-}
+/* ── STATS PANEL ────────────────────────────────────────────────────── */
+#stats{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;padding:8px 13px;
+  font-family:'Share Tech Mono',monospace;font-size:var(--ms);line-height:2;color:var(--txt);
+  pointer-events:none;flex-shrink:0;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#stats .v{color:var(--c);font-weight:bold}
 
-/* Scanlines overlay to give the HUD elements depth against the 3D scene */
-body::after {
-  content: ''; 
-  position: fixed; 
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg, 
-    transparent, 
-    transparent 2px, 
-    rgba(0, 0, 0, 0.02) 2px, 
-    rgba(0, 0, 0, 0.02) 4px
-  );
-  pointer-events: none; 
-  z-index: 900;
-}
+/* ── BUTTON BASE ────────────────────────────────────────────────────── */
+.btn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:6px 11px;
+  border:1px solid var(--b0);background:rgba(4,10,22,.88);color:var(--txt);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;
+  transition:border-color .18s,color .18s,background .18s,box-shadow .18s;
+  backdrop-filter:blur(5px);touch-action:manipulation;white-space:nowrap;user-select:none}
+.btn:active,.btn.on{border-color:var(--b1);color:var(--c);
+  background:rgba(0,229,255,.18);box-shadow:0 0 14px rgba(0,229,255,.38)}
 
-/* ═══════════════════════════════════════════════════════════════════════
-   HUD LAYOUT (GRID)
-   ═══════════════════════════════════════════════════════════════════════ */
-#hud {
-  position: fixed; 
-  inset: 0; 
-  pointer-events: none; 
-  z-index: 100;
-  display: grid; 
-  grid-template-rows: auto 1fr auto; 
-  grid-template-columns: 1fr;
-}
+/* ── SCENE & VIEW BUTTONS ───────────────────────────────────────────── */
+#scene-row{display:flex;gap:6px;pointer-events:all;flex-wrap:wrap;
+  position:absolute;top:14px;left:14px;max-width:72vw;z-index:110}
+#view-row{display:flex;gap:6px;pointer-events:all;flex-wrap:wrap;
+  position:absolute;bottom:28px;left:14px;max-width:80vw;z-index:110}
+.vbtn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:5px 10px;
+  border:1px solid rgba(255,180,0,.35);background:rgba(4,10,22,.88);color:rgba(255,180,0,.75);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;transition:all .18s;
+  backdrop-filter:blur(5px);touch-action:manipulation;white-space:nowrap;user-select:none}
+.vbtn:active,.vbtn.on{border-color:var(--a);color:var(--a);
+  background:rgba(255,180,0,.18);box-shadow:0 0 12px rgba(255,180,0,.3)}
 
-#top-bar {
-  grid-row: 1; 
-  display: flex; 
-  align-items: flex-start; 
-  justify-content: space-between;
-  padding: 15px; 
-  padding-top: calc(15px + env(safe-area-inset-top)); 
-  gap: 10px;
-  pointer-events: none; 
-  background: linear-gradient(to bottom, rgba(2, 5, 12, 0.85) 0%, transparent 100%);
-}
+/* ── TOOL TOGGLE ────────────────────────────────────────────────────── */
+#tool-wrap{position:absolute;top:58px;left:14px;pointer-events:all;z-index:110}
+#tool-btn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:6px 13px;
+  border:1px solid rgba(57,255,122,.45);background:rgba(4,10,22,.88);color:var(--g);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;transition:all .18s;
+  backdrop-filter:blur(5px);box-shadow:0 0 10px rgba(57,255,122,.18);user-select:none;touch-action:manipulation}
+#tool-btn.on{background:rgba(57,255,122,.22);border-color:var(--g);
+  box-shadow:0 0 16px rgba(57,255,122,.4);color:#fff}
 
-#sim-area { 
-  grid-row: 2; 
-  position: relative; 
-  pointer-events: none; 
-  overflow: hidden; 
-}
+/* ── SIDE PANEL ─────────────────────────────────────────────────────── */
+#panel{position:absolute;top:0;right:0;bottom:0;width:clamp(240px,44vw,310px);
+  display:flex;flex-direction:column;gap:9px;padding:14px 14px 14px 0;
+  pointer-events:all;transform:translateX(calc(100% + 2px));
+  transition:transform .28s cubic-bezier(.2,1,.3,1);overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;z-index:200}
+#panel::-webkit-scrollbar{display:none}
+#panel.open{transform:translateX(0)}
+#ptog{position:absolute;top:50%;right:0;transform:translateY(-50%);
+  width:27px;height:58px;background:var(--pnl);border:1px solid var(--b0);
+  border-right:none;border-radius:6px 0 0 6px;display:flex;align-items:center;
+  justify-content:center;pointer-events:all;cursor:pointer;z-index:201;
+  transition:background .18s,border-color .18s;backdrop-filter:blur(7px);touch-action:manipulation}
+#ptog:active{background:rgba(0,229,255,.22);border-color:var(--b1)}
+#ptog svg{transition:transform .28s}
+#panel.open~#ptog svg{transform:scaleX(-1)}
+#panel.open~#ptog,#ptog.shifted{right:clamp(240px,44vw,310px)}
 
-#bottom-bar {
-  grid-row: 3; 
-  display: flex; 
-  align-items: flex-end; 
-  justify-content: space-between;
-  padding: 15px; 
-  padding-bottom: calc(15px + env(safe-area-inset-bottom)); 
-  gap: 10px;
-  pointer-events: none; 
-  background: linear-gradient(to top, rgba(2, 5, 12, 0.85) 0%, transparent 100%);
-}
+/* ── CARD ───────────────────────────────────────────────────────────── */
+.card{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;
+  padding:11px 13px;backdrop-filter:blur(10px)}
+.card h3{font-family:'Share Tech Mono',monospace;font-size:var(--ms);color:var(--c);
+  letter-spacing:.1em;margin-bottom:9px;border-bottom:1px solid var(--b0);padding-bottom:5px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.row label{font-size:var(--cs);color:var(--txt);font-family:'Share Tech Mono',monospace;
+  white-space:nowrap;flex-shrink:0}
+.row input[type=range]{flex-grow:1;min-width:48px;accent-color:var(--c);cursor:pointer;
+  height:22px;padding:4px 0;touch-action:none}
+.row input[type=number]{width:54px;background:transparent;border:1px solid var(--b0);
+  color:var(--c);font-family:'Share Tech Mono',monospace;font-size:var(--cs);
+  padding:2px 4px;border-radius:3px;outline:none;text-align:right}
+.row button.aply{background:rgba(0,229,255,.13);border:1px solid var(--c);color:var(--c);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:4px 8px;
+  border-radius:3px;cursor:pointer;transition:.18s}
+.row button.aply:active{background:var(--c);color:#000}
+.row.am  input[type=range]{accent-color:var(--a)}
+.row.am  input[type=number]{color:var(--a);border-color:rgba(255,180,0,.35)}
+.row.am  label{color:rgba(255,180,0,.85)}
+.row.mg  input[type=range]{accent-color:var(--v)}
+.row.mg  input[type=number]{color:var(--v);border-color:rgba(200,0,255,.35)}
+.row.mg  label{color:rgba(200,0,255,.85)}
+.chk{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);color:var(--txt)}
+.chk label{cursor:pointer}
+.chk input[type=checkbox]{accent-color:var(--c);width:16px;height:16px;cursor:pointer}
 
-/* ═══════════════════════════════════════════════════════════════════════
-   TITLE BLOCK & STATS
-   ═══════════════════════════════════════════════════════════════════════ */
-#title-block { 
-  pointer-events: none; 
-  flex-shrink: 0; 
-}
+/* ── BOTTOM BAR WIDGETS ─────────────────────────────────────────────── */
+#pipe{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;
+  padding:7px 11px;font-family:'Share Tech Mono',monospace;font-size:var(--cs);
+  color:var(--dim);pointer-events:none;flex:1;min-width:0;
+  backdrop-filter:blur(7px);overflow:hidden;white-space:nowrap}
+#pipe .ps{display:inline-block;margin-right:4px}
+#pipe .ps.on{color:var(--c);font-weight:bold}
+#pipe .sep{color:#1a2a3a;margin-right:4px}
+#cred{font-family:'Share Tech Mono',monospace;font-size:clamp(8px,1.55vw,10px);
+  color:var(--dim);text-align:right;line-height:1.75;pointer-events:all;flex-shrink:0;white-space:nowrap}
+#cred a{color:var(--c);text-decoration:none;opacity:.65}
+#cred a:active{opacity:1}
 
-#title-block h1 { 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--title-size); 
-  color: var(--cyan); 
-  letter-spacing: 0.1em; 
-  text-shadow: 0 0 18px rgba(0, 229, 255, 0.8); 
-  line-height: 1.25; 
-  white-space: nowrap; 
-}
-
-#title-block .sub { 
-  font-size: clamp(7.5px, 1.8vw, 9.5px); 
-  color: var(--text); 
-  letter-spacing: 0.07em; 
-  margin-top: 3px; 
-  font-family: 'Share Tech Mono', monospace; 
-  white-space: nowrap; 
-  overflow: hidden; 
-  text-overflow: ellipsis; 
-  max-width: 55vw; 
-}
-
-#stats {
-  background: var(--panel); 
-  border: 1px solid var(--border); 
-  border-radius: 6px; 
-  padding: 8px 14px;
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--mono-size); 
-  line-height: 1.9; 
-  color: var(--text);
-  pointer-events: none; 
-  flex-shrink: 0; 
-  backdrop-filter: blur(8px); 
-  -webkit-backdrop-filter: blur(8px);
-}
-
-#stats .val { 
-  color: var(--cyan); 
-  font-weight: bold; 
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   BUTTONS (MODE, SCENE, RENDERER)
-   ═══════════════════════════════════════════════════════════════════════ */
-#mode-btns {
-  display: flex; 
-  gap: 6px; 
-  pointer-events: all; 
-  flex-wrap: wrap; 
-  position: absolute; 
-  top: 15px; 
-  left: 15px; 
-  max-width: 75vw; 
-  z-index: 105;
-}
-
-.mode-btn {
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  padding: 6px 10px; 
-  border: 1px solid var(--border); 
-  background: rgba(2, 8, 18, 0.85); 
-  color: var(--text); 
-  border-radius: 4px; 
-  cursor: pointer; 
-  letter-spacing: 0.05em; 
-  transition: border-color 0.2s, color 0.2s, background 0.2s, box-shadow 0.2s; 
-  backdrop-filter: blur(4px); 
-  touch-action: manipulation; 
-  white-space: nowrap; 
-  user-select: none;
-}
-
-.mode-btn:active, .mode-btn.active { 
-  border-color: var(--border-hi); 
-  color: var(--cyan); 
-  background: rgba(0, 229, 255, 0.20); 
-  box-shadow: 0 0 14px rgba(0, 229, 255, 0.4); 
-}
-
-#view-btns {
-  display: flex; 
-  gap: 6px; 
-  pointer-events: all; 
-  flex-wrap: wrap; 
-  position: absolute; 
-  bottom: 30px; 
-  left: 15px; 
-  max-width: 80vw; 
-  z-index: 105;
-}
-
-.view-btn {
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  padding: 5px 10px; 
-  border: 1px solid rgba(255, 180, 0, 0.4); 
-  background: rgba(2, 8, 18, 0.85); 
-  color: rgba(255, 180, 0, 0.8); 
-  border-radius: 4px; 
-  cursor: pointer; 
-  letter-spacing: 0.05em; 
-  transition: all 0.2s; 
-  backdrop-filter: blur(4px); 
-  touch-action: manipulation; 
-  white-space: nowrap; 
-  user-select: none;
-}
-
-.view-btn:active, .view-btn.active { 
-  border-color: var(--amber); 
-  color: var(--amber); 
-  background: rgba(255, 180, 0, 0.20); 
-  box-shadow: 0 0 12px rgba(255, 180, 0, 0.3); 
-}
-
-/* Tool Toggle positioned safely below mode-btns */
-#tool-mode-container {
-  position: absolute; 
-  top: 70px; 
-  left: 15px; 
-  pointer-events: all; 
-  z-index: 105;
-}
-
-#tool-btn {
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  padding: 6px 12px; 
-  border: 1px solid rgba(57, 255, 122, 0.5); 
-  background: rgba(2, 8, 18, 0.85); 
-  color: var(--green); 
-  border-radius: 4px; 
-  cursor: pointer; 
-  letter-spacing: 0.05em; 
-  transition: all 0.2s; 
-  backdrop-filter: blur(4px); 
-  box-shadow: 0 0 10px rgba(57, 255, 122, 0.2);
-}
-
-#tool-btn.active { 
-  background: rgba(57, 255, 122, 0.25); 
-  border-color: var(--green); 
-  box-shadow: 0 0 15px rgba(57, 255, 122, 0.4); 
-  color: #fff; 
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   SIDE PANEL & SLIDERS
-   ═══════════════════════════════════════════════════════════════════════ */
-#side-panel {
-  position: absolute; 
-  top: 0; 
-  right: 0; 
-  bottom: 0; 
-  width: clamp(240px, 45vw, 320px); 
-  display: flex; 
-  flex-direction: column; 
-  gap: 10px; 
-  padding: 15px 15px 15px 0; 
-  pointer-events: all; 
-  transform: translateX(calc(100% + 2px)); 
-  transition: transform 0.3s cubic-bezier(0.2, 1, 0.3, 1); 
-  overflow-y: auto; 
-  overflow-x: hidden; 
-  -webkit-overflow-scrolling: touch; 
-  scrollbar-width: none; 
-  z-index: 200;
-}
-
-#side-panel::-webkit-scrollbar { 
-  display: none; 
-}
-
-#side-panel.open { 
-  transform: translateX(0); 
-}
-
-#panel-toggle {
-  position: absolute; 
-  top: 50%; 
-  right: 0; 
-  transform: translateY(-50%); 
-  width: 28px; 
-  height: 60px; 
-  background: var(--panel); 
-  border: 1px solid var(--border); 
-  border-right: none; 
-  border-radius: 6px 0 0 6px; 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  pointer-events: all; 
-  cursor: pointer; 
-  z-index: 201; 
-  transition: background 0.2s, border-color 0.2s; 
-  backdrop-filter: blur(6px); 
-  touch-action: manipulation;
-}
-
-#panel-toggle:active { 
-  background: rgba(0, 229, 255, 0.25); 
-  border-color: var(--border-hi); 
-}
-
-#panel-toggle svg { 
-  transition: transform 0.3s; 
-}
-
-#side-panel.open + #panel-toggle svg { 
-  transform: scaleX(-1); 
-}
-
-#side-panel.open ~ #panel-toggle, 
-#panel-toggle.shifted { 
-  right: clamp(240px, 45vw, 320px); 
-}
-
-.ctrl-card { 
-  background: var(--panel); 
-  border: 1px solid var(--border); 
-  border-radius: 6px; 
-  padding: 12px 14px; 
-  backdrop-filter: blur(8px); 
-}
-
-.ctrl-card h3 { 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--mono-size); 
-  color: var(--cyan); 
-  letter-spacing: 0.1em; 
-  margin-bottom: 10px; 
-  border-bottom: 1px solid var(--border); 
-  padding-bottom: 6px; 
-}
-
-.ctrl-row { 
-  display: flex; 
-  align-items: center; 
-  justify-content: space-between; 
-  gap: 8px; 
-  margin-bottom: 8px; 
-}
-
-.ctrl-row label { 
-  font-size: var(--ctrl-size); 
-  color: var(--text); 
-  font-family: 'Share Tech Mono', monospace; 
-  white-space: nowrap; 
-  flex-shrink: 0; 
-}
-
-.ctrl-row input[type=range] { 
-  flex-grow: 1; 
-  min-width: 50px; 
-  accent-color: var(--cyan); 
-  cursor: pointer; 
-  height: 22px; 
-  padding: 4px 0; 
-  touch-action: none; 
-}
-
-.ctrl-row input[type=number] {
-  width: 55px; 
-  background: transparent; 
-  border: 1px solid var(--border); 
-  color: var(--cyan); 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  padding: 2px 4px; 
-  border-radius: 3px; 
-  outline: none; 
-  text-align: right;
-}
-
-.ctrl-row button.apply-btn {
-  background: rgba(0, 229, 255, 0.15); 
-  border: 1px solid var(--cyan); 
-  color: var(--cyan);
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  padding: 4px 8px; 
-  border-radius: 3px; 
-  cursor: pointer; 
-  transition: 0.2s;
-}
-
-.ctrl-row button.apply-btn:active { 
-  background: var(--cyan); 
-  color: #000; 
-}
-
-/* Slider Custom Color Classes */
-.ctrl-row.amber input[type=range] { accent-color: var(--amber); }
-.ctrl-row.amber input[type=number] { color: var(--amber); border-color: rgba(255, 180, 0, 0.4); }
-.ctrl-row.amber label { color: rgba(255, 180, 0, 0.8); }
-
-.ctrl-row.magenta input[type=range] { accent-color: var(--magenta); }
-.ctrl-row.magenta input[type=number] { color: var(--magenta); border-color: rgba(255, 0, 200, 0.4); }
-.ctrl-row.magenta label { color: rgba(255, 0, 200, 0.8); }
-
-.toggle-row { 
-  display: flex; 
-  align-items: center; 
-  justify-content: space-between; 
-  margin-bottom: 8px; 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  color: var(--text); 
-}
-
-.toggle-row label { 
-  cursor: pointer; 
-}
-
-.toggle-row input[type=checkbox] { 
-  accent-color: var(--cyan); 
-  width: 16px; 
-  height: 16px; 
-  cursor: pointer; 
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   MISC HUD ELEMENTS (PIPELINE, HINTS)
-   ═══════════════════════════════════════════════════════════════════════ */
-#pipeline { 
-  background: var(--panel); 
-  border: 1px solid var(--border); 
-  border-radius: 6px; 
-  padding: 8px 12px; 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  color: var(--dim); 
-  pointer-events: none; 
-  flex: 1; 
-  min-width: 0; 
-  backdrop-filter: blur(6px); 
-  overflow: hidden; 
-}
-
-#pipeline .step { 
-  display: inline-block; 
-  margin-right: 5px; 
-  white-space: nowrap; 
-}
-
-#pipeline .step.active { 
-  color: var(--cyan); 
-  font-weight: bold; 
-}
-
-#pipeline .sep { 
-  color: #223; 
-  margin-right: 5px; 
-}
-
-#credit { 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: clamp(8px, 1.6vw, 10px); 
-  color: var(--dim); 
-  text-align: right; 
-  line-height: 1.7; 
-  pointer-events: all; 
-  flex-shrink: 0; 
-  white-space: nowrap; 
-}
-
-#credit a { 
-  color: var(--cyan); 
-  text-decoration: none; 
-  opacity: 0.7; 
-}
-
-#credit a:active { 
-  opacity: 1; 
-}
-
-#mouse-hint { 
-  position: absolute; 
-  bottom: 12px; 
-  left: 50%; 
-  transform: translateX(-50%); 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--ctrl-size); 
-  color: var(--dim); 
-  pointer-events: none; 
-  opacity: 0.75; 
-  white-space: nowrap; 
-  text-align: center; 
-  z-index: 105; 
-  background: rgba(0, 0, 0, 0.4); 
-  padding: 4px 10px; 
-  border-radius: 12px; 
-}
-
-#view-indicator { 
-  position: absolute; 
-  top: 15px; 
-  right: 0; 
-  font-family: 'Share Tech Mono', monospace; 
-  font-size: var(--mono-size); 
-  color: var(--amber); 
-  font-weight: bold; 
-  opacity: 0.95; 
-  pointer-events: none; 
-  padding: 5px 12px; 
-  background: rgba(2, 8, 18, 0.85); 
-  border-radius: 4px 0 0 4px; 
-  border: 1px solid rgba(255, 180, 0, 0.45); 
-  border-right: none; 
-}
-
-/* Interaction Ripple Feedback */
-@keyframes ripple { 
-  0% { transform: scale(0.6); opacity: 0.9; } 
-  100% { transform: scale(2.8); opacity: 0; } 
-}
-
-.ripple-dot { 
-  position: fixed; 
-  width: 36px; 
-  height: 36px; 
-  border-radius: 50%; 
-  border: 2px solid var(--cyan); 
-  pointer-events: none; 
-  z-index: 800; 
-  transform-origin: center; 
-  animation: ripple 0.5s ease-out forwards; 
-  margin-left: -18px; 
-  margin-top: -18px; 
-}
-
-/* Landscape Adaptation */
-@media (orientation: landscape) {
-  :root { 
-    --mono-size: clamp(8px, 1.5vw, 10px); 
-    --ctrl-size: clamp(8px, 1.5vw, 10px); 
-    --title-size: clamp(10px, 1.9vw, 13px); 
-  }
-  #mode-btns { 
-    flex-direction: row; 
-    flex-wrap: wrap; 
-    max-width: 50vw; 
-  }
-  #side-panel { 
-    width: clamp(240px, 30vw, 320px); 
-  }
-  #side-panel.open ~ #panel-toggle, #panel-toggle.shifted { 
-    right: clamp(240px, 30vw, 320px); 
-  }
+/* ── MISC ───────────────────────────────────────────────────────────── */
+#hint{position:absolute;bottom:11px;left:50%;transform:translateX(-50%);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);color:var(--dim);
+  pointer-events:none;opacity:.7;white-space:nowrap;text-align:center;z-index:110;
+  background:rgba(0,0,0,.45);padding:4px 10px;border-radius:12px}
+#vind{position:absolute;top:14px;right:0;font-family:'Share Tech Mono',monospace;
+  font-size:var(--ms);color:var(--a);font-weight:bold;opacity:.95;pointer-events:none;
+  padding:5px 11px;background:rgba(4,10,22,.88);border-radius:4px 0 0 4px;
+  border:1px solid rgba(255,180,0,.4);border-right:none}
+@keyframes rip{0%{transform:scale(.6);opacity:.9}100%{transform:scale(2.8);opacity:0}}
+.rip{position:fixed;width:34px;height:34px;border-radius:50%;
+  border:2px solid var(--c);pointer-events:none;z-index:800;
+  transform-origin:center;animation:rip .48s ease-out forwards;margin:-17px 0 0 -17px}
+@media(orientation:landscape){
+  :root{--ms:clamp(8px,1.4vw,10px);--cs:clamp(8px,1.4vw,10px);--ts:clamp(10px,1.8vw,13px)}
+  #scene-row{flex-wrap:wrap;max-width:50vw}
+  #panel{width:clamp(240px,29vw,310px)}
+  #panel.open~#ptog,#ptog.shifted{right:clamp(240px,29vw,310px)}
 }
 </style>
 </head>
 <body>
-
-<canvas id="three-canvas"></canvas>
+<canvas id="c"></canvas>
 
 <div id="hud">
-  
-  <div id="top-bar">
-    <div id="title-block">
+  <div id="top">
+    <div id="title">
       <h1>ARCLAKE · SPH OCEAN · 3D</h1>
-      <div class="sub">DAYTIME · VOLUMETRIC RAYMARCH · SSFR EXTINCTION</div>
+      <div class="sub">SPACEPUNK · VOLUMETRIC · SSFR EXTINCTION · DIFFUSE PARTICLES</div>
     </div>
     <div id="stats">
-      <div><span class="lbl">FLUID PTS&nbsp;</span><span class="val" id="s-n">—</span></div>
-      <div><span class="lbl">DIFFUSE&nbsp;&nbsp;&nbsp;</span><span class="val" id="s-foam">—</span></div>
-      <div><span class="lbl">AVG&nbsp;DENS&nbsp;</span><span class="val" id="s-d">—</span></div>
-      <div><span class="lbl">FPS&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val" id="s-fps">—</span></div>
+      <div>FLUID&nbsp;<span class="v" id="sn">—</span></div>
+      <div>DIFFUSE&nbsp;<span class="v" id="sf">—</span></div>
+      <div>AVG&nbsp;ρ&nbsp;<span class="v" id="sd">—</span></div>
+      <div>FPS&nbsp;<span class="v" id="sfps">—</span></div>
     </div>
   </div>
 
-  <div id="sim-area">
-    
-    <div id="mode-btns">
-      <button class="mode-btn active" data-scene="dam">DAM BREAK</button>
-      <button class="mode-btn" data-scene="wave">OCEAN WAVE</button>
-      <button class="mode-btn" data-scene="drop">DROP</button>
-      <button class="mode-btn" data-scene="jets">DUAL JETS</button>
-      <button class="mode-btn" data-scene="orbit">ORBITAL</button>
-      <button class="mode-btn" data-scene="fountain">FOUNTAIN</button>
+  <div id="mid">
+    <div id="scene-row">
+      <button class="btn on" data-scene="dam">DAM BREAK</button>
+      <button class="btn" data-scene="wave">OCEAN WAVE</button>
+      <button class="btn" data-scene="drop">DROP</button>
+      <button class="btn" data-scene="jets">DUAL JETS</button>
+      <button class="btn" data-scene="orbit">ORBITAL</button>
+      <button class="btn" data-scene="fountain">FOUNTAIN</button>
     </div>
 
-    <!-- Toggle Tool safely positioned below mode-btns -->
-    <div id="tool-mode-container">
-      <button id="tool-btn">MODE: CAMERA</button>
+    <div id="tool-wrap"><button id="tool-btn">MODE: CAMERA</button></div>
+
+    <div id="vind">SSFR FLUID VIEW</div>
+
+    <div id="view-row">
+      <button class="vbtn on" data-view="ocean">SSFR FLUID</button>
+      <button class="vbtn" data-view="vol">VOLUMETRIC</button>
+      <button class="vbtn" data-view="pressure">PRESSURE</button>
+      <button class="vbtn" data-view="velocity">VELOCITY</button>
+      <button class="vbtn" data-view="ke">KINETIC E</button>
+      <button class="vbtn" data-view="diffuse">DIFFUSE DBG</button>
     </div>
 
-    <div id="view-indicator">SSFR FLUID VIEW</div>
-
-    <div id="view-btns">
-      <button class="view-btn active" data-view="ocean">SSFR FLUID</button>
-      <button class="view-btn" data-view="volumetric">VOLUMETRIC DENSITY</button>
-      <button class="view-btn" data-view="pressure">PRESSURE CLOUD</button>
-      <button class="view-btn" data-view="velocity">VELOCITY CLOUD</button>
-      <button class="view-btn" data-view="ke">KINETIC ENERGY</button>
-      <button class="view-btn" data-view="diffuse">DIFFUSE CLASSIFY</button>
-    </div>
-
-    <div id="side-panel">
-      
-      <!-- PERFORMANCE & PHYSICS -->
-      <div class="ctrl-card">
-        <h3>// SCALING & PHYSICS</h3>
-        
-        <!-- Scalable Input (1024 -> 600,000) Defaults to 3000 now -->
-        <div class="ctrl-row">
+    <!-- ── SIDE PANEL ── -->
+    <div id="panel">
+      <div class="card">
+        <h3>// SCALING &amp; PHYSICS</h3>
+        <div class="row">
           <label>COUNT</label>
-          <input type="number" id="num-count" min="1024" max="600000" step="1024" value="3000">
-          <button class="apply-btn" onclick="applyParticleCount()">APPLY</button>
+          <input type="number" id="nCount" min="512" max="600000" step="512" value="3500">
+          <button class="aply" onclick="applyCount()">APPLY</button>
         </div>
-        
-        <div class="ctrl-row magenta">
+        <div class="row mg">
           <label>TIME SCALE</label>
-          <input type="range" id="sl-timescale" min="0.1" max="2.0" step="0.1" value="1.0" oninput="sim.timeScale=+this.value; document.getElementById('num-timescale').value=(+this.value).toFixed(1)">
-          <input type="number" id="num-timescale" value="1.0" step="0.1" min="0.1" max="2.0" onchange="document.getElementById('sl-timescale').value=this.value; sim.timeScale=+this.value;">
+          <input type="range"  id="rTS" min=".1" max="2" step=".05" value="1"
+            oninput="S.ts=+this.value;document.getElementById('nTS').value=(+this.value).toFixed(2)">
+          <input type="number" id="nTS" value="1.00" step=".05"
+            onchange="document.getElementById('rTS').value=this.value;S.ts=+this.value">
         </div>
-        <div class="ctrl-row">
+        <div class="row">
           <label>TARGET ρ</label>
-          <input type="range" id="sl-density" min="200" max="1200" value="600" oninput="sim.targetDensity=+this.value; document.getElementById('num-density').value=this.value">
-          <input type="number" id="num-density" value="600" step="10" onchange="document.getElementById('sl-density').value=this.value; sim.targetDensity=+this.value;">
+          <input type="range"  id="rD"  min="100" max="1400" value="650"
+            oninput="S.rho=+this.value;document.getElementById('nD').value=this.value">
+          <input type="number" id="nD"  value="650" step="10"
+            onchange="document.getElementById('rD').value=this.value;S.rho=+this.value">
         </div>
-        <div class="ctrl-row">
+        <div class="row">
           <label>PRESSURE</label>
-          <input type="range" id="sl-press" min="5" max="350" value="200" oninput="sim.pressureMul=+this.value; document.getElementById('num-press').value=this.value">
-          <input type="number" id="num-press" value="200" step="5" onchange="document.getElementById('sl-press').value=this.value; sim.pressureMul=+this.value;">
+          <input type="range"  id="rP"  min="5" max="400" value="220"
+            oninput="S.pm=+this.value;document.getElementById('nP').value=this.value">
+          <input type="number" id="nP"  value="220" step="5"
+            onchange="document.getElementById('rP').value=this.value;S.pm=+this.value">
         </div>
-        <div class="ctrl-row">
+        <div class="row">
           <label>VISCOSITY</label>
-          <input type="range" id="sl-visc" min="0" max="0.3" step="0.005" value="0.05" oninput="sim.viscosity=+this.value; document.getElementById('num-visc').value=(+this.value).toFixed(3)">
-          <input type="number" id="num-visc" value="0.050" step="0.005" onchange="document.getElementById('sl-visc').value=this.value; sim.viscosity=+this.value;">
+          <input type="range"  id="rV"  min="0" max=".35" step=".005" value=".055"
+            oninput="S.visc=+this.value;document.getElementById('nV').value=(+this.value).toFixed(3)">
+          <input type="number" id="nV"  value=".055" step=".005"
+            onchange="document.getElementById('rV').value=this.value;S.visc=+this.value">
         </div>
-        
-        <!-- Gravity mapped 0.0 to 50.0 (1.0 = Earth Gravity) -->
-        <div class="ctrl-row">
+        <div class="row">
           <label>GRAVITY (G)</label>
-          <input type="range" id="sl-grav" min="0.0" max="50.0" step="0.1" value="1.0" oninput="sim.gravity=+this.value; document.getElementById('num-grav').value=(+this.value).toFixed(1)">
-          <input type="number" id="num-grav" value="1.0" step="0.1" min="0.0" max="50.0" onchange="document.getElementById('sl-grav').value=this.value; sim.gravity=+this.value;">
+          <input type="range"  id="rG"  min="0" max="50" step=".1" value="1"
+            oninput="S.grav=+this.value;document.getElementById('nG').value=(+this.value).toFixed(1)">
+          <input type="number" id="nG"  value="1.0" step=".1" min="0" max="50"
+            onchange="document.getElementById('rG').value=this.value;S.grav=+this.value">
         </div>
-        
-        <div class="ctrl-row">
+        <div class="row">
           <label>SMOOTH RAD</label>
-          <input type="range" id="sl-h" min="15" max="60" value="28" oninput="sim.h=+this.value; document.getElementById('num-h').value=this.value">
-          <input type="number" id="num-h" value="28" step="1" onchange="document.getElementById('sl-h').value=this.value; sim.h=+this.value;">
+          <input type="range"  id="rH"  min="12" max="65" value="30"
+            oninput="S.h=+this.value;document.getElementById('nH').value=this.value">
+          <input type="number" id="nH"  value="30" step="1"
+            onchange="document.getElementById('rH').value=this.value;S.h=+this.value">
         </div>
       </div>
 
-      <!-- VOLUMETRIC RENDERING -->
-      <div class="ctrl-card">
-        <h3>// VOLUMETRIC RENDERING</h3>
-        <!-- Visual size defaults to 2.0 now for fine granularity -->
-        <div class="ctrl-row amber">
-          <label>VISUAL SIZE</label>
-          <input type="range" id="sl-psize" min="1.0" max="20.0" step="0.5" value="2.0" oninput="render.particleScale=+this.value; document.getElementById('num-psize').value=(+this.value).toFixed(1); updateParticleScale();">
-          <input type="number" id="num-psize" value="2.0" step="0.5" min="1.0" max="20.0" onchange="document.getElementById('sl-psize').value=this.value; render.particleScale=+this.value; updateParticleScale();">
+      <div class="card">
+        <h3>// RENDERING</h3>
+        <div class="row am">
+          <label>PART SIZE</label>
+          <input type="range"  id="rPS" min="1" max="20" step=".5" value="2"
+            oninput="R.sz=+this.value;document.getElementById('nPS').value=(+this.value).toFixed(1);updSz()">
+          <input type="number" id="nPS" value="2.0" step=".5" min="1" max="20"
+            onchange="document.getElementById('rPS').value=this.value;R.sz=+this.value;updSz()">
         </div>
-        <div class="ctrl-row amber">
+        <div class="row am">
           <label>EXTINCTION</label>
-          <input type="range" id="sl-ext" min="1" max="80" step="1" value="35" oninput="render.extinction=+this.value; document.getElementById('num-ext').value=this.value; updateMaterialProps();">
-          <input type="number" id="num-ext" value="35" step="1" onchange="document.getElementById('sl-ext').value=this.value; render.extinction=+this.value; updateMaterialProps();">
+          <input type="range"  id="rEX" min="1" max="90" step="1" value="38"
+            oninput="R.ext=+this.value;document.getElementById('nEX').value=this.value;updMat()">
+          <input type="number" id="nEX" value="38" step="1"
+            onchange="document.getElementById('rEX').value=this.value;R.ext=+this.value;updMat()">
         </div>
-        <div class="ctrl-row amber">
+        <div class="row am">
           <label>CAUSTICS</label>
-          <input type="range" id="sl-caustics" min="0" max="1" step="0.01" value="0.75" oninput="render.causticStrength=+this.value; document.getElementById('num-caustics').value=(+this.value).toFixed(2);">
-          <input type="number" id="num-caustics" value="0.75" step="0.05" onchange="document.getElementById('sl-caustics').value=this.value; render.causticStrength=+this.value;">
+          <input type="range"  id="rCA" min="0" max="1" step=".01" value=".7"
+            oninput="R.caus=+this.value;document.getElementById('nCA').value=(+this.value).toFixed(2)">
+          <input type="number" id="nCA" value=".70" step=".05"
+            onchange="document.getElementById('rCA').value=this.value;R.caus=+this.value">
         </div>
-        <div class="toggle-row">
-          <label for="chk-foam-vis">SHOW DIFFUSE (FOAM)</label>
-          <input type="checkbox" id="chk-foam-vis" checked onchange="render.showFoam=this.checked;updateFoamVis()">
+        <div class="row am">
+          <label>FOAM SIZE</label>
+          <input type="range"  id="rFS" min="1" max="18" step=".5" value="5"
+            oninput="R.fsz=+this.value;document.getElementById('nFS').value=(+this.value).toFixed(1);updFoamSz()">
+          <input type="number" id="nFS" value="5.0" step=".5" min="1" max="18"
+            onchange="document.getElementById('rFS').value=this.value;R.fsz=+this.value;updFoamSz()">
         </div>
-        <div class="toggle-row">
-          <label for="chk-particles">SHOW FLUID VOLUME</label>
-          <input type="checkbox" id="chk-particles" checked onchange="render.showParticles=this.checked;updateParticlesVis()">
+        <div class="chk">
+          <label for="chkF">SHOW DIFFUSE</label>
+          <input type="checkbox" id="chkF" checked onchange="foamPts.visible=this.checked">
+        </div>
+        <div class="chk">
+          <label for="chkP">SHOW FLUID</label>
+          <input type="checkbox" id="chkP" checked onchange="fluidMesh.visible=this.checked">
+        </div>
+        <div class="chk">
+          <label for="chkBx">BOUNDS BOX</label>
+          <input type="checkbox" id="chkBx" checked onchange="boxMesh.visible=this.checked">
         </div>
       </div>
 
-      <!-- DIFFUSE PARTICLES (FOAM) -->
-      <div class="ctrl-card">
-        <h3>// DIFFUSE LOGIC</h3>
-        <div class="ctrl-row">
+      <div class="card">
+        <h3>// DIFFUSE PARTICLES</h3>
+        <div class="row">
           <label>SPAWN RATE</label>
-          <input type="range" id="sl-foamrate" min="0" max="5" step="0.1" value="1.8" oninput="foam.spawnRate=+this.value; document.getElementById('num-foamrate').value=(+this.value).toFixed(1);">
-          <input type="number" id="num-foamrate" value="1.8" step="0.1" onchange="document.getElementById('sl-foamrate').value=this.value; foam.spawnRate=+this.value;">
+          <input type="range"  id="rFR" min="0" max="6" step=".1" value="2"
+            oninput="F.rate=+this.value;document.getElementById('nFR').value=(+this.value).toFixed(1)">
+          <input type="number" id="nFR" value="2.0" step=".1"
+            onchange="document.getElementById('rFR').value=this.value;F.rate=+this.value">
         </div>
-        <div class="ctrl-row">
+        <div class="row">
           <label>BUOYANCY</label>
-          <input type="range" id="sl-buoyancy" min="0" max="5" step="0.1" value="2.2" oninput="foam.buoyancy=+this.value; document.getElementById('num-buoyancy').value=(+this.value).toFixed(1);">
-          <input type="number" id="num-buoyancy" value="2.2" step="0.1" onchange="document.getElementById('sl-buoyancy').value=this.value; foam.buoyancy=+this.value;">
+          <input type="range"  id="rFB" min="0" max="6" step=".1" value="2.5"
+            oninput="F.buoy=+this.value;document.getElementById('nFB').value=(+this.value).toFixed(1)">
+          <input type="number" id="nFB" value="2.5" step=".1"
+            onchange="document.getElementById('rFB').value=this.value;F.buoy=+this.value">
         </div>
-        <div class="ctrl-row">
+        <div class="row">
           <label>LIFETIME</label>
-          <input type="range" id="sl-lifetime" min="30" max="400" step="10" value="150" oninput="foam.lifetime=+this.value; document.getElementById('num-lifetime').value=this.value;">
-          <input type="number" id="num-lifetime" value="150" step="10" onchange="document.getElementById('sl-lifetime').value=this.value; foam.lifetime=+this.value;">
+          <input type="range"  id="rFL" min="20" max="500" step="10" value="160"
+            oninput="F.life=+this.value;document.getElementById('nFL').value=this.value">
+          <input type="number" id="nFL" value="160" step="10"
+            onchange="document.getElementById('rFL').value=this.value;F.life=+this.value">
+        </div>
+        <div class="row">
+          <label>SPRAY NBRS ≤</label>
+          <input type="range"  id="rSN" min="1" max="25" step="1" value="8"
+            oninput="F.sprayNbr=+this.value;document.getElementById('nSN').value=this.value">
+          <input type="number" id="nSN" value="8" step="1"
+            onchange="document.getElementById('rSN').value=this.value;F.sprayNbr=+this.value">
+        </div>
+        <div class="row">
+          <label>BUBBLE NBRS ≥</label>
+          <input type="range"  id="rBN" min="5" max="40" step="1" value="22"
+            oninput="F.bubNbr=+this.value;document.getElementById('nBN').value=this.value">
+          <input type="number" id="nBN" value="22" step="1"
+            onchange="document.getElementById('rBN').value=this.value;F.bubNbr=+this.value">
         </div>
       </div>
     </div>
 
-    <!-- Slide Panel Toggle Chevron -->
-    <div id="panel-toggle" role="button" aria-label="Toggle parameters panel">
-      <svg width="12" height="20" viewBox="0 0 12 20" fill="none">
-        <polyline points="10,2 2,10 10,18" stroke="#00e5ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <div id="ptog" role="button" aria-label="Toggle panel">
+      <svg width="11" height="20" viewBox="0 0 11 20" fill="none">
+        <polyline points="9,2 2,10 9,18" stroke="#00e5ff" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </div>
   </div>
 
-  <div id="bottom-bar">
-    <div id="pipeline">
-      <span class="step" id="ps0">① PREDICT (dt)</span><span class="sep">→</span>
-      <span class="step" id="ps1">② 3D HASH</span><span class="sep">→</span>
-      <span class="step" id="ps2">③ DENSITY</span><span class="sep">→</span>
-      <span class="step" id="ps3">④ PRESSURE</span><span class="sep">→</span>
-      <span class="step" id="ps4">⑤ VISCOSITY</span><span class="sep">→</span>
-      <span class="step" id="ps5">⑥ INTEGRATE</span>
+  <div id="bot">
+    <div id="pipe">
+      <span class="ps" id="p0">① PREDICT</span><span class="sep">→</span>
+      <span class="ps" id="p1">② HASH</span><span class="sep">→</span>
+      <span class="ps" id="p2">③ DENSITY</span><span class="sep">→</span>
+      <span class="ps" id="p3">④ PRESSURE</span><span class="sep">→</span>
+      <span class="ps" id="p4">⑤ VISCOSITY</span><span class="sep">→</span>
+      <span class="ps" id="p5">⑥ INTEGRATE</span><span class="sep">→</span>
+      <span class="ps" id="p6">⑦ DIFFUSE</span>
     </div>
-    <div id="credit">
-      KERNEL MATH: <a href="https://github.com/SebLague/Fluid-Sim" target="_blank">SEBLAGUE/FLUID-SIM</a><br>
-      ARCLAKE: <a href="https://github.com/DART-Skyboard" target="_blank">DART-SKYBOARD</a> · DAYTIME 3D SSFR/RAYMARCH
+    <div id="cred">
+      KERNEL: <a href="https://github.com/SebLague/Fluid-Sim" target="_blank">SEBLAGUE/FLUID-SIM</a><br>
+      <a href="https://radicaldeepscale.com" target="_blank">RADICAL DEEPSCALE</a> · ARCLAKE 3D
     </div>
   </div>
 </div>
 
-<!-- Three.js Library -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
 <script>
 'use strict';
-
-// ═══════════════════════════════════════════════════════════════════════
-// THREE.JS SCENE SETUP & BRIGHT DAYTIME LIGHTING
-// ═══════════════════════════════════════════════════════════════════════
-const canvas3d = document.getElementById('three-canvas');
-const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true, alpha: false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+/* ════════════════════════════════════════════════════════════════════════
+   THREE.JS  SCENE
+   ════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.35; // Brightened Scene Exposure
+renderer.toneMappingExposure = 1.1;
 
 const scene = new THREE.Scene();
 
-// --- REPOSITIONED HORIZON GRADIENT ---
-const canvas = document.createElement('canvas');
-canvas.width = 2;
-canvas.height = 512;
-const context = canvas.getContext('2d');
+/* ── Sky ── */
+const skyCvs = document.createElement('canvas');
+skyCvs.width = 2; skyCvs.height = 512;
+const skyCtx = skyCvs.getContext('2d');
+const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 512);
+skyGrad.addColorStop(0.0,  '#06101a');
+skyGrad.addColorStop(0.35, '#0a1f35');
+skyGrad.addColorStop(0.6,  '#051828');
+skyGrad.addColorStop(1.0,  '#020c14');
+skyCtx.fillStyle = skyGrad;
+skyCtx.fillRect(0, 0, 2, 512);
+scene.background = new THREE.CanvasTexture(skyCvs);
 
-const gradient = context.createLinearGradient(0, 0, 0, 512);
+/* ── Camera ── */
+const cam = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 500000);
 
-// Upper Atmosphere
-gradient.addColorStop(0, '#87CEEB'); 
+/* ── Lights ── */
+const ambL = new THREE.AmbientLight(0x112233, 2.2);
+scene.add(ambL);
+const sunL = new THREE.DirectionalLight(0xc8e8ff, 3.8);
+sunL.position.set(250, 550, 180);
+sunL.castShadow = true;
+sunL.shadow.mapSize.set(2048, 2048);
+const sd = 600;
+Object.assign(sunL.shadow.camera, { near:5, far:2000, left:-sd, right:sd, top:sd, bottom:-sd });
+sunL.shadow.bias = -0.0005;
+scene.add(sunL);
+const rimL = new THREE.PointLight(0x00ffcc, 1.2, 900);
+rimL.position.set(-280, -80, -280);
+scene.add(rimL);
+const fillL = new THREE.PointLight(0xff44cc, 0.4, 600);
+fillL.position.set(300, 200, -200);
+scene.add(fillL);
 
-// The "Horizon Line" (The d-band)
-// We set this at 0.5 (the middle) to align with the camera's default horizon
-gradient.addColorStop(0.5, '#0a4060'); 
+/* ════════════════════════════════════════════════════════════════════════
+   SIMULATION CONSTANTS
+   ════════════════════════════════════════════════════════════════════════ */
+const W = 400, H = 300, D = 300;   // simulation domain
+const SCALE = 0.8;                  // world → sim space
 
-// 30% Darker than Ocean Blue for below the floor
-// This represents the "void" or deep distance
-gradient.addColorStop(1, '#051c2b'); 
-
-context.fillStyle = gradient;
-context.fillRect(0, 0, 2, 512);
-
-const skyTexture = new THREE.CanvasTexture(canvas);
-scene.background = skyTexture;
-
-
-
-
-
-
-// Huge clipping planes per request (near: 0.1, far: 500000)
-const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 500000);
-camera.position.set(400, 350, 650);
-camera.lookAt(0, 50, 0);
-
-// Lighting setup designed to highlight fluids in daylight
-const ambientLight = new THREE.AmbientLight(0xffffff, ); 
-scene.add(ambientLight);
-
-const sunLight = new THREE.DirectionalLight(0xfffae0, 0.15); // Warm, bright sun
-sunLight.position.set(300, 600, 200);
-sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
-sunLight.shadow.camera.near = 10;
-sunLight.shadow.camera.far = 2000;
-const dShadow = 600;
-sunLight.shadow.camera.left = -dShadow; 
-sunLight.shadow.camera.right = dShadow;
-sunLight.shadow.camera.top = dShadow; 
-sunLight.shadow.camera.bottom = -dShadow;
-sunLight.shadow.bias = -0.0005;
-scene.add(sunLight);
-
-const fillLight = new THREE.PointLight(0x00aaff, 1.5, 1000); 
-fillLight.position.set(-300, -100, -300);
-scene.add(fillLight);
-
-// ═══════════════════════════════════════════════════════════════════════
-// INTERACTION STATE: CAMERA vs STIR
-// ═══════════════════════════════════════════════════════════════════════
-let currentMode = 'camera'; 
-const toolBtn = document.getElementById('tool-btn');
-
-toolBtn.addEventListener('click', () => {
-  if (currentMode === 'camera') {
-    currentMode = 'stir';
-    toolBtn.textContent = 'MODE: STIR FLUID';
-    toolBtn.classList.add('active');
-  } else {
-    currentMode = 'camera';
-    toolBtn.textContent = 'MODE: CAMERA';
-    toolBtn.classList.remove('active');
-  }
-});
-
-// Interactive raycaster for Stir Force
-const raycaster = new THREE.Raycaster();
-const mouseVec = new THREE.Vector2();
-const interactPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); 
-let interactWorldPos = new THREE.Vector3();
-let isInteracting = false;
-let interactButton = 0; 
-
-// Visual sphere for the stirring wand
-const stirGeo = new THREE.SphereGeometry(25, 16, 16);
-const stirMat = new THREE.MeshBasicMaterial({ 
-    color: 0x39ff7a, 
-    wireframe: true, 
-    transparent: true, 
-    opacity: 0.5 
-});
-const stirCursor = new THREE.Mesh(stirGeo, stirMat);
-stirCursor.visible = false;
-scene.add(stirCursor);
-
-// ═══════════════════════════════════════════════════════════════════════
-// INVERTED ORBIT CONTROLS & STIR LOGIC
-// ═══════════════════════════════════════════════════════════════════════
-const orbitState = {
-  spherical: { theta: -0.6, phi: 1.15, r: 700 },
-  target: new THREE.Vector3(0, 50, 0),
-  dragging: false, 
-  panning: false, 
-  lastX: 0, 
-  lastY: 0, 
-  pinchDist: 0,
+/* Simulation state */
+const S = {
+  n: 3500,
+  ts: 1.0,
+  h: 30,
+  rho: 650,
+  pm: 220,
+  npm: 5.0,
+  visc: 0.055,
+  grav: 1.0,
+  damp: 0.72,
+  mf: 14,
+  pts: [],
+  hCached: -1,
+  scene: 'dam',
+  // Kernel pre-computed constants
+  kSp2: 0, kSp3: 0, kSp2g: 0, kSp3g: 0, kP6: 0,
 };
 
-function updateCameraFromOrbit() {
-  const { theta, phi, r } = orbitState.spherical;
-  const sinPhi = Math.sin(phi);
-  
-  camera.position.set(
-    orbitState.target.x + r * sinPhi * Math.sin(theta),
-    orbitState.target.y + r * Math.cos(phi),
-    orbitState.target.z + r * sinPhi * Math.cos(theta)
-  );
-  camera.lookAt(orbitState.target);
-}
-updateCameraFromOrbit();
+/* Render state */
+const R = { view: 'ocean', sz: 2.0, ext: 38, caus: 0.7, fsz: 5.0 };
 
-function updateStirCursor(clientX, clientY) {
-  mouseVec.x = (clientX / window.innerWidth) * 2 - 1;
-  mouseVec.y = -(clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouseVec, camera);
-  raycaster.ray.intersectPlane(interactPlane, interactWorldPos);
-  
-  if (interactWorldPos) {
-    stirCursor.position.copy(interactWorldPos);
-    stirCursor.visible = true;
-    stirMat.color.setHex(interactButton === 2 ? 0xff00c8 : 0x39ff7a); 
-  }
-}
-
-const domElem = canvas3d;
-
-function onPointerDown(e) {
-  if (e.target.closest('#hud')) return;
-  if (e.pointerType === 'touch') return;
-  
-  if (currentMode === 'stir') {
-    isInteracting = true; 
-    interactButton = e.button;
-    updateStirCursor(e.clientX, e.clientY);
-  } else {
-    orbitState.dragging = true; 
-    orbitState.panning = e.button === 1 || e.shiftKey;
-    orbitState.lastX = e.clientX; 
-    orbitState.lastY = e.clientY;
-  }
-  e.preventDefault();
-}
-
-function onPointerMove(e) {
-  if (currentMode === 'stir') {
-    if (isInteracting) updateStirCursor(e.clientX, e.clientY);
-    return;
-  }
-  
-  if (!orbitState.dragging) return;
-  
-  const dx = e.clientX - orbitState.lastX;
-  const dy = e.clientY - orbitState.lastY;
-  orbitState.lastX = e.clientX;
-  orbitState.lastY = e.clientY;
-  
-  if (orbitState.panning) {
-    const panScale = orbitState.spherical.r * 0.001;
-    const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()).negate(), camera.up).normalize();
-    const up = new THREE.Vector3().copy(camera.up);
-    
-    // PAN X/Y INVERTED: Adding instead of subtracting
-    orbitState.target.addScaledVector(right, dx * panScale); 
-    orbitState.target.addScaledVector(up, -dy * panScale); // Inverted Y pan
-  } else {
-    orbitState.spherical.theta -= dx * 0.006;
-    
-    // ORBIT Y INVERTED: Subtracting dy instead of adding
-    orbitState.spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, orbitState.spherical.phi - dy * 0.006));
-  }
-  updateCameraFromOrbit();
-}
-
-function onPointerUp() { 
-  orbitState.dragging = false; 
-  isInteracting = false; 
-  stirCursor.visible = false; 
-}
-
-function onWheel(e) {
-  if (currentMode === 'stir') return;
-  orbitState.spherical.r = Math.max(50, Math.min(10000, orbitState.spherical.r * (1 + e.deltaY * 0.001)));
-  updateCameraFromOrbit(); 
-  e.preventDefault();
-}
-
-domElem.addEventListener('mousedown', onPointerDown);
-window.addEventListener('mousemove', onPointerMove);
-window.addEventListener('mouseup', onPointerUp);
-domElem.addEventListener('wheel', onWheel, { passive: false });
-domElem.addEventListener('contextmenu', e => { 
-  if (currentMode === 'stir') e.preventDefault(); 
-});
-
-let _touches =[];
-domElem.addEventListener('touchstart', e => {
-  if (e.target.closest('#hud')) return;
-  _touches = Array.from(e.touches);
-  
-  if (currentMode === 'stir') {
-    isInteracting = true; 
-    interactButton = _touches.length >= 2 ? 2 : 0;
-    updateStirCursor(_touches[0].clientX, _touches[0].clientY);
-    spawnRipple(_touches[0].clientX, _touches[0].clientY);
-    e.preventDefault(); 
-    return;
-  }
-  
-  if (_touches.length === 1) {
-    orbitState.dragging = true; 
-    orbitState.panning = false;
-    orbitState.lastX = _touches[0].clientX; 
-    orbitState.lastY = _touches[0].clientY;
-  } else if (_touches.length === 2) {
-    orbitState.dragging = false;
-    orbitState.pinchDist = Math.hypot(
-      _touches[1].clientX - _touches[0].clientX, 
-      _touches[1].clientY - _touches[0].clientY
-    );
-    orbitState.lastX = (_touches[0].clientX + _touches[1].clientX) / 2; 
-    orbitState.lastY = (_touches[0].clientY + _touches[1].clientY) / 2;
-  }
-  e.preventDefault();
-}, { passive: false });
-
-domElem.addEventListener('touchmove', e => {
-  if (e.target.closest('#hud')) return;
-  const touches = Array.from(e.touches);
-  
-  if (currentMode === 'stir') {
-    if (isInteracting) { 
-      interactButton = touches.length >= 2 ? 2 : 0; 
-      updateStirCursor(touches[0].clientX, touches[0].clientY); 
-    }
-    e.preventDefault(); 
-    return;
-  }
-  
-  if (touches.length === 1 && orbitState.dragging) {
-    const dx = touches[0].clientX - orbitState.lastX; 
-    const dy = touches[0].clientY - orbitState.lastY;
-    orbitState.lastX = touches[0].clientX; 
-    orbitState.lastY = touches[0].clientY;
-    
-    orbitState.spherical.theta -= dx * 0.007;
-    
-    // ORBIT Y INVERTED (Swipe up/down reversed)
-    orbitState.spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, orbitState.spherical.phi - dy * 0.007));
-    
-    updateCameraFromOrbit();
-  } else if (touches.length === 2) {
-    const dist = Math.hypot(
-      touches[1].clientX - touches[0].clientX, 
-      touches[1].clientY - touches[0].clientY
-    );
-    orbitState.spherical.r = Math.max(50, Math.min(10000, orbitState.spherical.r * (1 + (orbitState.pinchDist - dist) * 0.008)));
-    orbitState.pinchDist = dist;
-    
-    const midX = (touches[0].clientX + touches[1].clientX) / 2; 
-    const midY = (touches[0].clientY + touches[1].clientY) / 2;
-    const pdx = midX - orbitState.lastX; 
-    const pdy = midY - orbitState.lastY;
-    orbitState.lastX = midX; 
-    orbitState.lastY = midY;
-    
-    const panScale = orbitState.spherical.r * 0.0012;
-    const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()).negate(), camera.up).normalize();
-    
-    // TWO-FINGER PAN Y INVERTED (adding pdy instead of subtracting)
-    orbitState.target.addScaledVector(right, pdx * panScale); 
-    orbitState.target.y += pdy * panScale; 
-    
-    updateCameraFromOrbit();
-  }
-  e.preventDefault();
-}, { passive: false });
-
-domElem.addEventListener('touchend', e => {
-  _touches = Array.from(e.touches);
-  
-  if (currentMode === 'stir') { 
-    if (_touches.length === 0) { 
-      isInteracting = false; 
-      stirCursor.visible = false; 
-    } 
-    e.preventDefault(); 
-    return; 
-  }
-  
-  if (_touches.length === 0) {
-    orbitState.dragging = false;
-  } else if (_touches.length === 1) { 
-    orbitState.dragging = true; 
-    orbitState.lastX = _touches[0].clientX; 
-    orbitState.lastY = _touches[0].clientY; 
-  }
-  e.preventDefault();
-}, { passive: false });
-
-function spawnRipple(cx, cy) {
-  const el = document.createElement('div'); 
-  el.className = 'ripple-dot'; 
-  el.style.left = cx + 'px'; 
-  el.style.top = cy + 'px';
-  document.body.appendChild(el); 
-  el.addEventListener('animationend', () => el.remove());
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// CHECKERBOARD DEBUG FLOOR
-// ═══════════════════════════════════════════════════════════════════════
-let floorMesh, floorMat;
-function buildFloor() {
-  const canvasFloor = document.createElement('canvas'); 
-  canvasFloor.width = 1024; 
-  canvasFloor.height = 1024;
-  const ctxFloor = canvasFloor.getContext('2d');
-  
-  ctxFloor.fillStyle = '#6ab0ff'; ctxFloor.fillRect(0, 0, 512, 512); 
-  ctxFloor.fillStyle = '#c9a5f2'; ctxFloor.fillRect(512, 0, 512, 512); 
-  ctxFloor.fillStyle = '#7ae38f'; ctxFloor.fillRect(0, 512, 512, 512); 
-  ctxFloor.fillStyle = '#fce595'; ctxFloor.fillRect(512, 512, 512, 512); 
-  
-  ctxFloor.fillStyle = 'rgba(0, 3, 0, 0.1)'; // Slightly lighter grid for daytime
-  for(let y=0; y<1024; y+=64) {
-    for(let x=0; x<1024; x+=64) {
-      if((x/64 + y/64) % 2 === 0) {
-        ctxFloor.fillRect(x, y, 64, 64);
-      }
-    }
-  }
-  
-  const floorTex = new THREE.CanvasTexture(canvasFloor);
-  floorTex.wrapS = THREE.RepeatWrapping; 
-  floorTex.wrapT = THREE.RepeatWrapping; 
-  floorTex.repeat.set(4, 4);
-  floorTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  
-  floorMat = new THREE.MeshStandardMaterial({ 
-    map: floorTex, 
-    roughness: 0.4, 
-    metalness: 0.9
-  });
-  
-  floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000), floorMat);
-  floorMesh.rotation.x = -Math.PI / 2; 
-  floorMesh.position.y = -40; 
-  floorMesh.receiveShadow = true;
-  scene.add(floorMesh);
-}
-buildFloor();
-
-const SIM_W = 400, SIM_H = 300, SIM_D = 300; 
-const SCALE = 0.8; 
-const boxGeo = new THREE.BoxGeometry(SIM_W * SCALE, SIM_H * SCALE, SIM_D * SCALE);
-const edges = new THREE.EdgesGeometry(boxGeo);
-const boxMat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.25 });
-const boundsMesh = new THREE.LineSegments(edges, boxMat);
-boundsMesh.position.set(0, (SIM_H / 2) * SCALE - 20, 0); 
-scene.add(boundsMesh);
-
-// ═══════════════════════════════════════════════════════════════════════
-// TRUE 3D SPH PHYSICS ENGINE WITH DYNAMIC CAPACITY
-// ═══════════════════════════════════════════════════════════════════════
-const sim = {
-  particleCount: 3000,
-  timeScale: 1.0, 
-  h: 28, 
-  targetDensity: 600, 
-  pressureMul: 200, 
-  nearPressureMul: 5.0,
-  viscosity: 0.05, 
-  gravity: 1.0, 
-  collisionDamp: 0.70, 
-  mouseForce: 15, 
-  pts:[], 
-  hOld: -1, 
-  currentScene: 'dam',
-  kSpikyPow2: 0, 
-  kSpikyPow3: 0, 
-  kSpikyPow2G: 0, 
-  kSpikyPow3G: 0, 
-  kPoly6: 0,
+/* Diffuse (foam/spray/bubble) state */
+const F = {
+  rate: 2.0,
+  buoy: 2.5,
+  life: 160,
+  pts: [],
+  sprayNbr: 8,
+  bubNbr: 22,
+  MAX: 22000,
 };
 
-const render = {
-  viewMode: 'ocean', 
-  particleScale: 2.0, 
-  extinction: 35, 
-  causticStrength: 0.75,
-  showFoam: true, 
-  showParticles: true, 
-  showFloor: true, 
-  sunHeight: 45
-};
-
-const foam = { 
-  spawnRate: 1.8, 
-  buoyancy: 2.2, 
-  lifetime: 150, 
-  particles:[] 
-};
-
-// ── KERNEL MATHEMATICS (Lague Equations) ──
-function updateKernels(h) {
+/* ════════════════════════════════════════════════════════════════════════
+   KERNEL MATHEMATICS  (Lague / SebLague/Fluid-Sim, MIT)
+   ════════════════════════════════════════════════════════════════════════ */
+function recompKernels(h) {
   const PI = Math.PI;
-  sim.kSpikyPow2  = 15 / (2 * PI * Math.pow(h, 5));
-  sim.kSpikyPow3  = 15 / (PI * Math.pow(h, 6));
-  sim.kSpikyPow2G = 15 / (PI * Math.pow(h, 5));
-  sim.kSpikyPow3G = 45 / (PI * Math.pow(h, 6));
-  sim.kPoly6      = 315 / (64 * PI * Math.pow(h, 9));
+  S.kSp2  = 15 / (2 * PI * Math.pow(h, 5));
+  S.kSp3  = 15 / (    PI * Math.pow(h, 6));
+  S.kSp2g = 15 / (    PI * Math.pow(h, 5));
+  S.kSp3g = 45 / (    PI * Math.pow(h, 6));
+  S.kP6   = 315 / (64 * PI * Math.pow(h, 9));
 }
 
-function spikyPow2(d, h) { 
-  if (d >= h) return 0; 
-  const v = h - d; 
-  return v * v * sim.kSpikyPow2; 
-}
+// SpikyPow2 (DensityKernel in Lague)
+const sp2  = (d, h) => { if (d >= h) return 0; const v = h - d; return v * v * S.kSp2; };
+// SpikyPow3 (NearDensityKernel)
+const sp3  = (d, h) => { if (d >= h) return 0; const v = h - d; return v * v * v * S.kSp3; };
+// Derivative SpikyPow2 (DensityDerivative)
+const dsp2 = (d, h) => { if (d > h)  return 0; const v = h - d; return -v * S.kSp2g; };
+// Derivative SpikyPow3 (NearDensityDerivative)
+const dsp3 = (d, h) => { if (d > h)  return 0; const v = h - d; return -v * v * S.kSp3g; };
+// Poly6 (SmoothingKernelPoly6, used for viscosity)
+const p6   = (d2, h) => { const v = h * h - d2; return v <= 0 ? 0 : v * v * v * S.kP6; };
+// LinearKernel (used for diffuse influence weight)
+const linK = (d, h) => d < h ? 1 - d / h : 0;
 
-function spikyPow3(d, h) { 
-  if (d >= h) return 0; 
-  const v = h - d; 
-  return v * v * v * sim.kSpikyPow3; 
-}
+/* ════════════════════════════════════════════════════════════════════════
+   3D SPATIAL HASH GRID  (matches Lague SpatialHash3D.hlsl logic)
+   ════════════════════════════════════════════════════════════════════════ */
+let _cells = null, _gx = 0, _gy = 0, _gz = 0, _cs = 0, _gW = 0, _gH = 0, _gD = 0;
+const MAX_NB = 2200;
+const _nb = new Int32Array(MAX_NB);
+let _nbc = 0;
 
-function dSpikyPow2(d, h) { 
-  if (d > h) return 0; 
-  const v = h - d; 
-  return -v * sim.kSpikyPow2G; 
-}
-
-function dSpikyPow3(d, h) { 
-  if (d > h) return 0; 
-  const v = h - d; 
-  return -v * v * sim.kSpikyPow3G; 
-}
-
-function poly6(d2, h) { 
-  const v = h * h - d2; 
-  if (v <= 0) return 0; 
-  return v * v * v * sim.kPoly6; 
-}
-
-// ── 3D SPATIAL HASH GRID ──
-let _cells = null, _gMinX = 0, _gMinY = 0, _gMinZ = 0, _cellSz = 0, _gW = 0, _gH = 0, _gD = 0;
-const MAX_NEIGHBORS = 2000;
-const _nbBuf = new Int32Array(MAX_NEIGHBORS);
-let _nbCount = 0;
-
-function buildGrid3D() {
-  const h = sim.h, pts = sim.pts, n = pts.length;
-  if (n === 0) return;
-
+function buildGrid() {
+  const h = S.h, pts = S.pts, n = pts.length;
+  if (!n) return;
   let mx = Infinity, my = Infinity, mz = Infinity;
   let Mx = -Infinity, My = -Infinity, Mz = -Infinity;
-  
-  for(let i=0; i<n; i++) {
+  for (let i = 0; i < n; i++) {
     const p = pts[i];
-    if (p.x < mx) mx = p.x; 
-    if (p.x > Mx) Mx = p.x;
-    if (p.y < my) my = p.y; 
-    if (p.y > My) My = p.y;
-    if (p.z < mz) mz = p.z; 
-    if (p.z > Mz) Mz = p.z;
+    if (p.x < mx) mx = p.x; if (p.x > Mx) Mx = p.x;
+    if (p.y < my) my = p.y; if (p.y > My) My = p.y;
+    if (p.z < mz) mz = p.z; if (p.z > Mz) Mz = p.z;
   }
-  
-  _gMinX = mx - h; 
-  _gMinY = my - h; 
-  _gMinZ = mz - h; 
-  _cellSz = h;
-  
-  _gW = Math.max(1, Math.ceil((Mx - mx + h * 2) / h) + 1);
-  _gH = Math.max(1, Math.ceil((My - my + h * 2) / h) + 1);
-  _gD = Math.max(1, Math.ceil((Mz - mz + h * 2) / h) + 1);
-  
-  const total = _gW * _gH * _gD;
-  if (!_cells || _cells.length !== total) { 
-    _cells = new Array(total); 
-    for(let c = 0; c < total; c++) {
-      _cells[c] =[]; 
-    }
-  } else { 
-    for(let c = 0; c < total; c++) {
-      _cells[c].length = 0; 
-    }
+  _gx = mx - h; _gy = my - h; _gz = mz - h; _cs = h;
+  _gW = Math.max(1, Math.ceil((Mx - mx + 2 * h) / h) + 1);
+  _gH = Math.max(1, Math.ceil((My - my + 2 * h) / h) + 1);
+  _gD = Math.max(1, Math.ceil((Mz - mz + 2 * h) / h) + 1);
+  const tot = _gW * _gH * _gD;
+  if (!_cells || _cells.length !== tot) {
+    _cells = Array.from({ length: tot }, () => []);
+  } else {
+    for (let i = 0; i < tot; i++) _cells[i].length = 0;
   }
-  
-  for(let i=0; i<n; i++) {
+  for (let i = 0; i < n; i++) {
     const p = pts[i];
-    const cx = Math.floor((p.x - _gMinX) / _cellSz);
-    const cy = Math.floor((p.y - _gMinY) / _cellSz);
-    const cz = Math.floor((p.z - _gMinZ) / _cellSz);
+    const cx = Math.floor((p.x - _gx) / _cs);
+    const cy = Math.floor((p.y - _gy) / _cs);
+    const cz = Math.floor((p.z - _gz) / _cs);
     _cells[cx + cy * _gW + cz * _gW * _gH].push(i);
   }
 }
 
-function findNeighbors3D(px, py, pz) {
-  _nbCount = 0;
-  const cx = Math.floor((px - _gMinX) / _cellSz);
-  const cy = Math.floor((py - _gMinY) / _cellSz);
-  const cz = Math.floor((pz - _gMinZ) / _cellSz);
-  
-  for(let oz = -1; oz <= 1; oz++) {
-    const nz = cz + oz; 
-    if (nz < 0 || nz >= _gD) continue;
-    const zOffset = nz * _gW * _gH;
-    
-    for(let oy = -1; oy <= 1; oy++) {
-      const ny = cy + oy; 
-      if (ny < 0 || ny >= _gH) continue;
-      const yOffset = ny * _gW;
-      
-      for(let ox = -1; ox <= 1; ox++) {
-        const nx = cx + ox; 
-        if (nx < 0 || nx >= _gW) continue;
-        
-        const cell = _cells[nx + yOffset + zOffset];
-        for(let k=0; k<cell.length; k++) {
-          if (_nbCount < MAX_NEIGHBORS) {
-            _nbBuf[_nbCount++] = cell[k];
-          }
+function neighbors(px, py, pz) {
+  _nbc = 0;
+  const cx = Math.floor((px - _gx) / _cs);
+  const cy = Math.floor((py - _gy) / _cs);
+  const cz = Math.floor((pz - _gz) / _cs);
+  for (let oz = -1; oz <= 1; oz++) {
+    const nz = cz + oz; if (nz < 0 || nz >= _gD) continue;
+    const zo = nz * _gW * _gH;
+    for (let oy = -1; oy <= 1; oy++) {
+      const ny = cy + oy; if (ny < 0 || ny >= _gH) continue;
+      const yo = ny * _gW;
+      for (let ox = -1; ox <= 1; ox++) {
+        const nx = cx + ox; if (nx < 0 || nx >= _gW) continue;
+        const cell = _cells[nx + yo + zo];
+        for (let k = 0; k < cell.length; k++) {
+          if (_nbc < MAX_NB) _nb[_nbc++] = cell[k];
         }
       }
     }
   }
 }
 
-// ── SCENE GENERATION DYNAMIC SIZING & BUG FIX ──
-function applyParticleCount() {
-  const c = parseInt(document.getElementById('num-count').value);
-  if (c >= 1024 && c <= 600000) {
-    sim.particleCount = c;
-    reallocateInstancedMesh(c);
-    setScene(sim.currentScene);
-  }
+/* ════════════════════════════════════════════════════════════════════════
+   PARTICLE SPAWNING
+   ════════════════════════════════════════════════════════════════════════ */
+function mkPt(x, y, z, vx = 0, vy = 0, vz = 0) {
+  return { x, y, z, vx, vy, vz, px: 0, py: 0, pz: 0,
+           dens: 0, nDens: 0, press: 0, nPress: 0,
+           spd: 0, ke: 0, nbc: 0 };
 }
 
-// Bulletproof Spawner that ensures particles NEVER spawn outside the bounding box
-function spawnByCount(count, layoutType) {
+function spawnGrid(count, startY = H * 0.12, xFrac = 0.88, zFrac = 0.88) {
   let side = Math.ceil(Math.cbrt(count));
-  let cols = side, rows = side, depths = side;
-  
-  if (layoutType === 'pool') { 
-      rows = Math.max(1, Math.floor(side * 0.3)); 
-      cols = Math.floor(Math.sqrt(count / rows)); 
-      depths = Math.ceil(count / (rows * cols)); 
-  } else if (layoutType === 'drop') { 
-      rows = side; 
-      cols = Math.max(1, Math.floor(side * 0.8)); 
-      depths = Math.ceil(count / (rows * cols)); 
-  }
-
-  // Auto-scaling logic prevents collapse bug
-  let maxSpX = (SIM_W * 0.9) / cols;
-  let maxSpY = (SIM_H * 0.9) / rows;
-  let maxSpZ = (SIM_D * 0.9) / depths;
-  
-  // Choose a spacing that fits everything securely within the bounding box
-  let sp = Math.min(sim.h * 0.65, maxSpX, maxSpY, maxSpZ); 
-
-  const x0 = (SIM_W - cols * sp) / 2;
-  const y0 = SIM_H * 0.15; // Start safely above floor
-  const z0 = (SIM_D - depths * sp) / 2;
-  
+  let rows = side, cols = side, deps = side;
+  const spX = (W * xFrac) / cols;
+  const spY = (H * 0.85)  / rows;
+  const spZ = (D * zFrac) / deps;
+  const sp  = Math.min(S.h * 0.62, spX, spY, spZ);
+  const x0  = (W - cols * sp) / 2;
+  const z0  = (D - deps * sp) / 2;
   let spawned = 0;
-  for(let d=0; d<depths; d++) {
-    for(let r=0; r<rows; r++) {
-      for(let c=0; c<cols; c++) {
-        if(spawned >= count) return;
-        
-        sim.pts.push({
-          x: x0 + c * sp + (Math.random() - 0.5) * 2,
-          y: y0 + r * sp + (Math.random() - 0.5) * 2,
-          z: z0 + d * sp + (Math.random() - 0.5) * 2,
-          vx: 0, vy: 0, vz: 0, px: 0, py: 0, pz: 0,
-          dens: 0, nearDens: 0, press: 0, nPress: 0,
-          speed: 0, nbCount: 0, ke: 0
-        });
+  for (let d = 0; d < deps && spawned < count; d++) {
+    for (let r = 0; r < rows && spawned < count; r++) {
+      for (let c = 0; c < cols && spawned < count; c++) {
+        S.pts.push(mkPt(
+          x0 + c * sp + (Math.random() - .5) * 1.5,
+          startY + r * sp + (Math.random() - .5) * 1.5,
+          z0 + d * sp + (Math.random() - .5) * 1.5
+        ));
         spawned++;
       }
     }
   }
 }
 
-// ── THE MISSING MODE BUTTON LISTENER IS RESTORED HERE ──
-document.querySelectorAll('.mode-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    setScene(btn.dataset.scene);
-  });
-});
-
-// Controls scene initialization and resets
+/* ════════════════════════════════════════════════════════════════════════
+   SCENES
+   ════════════════════════════════════════════════════════════════════════ */
 function setScene(name) {
-  sim.currentScene = name;
-  
-  // Highlight the active mode button
-  document.querySelectorAll('.mode-btn').forEach(b => { 
-    b.classList.remove('active'); 
-    if (b.dataset.scene === name) {
-      b.classList.add('active'); 
-    }
-  });
-  
-  // Completely empty the simulation arrays to restart
-  sim.pts = []; 
-  foam.particles =[];
-  
-  // To ensure visual pop on reset
-  if (fluidMesh && fluidMesh.instanceMatrix) {
-    fluidMesh.instanceMatrix.needsUpdate = true;
-  }
-  
-  // Explicitly clear the grid
-  _cells = null;
+  S.scene = name;
+  S.pts = []; F.pts = []; _cells = null;
+  document.querySelectorAll('.btn[data-scene]').forEach(b =>
+    b.classList.toggle('on', b.dataset.scene === name));
 
-  const n = sim.particleCount;
+  // Reset gravity to 1G for all presets
+  S.grav = 1.0;
+  document.getElementById('rG').value = 1.0;
+  document.getElementById('nG').value = '1.0';
 
-  // G-FORCE SYSTEM: ALL PRESETS NOW INITIALIZE AT 1.0 (EARTH GRAVITY)
-  sim.gravity = 1.0; 
-  document.getElementById('num-grav').value = 1.0; 
-  document.getElementById('sl-grav').value = 1.0;
+  const n = S.n;
 
   if (name === 'dam') {
-    spawnByCount(n, 'cube');
-  } else if (name === 'drop') {
-    spawnByCount(Math.floor(n * 0.7), 'pool');
-    
-    const dropStart = sim.pts.length;
-    const dropCount = n - dropStart;
-    const dropSide = Math.ceil(Math.cbrt(dropCount));
-    
-    const spX = (SIM_W * 0.8) / dropSide;
-    const spY = (SIM_H * 0.4) / dropSide;
-    const spZ = (SIM_D * 0.8) / dropSide;
-    const sp = Math.min(sim.h * 0.65, spX, spY, spZ);
-    
-    const startY = SIM_H * 0.5;
-    let spawned = 0;
-    
-    for(let d=0; d<dropSide; d++) {
-      for(let r=0; r<dropSide; r++) {
-        for(let c=0; c<dropSide; c++) {
-          if(dropStart + spawned >= n) break;
-          sim.pts.push({
-            x: (SIM_W - dropSide * sp) / 2 + c * sp + (Math.random() - 0.5) * 2,
-            y: startY + r * sp + (Math.random() - 0.5) * 2,
-            z: (SIM_D - dropSide * sp) / 2 + d * sp + (Math.random() - 0.5) * 2,
-            vx: 0, vy: -5.0, vz: 0, px: 0, py: 0, pz: 0, 
-            dens: 0, nearDens: 0, press: 0, nPress: 0, 
-            speed: 0, nbCount: 0, ke: 0
-          });
-          spawned++;
-        }
-      }
-    }
+    // Dam break: left-third block, slight rightward velocity
+    const cols = Math.ceil(Math.cbrt(n * 2));
+    const rows = Math.ceil(n / (cols * cols));
+    const deps = cols;
+    const sp = Math.min(S.h * 0.6, (W * 0.38) / cols, (H * 0.88) / rows, (D * 0.9) / deps);
+    const x0 = W * 0.04, y0 = H * 0.06, z0 = (D - deps * sp) / 2;
+    let k = 0;
+    for (let d = 0; d < deps && k < n; d++)
+      for (let r = 0; r < rows && k < n; r++)
+        for (let c = 0; c < cols && k < n; c++, k++)
+          S.pts.push(mkPt(x0 + c * sp + (Math.random()-.5), y0 + r * sp + (Math.random()-.5),
+            z0 + d * sp + (Math.random()-.5)));
+
   } else if (name === 'wave') {
-    spawnByCount(n, 'pool');
-    
-    for(let i=0; i<sim.pts.length; i++) { 
-      const p = sim.pts[i];
-      const normX = p.x / SIM_W; 
-      p.vx = Math.exp(-normX * 6) * 20; 
-    }
+    spawnGrid(n, H * 0.06, 0.9, 0.9);
+    // Wave: exponential velocity gradient from left
+    S.pts.forEach(p => { p.vx = Math.exp(-(p.x / W) * 5.5) * 22; });
+
+  } else if (name === 'drop') {
+    // Pool + falling drop
+    const poolN = Math.floor(n * 0.72);
+    spawnGrid(poolN, H * 0.06, 0.92, 0.92);
+    const dropN = n - S.pts.length;
+    const ds = Math.ceil(Math.cbrt(dropN));
+    const sp = Math.min(S.h * 0.62, (W * 0.45) / ds, (H * 0.3) / ds, (D * 0.45) / ds);
+    const x0 = (W - ds * sp) / 2, z0 = (D - ds * sp) / 2;
+    let k = 0;
+    for (let d = 0; d < ds && k < dropN; d++)
+      for (let r = 0; r < ds && k < dropN; r++)
+        for (let c = 0; c < ds && k < dropN; c++, k++)
+          S.pts.push(mkPt(x0 + c * sp, H * 0.54 + r * sp, z0 + d * sp, 0, -8, 0));
+
   } else if (name === 'jets') {
-    for(let i=0; i<n; i++) {
-      const isLeft = i % 2 === 0;
-      sim.pts.push({
-        x: isLeft ? (SIM_W * 0.15 + (Math.random() - 0.5) * 15) : (SIM_W * 0.85 + (Math.random() - 0.5) * 15), 
-        y: SIM_H * 0.5 + (Math.random() - 0.5) * 15, 
-        z: SIM_D * 0.5 + (Math.random() - 0.5) * 15,
-        vx: isLeft ? (12 + Math.random() * 6) : (-12 - Math.random() * 6), 
-        vy: (Math.random() - 0.5) * 3, 
-        vz: (Math.random() - 0.5) * 3,
-        px: 0, py: 0, pz: 0, dens: 0, nearDens: 0, press: 0, nPress: 0, speed: 0, nbCount: 0, ke: 0
-      });
+    for (let i = 0; i < n; i++) {
+      const left = i % 2 === 0;
+      S.pts.push(mkPt(
+        left ? W * 0.12 + (Math.random()-.5)*14 : W * 0.88 + (Math.random()-.5)*14,
+        H * 0.48 + (Math.random()-.5)*14,
+        D * 0.5  + (Math.random()-.5)*14,
+        left ? 13 + Math.random()*5 : -13 - Math.random()*5,
+        (Math.random()-.5)*4,
+        (Math.random()-.5)*4
+      ));
     }
+
   } else if (name === 'orbit') {
-    const cx = SIM_W / 2, cy = SIM_H / 2, cz = SIM_D / 2;
-    
-    for(let i=0; i<n; i++) {
+    const cx = W/2, cy = H/2, cz = D/2;
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const b = Math.acos(2 * Math.random() - 1);
-      const r = 40 + Math.random() * 80;
-      const spd = Math.sqrt(0.8 / r) * 200;
-      sim.pts.push({
-        x: cx + r * Math.sin(b) * Math.cos(a), 
-        y: cy + r * Math.sin(b) * Math.sin(a), 
-        z: cz + r * Math.cos(b),
-        vx: -Math.sin(a) * spd, 
-        vy: Math.cos(a) * spd, 
-        vz: 0, 
-        px: 0, py: 0, pz: 0, dens: 0, nearDens: 0, press: 0, nPress: 0, speed: 0, nbCount: 0, ke: 0
-      });
+      const r = 38 + Math.random() * 75;
+      const spd = Math.sqrt(0.85 / r) * 195;
+      S.pts.push(mkPt(
+        cx + r * Math.sin(b) * Math.cos(a),
+        cy + r * Math.sin(b) * Math.sin(a),
+        cz + r * Math.cos(b),
+        -Math.sin(a) * spd, Math.cos(a) * spd, 0
+      ));
     }
+
   } else if (name === 'fountain') {
-    spawnByCount(n, 'cube');
-    
-    for(let i=0; i<sim.pts.length; i++) {
-      const p = sim.pts[i];
-      p.vy = 15 + Math.random() * 8; 
-      p.vx = (Math.random() - 0.5) * 8; 
-      p.vz = (Math.random() - 0.5) * 8;
-    }
+    spawnGrid(n, H * 0.06);
+    S.pts.forEach(p => { p.vy = 16 + Math.random()*9; p.vx=(Math.random()-.5)*7; p.vz=(Math.random()-.5)*7; });
   }
 }
 
-// ── WORLD TRANSFORM UTILITY ──
-function worldToSim(v) { 
-  return { 
-    x: (v.x / SCALE) + SIM_W / 2, 
-    y: (v.y + 20) / SCALE, 
-    z: (v.z / SCALE) + SIM_D / 2 
-  }; 
-}
+/* ════════════════════════════════════════════════════════════════════════
+   COORD UTILITIES
+   ════════════════════════════════════════════════════════════════════════ */
+const s2w = p  => ({ x: (p.x - W/2) * SCALE, y: p.y * SCALE - 20, z: (p.z - D/2) * SCALE });
+const w2s = v  => ({ x: v.x / SCALE + W/2, y: (v.y + 20) / SCALE, z: v.z / SCALE + D/2 });
 
-function simToWorld(p) { 
-  return { 
-    x: (p.x - SIM_W / 2) * SCALE, 
-    y: (p.y) * SCALE - 20, 
-    z: (p.z - SIM_D / 2) * SCALE 
-  }; 
-}
-
-// ── PHYSICS INTEGRATION LOOP (WITH TIME SCALE & STIRRING) ──
-let avgDens = 0;
+/* ════════════════════════════════════════════════════════════════════════
+   PHYSICS  (all steps reference the Lague compute shader logic)
+   ════════════════════════════════════════════════════════════════════════ */
+let avgRho = 0;
 
 function simStep() {
-  const pts = sim.pts, n = pts.length, h = sim.h;
-  const dt = sim.timeScale; 
-  
-  if (n === 0 || dt === 0) return;
-  if (sim.h !== sim.hOld) { updateKernels(sim.h); sim.hOld = sim.h; }
+  const pts = S.pts, n = pts.length;
+  if (!n) return;
+  if (S.h !== S.hCached) { recompKernels(S.h); S.hCached = S.h; }
 
-  let sMouse = null;
-  if (isInteracting && interactWorldPos) {
-    sMouse = worldToSim(interactWorldPos);
-  }
+  const h = S.h, dt = S.ts;
+  const g = S.grav * 0.25;       // gravity scaling
 
-  // Apply mapped gravity factor where 1.0 G visually matches 0.25 scaling 
-  const activeGravity = sim.gravity * 0.25;
+  /* mouse / stir position in sim space */
+  let ms = null;
+  if (isInteracting && iWP)
+    ms = w2s(iWP);
 
-  // 1. Predict
-  advancePipe(0);
-  for(let i=0; i<n; i++) {
+  /* ① PREDICT  (ExternalForces + predict half-step) */
+  pipe(0);
+  for (let i = 0; i < n; i++) {
     const p = pts[i];
-    p.vy -= activeGravity * dt; 
-    
-    if (sim.currentScene === 'orbit') {
-      const dx = SIM_W/2 - p.x, dy = SIM_H/2 - p.y, dz = SIM_D/2 - p.z;
-      const f = 800 / (dx*dx + dy*dy + dz*dz + 400);
-      p.vx += dx * f * 0.0008 * dt; 
-      p.vy += dy * f * 0.0008 * dt; 
-      p.vz += dz * f * 0.0008 * dt;
+    p.vy -= g * dt;
+
+    // Orbit attractor
+    if (S.scene === 'orbit') {
+      const dx = W/2 - p.x, dy = H/2 - p.y, dz = D/2 - p.z;
+      const f = 780 / (dx*dx + dy*dy + dz*dz + 400);
+      p.vx += dx * f * 0.00085 * dt;
+      p.vy += dy * f * 0.00085 * dt;
+      p.vz += dz * f * 0.00085 * dt;
     }
 
-    if (sMouse) {
-      const dx = sMouse.x - p.x, dy = sMouse.y - p.y, dz = sMouse.z - p.z;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      const mRadius = h * 4; 
-      
-      if (d2 < mRadius * mRadius && d2 > 1) {
-        const d = Math.sqrt(d2);
-        const strength = sim.mouseForce * (1 - d / mRadius) * dt;
-        const sign = interactButton === 2 ? -1 : 1; 
-        p.vx += sign * (dx / d) * strength; 
-        p.vy += sign * (dy / d) * strength; 
-        p.vz += sign * (dz / d) * strength;
+    // Stir force
+    if (ms) {
+      const dx = ms.x - p.x, dy = ms.y - p.y, dz = ms.z - p.z;
+      const d2 = dx*dx + dy*dy + dz*dz, mr = h * 4.2;
+      if (d2 < mr*mr && d2 > 0.5) {
+        const d = Math.sqrt(d2), str = S.mf * (1 - d/mr) * dt;
+        const sgn = stirBtn === 2 ? -1 : 1;
+        p.vx += sgn * (dx/d) * str;
+        p.vy += sgn * (dy/d) * str;
+        p.vz += sgn * (dz/d) * str;
       }
     }
-    
-    p.px = p.x + p.vx * dt * 0.5; 
-    p.py = p.y + p.vy * dt * 0.5; 
+
+    p.px = p.x + p.vx * dt * 0.5;
+    p.py = p.y + p.vy * dt * 0.5;
     p.pz = p.z + p.vz * dt * 0.5;
   }
 
-  // 2. Hash Grid
-  advancePipe(1); 
-  buildGrid3D();
+  /* ② HASH GRID */
+  pipe(1);
+  buildGrid();
 
-  // 3. Density
-  advancePipe(2);
-  let sumDens = 0;
-  for(let i=0; i<n; i++) {
-    const p = pts[i]; 
-    let dens = 0, nDens = 0, nbCount = 0;
-    
-    findNeighbors3D(p.px, p.py, p.pz);
-    
-    for(let k=0; k<_nbCount; k++) {
-      const j = _nbBuf[k]; 
+  /* ③ DENSITY  (CalculateDensities) */
+  pipe(2);
+  let sumRho = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    let dens = sp2(0, h) + sp3(0, h), nDens = sp3(0, h), nbc = 0;
+    neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _nbc; k++) {
+      const j = _nb[k];
       const pj = pts[j];
       const dx = p.px - pj.px, dy = p.py - pj.py, dz = p.pz - pj.pz;
       const d2 = dx*dx + dy*dy + dz*dz;
-      
       if (d2 >= h*h) continue;
-      
       const d = Math.sqrt(d2);
-      dens  += spikyPow2(d, h); 
-      nDens += spikyPow3(d, h);
-      
-      if (j !== i) nbCount++;
+      dens  += sp2(d, h);
+      nDens += sp3(d, h);
+      if (j !== i) nbc++;
     }
-    
-    dens += spikyPow2(0, h); 
-    nDens += spikyPow3(0, h);
-    
-    p.dens = dens; 
-    p.nearDens = nDens;
-    p.press = (dens - sim.targetDensity) * sim.pressureMul;
-    p.nPress = nDens * sim.nearPressureMul; 
-    p.nbCount = nbCount;
-    sumDens += dens;
+    p.dens   = dens;
+    p.nDens  = nDens;
+    p.press  = (dens  - S.rho) * S.pm;
+    p.nPress = nDens * S.npm;
+    p.nbc    = nbc;
+    sumRho  += dens;
   }
-  avgDens = n ? (sumDens / n).toFixed(1) : 0;
+  avgRho = n ? (sumRho / n).toFixed(1) : 0;
 
-  // 4. Pressure
-  advancePipe(3);
-  for(let i=0; i<n; i++) {
-    const p = pts[i]; 
+  /* ④ PRESSURE FORCE  (CalculatePressureForce)
+     Also computes trapped-air criterion for diffuse spawning (Ihmsen 2012) */
+  pipe(3);
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
     let fx = 0, fy = 0, fz = 0;
-    
-    findNeighbors3D(p.px, p.py, p.pz);
-    
-    for(let k=0; k<_nbCount; k++) {
-      const j = _nbBuf[k]; 
-      if (j === i) continue;
-      
+    let vdiff = 0;    // weighted velocity difference (trapped air)
+    neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _nbc; k++) {
+      const j = _nb[k]; if (j === i) continue;
       const pj = pts[j];
       const dx = p.px - pj.px, dy = p.py - pj.py, dz = p.pz - pj.pz;
       const d2 = dx*dx + dy*dy + dz*dz;
-      
-      if (d2 >= h*h || d2 < 0.0001) continue;
-      
-      const d = Math.sqrt(d2);
-      const fMag = ((p.press + pj.press) * 0.5) * dSpikyPow2(d, h) * 0.0016 + 
-                   ((p.nPress + pj.nPress) * 0.5) * dSpikyPow3(d, h) * 0.0006;
-                   
-      fx += dx / d * fMag; 
-      fy += dy / d * fMag; 
-      fz += dz / d * fMag;
+      if (d2 >= h*h || d2 < 1e-6) continue;
+      const d     = Math.sqrt(d2);
+      const invD  = 1 / d;
+      const nx    = dx * invD, ny = dy * invD, nz = dz * invD; // dir to neighbour
+      const sP    = (p.press  + pj.press)  * 0.5;
+      const snP   = (p.nPress + pj.nPress) * 0.5;
+      const rhoj  = Math.max(0.001, pj.dens);
+      const fmag  = sP  * dsp2(d, h) * 0.0016 / rhoj
+                  + snP * dsp3(d, h) * 0.0006 / rhoj;
+      fx += nx * fmag; fy += ny * fmag; fz += nz * fmag;
+
+      /* Trapped-air: v_diff = Σ ||v_ij|| (1 - v̂_ij · x̂_ij) · W(x_ij, h)
+         (Ihmsen et al. 2012, eq.5, LinearKernel) */
+      const rvx = p.vx - pj.vx, rvy = p.vy - pj.vy, rvz = p.vz - pj.vz;
+      const rmag = Math.sqrt(rvx*rvx + rvy*rvy + rvz*rvz);
+      if (rmag > 1e-6) {
+        const rix = rvx/rmag, riy = rvy/rmag, riz = rvz/rmag;
+        const cvg = (1 - (rix*(-nx) + riy*(-ny) + riz*(-nz))) * 0.5; // converge weight
+        const inf = linK(d, h);
+        vdiff += rmag * cvg * inf;
+      }
     }
-    p.vx += fx * dt; 
-    p.vy += fy * dt; 
-    p.vz += fz * dt;
+    p.vx += fx * dt; p.vy += fy * dt; p.vz += fz * dt;
+    // Airborne drag (few neighbours = not submerged)
+    if (p.nbc < 8) { p.vx *= Math.pow(0.92, dt); p.vy *= Math.pow(0.92, dt); p.vz *= Math.pow(0.92, dt); }
+    p.vdiff = vdiff; // store for diffuse spawning
   }
 
-  // 5. Viscosity
-  advancePipe(4);
-  for(let i=0; i<n; i++) {
-    const p = pts[i]; 
+  /* ⑤ VISCOSITY  (CalculateViscosity, Poly6 kernel) */
+  pipe(4);
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
     let dvx = 0, dvy = 0, dvz = 0;
-    
-    findNeighbors3D(p.px, p.py, p.pz);
-    
-    for(let k=0; k<_nbCount; k++) {
-      const j = _nbBuf[k]; 
-      if (j === i) continue;
-      
+    neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _nbc; k++) {
+      const j = _nb[k]; if (j === i) continue;
       const pj = pts[j];
-      const dx = p.px - pj.px, dy = p.py - pj.py, dz = p.pz - pj.pz;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      
+      const dx = p.px-pj.px, dy = p.py-pj.py, dz = p.pz-pj.pz;
+      const d2 = dx*dx+dy*dy+dz*dz;
       if (d2 >= h*h) continue;
-      
-      const w = poly6(d2, h) * sim.viscosity * 0.0003;
-      dvx += (pj.vx - p.vx) * w; 
-      dvy += (pj.vy - p.vy) * w; 
-      dvz += (pj.vz - p.vz) * w;
+      const w = p6(d2, h) * S.visc * 0.00028;
+      dvx += (pj.vx-p.vx)*w; dvy += (pj.vy-p.vy)*w; dvz += (pj.vz-p.vz)*w;
     }
-    p.vx += dvx * dt; 
-    p.vy += dvy * dt; 
-    p.vz += dvz * dt;
+    p.vx += dvx*dt; p.vy += dvy*dt; p.vz += dvz*dt;
   }
 
-  // 6. Integrate
-  advancePipe(5);
-  const damp = sim.collisionDamp;
-  for(let i=0; i<n; i++) {
+  /* ⑥ INTEGRATE  (UpdatePositions + ResolveCollisions) */
+  pipe(5);
+  const damp = S.damp;
+  const VMAX = 30;
+  for (let i = 0; i < n; i++) {
     const p = pts[i];
     const spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
-    
-    p.speed = spd; 
-    p.ke = 0.5 * spd * spd; 
-    
-    if(spd > 28) { 
-      p.vx *= 28 / spd; 
-      p.vy *= 28 / spd; 
-      p.vz *= 28 / spd; 
-    }
-    
-    p.x += p.vx * dt; 
-    p.y += p.vy * dt; 
-    p.z += p.vz * dt;
-
-    if(p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx) * damp; }
-    if(p.x > SIM_W) { p.x = SIM_W; p.vx = -Math.abs(p.vx) * damp; }
-    if(p.y < 0) { p.y = 0; p.vy = Math.abs(p.vy) * damp; }
-    if(p.y > SIM_H) { p.y = SIM_H; p.vy = -Math.abs(p.vy) * damp; }
-    if(p.z < 0) { p.z = 0; p.vz = Math.abs(p.vz) * damp; }
-    if(p.z > SIM_D) { p.z = SIM_D; p.vz = -Math.abs(p.vz) * damp; }
+    if (spd > VMAX) { const inv = VMAX/spd; p.vx*=inv; p.vy*=inv; p.vz*=inv; }
+    p.spd = spd; p.ke = 0.5 * spd * spd;
+    p.x += p.vx*dt; p.y += p.vy*dt; p.z += p.vz*dt;
+    // bounds (AABB, no rotation — matches Lague ResolveCollisions for axis-aligned box)
+    if (p.x < 0)   { p.x = 0;  p.vx =  Math.abs(p.vx)*damp; }
+    if (p.x > W)   { p.x = W;  p.vx = -Math.abs(p.vx)*damp; }
+    if (p.y < 0)   { p.y = 0;  p.vy =  Math.abs(p.vy)*damp; }
+    if (p.y > H)   { p.y = H;  p.vy = -Math.abs(p.vy)*damp; }
+    if (p.z < 0)   { p.z = 0;  p.vz =  Math.abs(p.vz)*damp; }
+    if (p.z > D)   { p.z = D;  p.vz = -Math.abs(p.vz)*damp; }
   }
-  
-  updateFoam(dt);
+
+  /* ⑦ DIFFUSE PARTICLES  (Ihmsen 2012 foam/spray/bubble system) */
+  pipe(6);
+  updateDiffuse(dt, g);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// LAGUE DIFFUSE PARTICLE SYSTEM (FOAM, SPRAY, BUBBLES)
-// ═══════════════════════════════════════════════════════════════════════
-const MAX_FOAM_LIMIT = 20000;
-let currentMaxFoam = 8000;
+/* ════════════════════════════════════════════════════════════════════════
+   DIFFUSE PARTICLE SYSTEM  (Ihmsen et al. 2012)
+   ════════════════════════════════════════════════════════════════════════ */
+function updateDiffuse(dt, g) {
+  const pts = S.pts, n = pts.length, h = S.h;
 
-function updateFoam(dt) {
-  const pts = sim.pts, n = pts.length;
-  currentMaxFoam = Math.min(MAX_FOAM_LIMIT, Math.max(8000, n));
-  const activeGravity = sim.gravity * 0.25;
-
-  for(let i=0; i<n && foam.particles.length < currentMaxFoam; i++) {
+  /* ── SPAWN (per fluid particle, cylinder volume, trapped-air criterion) ── */
+  for (let i = 0; i < n && F.pts.length < F.MAX; i++) {
     const p = pts[i];
-    if (p.ke < 25) continue; 
-    
-    const spawnProb = (p.ke - 25) * 0.0002 * foam.spawnRate * dt;
-    if (Math.random() < spawnProb) {
-      let type; // 0=Bubble, 1=Spray, 2=Foam
-      
-      if (p.nbCount >= 22) {
-        type = 0; 
-      } else if (p.nbCount <= 8) {
-        type = 1; 
-      } else {
-        type = 2;
-      }
-      
-      foam.particles.push({
-        x: p.x + (Math.random() - 0.5) * 15, 
-        y: p.y + (Math.random() - 0.5) * 15, 
-        z: p.z + (Math.random() - 0.5) * 15,
-        vx: p.vx + (Math.random() - 0.5) * 2, 
-        vy: p.vy + (Math.random() - 0.5) * 2, 
-        vz: p.vz + (Math.random() - 0.5) * 2,
-        life: foam.lifetime * (0.5 + Math.random() * 0.5), 
-        maxLife: foam.lifetime, 
-        type: type
+    // Kinetic energy factor (KE must exceed threshold)
+    const keFac = Math.min(1, Math.max(0, (p.ke - 20) / 200));
+    if (keFac < 0.001) continue;
+
+    // Trapped-air factor from vdiff (Ihmsen eq.5)
+    const taf = Math.min(1, p.vdiff / 60);
+    const spawnFac = taf * keFac * F.rate * dt * 0.9;
+    let spawnN = Math.floor(spawnFac);
+    if (Math.random() < (spawnFac - spawnN)) spawnN++;
+    if (spawnN <= 0) continue;
+
+    /* Cylinder spawn volume (Fig.3, Ihmsen 2012):
+       base = current pos, top = pos + vel * dt,
+       radius = smoothingRadius, particles uniform inside cylinder */
+    const vlen = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz) + 1e-6;
+    const eax = p.vy / vlen, eay = -p.vx / vlen, eaz = 0; // CalculateOrthonormal
+    const ebx = eay*p.vz/vlen - eaz*p.vy/vlen;
+    const eby = eaz*p.vx/vlen - eax*p.vz/vlen;
+    const ebz = eax*p.vy/vlen - eay*p.vx/vlen;
+
+    for (let k = 0; k < Math.min(spawnN, 4); k++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = Math.sqrt(Math.random()) * h;
+      const ox = Math.cos(ang)*eax + Math.sin(ang)*ebx;
+      const oy = Math.cos(ang)*eay + Math.sin(ang)*eby;
+      const oz = Math.cos(ang)*eaz + Math.sin(ang)*ebz;
+      const t  = Math.random();
+      F.pts.push({
+        x: p.x + ox*rad + p.vx*dt*t,
+        y: p.y + oy*rad + p.vy*dt*t,
+        z: p.z + oz*rad + p.vz*dt*t,
+        vx: p.vx + ox * 1.5,
+        vy: p.vy + oy * 1.5,
+        vz: p.vz + oz * 1.5,
+        life: F.life * (0.5 + Math.random()*0.5),
+        maxL: F.life,
+        type: 1 // tentative — reclassified below
       });
     }
   }
 
-  const toRemove =[];
-  const h = sim.h;
-  
-  for(let i=0; i<foam.particles.length; i++) {
-    const fp = foam.particles[i];
+  /* ── UPDATE & CLASSIFY ── */
+  const dead = [];
+  for (let i = 0; i < F.pts.length; i++) {
+    const fp = F.pts[i];
     fp.life -= dt;
-    
-    if (fp.life <= 0) { 
-      toRemove.push(i); 
-      continue; 
-    }
-    
-    let lvx = 0, lvy = 0, lvz = 0, weightSum = 0;
-    findNeighbors3D(fp.x, fp.y, fp.z);
-    
-    for(let k=0; k<_nbCount; k++) {
-      const pj = pts[_nbBuf[k]];
-      const dx = fp.x - pj.x, dy = fp.y - pj.y, dz = fp.z - pj.z;
-      const d2 = dx*dx + dy*dy + dz*dz;
-      
+    if (fp.life <= 0 || fp.x<0||fp.x>W||fp.y<0||fp.y>H||fp.z<0||fp.z>D) { dead.push(i); continue; }
+
+    /* Classify by neighbour count (matches Lague UpdateWhiteParticles) */
+    neighbors(fp.x, fp.y, fp.z);
+    let lvx = 0, lvy = 0, lvz = 0, wsum = 0, nbc = 0;
+    for (let k = 0; k < _nbc; k++) {
+      const pj = pts[_nb[k]];
+      const dx = fp.x-pj.x, dy = fp.y-pj.y, dz = fp.z-pj.z;
+      const d2 = dx*dx+dy*dy+dz*dz;
       if (d2 < h*h) {
-         const w = poly6(d2, h);
-         lvx += pj.vx * w; 
-         lvy += pj.vy * w; 
-         lvz += pj.vz * w;
-         weightSum += w;
+        const w = p6(d2, h);
+        lvx += pj.vx*w; lvy += pj.vy*w; lvz += pj.vz*w;
+        wsum += w; nbc++;
       }
     }
-    
-    if (weightSum > 0) { 
-      lvx /= weightSum; 
-      lvy /= weightSum; 
-      lvz /= weightSum; 
+    if (wsum > 0) { lvx /= wsum; lvy /= wsum; lvz /= wsum; }
+
+    const isBub  = nbc >= F.bubNbr;
+    const isSpr  = nbc <= F.sprayNbr;
+    const isFoam = !isBub && !isSpr;
+    fp.type = isBub ? 0 : isSpr ? 1 : 2;
+
+    if (isFoam) {
+      /* Foam: velocity directly set to local fluid velocity (Lague isFoam branch) */
+      if (wsum > 0) { fp.vx = lvx; fp.vy = lvy; fp.vz = lvz; }
+      fp.life -= dt; // foam dissolves faster
+    } else if (isBub) {
+      /* Bubble: buoyancy + fluid acceleration (Lague isBubble branch) */
+      const abuoy_y = -g * (1 - F.buoy);
+      if (wsum > 0) {
+        fp.vx += (lvx - fp.vx) * 3.0 * dt;
+        fp.vy += (lvy - fp.vy) * 3.0 * dt + abuoy_y * dt;
+        fp.vz += (lvz - fp.vz) * 3.0 * dt;
+      } else {
+        fp.vy += abuoy_y * dt;
+      }
+    } else {
+      /* Spray: gravity + quadratic drag (Lague isSpray branch) */
+      const spd2 = fp.vx*fp.vx + fp.vy*fp.vy + fp.vz*fp.vz;
+      const spd  = Math.sqrt(spd2) + 1e-6;
+      const drag = 0.035 * spd2;
+      fp.vx += (-fp.vx/spd * drag) * dt;
+      fp.vy += (-g - fp.vy/spd * drag) * dt;
+      fp.vz += (-fp.vz/spd * drag) * dt;
     }
 
-    if (fp.type === 0) {
-      fp.vy += foam.buoyancy * 0.05 * dt;
-      if (weightSum > 0) {
-        fp.vx += (lvx - fp.vx) * 0.1 * dt; 
-        fp.vy += (lvy - fp.vy) * 0.1 * dt; 
-        fp.vz += (lvz - fp.vz) * 0.1 * dt;
-      }
-      fp.vx *= Math.pow(0.85, dt); 
-      fp.vy *= Math.pow(0.85, dt); 
-      fp.vz *= Math.pow(0.85, dt);
-    } else if (fp.type === 1) {
-      fp.vy -= activeGravity * dt;
-      fp.vx *= Math.pow(0.98, dt); 
-      fp.vy *= Math.pow(0.98, dt); 
-      fp.vz *= Math.pow(0.98, dt);
-    } else {
-      if (weightSum > 0) {
-        fp.vx += (lvx - fp.vx) * 0.8 * dt; 
-        fp.vy += (lvy - fp.vy) * 0.8 * dt; 
-        fp.vz += (lvz - fp.vz) * 0.8 * dt;
-      }
-      fp.vx *= Math.pow(0.95, dt); 
-      fp.vy *= Math.pow(0.95, dt); 
-      fp.vz *= Math.pow(0.95, dt);
-    }
-    
-    fp.x += fp.vx * dt; 
-    fp.y += fp.vy * dt; 
-    fp.z += fp.vz * dt;
-    
-    if (fp.y < 0 || fp.y > SIM_H || fp.x < 0 || fp.x > SIM_W || fp.z < 0 || fp.z > SIM_D) { 
-      toRemove.push(i); 
-    }
+    fp.x += fp.vx*dt; fp.y += fp.vy*dt; fp.z += fp.vz*dt;
   }
-  
-  for(let i = toRemove.length - 1; i >= 0; i--) {
-    foam.particles.splice(toRemove[i], 1);
-  }
+
+  // Remove dead (reverse order)
+  for (let i = dead.length - 1; i >= 0; i--) F.pts.splice(dead[i], 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// THREE.JS VOLUMETRIC RENDERING SETUP (DYNAMIC SCALING)
-// ═══════════════════════════════════════════════════════════════════════
-let currentMaxParticles = 1024;
+/* ════════════════════════════════════════════════════════════════════════
+   THREE.JS  RENDERING
+   ════════════════════════════════════════════════════════════════════════ */
 const dummy = new THREE.Object3D();
-const _col = new THREE.Color();
+const col   = new THREE.Color();
+const sphGeo = new THREE.SphereGeometry(1, 14, 10);
 
+/* ── Materials ── */
 const oceanMat = new THREE.MeshPhysicalMaterial({
-  color: 0x44aaff, 
-  metalness: 0.1, 
-  roughness: 0.05, 
-  transmission: 1.0, 
-  ior: 1.33,
-  thickness: 25.0, 
-  attenuationColor: 0x0077ff, 
-  attenuationDistance: 35, 
-  transparent: true, 
-  opacity: 1.0, 
+  color: 0x1a88ff,
+  metalness: 0.05,
+  roughness: 0.04,
+  transmission: 1.0,
+  ior: 1.34,
+  thickness: 28,
+  attenuationColor: new THREE.Color(0x0044cc),
+  attenuationDistance: 38,
+  transparent: true,
+  opacity: 1.0,
   depthWrite: true,
 });
-
-const volumetricMat = new THREE.ShaderMaterial({
+const volMat = new THREE.ShaderMaterial({
+  uniforms: { time: { value: 0 } },
   vertexShader: `
-    varying vec2 vUv; 
-    varying float vDepth; 
-    void main() { 
-      vUv = uv; 
-      vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0); 
-      gl_Position = projectionMatrix * mvPosition; 
-      vDepth = -mvPosition.z; 
-    }
-  `,
+    varying vec2 vUv; varying float vD;
+    void main(){
+      vUv=uv;
+      vec4 mvp=modelViewMatrix*instanceMatrix*vec4(position,1.0);
+      gl_Position=projectionMatrix*mvp; vD=-mvp.z;
+    }`,
   fragmentShader: `
-    varying vec2 vUv; 
-    varying float vDepth; 
-    void main() { 
-      float dist = length(vUv - 0.5) * 2.0; 
-      if (dist > 1.0) discard; 
-      float alpha = pow(1.0 - dist, 1.5); 
-      vec3 col = mix(vec3(0.0, 1.0, 0.4), vec3(1.0, 0.0, 0.5), smoothstep(200.0, 800.0, vDepth)); 
-      gl_FragColor = vec4(col, alpha * 0.15); 
-    }
-  `,
-  blending: THREE.AdditiveBlending, 
-  depthWrite: false, 
-  transparent: true
+    varying vec2 vUv; varying float vD;
+    void main(){
+      float r=length(vUv-.5)*2.;
+      if(r>1.)discard;
+      float a=pow(1.-r,1.6);
+      vec3 c=mix(vec3(0.,1.,.5),vec3(.6,0.,1.),smoothstep(100.,600.,vD));
+      gl_FragColor=vec4(c,a*.14);
+    }`,
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
 });
+const dbgMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 140, vertexColors: true });
 
-const debugMat = new THREE.MeshPhongMaterial({ 
-  color: 0xffffff, 
-  shininess: 120 
-});
+/* ── Instanced fluid mesh ── */
+let fluidMesh, maxPts = 512;
 
-const sphereGeo = new THREE.SphereGeometry(1, 16, 16);
-let fluidMesh = null;
-
-function reallocateInstancedMesh(newMax) {
+function reallocFluid(newMax) {
   if (fluidMesh) scene.remove(fluidMesh);
-  currentMaxParticles = Math.max(1024, newMax);
-  
-  fluidMesh = new THREE.InstancedMesh(
-    sphereGeo, 
-    render.viewMode === 'ocean' ? oceanMat : (render.viewMode === 'volumetric' ? volumetricMat : debugMat), 
-    currentMaxParticles
-  );
-  
+  maxPts = Math.max(512, newMax);
+  const mat = R.view === 'ocean' ? oceanMat : R.view === 'vol' ? volMat : dbgMat;
+  fluidMesh = new THREE.InstancedMesh(sphGeo, mat, maxPts);
   fluidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  fluidMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(currentMaxParticles * 3), 3);
+  fluidMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(maxPts * 3), 3);
   fluidMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   scene.add(fluidMesh);
 }
+reallocFluid(S.n);
 
-// Initialize Instance Mesh
-reallocateInstancedMesh(sim.particleCount);
-
-function updateParticleScale() {
-  const scale = render.particleScale * SCALE;
-  dummy.scale.set(scale, scale, scale);
+function updSz() {
+  const s = R.sz * SCALE;
+  dummy.scale.set(s, s, s);
 }
-updateParticleScale();
+updSz();
 
-function updateMaterialProps() {
-  oceanMat.attenuationDistance = render.extinction;
+function updMat() {
+  oceanMat.attenuationDistance = R.ext;
   oceanMat.needsUpdate = true;
 }
 
-// Foam Point Cloud (Scales Geometry Buffers Dynamically)
-let foamGeo, foamPoints;
-let currentFoamGeoSize = MAX_FOAM_LIMIT;
+/* ── Foam point cloud ── */
+let foamGeo, foamPts, foamGeoCap = F.MAX;
 
-function buildFoam() {
-  if (foamPoints) scene.remove(foamPoints);
-  
+function buildFoamCloud() {
+  if (foamPts) scene.remove(foamPts);
   foamGeo = new THREE.BufferGeometry();
-  foamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(currentFoamGeoSize * 3), 3).setUsage(THREE.DynamicDrawUsage));
-  foamGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(currentFoamGeoSize * 3), 3).setUsage(THREE.DynamicDrawUsage));
-  
-  const foamMat = new THREE.PointsMaterial({ 
-    size: 4.5, 
-    vertexColors: true, 
-    transparent: true, 
-    opacity: 0.90, 
-    depthWrite: false, 
-    blending: THREE.AdditiveBlending 
-  });
-  
-  foamPoints = new THREE.Points(foamGeo, foamMat);
-  scene.add(foamPoints);
+  foamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(foamGeoCap*3), 3).setUsage(THREE.DynamicDrawUsage));
+  foamGeo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(foamGeoCap*3), 3).setUsage(THREE.DynamicDrawUsage));
+  foamPts = new THREE.Points(foamGeo, new THREE.PointsMaterial({
+    size: R.fsz, vertexColors: true, transparent: true, opacity: 0.92,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  scene.add(foamPts);
 }
-buildFoam();
+buildFoamCloud();
 
-function getParticleColor(p) {
-  const mode = render.viewMode;
-  
-  if (mode === 'ocean' || mode === 'volumetric') {
-    return _col.setHex(0xffffff); 
-  } else if (mode === 'pressure') { 
-    const t = Math.min(1, Math.max(0, p.press / 100)); 
-    return _col.setRGB(t, 1 - t * 0.6, 1 - t * 0.2); 
-  } else if (mode === 'velocity') { 
-    const t = Math.min(1, p.speed / 20); 
-    return _col.setRGB(t * 0.9, 1 - t * 0.2, 1 - t * 0.8); 
-  } else if (mode === 'ke') { 
-    const t = Math.min(1, p.ke / 80); 
-    return _col.setRGB(t, t * 0.8, 0.1); 
-  } else if (mode === 'diffuse') {
-    return _col.setHex(0x1a2a3a); 
-  }
-  
-  return _col.setHex(0x00d4ff);
+function updFoamSz() {
+  if (foamPts) foamPts.material.size = R.fsz;
 }
 
-function updateGeometry() {
-  const pts = sim.pts, n = pts.length;
-  
-  if (n > currentMaxParticles) {
-    reallocateInstancedMesh(n + 1000);
+/* ── Checkerboard floor ── */
+const flrCvs = document.createElement('canvas');
+flrCvs.width = flrCvs.height = 1024;
+const flrCtx = flrCvs.getContext('2d');
+const fq = [['#0a1e35','#0e2840'],['#0d1e3a','#0c2035'],['#0a1e30','#0e2640'],['#0c1e38','#0d2242']];
+for (let r = 0; r < 4; r++)
+  for (let c = 0; c < 4; c++) {
+    flrCtx.fillStyle = fq[r][c % 2]; flrCtx.fillRect(c*256, r*256, 256, 256);
   }
+// subtle grid lines
+flrCtx.strokeStyle = 'rgba(0,229,255,0.06)'; flrCtx.lineWidth = 1;
+for (let i = 0; i <= 1024; i += 64) {
+  flrCtx.beginPath(); flrCtx.moveTo(i, 0); flrCtx.lineTo(i, 1024); flrCtx.stroke();
+  flrCtx.beginPath(); flrCtx.moveTo(0, i); flrCtx.lineTo(1024, i); flrCtx.stroke();
+}
+const flrTex = new THREE.CanvasTexture(flrCvs);
+flrTex.wrapS = flrTex.wrapT = THREE.RepeatWrapping;
+flrTex.repeat.set(5, 5);
+flrTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+const flrMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(4000, 4000),
+  new THREE.MeshStandardMaterial({ map: flrTex, roughness: 0.3, metalness: 0.95 })
+);
+flrMesh.rotation.x = -Math.PI/2;
+flrMesh.position.y = -42;
+flrMesh.receiveShadow = true;
+scene.add(flrMesh);
 
+/* ── Bounds wireframe ── */
+const boxMesh = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(W*SCALE, H*SCALE, D*SCALE)),
+  new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.18 })
+);
+boxMesh.position.set(0, H*SCALE/2 - 22, 0);
+scene.add(boxMesh);
+
+/* ── Stir cursor ── */
+const stirMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(22, 14, 10),
+  new THREE.MeshBasicMaterial({ color: 0x39ff7a, wireframe: true, transparent: true, opacity: 0.45 })
+);
+stirMesh.visible = false;
+scene.add(stirMesh);
+
+/* ── Per-particle colour ── */
+function ptColor(p) {
+  const v = R.view;
+  if (v === 'ocean' || v === 'vol') return col.set(0xffffff);
+  if (v === 'pressure') {
+    const t = Math.min(1, Math.max(0, p.press / 120));
+    return col.setRGB(0.1 + t*0.9, 0.9 - t*0.8, 1 - t*0.7);
+  }
+  if (v === 'velocity') {
+    const t = Math.min(1, p.spd / 22);
+    return col.setRGB(t, 1 - t*0.5, 1 - t);
+  }
+  if (v === 'ke') {
+    const t = Math.min(1, p.ke / 100);
+    return col.setRGB(t, t*0.6, 0.05);
+  }
+  if (v === 'diffuse') return col.set(0x102030);
+  return col.set(0x00d8ff);
+}
+
+/* ── Update geometry buffers ── */
+function updateGeo() {
+  const pts = S.pts, n = pts.length;
+  if (n > maxPts) reallocFluid(n + 800);
   fluidMesh.count = n;
-  
-  for(let i=0; i<fluidMesh.count; i++) {
-    const p = pts[i]; 
-    const w = simToWorld(p);
-    
-    dummy.position.set(w.x, w.y, w.z); 
+
+  const sc = R.sz * SCALE;
+  for (let i = 0; i < n; i++) {
+    const w = s2w(pts[i]);
+    dummy.position.set(w.x, w.y, w.z);
+    dummy.scale.setScalar(sc);
     dummy.updateMatrix();
     fluidMesh.setMatrixAt(i, dummy.matrix);
-    
-    if (render.viewMode !== 'ocean' && render.viewMode !== 'volumetric') {
-      fluidMesh.setColorAt(i, getParticleColor(p));
-    }
+    if (R.view !== 'ocean' && R.view !== 'vol')
+      fluidMesh.setColorAt(i, ptColor(pts[i]));
   }
-  
   fluidMesh.instanceMatrix.needsUpdate = true;
-  if (fluidMesh.instanceColor && render.viewMode !== 'ocean' && render.viewMode !== 'volumetric') {
+  if (fluidMesh.instanceColor && R.view !== 'ocean' && R.view !== 'vol')
     fluidMesh.instanceColor.needsUpdate = true;
-  }
 
-  const fp = foam.particles, fn = fp.length;
-  if (fn > currentFoamGeoSize) { 
-    currentFoamGeoSize = fn + 5000; 
-    buildFoam(); 
-  }
-
-  const posArr = foamGeo.attributes.position.array; 
-  const colArr = foamGeo.attributes.color.array;
-  
-  for(let i=0; i<fn; i++) {
-    const f = fp[i]; 
-    const w = simToWorld(f);
-    
-    posArr[i*3] = w.x; 
-    posArr[i*3 + 1] = w.y; 
-    posArr[i*3 + 2] = w.z;
-    
-    const lifeT = f.life / f.maxLife;
-    
-    if (render.viewMode === 'diffuse') {
-      if (f.type === 0) { 
-        colArr[i*3]=1; colArr[i*3+1]=0.1; colArr[i*3+2]=0.1; 
-      } else if (f.type === 1) { 
-        colArr[i*3]=0.1; colArr[i*3+1]=1; colArr[i*3+2]=0.1; 
-      } else { 
-        colArr[i*3]=0.1; colArr[i*3+1]=0.4; colArr[i*3+2]=1; 
-      } 
+  /* Foam */
+  const fp = F.pts, fn = fp.length;
+  if (fn > foamGeoCap) { foamGeoCap = fn + 4000; buildFoamCloud(); }
+  const posA = foamGeo.attributes.position.array;
+  const colA = foamGeo.attributes.color.array;
+  for (let i = 0; i < fn; i++) {
+    const f = fp[i], w = s2w(f);
+    posA[i*3]   = w.x; posA[i*3+1] = w.y; posA[i*3+2] = w.z;
+    const lt = f.life / f.maxL;
+    if (R.view === 'diffuse') {
+      // debug: red=bubble, green=spray, blue=foam
+      if (f.type===0) { colA[i*3]=1;   colA[i*3+1]=0.08; colA[i*3+2]=0.08; }
+      else if (f.type===1) { colA[i*3]=0.08; colA[i*3+1]=1;   colA[i*3+2]=0.08; }
+      else              { colA[i*3]=0.08; colA[i*3+1]=0.35; colA[i*3+2]=1; }
     } else {
-      if (f.type === 1) { 
-        colArr[i*3] = lifeT; colArr[i*3+1] = lifeT; colArr[i*3+2] = lifeT; 
-      } else { 
-        colArr[i*3] = 0.6 * lifeT; colArr[i*3+1] = 0.85 * lifeT; colArr[i*3+2] = lifeT; 
-      }
+      // foam=cyan-white, spray=white, bubble=pale cyan
+      if (f.type===1) { colA[i*3]=lt; colA[i*3+1]=lt; colA[i*3+2]=lt; }
+      else { colA[i*3]=0.55*lt; colA[i*3+1]=0.88*lt; colA[i*3+2]=lt; }
     }
   }
-  
   foamGeo.setDrawRange(0, fn);
-  foamGeo.attributes.position.needsUpdate = true; 
-  foamGeo.attributes.color.needsUpdate = true;
+  foamGeo.attributes.position.needsUpdate = true;
+  foamGeo.attributes.color.needsUpdate    = true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// UI CONTROLS & PIPELINE
-// ═══════════════════════════════════════════════════════════════════════
-function updateFoamVis() { 
-  if (foamPoints) foamPoints.visible = render.showFoam; 
-}
-function updateParticlesVis() { 
-  if (fluidMesh) fluidMesh.visible = render.showParticles; 
-}
+/* ════════════════════════════════════════════════════════════════════════
+   ORBIT CAMERA + STIR INTERACTION
+   ════════════════════════════════════════════════════════════════════════ */
+const orb = { theta: -0.55, phi: 1.12, r: 720, tgt: new THREE.Vector3(0, 50, 0),
+               drag: false, pan: false, lx: 0, ly: 0, pinch: 0 };
 
-document.querySelectorAll('.view-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const mode = btn.dataset.view; 
-    render.viewMode = mode;
-    
-    document.querySelectorAll('.view-btn').forEach(b => { 
-      b.classList.remove('active'); 
-      if (b.dataset.view === mode) b.classList.add('active'); 
-    });
-    
-    document.getElementById('view-indicator').textContent = btn.textContent + ' VIEW';
+function camUpdate() {
+  const { theta, phi, r, tgt } = orb;
+  const sp = Math.sin(phi);
+  cam.position.set(
+    tgt.x + r * sp * Math.sin(theta),
+    tgt.y + r * Math.cos(phi),
+    tgt.z + r * sp * Math.cos(theta)
+  );
+  cam.lookAt(tgt);
+}
+camUpdate();
 
-    if (mode === 'ocean') { 
-      fluidMesh.material = oceanMat; 
-      sunLight.intensity = 3.5; 
-    } else if (mode === 'volumetric') { 
-      fluidMesh.material = volumetricMat; 
-      sunLight.intensity = 0.5; 
-    } else {
-      fluidMesh.material = debugMat; 
-      sunLight.intensity = 1.0;
-      const pts = sim.pts, n = pts.length;
-      for(let i=0; i<n; i++) { 
-        fluidMesh.setColorAt(i, getParticleColor(pts[i])); 
-      }
-      fluidMesh.instanceColor.needsUpdate = true;
-    }
-  });
+let toolMode = 'camera', isInteracting = false, stirBtn = 0;
+let iWP = null;
+const ray = new THREE.Raycaster();
+const mv  = new THREE.Vector2();
+const stirPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+const toolBtnEl = document.getElementById('tool-btn');
+toolBtnEl.addEventListener('click', () => {
+  toolMode = toolMode === 'camera' ? 'stir' : 'camera';
+  toolBtnEl.textContent = toolMode === 'stir' ? 'MODE: STIR FLUID' : 'MODE: CAMERA';
+  toolBtnEl.classList.toggle('on', toolMode === 'stir');
+  if (toolMode === 'camera') { stirMesh.visible = false; iWP = null; }
 });
 
-const sidePanel = document.getElementById('side-panel');
-const panelToggle = document.getElementById('panel-toggle');
-panelToggle.addEventListener('click', () => { 
-  sidePanel.classList.toggle('open'); 
-  panelToggle.classList.toggle('shifted'); 
-});
+function updateStir(cx, cy) {
+  mv.x = (cx / innerWidth) * 2 - 1;
+  mv.y = -(cy / innerHeight) * 2 + 1;
+  ray.setFromCamera(mv, cam);
+  const pt = new THREE.Vector3();
+  ray.ray.intersectPlane(stirPlane, pt);
+  if (pt) { iWP = pt; stirMesh.position.copy(pt); stirMesh.visible = true;
+            stirMesh.material.color.setHex(stirBtn === 2 ? 0xff00c8 : 0x39ff7a); }
+}
 
-let _pipeStep = -1;
-function advancePipe(step) {
-  if (_pipeStep >= 0) { 
-    const el = document.getElementById('ps' + _pipeStep); 
-    if (el) el.classList.remove('active'); 
+// Mouse
+canvas.addEventListener('mousedown', e => {
+  if (e.target.closest('#hud')) return;
+  if (toolMode === 'stir') { isInteracting = true; stirBtn = e.button; updateStir(e.clientX, e.clientY); }
+  else { orb.drag = true; orb.pan = e.button === 1 || e.shiftKey; orb.lx = e.clientX; orb.ly = e.clientY; }
+  e.preventDefault();
+});
+window.addEventListener('mousemove', e => {
+  if (toolMode === 'stir') { if (isInteracting) updateStir(e.clientX, e.clientY); return; }
+  if (!orb.drag) return;
+  const dx = e.clientX - orb.lx, dy = e.clientY - orb.ly;
+  orb.lx = e.clientX; orb.ly = e.clientY;
+  if (orb.pan) {
+    const sc = orb.r * 0.001;
+    const rt = new THREE.Vector3().crossVectors(cam.getWorldDirection(new THREE.Vector3()).negate(), cam.up).normalize();
+    orb.tgt.addScaledVector(rt, dx * sc);
+    orb.tgt.y -= dy * sc;
+  } else {
+    orb.theta -= dx * 0.006;
+    orb.phi = Math.max(0.01, Math.min(Math.PI - 0.01, orb.phi - dy * 0.006));
   }
-  _pipeStep = step; 
-  const el2 = document.getElementById('ps' + step); 
-  if (el2) el2.classList.add('active');
+  camUpdate();
+});
+window.addEventListener('mouseup', () => { orb.drag = false; isInteracting = false; stirMesh.visible = false; });
+canvas.addEventListener('wheel', e => {
+  if (toolMode === 'stir') return;
+  orb.r = Math.max(60, Math.min(12000, orb.r * (1 + e.deltaY * 0.001)));
+  camUpdate(); e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('contextmenu', e => { if (toolMode === 'stir') e.preventDefault(); });
+
+// Touch
+let _t = [];
+canvas.addEventListener('touchstart', e => {
+  if (e.target.closest('#hud')) return;
+  _t = [...e.touches];
+  if (toolMode === 'stir') {
+    isInteracting = true; stirBtn = _t.length >= 2 ? 2 : 0;
+    updateStir(_t[0].clientX, _t[0].clientY);
+    spawnRip(_t[0].clientX, _t[0].clientY);
+    e.preventDefault(); return;
+  }
+  if (_t.length === 1) { orb.drag = true; orb.pan = false; orb.lx = _t[0].clientX; orb.ly = _t[0].clientY; }
+  else if (_t.length === 2) {
+    orb.drag = false;
+    orb.pinch = Math.hypot(_t[1].clientX-_t[0].clientX, _t[1].clientY-_t[0].clientY);
+    orb.lx = (_t[0].clientX+_t[1].clientX)/2; orb.ly = (_t[0].clientY+_t[1].clientY)/2;
+  }
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  if (e.target.closest('#hud')) return;
+  const ts = [...e.touches];
+  if (toolMode === 'stir') {
+    if (isInteracting) { stirBtn = ts.length>=2?2:0; updateStir(ts[0].clientX, ts[0].clientY); }
+    e.preventDefault(); return;
+  }
+  if (ts.length === 1 && orb.drag) {
+    const dx = ts[0].clientX-orb.lx, dy = ts[0].clientY-orb.ly;
+    orb.lx = ts[0].clientX; orb.ly = ts[0].clientY;
+    orb.theta -= dx*0.007;
+    orb.phi = Math.max(0.01, Math.min(Math.PI-0.01, orb.phi - dy*0.007));
+    camUpdate();
+  } else if (ts.length === 2) {
+    const d = Math.hypot(ts[1].clientX-ts[0].clientX, ts[1].clientY-ts[0].clientY);
+    orb.r = Math.max(60, Math.min(12000, orb.r * (1 + (orb.pinch-d)*0.008)));
+    orb.pinch = d;
+    const mx = (ts[0].clientX+ts[1].clientX)/2, my = (ts[0].clientY+ts[1].clientY)/2;
+    const pdx = mx-orb.lx, pdy = my-orb.ly;
+    orb.lx = mx; orb.ly = my;
+    const sc = orb.r * 0.0012;
+    const rt = new THREE.Vector3().crossVectors(cam.getWorldDirection(new THREE.Vector3()).negate(), cam.up).normalize();
+    orb.tgt.addScaledVector(rt, pdx*sc); orb.tgt.y += pdy*sc;
+    camUpdate();
+  }
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  _t = [...e.touches];
+  if (toolMode === 'stir') { if (!_t.length) { isInteracting=false; stirMesh.visible=false; } e.preventDefault(); return; }
+  if (!_t.length) orb.drag = false;
+  else if (_t.length === 1) { orb.drag=true; orb.lx=_t[0].clientX; orb.ly=_t[0].clientY; }
+  e.preventDefault();
+}, { passive: false });
+
+function spawnRip(x, y) {
+  const el = document.createElement('div'); el.className = 'rip';
+  el.style.left = x+'px'; el.style.top = y+'px';
+  document.body.appendChild(el); el.addEventListener('animationend', () => el.remove());
 }
 
-let frames = 0, lastTime = performance.now();
-function updateStats() {
-  frames++; 
+/* ════════════════════════════════════════════════════════════════════════
+   UI  WIRING
+   ════════════════════════════════════════════════════════════════════════ */
+// Scene buttons
+document.querySelectorAll('.btn[data-scene]').forEach(b =>
+  b.addEventListener('click', () => setScene(b.dataset.scene)));
+
+// View buttons
+document.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () => {
+  R.view = b.dataset.view;
+  document.querySelectorAll('.vbtn').forEach(x => x.classList.toggle('on', x===b));
+  document.getElementById('vind').textContent = b.textContent + ' VIEW';
+  const mat = R.view==='ocean' ? oceanMat : R.view==='vol' ? volMat : dbgMat;
+  fluidMesh.material = mat;
+  sunL.intensity = R.view==='ocean' ? 3.8 : R.view==='vol' ? 0.5 : 1.2;
+}));
+
+// Panel toggle
+const panelEl = document.getElementById('panel');
+const ptogEl  = document.getElementById('ptog');
+ptogEl.addEventListener('click', () => { panelEl.classList.toggle('open'); ptogEl.classList.toggle('shifted'); });
+
+// Apply count
+function applyCount() {
+  const v = parseInt(document.getElementById('nCount').value);
+  if (v >= 512 && v <= 600000) { S.n = v; reallocFluid(v); setScene(S.scene); }
+}
+
+/* ── Pipeline step highlight ── */
+let _pStep = -1;
+function pipe(step) {
+  if (_pStep >= 0) { const el = document.getElementById('p'+_pStep); if (el) el.classList.remove('on'); }
+  _pStep = step;
+  const el = document.getElementById('p'+step); if (el) el.classList.add('on');
+}
+
+/* ── Stats ── */
+let _frames = 0, _lt = performance.now();
+function updStats() {
+  _frames++;
   const now = performance.now();
-  if (now - lastTime > 500) {
-    document.getElementById('s-fps').textContent = Math.round(frames * 1000 / (now - lastTime));
-    document.getElementById('s-n').textContent = sim.pts.length;
-    document.getElementById('s-foam').textContent = foam.particles.length;
-    document.getElementById('s-d').textContent = avgDens;
-    frames = 0; 
-    lastTime = now;
+  if (now - _lt > 480) {
+    document.getElementById('sfps').textContent = Math.round(_frames*1000/(now-_lt));
+    document.getElementById('sn').textContent   = S.pts.length;
+    document.getElementById('sf').textContent   = F.pts.length;
+    document.getElementById('sd').textContent   = avgRho;
+    _frames = 0; _lt = now;
   }
 }
 
-function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight; 
-  camera.updateProjectionMatrix(); 
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
-window.addEventListener('resize', onResize);
+/* ── Resize ── */
+window.addEventListener('resize', () => {
+  cam.aspect = innerWidth/innerHeight;
+  cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setSize(innerWidth, innerHeight);
 
+/* ════════════════════════════════════════════════════════════════════════
+   MAIN LOOP
+   ════════════════════════════════════════════════════════════════════════ */
+let simTime = 0;
 function loop() {
   requestAnimationFrame(loop);
-  
-  simStep(); 
-  updateGeometry(); 
-  updateStats();
-  
-  if (render.causticStrength > 0 && render.viewMode === 'ocean') {
-    sunLight.intensity = 3.5 + Math.sin(performance.now() * 0.003) * render.causticStrength * 0.8;
-  }
-  
-  renderer.render(scene, camera);
+  simStep();
+  updateGeo();
+  updStats();
+  // Caustic shimmer on sun
+  if (R.caus > 0 && R.view === 'ocean')
+    sunL.intensity = 3.8 + Math.sin(performance.now()*0.0028) * R.caus * 0.7;
+  renderer.render(scene, cam);
 }
 
-// Bootstrap
-onResize(); 
-updateKernels(sim.h); 
-setScene('dam'); 
+/* Bootstrap */
+recompKernels(S.h);
+setScene('dam');
 loop();
 </script>
 </body>
