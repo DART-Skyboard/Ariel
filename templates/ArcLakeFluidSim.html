@@ -225,6 +225,14 @@ body::after{content:'';position:fixed;inset:0;
     <div id="tool-wrap"><button id="tool-btn">MODE: CAMERA</button></div>
 
     <div id="vind">SSFR FLUID VIEW</div>
+    <div id="daynight-wrap" style="position:absolute;top:14px;right:38px;pointer-events:all;z-index:110">
+      <button id="dn-btn" style="font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:6px 13px;
+        border:1px solid rgba(255,220,80,0.55);background:rgba(4,10,22,.88);color:#ffdc50;
+        border-radius:4px;cursor:pointer;letter-spacing:.05em;transition:all .2s;
+        backdrop-filter:blur(5px);box-shadow:0 0 12px rgba(255,220,80,.2);user-select:none;touch-action:manipulation">
+        ☀ DAY
+      </button>
+    </div>
 
     <div id="view-row">
       <button class="vbtn on" data-view="ocean">SSFR FLUID</button>
@@ -413,39 +421,131 @@ renderer.toneMappingExposure = 1.1;
 
 const scene = new THREE.Scene();
 
-/* ── Sky ── */
+/* ── Sky ── Two modes: DAY and NIGHT ── */
+let isDaytime = true;
+
+const DAY_SKY   = { top: '#5ec8f5', mid: '#87ceeb', horiz: '#c2e8f8', ground: '#a8d4a0' };
+const NIGHT_SKY = { top: '#06101a', mid: '#0a1f35', horiz: '#051828', ground: '#020c14' };
+
 const skyCvs = document.createElement('canvas');
-skyCvs.width = 2; skyCvs.height = 512;
+skyCvs.width = 4; skyCvs.height = 1024;
 const skyCtx = skyCvs.getContext('2d');
-const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 512);
-skyGrad.addColorStop(0.0,  '#06101a');
-skyGrad.addColorStop(0.35, '#0a1f35');
-skyGrad.addColorStop(0.6,  '#051828');
-skyGrad.addColorStop(1.0,  '#020c14');
-skyCtx.fillStyle = skyGrad;
-skyCtx.fillRect(0, 0, 2, 512);
-scene.background = new THREE.CanvasTexture(skyCvs);
+let skyTex = new THREE.CanvasTexture(skyCvs);
+
+function buildSky(day) {
+  const g = skyCtx.createLinearGradient(0, 0, 0, 1024);
+  const p = day ? DAY_SKY : NIGHT_SKY;
+  g.addColorStop(0.0,  p.top);
+  g.addColorStop(0.42, p.mid);
+  g.addColorStop(0.62, p.horiz);
+  g.addColorStop(1.0,  p.ground);
+  skyCtx.fillStyle = g;
+  skyCtx.fillRect(0, 0, 4, 1024);
+  skyTex.needsUpdate = true;
+  scene.background = skyTex;
+}
+buildSky(true);
 
 /* ── Camera ── */
 const cam = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 500000);
 
-/* ── Lights ── */
-const ambL = new THREE.AmbientLight(0x112233, 2.2);
+/* ── Lights ──
+   Dual rig: daytime sun + hemisphere, nighttime moon + glow
+   Shadow-casting directional matches Lague's Unity pipeline
+   ─────────────────────────────────────────────────────── */
+
+// Hemisphere sky/ground light — fills shadows naturally
+const hemiL = new THREE.HemisphereLight(0x87ceeb, 0x6aae5e, 0);
+scene.add(hemiL);
+
+// Ambient (baseline fill)
+const ambL = new THREE.AmbientLight(0xffffff, 0);
 scene.add(ambL);
-const sunL = new THREE.DirectionalLight(0xc8e8ff, 3.8);
-sunL.position.set(250, 550, 180);
+
+// Primary directional (sun / moon) — casts PCF soft shadows
+const sunL = new THREE.DirectionalLight(0xfffae0, 0);
+sunL.position.set(380, 600, 250);
 sunL.castShadow = true;
 sunL.shadow.mapSize.set(2048, 2048);
-const sd = 600;
-Object.assign(sunL.shadow.camera, { near:5, far:2000, left:-sd, right:sd, top:sd, bottom:-sd });
-sunL.shadow.bias = -0.0005;
+const sd = 650;
+Object.assign(sunL.shadow.camera, { near: 5, far: 2500, left:-sd, right:sd, top:sd, bottom:-sd });
+sunL.shadow.bias = -0.0004;
 scene.add(sunL);
-const rimL = new THREE.PointLight(0x00ffcc, 1.2, 900);
-rimL.position.set(-280, -80, -280);
-scene.add(rimL);
-const fillL = new THREE.PointLight(0xff44cc, 0.4, 600);
-fillL.position.set(300, 200, -200);
+
+// Secondary fill / bounce (blue sky bounce for daytime)
+const fillL = new THREE.DirectionalLight(0x6fc8ff, 0);
+fillL.position.set(-300, 200, -300);
 scene.add(fillL);
+
+// Rim / backlight
+const rimL = new THREE.PointLight(0x00e8ff, 0, 1100);
+rimL.position.set(-300, 80, -280);
+scene.add(rimL);
+
+// Night-only: cool moonlight secondary + warm glow on fluid
+const moonL = new THREE.DirectionalLight(0xaaccff, 0);
+moonL.position.set(-200, 400, -150);
+scene.add(moonL);
+
+/* Inline sun/moon sphere billboard (visible in scene) */
+const sunSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(24, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xfffade })
+);
+sunSphere.position.set(380, 600, 250);
+scene.add(sunSphere);
+
+const moonSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(18, 14, 10),
+  new THREE.MeshBasicMaterial({ color: 0xd0e8ff, transparent: true, opacity: 0 })
+);
+moonSphere.position.set(-200, 400, -150);
+scene.add(moonSphere);
+
+/* ── Day / Night rig setter ── */
+const DAY_RIG = {
+  exposure: 1.45,
+  hemi:     [0x87ceeb, 0x6aae5e, 2.2],
+  amb:      [0xffeedd, 0.6],
+  sun:      [0xfffae0, 4.2],
+  fill:     [0x6fc8ff, 1.0],
+  rim:      [0x00e8ff, 0.8],
+  moon:     [0xaaccff, 0.0],
+  sunAlpha: 1.0,
+  moonAlpha: 0.0,
+};
+const NIGHT_RIG = {
+  exposure: 0.85,
+  hemi:     [0x0a1a35, 0x050e1a, 0.6],
+  amb:      [0x112244, 0.4],
+  sun:      [0xc8d8ff, 0.3],   // dim cool moon as "sun"
+  fill:     [0x002255, 0.2],
+  rim:      [0x00e8ff, 0.5],   // cyan rim glow stays for the fluid look
+  moon:     [0xaaccff, 1.2],
+  sunAlpha: 0.0,
+  moonAlpha: 0.8,
+};
+
+function applyLightRig(rig) {
+  renderer.toneMappingExposure = rig.exposure;
+  hemiL.color.setHex(rig.hemi[0]);
+  hemiL.groundColor.setHex(rig.hemi[1]);
+  hemiL.intensity = rig.hemi[2];
+  ambL.color.setHex(rig.amb[0]);
+  ambL.intensity  = rig.amb[1];
+  sunL.color.setHex(rig.sun[0]);
+  sunL.intensity  = rig.sun[1];
+  fillL.color.setHex(rig.fill[0]);
+  fillL.intensity = rig.fill[1];
+  rimL.intensity  = rig.rim[1];
+  moonL.color.setHex(rig.moon[0]);
+  moonL.intensity = rig.moon[1];
+  sunSphere.material.opacity  = rig.sunAlpha;
+  sunSphere.material.transparent = rig.sunAlpha < 1;
+  moonSphere.material.opacity = rig.moonAlpha;
+  moonSphere.material.transparent = rig.moonAlpha < 1;
+}
+applyLightRig(DAY_RIG);  // start in daytime
 
 /* ════════════════════════════════════════════════════════════════════════
    SIMULATION CONSTANTS
@@ -975,17 +1075,18 @@ const sphGeo = new THREE.SphereGeometry(1, 14, 10);
 
 /* ── Materials ── */
 const oceanMat = new THREE.MeshPhysicalMaterial({
-  color: 0x1a88ff,
-  metalness: 0.05,
-  roughness: 0.04,
+  color: 0x0d9fd4,
+  metalness: 0.0,
+  roughness: 0.03,
   transmission: 1.0,
   ior: 1.34,
-  thickness: 28,
-  attenuationColor: new THREE.Color(0x0044cc),
+  thickness: 32,
+  attenuationColor: new THREE.Color(0x006688),
   attenuationDistance: 38,
   transparent: true,
   opacity: 1.0,
   depthWrite: true,
+  envMapIntensity: 1.0,
 });
 const volMat = new THREE.ShaderMaterial({
   uniforms: { time: { value: 0 } },
@@ -1055,29 +1156,39 @@ function updFoamSz() {
   if (foamPts) foamPts.material.size = R.fsz;
 }
 
-/* ── Checkerboard floor ── */
+/* ── Checkerboard floor — bright Lague-style quads, responds to day/night ── */
 const flrCvs = document.createElement('canvas');
 flrCvs.width = flrCvs.height = 1024;
 const flrCtx = flrCvs.getContext('2d');
-const fq = [['#0a1e35','#0e2840'],['#0d1e3a','#0c2035'],['#0a1e30','#0e2640'],['#0c1e38','#0d2242']];
-for (let r = 0; r < 4; r++)
-  for (let c = 0; c < 4; c++) {
-    flrCtx.fillStyle = fq[r][c % 2]; flrCtx.fillRect(c*256, r*256, 256, 256);
-  }
-// subtle grid lines
-flrCtx.strokeStyle = 'rgba(0,229,255,0.06)'; flrCtx.lineWidth = 1;
-for (let i = 0; i <= 1024; i += 64) {
-  flrCtx.beginPath(); flrCtx.moveTo(i, 0); flrCtx.lineTo(i, 1024); flrCtx.stroke();
-  flrCtx.beginPath(); flrCtx.moveTo(0, i); flrCtx.lineTo(1024, i); flrCtx.stroke();
+
+// Day palette: vibrant blue / purple / green / gold (matches reference screenshots)
+const DAY_FLOOR  = [['#6ab0ff','#c9a5f2'],['#c9a5f2','#6ab0ff'],['#7ae38f','#fce595'],['#fce595','#7ae38f']];
+// Night palette: deep muted versions
+const NIGHT_FLOOR= [['#0a1e35','#0e2840'],['#0d1e3a','#0c2035'],['#0a1e30','#0e2640'],['#0c1e38','#0d2242']];
+
+let flrTex;
+function buildFloorTex(day) {
+  const pal = day ? DAY_FLOOR : NIGHT_FLOOR;
+  for (let r = 0; r < 4; r++)
+    for (let c = 0; c < 4; c++) {
+      flrCtx.fillStyle = pal[r][c % 2]; flrCtx.fillRect(c*256, r*256, 256, 256);
+    }
+  // checker pattern within each quad
+  flrCtx.fillStyle = day ? 'rgba(0,0,0,0.09)' : 'rgba(0,0,0,0.12)';
+  for (let y = 0; y < 1024; y += 64)
+    for (let x = 0; x < 1024; x += 64)
+      if (((x/64)+(y/64)) % 2 === 0) flrCtx.fillRect(x, y, 64, 64);
+  if (flrTex) flrTex.needsUpdate = true;
 }
-const flrTex = new THREE.CanvasTexture(flrCvs);
+
+buildFloorTex(true);
+flrTex = new THREE.CanvasTexture(flrCvs);
 flrTex.wrapS = flrTex.wrapT = THREE.RepeatWrapping;
-flrTex.repeat.set(5, 5);
+flrTex.repeat.set(4, 4);
 flrTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-const flrMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(4000, 4000),
-  new THREE.MeshStandardMaterial({ map: flrTex, roughness: 0.3, metalness: 0.95 })
-);
+
+const flrMat = new THREE.MeshStandardMaterial({ map: flrTex, roughness: 0.55, metalness: 0.0 });
+const flrMesh = new THREE.Mesh(new THREE.PlaneGeometry(5000, 5000), flrMat);
 flrMesh.rotation.x = -Math.PI/2;
 flrMesh.position.y = -42;
 flrMesh.receiveShadow = true;
@@ -1313,13 +1424,28 @@ document.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () =
   document.getElementById('vind').textContent = b.textContent + ' VIEW';
   const mat = R.view==='ocean' ? oceanMat : R.view==='vol' ? volMat : dbgMat;
   fluidMesh.material = mat;
-  sunL.intensity = R.view==='ocean' ? 3.8 : R.view==='vol' ? 0.5 : 1.2;
+  // Re-apply rig at correct intensity for this view
+  const rig = isDaytime ? DAY_RIG : NIGHT_RIG;
+  sunL.intensity = R.view==='vol' ? rig.sun[1]*0.15 : rig.sun[1];
 }));
 
 // Panel toggle
 const panelEl = document.getElementById('panel');
 const ptogEl  = document.getElementById('ptog');
 ptogEl.addEventListener('click', () => { panelEl.classList.toggle('open'); ptogEl.classList.toggle('shifted'); });
+
+// Day / Night toggle
+const dnBtn = document.getElementById('dn-btn');
+dnBtn.addEventListener('click', () => {
+  isDaytime = !isDaytime;
+  buildSky(isDaytime);
+  buildFloorTex(isDaytime);
+  applyLightRig(isDaytime ? DAY_RIG : NIGHT_RIG);
+  dnBtn.textContent = isDaytime ? '☀ DAY' : '☾ NIGHT';
+  dnBtn.style.color         = isDaytime ? '#ffdc50' : '#aaccff';
+  dnBtn.style.borderColor   = isDaytime ? 'rgba(255,220,80,0.55)' : 'rgba(170,200,255,0.55)';
+  dnBtn.style.boxShadow     = isDaytime ? '0 0 12px rgba(255,220,80,.2)' : '0 0 12px rgba(170,200,255,.2)';
+});
 
 // Apply count
 function applyCount() {
@@ -1367,8 +1493,10 @@ function loop() {
   updateGeo();
   updStats();
   // Caustic shimmer on sun
-  if (R.caus > 0 && R.view === 'ocean')
-    sunL.intensity = 3.8 + Math.sin(performance.now()*0.0028) * R.caus * 0.7;
+  if (R.caus > 0 && R.view === 'ocean') {
+    const base = isDaytime ? DAY_RIG.sun[1] : NIGHT_RIG.sun[1];
+    sunL.intensity = base + Math.sin(performance.now()*0.0028) * R.caus * 0.65;
+  }
   renderer.render(scene, cam);
 }
 
