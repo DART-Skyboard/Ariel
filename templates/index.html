@@ -1160,6 +1160,9 @@
  <video id="bgvid" autoplay muted loop playsinline>
   <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/treefrost.mp4" type="video/mp4">
 </video>
+<!-- ── BRPN World Scene — real-time multi-user presence canvas ── -->
+<canvas id="brpnWorldCanvas" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0.55;"></canvas>
+
 
 
   <!-- Privacy & Consent Modal -->
@@ -3102,6 +3105,336 @@ async function _dartLoadDomainPanel() {
     list.appendChild(row);
   });
 }
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  BRPN WORLD SCENE — Real-time multi-user presence
+//  Three.js canvas behind homepage. Each active user = buoyancy node.
+//  Bezier plasma splines connect all active nodes.
+// ═══════════════════════════════════════════════════════════════════
+;(function(){
+'use strict';
+
+// ── Session identity (tab-unique, persisted across refreshes) ─────
+var _sid = localStorage.getItem('brpn_sid');
+if (!_sid) {
+  _sid = 'u_' + Math.random().toString(36).substr(2,8) + '_t' + Date.now().toString(36);
+  localStorage.setItem('brpn_sid', _sid);
+}
+
+// ── BRPN world state ──────────────────────────────────────────────
+var _scene, _camera, _renderer, _raf;
+var _remoteNodes = {};  // sid → { mesh, label, spline, data }
+var _localMesh, _localPos = { x: 0, y: 0, z: 0 };
+var _frame = 0;
+var _heartbeatTimer, _pollTimer;
+var POLL_MS = 2000, BEAT_MS = 5000;
+var STALE_MS = 35000;
+
+// Shell color palette: Geological / Maritime / Aerospace
+var SHELL_COLORS = { Geological: 0x00e5ff, Maritime: 0x0088ff, Aerospace: 0xff4488 };
+
+// ── Init after DOM + GS_URL are ready ────────────────────────────
+function _initWorld() {
+  if (typeof THREE === 'undefined') return;
+  var canvas = document.getElementById('brpnWorldCanvas');
+  if (!canvas) return;
+
+  var W = window.innerWidth, H = window.innerHeight;
+
+  _scene    = new THREE.Scene();
+  _camera   = new THREE.PerspectiveCamera(55, W / H, 0.1, 200);
+  _camera.position.set(0, 0, 22);
+
+  _renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+  _renderer.setSize(W, H);
+  _renderer.setClearColor(0x000000, 0);
+  _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+
+  // Ambient + subtle point lights
+  _scene.add(new THREE.AmbientLight(0x003344, 1.2));
+  var pl = new THREE.PointLight(0x00e5ff, 1.8, 80);
+  pl.position.set(0, 10, 15);
+  _scene.add(pl);
+
+  // Local node (cyan sphere)
+  _localMesh = _makeNodeMesh(0x00e5ff, 0.38, true);
+  _scene.add(_localMesh);
+  _localPos = _defaultPos(_sid);
+
+  // Scroll / pointer → move local node
+  window.addEventListener('mousemove', function(e) {
+    _localPos.x = ((e.clientX / window.innerWidth)  - 0.5) * 14;
+    _localPos.y = ((e.clientY / window.innerHeight) - 0.5) * -8;
+  }, { passive: true });
+  window.addEventListener('scroll', function() {
+    var sc = window.scrollY / Math.max(1, document.body.scrollHeight - window.innerHeight);
+    _localPos.z = -4 + sc * 8;
+  }, { passive: true });
+  window.addEventListener('touchmove', function(e) {
+    if (!e.touches.length) return;
+    _localPos.x = ((e.touches[0].clientX / window.innerWidth)  - 0.5) * 14;
+    _localPos.y = ((e.touches[0].clientY / window.innerHeight) - 0.5) * -8;
+  }, { passive: true });
+
+  // Resize
+  window.addEventListener('resize', function() {
+    var W2 = window.innerWidth, H2 = window.innerHeight;
+    _camera.aspect = W2 / H2;
+    _camera.updateProjectionMatrix();
+    _renderer.setSize(W2, H2);
+  });
+
+  _animate();
+  _startSync();
+}
+
+// ── Node mesh factory ─────────────────────────────────────────────
+function _makeNodeMesh(color, radius, isLocal) {
+  var geo = new THREE.SphereGeometry(radius, 16, 12);
+  var mat = new THREE.MeshPhongMaterial({
+    color: color, emissive: color, emissiveIntensity: isLocal ? 0.6 : 0.35,
+    transparent: true, opacity: isLocal ? 0.82 : 0.65, shininess: 60
+  });
+  var m = new THREE.Mesh(geo, mat);
+  // Glow ring
+  var rg = new THREE.TorusGeometry(radius * 1.5, 0.02, 6, 24);
+  var rm = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.3 });
+  m.add(new THREE.Mesh(rg, rm));
+  return m;
+}
+
+// ── Deterministic starting position from SID hash ─────────────────
+function _defaultPos(sid) {
+  var h = 0;
+  for (var i = 0; i < sid.length; i++) h = (h * 31 + sid.charCodeAt(i)) & 0xffffffff;
+  return {
+    x: ((h & 0xff) / 255 - 0.5) * 12,
+    y: (((h >> 8) & 0xff) / 255 - 0.5) * 7,
+    z: (((h >> 16) & 0xff) / 255 - 0.5) * 6
+  };
+}
+
+// ── Plasma spline between two positions ───────────────────────────
+function _makeSpline(posA, posB, colorHex) {
+  var A = new THREE.Vector3(posA.x, posA.y, posA.z);
+  var B = new THREE.Vector3(posB.x, posB.y, posB.z);
+  var mid = A.clone().add(B).multiplyScalar(0.5);
+  var axis = B.clone().sub(A);
+  var perp = new THREE.Vector3(-axis.z, axis.x, axis.y).normalize();
+  var bulge = axis.length() * 0.28;
+  var cp1 = mid.clone().add(perp.clone().multiplyScalar( bulge));
+  var cp2 = mid.clone().add(perp.clone().multiplyScalar(-bulge * 0.6));
+  var curve = new THREE.CatmullRomCurve3([A, cp1, cp2, B]);
+  var pts   = curve.getPoints(56);
+  var geo   = new THREE.BufferGeometry().setFromPoints(pts);
+  var col   = new THREE.Color(colorHex);
+  var mat   = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.28 });
+  var line  = new THREE.Line(geo, mat);
+  // Pulse particle
+  var pg    = new THREE.SphereGeometry(0.05, 5, 5);
+  var pm    = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85 });
+  var pulse = new THREE.Mesh(pg, pm);
+  return { line: line, pulse: pulse, curve: curve, phase: Math.random(), speed: 0.005, mat: mat };
+}
+
+// ── Update remote node (create or move) ───────────────────────────
+function _upsertRemoteNode(node) {
+  if (!node || !node.sid || node.sid === _sid) return;
+  var col = SHELL_COLORS[node.shell] || 0x00e5ff;
+  if (!_remoteNodes[node.sid]) {
+    var mesh = _makeNodeMesh(col, 0.28, false);
+    _scene.add(mesh);
+    _remoteNodes[node.sid] = { mesh: mesh, spline: null, data: node, lastSeen: Date.now() };
+  }
+  var rn = _remoteNodes[node.sid];
+  rn.data = node;
+  rn.lastSeen = Date.now();
+  // Move mesh toward reported position (lerp)
+  rn.mesh.position.set(node.x || 0, node.y || 0, node.z || 0);
+  rn.mesh.material.color.setHex(col);
+  rn.mesh.material.emissive.setHex(col);
+  if (rn.mesh.children[0]) rn.mesh.children[0].material.color.setHex(col);
+}
+
+// ── Rebuild all splines from current node positions ───────────────
+function _rebuildSplines() {
+  // Remove old splines
+  Object.keys(_remoteNodes).forEach(function(sid) {
+    var rn = _remoteNodes[sid];
+    if (rn.spline) {
+      _scene.remove(rn.spline.line);
+      _scene.remove(rn.spline.pulse);
+      rn.spline = null;
+    }
+  });
+  // Build local → each remote
+  var localPosVec = _localPos;
+  Object.keys(_remoteNodes).forEach(function(sid) {
+    var rn = _remoteNodes[sid];
+    if (!rn.data || Date.now() - rn.lastSeen > STALE_MS) return;
+    var sp = _makeSpline(localPosVec, rn.mesh.position, 0x00e5ff);
+    rn.spline = sp;
+    _scene.add(sp.line);
+    _scene.add(sp.pulse);
+  });
+  // Build remote → remote (if ≥2 remotes)
+  var sids = Object.keys(_remoteNodes).filter(function(s) {
+    return Date.now() - _remoteNodes[s].lastSeen < STALE_MS;
+  });
+  for (var i = 0; i < sids.length - 1; i++) {
+    for (var j = i + 1; j < sids.length; j++) {
+      var a = _remoteNodes[sids[i]].mesh.position;
+      var b = _remoteNodes[sids[j]].mesh.position;
+      var col = SHELL_COLORS[_remoteNodes[sids[i]].data.shell] || 0x0088ff;
+      var sp2 = _makeSpline(a, b, col);
+      // Store on first node
+      if (!_remoteNodes[sids[i]]._peerSplines) _remoteNodes[sids[i]]._peerSplines = [];
+      _remoteNodes[sids[i]]._peerSplines.push(sp2);
+      _scene.add(sp2.line);
+      _scene.add(sp2.pulse);
+    }
+  }
+}
+
+// ── Prune stale nodes ─────────────────────────────────────────────
+function _pruneStale() {
+  var NOW = Date.now();
+  Object.keys(_remoteNodes).forEach(function(sid) {
+    if (NOW - _remoteNodes[sid].lastSeen > STALE_MS) {
+      var rn = _remoteNodes[sid];
+      _scene.remove(rn.mesh);
+      if (rn.spline) { _scene.remove(rn.spline.line); _scene.remove(rn.spline.pulse); }
+      if (rn._peerSplines) rn._peerSplines.forEach(function(sp) {
+        _scene.remove(sp.line); _scene.remove(sp.pulse);
+      });
+      delete _remoteNodes[sid];
+    }
+  });
+}
+
+// ── Animate loop ──────────────────────────────────────────────────
+function _animate() {
+  _raf = requestAnimationFrame(_animate);
+  _frame++;
+  var f = _frame;
+
+  // Move local node toward mouse position
+  _localMesh.position.x += (_localPos.x - _localMesh.position.x) * 0.04;
+  _localMesh.position.y += (_localPos.y - _localMesh.position.y) * 0.04;
+  _localMesh.position.z += (_localPos.z - _localMesh.position.z) * 0.04;
+
+  // Pulse local node
+  var pulse = 1 + Math.sin(f * 0.04) * 0.07;
+  _localMesh.scale.setScalar(pulse);
+  _localMesh.material.opacity = 0.7 + Math.sin(f * 0.06) * 0.12;
+
+  // Animate remote nodes + spline pulses
+  Object.keys(_remoteNodes).forEach(function(sid) {
+    var rn = _remoteNodes[sid];
+    // Remote node bob
+    rn.mesh.rotation.y = f * 0.008;
+    rn.mesh.scale.setScalar(1 + Math.sin(f * 0.05 + rn.mesh.position.x) * 0.08);
+
+    // Advance pulse particle along spline
+    if (rn.spline) {
+      rn.spline.phase = (rn.spline.phase + rn.spline.speed) % 1.0;
+      var pt = rn.spline.curve.getPoint(rn.spline.phase);
+      rn.spline.pulse.position.copy(pt);
+      // Fade spline with age
+      var age = (Date.now() - rn.lastSeen) / STALE_MS;
+      rn.spline.mat.opacity = Math.max(0.05, 0.28 * (1 - age));
+    }
+    if (rn._peerSplines) {
+      rn._peerSplines.forEach(function(sp) {
+        sp.phase = (sp.phase + sp.speed) % 1.0;
+        var pt2 = sp.curve.getPoint(sp.phase);
+        sp.pulse.position.copy(pt2);
+      });
+    }
+  });
+
+  // Slow camera orbit
+  _camera.position.x = Math.sin(f * 0.0004) * 2;
+  _camera.position.y = Math.cos(f * 0.0003) * 1.5;
+  _camera.lookAt(0, 0, 0);
+
+  _renderer.render(_scene, _camera);
+}
+
+// ── Presence sync ─────────────────────────────────────────────────
+function _startSync() {
+  _heartbeat();
+  _poll();
+  _heartbeatTimer = setInterval(_heartbeat, BEAT_MS);
+  _pollTimer      = setInterval(_poll,      POLL_MS);
+}
+
+function _heartbeat() {
+  if (typeof GS_URL === 'undefined' || !GS_URL) return;
+  var ghUser = window._ghUsername || null;
+  var node = {
+    x: _localMesh.position.x || 0,
+    y: _localMesh.position.y || 0,
+    z: _localMesh.position.z || 0,
+    shell: 'Geological',
+    color: '#00e5ff',
+    label: ghUser
+  };
+  fetch(GS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'writenode', sid: _sid, uid: ghUser || _sid, node: node })
+  }).catch(function(){});
+}
+
+var _splineRebuildTimer = 0;
+function _poll() {
+  if (typeof GS_URL === 'undefined' || !GS_URL) return;
+  fetch(GS_URL + '?action=readnodes&_=' + Date.now())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !Array.isArray(data.nodes)) return;
+      var changed = false;
+      data.nodes.forEach(function(node) {
+        if (node.sid === _sid) return; // skip self
+        _upsertRemoteNode(node);
+        changed = true;
+      });
+      _pruneStale();
+      // Rebuild splines every 5 polls or when nodes change
+      _splineRebuildTimer++;
+      if (changed || _splineRebuildTimer >= 5) {
+        _rebuildSplines();
+        _splineRebuildTimer = 0;
+      }
+    }).catch(function(){});
+}
+
+// ── Boot when GS_URL is ready ─────────────────────────────────────
+// GS_URL is set synchronously in the env-detect block above DART_AUTH boot
+window.addEventListener('DOMContentLoaded', function() {
+  if (typeof THREE !== 'undefined') {
+    _initWorld();
+  } else {
+    // Three.js may still be loading (CDN)
+    var check = setInterval(function() {
+      if (typeof THREE !== 'undefined') { clearInterval(check); _initWorld(); }
+    }, 200);
+  }
+});
+
+// Expose snapshot for BRPN HUD / Autumn integration
+window._getBRPNPresenceSnapshot = function() {
+  var remotes = Object.keys(_remoteNodes).map(function(sid) {
+    var rn = _remoteNodes[sid];
+    return { sid: sid, uid: rn.data.uid, shell: rn.data.shell, pos: rn.mesh.position };
+  });
+  return { localSid: _sid, remoteCount: remotes.length, nodes: remotes };
+};
+
+})(); // end IIFE
+
 
 /* ── Boot DART_AUTH ── */
 document.addEventListener('DOMContentLoaded', () => {
