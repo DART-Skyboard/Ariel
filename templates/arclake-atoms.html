@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║  ARCLAKE · QUANTUM ATOM VISUALIZER · PROTOTYPE                       ║
+  ╠══════════════════════════════════════════════════════════════════════╣
+  ║  Quantum Orbital Rendering                                           ║
+  ║  Hydrogen wavefunction ψ_nlm(r,θ,φ) — CDF importance sampling       ║
+  ║  Radial: Associated Laguerre  Angular: Associated Legendre           ║
+  ║  Heatmap coloring: |ψ|² probability density → fire colormap         ║
+  ║  Multi-electron: shell filling / aufbau, per-subshell orbital sets   ║
+  ║                                                                      ║
+  ║  Based on quantum orbital math from:                                 ║
+  ║  github.com/dartsolarpunk/Atoms (kavang.com/atom)                    ║
+  ║                                                                      ║
+  ║  Author : Justin / DART-Skyboard · Radical Deepscale LLC             ║
+  ║  Domain : radicaldeepscale.com                                       ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>ArcLake · Quantum Atom Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;500;700&display=swap" rel="stylesheet">
+<style>
+/* ── TOKENS ─────────────────────────────────────────────────────────── */
+:root {
+  --c:   #00e5ff;
+  --v:   #c800ff;
+  --a:   #ffb300;
+  --g:   #39ff7a;
+  --r:   #ff3366;
+  --bg:  #06101a;
+  --pnl: rgba(4,10,22,0.92);
+  --b0:  rgba(0,229,255,0.14);
+  --b1:  rgba(0,229,255,0.55);
+  --txt: #9bbfd0;
+  --dim: #4a6a7a;
+  --ms:  clamp(9px,2vw,11px);
+  --cs:  clamp(9px,2.1vw,11px);
+  --ts:  clamp(11px,2.6vw,14px);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--txt);
+  font-family:'Rajdhani',sans-serif;font-weight:300;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  touch-action:none}
+#c{position:fixed;top:0;left:0;width:100%;height:100%;display:block;will-change:transform;z-index:1}
+/* scanline grain */
+body::after{content:'';position:fixed;inset:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.025) 2px,rgba(0,0,0,0.025) 4px);
+  pointer-events:none;z-index:900}
+
+/* ── HUD GRID ──────────────────────────────────────────────────────── */
+#hud{position:fixed;inset:0;pointer-events:none;z-index:100;
+  display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:1fr}
+#top{grid-row:1;display:flex;align-items:flex-start;justify-content:space-between;
+  padding:14px 14px 0;padding-top:calc(14px + env(safe-area-inset-top));gap:8px;
+  pointer-events:none;background:linear-gradient(to bottom,rgba(3,8,18,.9) 0%,transparent 100%)}
+#mid{grid-row:2;display:flex;flex-direction:row;align-items:stretch;
+  pointer-events:none;overflow:hidden;position:relative}
+#mid-canvas{flex:1;position:relative;pointer-events:none;min-width:0;overflow:hidden}
+#bot{grid-row:3;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 14px 14px;padding-bottom:calc(14px + env(safe-area-inset-bottom));gap:8px;
+  pointer-events:none;background:linear-gradient(to top,rgba(3,8,18,.9) 0%,transparent 100%)}
+
+/* ── TITLE ─────────────────────────────────────────────────────────── */
+#title{pointer-events:none;flex-shrink:0}
+#title h1{font-family:'Share Tech Mono',monospace;font-size:var(--ts);color:var(--c);
+  letter-spacing:.1em;text-shadow:0 0 20px rgba(0,229,255,.8);line-height:1.25;white-space:nowrap}
+#title .sub{font-size:clamp(7px,1.7vw,9px);color:var(--txt);letter-spacing:.06em;margin-top:3px;
+  font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55vw}
+
+/* ── STATS PANEL ────────────────────────────────────────────────────── */
+#stats{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;padding:8px 13px;
+  font-family:'Share Tech Mono',monospace;font-size:var(--ms);line-height:2;color:var(--txt);
+  pointer-events:none;flex-shrink:0;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#stats .v{color:var(--c);font-weight:bold}
+#stats .vv{color:var(--a);font-weight:bold}
+
+/* ── BUTTON BASE ────────────────────────────────────────────────────── */
+.btn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:6px 11px;
+  border:1px solid var(--b0);background:rgba(4,10,22,.88);color:var(--txt);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;
+  transition:border-color .18s,color .18s,background .18s,box-shadow .18s;
+  backdrop-filter:blur(5px);touch-action:manipulation;white-space:nowrap;user-select:none}
+.btn:active,.btn.on{border-color:var(--b1);color:var(--c);
+  background:rgba(0,229,255,.18);box-shadow:0 0 14px rgba(0,229,255,.38)}
+
+/* ── ELEMENT LIST PANEL ─────────────────────────────────────────────── */
+#scene-row{display:flex;gap:6px;pointer-events:all;flex-wrap:wrap;
+  position:absolute;top:14px;left:14px;max-width:72vw;z-index:110}
+
+/* ── SIDE PANEL ─────────────────────────────────────────────────────── */
+#panel-wrap{display:flex;flex-direction:row;align-items:stretch;
+  flex-shrink:0;pointer-events:none;z-index:200;
+  margin-right:calc(-1 * clamp(260px,46vw,320px));
+  transition:margin-right .28s cubic-bezier(.2,1,.3,1)}
+#panel-wrap.open{margin-right:0}
+#ptog{width:27px;flex-shrink:0;background:var(--pnl);border:1px solid var(--b0);
+  border-right:none;border-radius:6px 0 0 6px;display:flex;align-items:center;
+  justify-content:center;pointer-events:all;cursor:pointer;
+  transition:background .18s,border-color .18s;backdrop-filter:blur(7px);touch-action:manipulation;
+  align-self:center;height:58px}
+#ptog:active{background:rgba(0,229,255,.22);border-color:var(--b1)}
+#ptog svg{transition:transform .28s}
+#panel-wrap.open #ptog svg{transform:scaleX(-1)}
+#panel{width:clamp(260px,46vw,320px);flex-shrink:0;
+  display:flex;flex-direction:column;gap:9px;padding:14px 14px 14px 0;
+  pointer-events:all;overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+  background:linear-gradient(to left,rgba(3,8,18,.7) 0%,transparent 100%)}
+#panel::-webkit-scrollbar{display:none}
+
+/* ── CARD ───────────────────────────────────────────────────────────── */
+.card{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;
+  padding:11px 13px;backdrop-filter:blur(10px)}
+.card h3{font-family:'Share Tech Mono',monospace;font-size:var(--ms);color:var(--c);
+  letter-spacing:.1em;margin-bottom:9px;border-bottom:1px solid var(--b0);padding-bottom:5px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.row label{font-size:var(--cs);color:var(--txt);font-family:'Share Tech Mono',monospace;
+  white-space:nowrap;flex-shrink:0}
+.row input[type=range]{flex-grow:1;min-width:48px;accent-color:var(--c);cursor:pointer;
+  height:22px;padding:4px 0;touch-action:none}
+.row input[type=number]{width:58px;background:transparent;border:1px solid var(--b0);
+  color:var(--c);font-family:'Share Tech Mono',monospace;font-size:var(--cs);
+  padding:2px 4px;border-radius:3px;outline:none;text-align:right}
+.row button.aply{background:rgba(0,229,255,.13);border:1px solid var(--c);color:var(--c);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:4px 8px;
+  border-radius:3px;cursor:pointer;transition:.18s}
+.row button.aply:active{background:var(--c);color:#000}
+.chk{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);color:var(--txt)}
+.chk label{cursor:pointer}
+.chk input[type=checkbox]{accent-color:var(--c);width:16px;height:16px;cursor:pointer}
+.row.am  input[type=range]{accent-color:var(--a)}
+.row.am  input[type=number]{color:var(--a);border-color:rgba(255,180,0,.35)}
+.row.am  label{color:rgba(255,180,0,.85)}
+.row.mg  input[type=range]{accent-color:var(--v)}
+.row.mg  input[type=number]{color:var(--v);border-color:rgba(200,0,255,.35)}
+.row.mg  label{color:rgba(200,0,255,.85)}
+
+/* ── ELEMENT SELECTOR ───────────────────────────────────────────────── */
+#elem-list{display:flex;flex-direction:column;gap:4px;max-height:340px;
+  overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--b1) transparent}
+#elem-list::-webkit-scrollbar{width:4px}
+#elem-list::-webkit-scrollbar-track{background:transparent}
+#elem-list::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
+.elem-row{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:3px;
+  border:1px solid var(--b0);cursor:pointer;transition:all .14s;
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs)}
+.elem-row:active,.elem-row.selected{background:rgba(0,229,255,.16);border-color:var(--c);
+  box-shadow:0 0 8px rgba(0,229,255,.25)}
+.elem-z{color:var(--dim);font-size:clamp(7px,1.5vw,9px);min-width:22px}
+.elem-sym{color:var(--c);font-weight:bold;min-width:26px}
+.elem-name{color:var(--txt);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.elem-e{color:var(--a);font-size:clamp(7px,1.5vw,9px);white-space:nowrap}
+
+/* ── ACTIVE SCENE LIST ──────────────────────────────────────────────── */
+#scene-atoms{display:flex;flex-direction:column;gap:4px}
+.scene-atom-chip{display:flex;align-items:center;gap:6px;padding:5px 8px;
+  border-radius:3px;border:1px solid rgba(57,255,122,.3);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs)}
+.scene-atom-chip .chip-sym{color:var(--g);font-weight:bold;min-width:26px}
+.scene-atom-chip .chip-name{color:var(--txt);flex:1;font-size:clamp(7px,1.5vw,9px)}
+.chip-rm{background:transparent;border:1px solid rgba(255,51,102,.4);color:var(--r);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:2px 6px;
+  border-radius:3px;cursor:pointer;transition:.14s}
+.chip-rm:active{background:rgba(255,51,102,.3);border-color:var(--r)}
+.chip-sel{background:transparent;border:1px solid var(--b0);color:var(--txt);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:2px 6px;
+  border-radius:3px;cursor:pointer;transition:.14s}
+.chip-sel:active,.chip-sel.active{background:rgba(0,229,255,.18);border-color:var(--c);color:var(--c)}
+
+/* ── VIEW ROW ───────────────────────────────────────────────────────── */
+#view-row{display:flex;gap:6px;pointer-events:all;flex-wrap:wrap;
+  position:absolute;bottom:28px;left:14px;max-width:80vw;z-index:110}
+.vbtn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:5px 10px;
+  border:1px solid rgba(255,180,0,.35);background:rgba(4,10,22,.88);color:rgba(255,180,0,.75);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;transition:all .18s;
+  backdrop-filter:blur(5px);touch-action:manipulation;white-space:nowrap;user-select:none}
+.vbtn:active,.vbtn.on{border-color:var(--a);color:var(--a);
+  background:rgba(255,180,0,.18);box-shadow:0 0 12px rgba(255,180,0,.3)}
+
+/* ── BOTTOM BAR ──────────────────────────────────────────────────────── */
+#pipe{background:var(--pnl);border:1px solid var(--b0);border-radius:6px;
+  padding:7px 11px;font-family:'Share Tech Mono',monospace;font-size:var(--cs);
+  color:var(--dim);pointer-events:none;flex:1;min-width:0;
+  backdrop-filter:blur(7px);overflow:hidden;white-space:nowrap}
+#cred{font-family:'Share Tech Mono',monospace;font-size:clamp(8px,1.55vw,10px);
+  color:var(--dim);text-align:right;line-height:1.75;pointer-events:all;flex-shrink:0;white-space:nowrap}
+#cred a{color:var(--c);text-decoration:none;opacity:.65}
+#cred a:active{opacity:1}
+
+/* ── MISC ───────────────────────────────────────────────────────────── */
+#hint{position:absolute;bottom:11px;left:50%;transform:translateX(-50%);
+  font-family:'Share Tech Mono',monospace;font-size:var(--cs);color:var(--dim);
+  pointer-events:none;opacity:.7;white-space:nowrap;text-align:center;z-index:110;
+  background:rgba(0,0,0,.45);padding:4px 10px;border-radius:12px}
+#top-right-stack{position:absolute;top:0;right:0;display:flex;flex-direction:column;
+  align-items:flex-end;gap:6px;padding-top:14px;pointer-events:all;z-index:115}
+#vind{font-family:'Share Tech Mono',monospace;
+  font-size:var(--ms);color:var(--a);font-weight:bold;opacity:.95;pointer-events:none;
+  padding:5px 11px;background:rgba(4,10,22,.88);border-radius:4px;
+  border:1px solid rgba(255,180,0,.4)}
+#gen-btn{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:6px 13px;
+  border:1px solid rgba(57,255,122,.55);background:rgba(4,10,22,.88);color:var(--g);
+  border-radius:4px;cursor:pointer;letter-spacing:.05em;transition:all .2s;
+  backdrop-filter:blur(5px);box-shadow:0 0 12px rgba(57,255,122,.15);
+  user-select:none;touch-action:manipulation;pointer-events:all}
+#gen-btn:active{background:rgba(57,255,122,.28);box-shadow:0 0 22px rgba(57,255,122,.4)}
+
+/* ── LOADING OVERLAY ─────────────────────────────────────────────────── */
+#loading{position:fixed;inset:0;background:rgba(6,16,26,.92);z-index:2000;
+  display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;
+  font-family:'Share Tech Mono',monospace}
+#loading.hidden{display:none}
+#load-txt{color:var(--c);font-size:clamp(10px,2.5vw,13px);letter-spacing:.12em}
+#load-bar-wrap{width:220px;height:4px;background:rgba(0,229,255,.15);border-radius:2px;overflow:hidden}
+#load-bar{height:100%;background:var(--c);border-radius:2px;width:0%;transition:width .12s}
+
+/* ── PERIODIC TABLE OVERLAY ──────────────────────────────────────────── */
+#periodic-overlay{position:fixed;inset:0;background:rgba(3,8,18,.96);z-index:1500;
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+  padding:18px 10px 10px;overflow:auto;scrollbar-width:none}
+#periodic-overlay.hidden{display:none}
+#periodic-overlay::-webkit-scrollbar{display:none}
+#periodic-header{display:flex;align-items:center;justify-content:space-between;
+  width:100%;max-width:860px;margin-bottom:12px;flex-shrink:0}
+#periodic-header h2{font-family:'Share Tech Mono',monospace;font-size:clamp(10px,2.8vw,15px);
+  color:var(--c);letter-spacing:.14em}
+#periodic-close{font-family:'Share Tech Mono',monospace;font-size:var(--cs);padding:5px 13px;
+  border:1px solid var(--b1);background:rgba(0,229,255,.1);color:var(--c);
+  border-radius:4px;cursor:pointer;letter-spacing:.06em;transition:.18s}
+#periodic-close:active{background:rgba(0,229,255,.35)}
+#periodic-grid{display:grid;grid-template-columns:repeat(18,1fr);gap:3px;
+  width:100%;max-width:860px}
+.pt-cell{aspect-ratio:1;background:rgba(4,10,22,.88);border:1px solid var(--b0);border-radius:3px;
+  cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  transition:all .12s;padding:1px;min-width:0;min-height:0;overflow:hidden}
+.pt-cell:active{border-color:var(--c);background:rgba(0,229,255,.22);
+  box-shadow:0 0 10px rgba(0,229,255,.4)}
+.pt-cell-z{font-family:'Share Tech Mono',monospace;font-size:clamp(5px,0.9vw,7px);color:var(--dim);line-height:1}
+.pt-cell-sym{font-family:'Share Tech Mono',monospace;font-size:clamp(7px,1.4vw,11px);
+  color:var(--c);font-weight:bold;line-height:1.1}
+.pt-cell-name{font-family:'Share Tech Mono',monospace;font-size:clamp(4px,0.7vw,6px);
+  color:var(--txt);line-height:1;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;padding:0 1px}
+.pt-cell.empty{background:transparent;border-color:transparent;cursor:default;pointer-events:none}
+.pt-cell[data-cat="alkali"]{border-color:rgba(255,80,80,.35)}
+.pt-cell[data-cat="alkaline"]{border-color:rgba(255,150,0,.35)}
+.pt-cell[data-cat="transition"]{border-color:rgba(0,229,255,.35)}
+.pt-cell[data-cat="post-transition"]{border-color:rgba(57,255,122,.35)}
+.pt-cell[data-cat="metalloid"]{border-color:rgba(200,0,255,.35)}
+.pt-cell[data-cat="nonmetal"]{border-color:rgba(255,255,100,.35)}
+.pt-cell[data-cat="noble"]{border-color:rgba(255,180,0,.45)}
+.pt-cell[data-cat="lanthanide"]{border-color:rgba(180,100,255,.35)}
+.pt-cell[data-cat="actinide"]{border-color:rgba(255,50,150,.35)}
+
+@keyframes rip{0%{transform:scale(.6);opacity:.9}100%{transform:scale(2.8);opacity:0}}
+.rip{position:fixed;width:34px;height:34px;border-radius:50%;
+  border:2px solid var(--c);pointer-events:none;z-index:800;
+  transform-origin:center;animation:rip .48s ease-out forwards;margin:-17px 0 0 -17px}
+@media(orientation:landscape){
+  :root{--ms:clamp(8px,1.4vw,10px);--cs:clamp(8px,1.4vw,10px);--ts:clamp(10px,1.8vw,13px)}
+  #panel{width:clamp(260px,30vw,320px)}
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<!-- Loading Overlay -->
+<div id="loading">
+  <div id="load-txt">BUILDING ORBITAL CDFs…</div>
+  <div id="load-bar-wrap"><div id="load-bar"></div></div>
+</div>
+
+<!-- Periodic Table Overlay -->
+<div id="periodic-overlay" class="hidden">
+  <div id="periodic-header">
+    <h2>// PERIODIC TABLE — SELECT ELEMENT</h2>
+    <button id="periodic-close">✕ CLOSE</button>
+  </div>
+  <div id="periodic-grid"></div>
+</div>
+
+<div id="hud">
+  <div id="top">
+    <div id="title">
+      <h1>ARCLAKE · QUANTUM ATOM VISUALIZER</h1>
+      <div class="sub">WAVEFUNCTION DENSITY · CDF SAMPLING · ψ_nlm ORBITAL RENDERING · 127 ELEMENTS</div>
+    </div>
+    <div id="stats">
+      <div>ATOMS&nbsp;<span class="v" id="sAtoms">0</span></div>
+      <div>PARTICLES&nbsp;<span class="v" id="sParts">0</span></div>
+      <div>ELEMENT&nbsp;<span class="vv" id="sElem">—</span></div>
+      <div>FPS&nbsp;<span class="v" id="sfps">—</span></div>
+    </div>
+  </div>
+
+  <div id="mid">
+    <div id="mid-canvas">
+      <div id="scene-row">
+        <button class="btn" id="periodic-btn">⊕ PERIODIC TABLE</button>
+        <button class="btn" id="clear-btn">⊘ CLEAR SCENE</button>
+      </div>
+
+      <div id="top-right-stack">
+        <div id="vind">PROBABILITY DENSITY</div>
+        <button id="gen-btn">↺ RESAMPLE</button>
+      </div>
+
+      <div id="view-row">
+        <button class="vbtn on" data-view="density">DENSITY</button>
+        <button class="vbtn" data-view="phase">PHASE</button>
+        <button class="vbtn" data-view="nucleus">NUCLEUS</button>
+        <button class="vbtn" data-view="wire">WIRE</button>
+      </div>
+
+      <div id="hint">DRAG ORBIT · PINCH ZOOM · 2-FINGER PAN</div>
+    </div><!-- /#mid-canvas -->
+
+    <div id="panel-wrap">
+      <div id="ptog" role="button" aria-label="Toggle panel">
+        <svg width="11" height="20" viewBox="0 0 11 20" fill="none">
+          <polyline points="9,2 2,10 9,18" stroke="#00e5ff" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div id="panel">
+
+        <!-- Element Picker -->
+        <div class="card">
+          <h3>// ELEMENT LIBRARY</h3>
+          <div id="elem-list"></div>
+        </div>
+
+        <!-- Active Scene -->
+        <div class="card">
+          <h3>// SCENE ATOMS</h3>
+          <div id="scene-atoms"><div style="font-family:'Share Tech Mono',monospace;font-size:var(--cs);color:var(--dim)">NO ATOMS ADDED YET</div></div>
+        </div>
+
+        <!-- Rendering Controls -->
+        <div class="card">
+          <h3>// ORBITAL RENDERING</h3>
+          <div class="row am">
+            <label>PARTICLES/ORBITAL</label>
+            <input type="range" id="rPO" min="500" max="8000" step="100" value="2000"
+              oninput="CFG.ptsPerOrbital=+this.value;document.getElementById('nPO').value=this.value">
+            <input type="number" id="nPO" value="2000" step="100" min="500" max="8000"
+              onchange="document.getElementById('rPO').value=this.value;CFG.ptsPerOrbital=+this.value">
+          </div>
+          <div class="row">
+            <label>POINT SIZE</label>
+            <input type="range" id="rPS" min="0.5" max="6" step="0.5" value="1.5"
+              oninput="CFG.ptSize=+this.value;document.getElementById('nPS').value=(+this.value).toFixed(1);updPtSz()">
+            <input type="number" id="nPS" value="1.5" step="0.5" min="0.5" max="6"
+              onchange="document.getElementById('rPS').value=this.value;CFG.ptSize=+this.value;updPtSz()">
+          </div>
+          <div class="row mg">
+            <label>ATOM SCALE</label>
+            <input type="range" id="rAS" min="5" max="60" step="1" value="20"
+              oninput="CFG.atomScale=+this.value;document.getElementById('nAS').value=this.value;rebuildScene()">
+            <input type="number" id="nAS" value="20" step="1" min="5" max="60"
+              onchange="document.getElementById('rAS').value=this.value;CFG.atomScale=+this.value;rebuildScene()">
+          </div>
+          <div class="row">
+            <label>OPACITY</label>
+            <input type="range" id="rOP" min="0.1" max="1" step="0.05" value="0.85"
+              oninput="CFG.opacity=+this.value;document.getElementById('nOP').value=(+this.value).toFixed(2);updPtSz()">
+            <input type="number" id="nOP" value="0.85" step="0.05" min="0.1" max="1"
+              onchange="document.getElementById('rOP').value=this.value;CFG.opacity=+this.value;updPtSz()">
+          </div>
+          <div class="chk">
+            <label for="chkNuc">SHOW NUCLEUS</label>
+            <input type="checkbox" id="chkNuc" checked onchange="CFG.showNucleus=this.checked;rebuildScene()">
+          </div>
+          <div class="chk">
+            <label for="chkSh">SHOW SHELLS</label>
+            <input type="checkbox" id="chkSh" onchange="CFG.showShells=this.checked;rebuildScene()">
+          </div>
+          <div class="row">
+            <label>SPACING</label>
+            <input type="range" id="rSP" min="0" max="200" step="5" value="0"
+              oninput="CFG.atomSpacing=+this.value;document.getElementById('nSP').value=this.value;rebuildScene()">
+            <input type="number" id="nSP" value="0" step="5" min="0" max="200"
+              onchange="document.getElementById('rSP').value=this.value;CFG.atomSpacing=+this.value;rebuildScene()">
+          </div>
+        </div>
+
+        <!-- Quantum Controls -->
+        <div class="card">
+          <h3>// QUANTUM STATE</h3>
+          <div class="row">
+            <label>N SHELLS (MAX)</label>
+            <input type="range" id="rNS" min="1" max="7" step="1" value="4"
+              oninput="CFG.maxShells=+this.value;document.getElementById('nNS').value=this.value">
+            <input type="number" id="nNS" value="4" step="1" min="1" max="7"
+              onchange="document.getElementById('rNS').value=this.value;CFG.maxShells=+this.value">
+          </div>
+          <div class="row am">
+            <label>COLOR MODE</label>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+            <button class="btn on" id="cm-fire" onclick="setCM('fire')">FIRE</button>
+            <button class="btn" id="cm-cyan" onclick="setCM('cyan')">CYAN</button>
+            <button class="btn" id="cm-rainbow" onclick="setCM('rainbow')">RAINBOW</button>
+            <button class="btn" id="cm-shell" onclick="setCM('shell')">SHELL</button>
+          </div>
+        </div>
+
+      </div><!-- /#panel -->
+    </div><!-- /#panel-wrap -->
+  </div><!-- /#mid -->
+
+  <div id="bot">
+    <div id="pipe">
+      <span id="pipe-txt" style="color:var(--c)">QUANTUM ORBITAL VISUALIZER · ψ_nlm(r,θ,φ) · ASSOCIATED LAGUERRE × LEGENDRE · HEATMAP FIRE</span>
+    </div>
+    <div id="cred">
+      ORBITAL MATH: <a href="https://kavang.com/atom" target="_blank">KAVANG.COM/ATOM</a><br>
+      <a href="https://radicaldeepscale.com" target="_blank">RADICAL DEEPSCALE</a> · ARCLAKE ATOMS
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════════════════════
+   ELEMENT DATA  (127 elements, atomic number = index)
+   ════════════════════════════════════════════════════════════════════════ */
+const ELEMENT_DATA = [
+  null, // index 0 placeholder
+  {sym:'H',  name:'Hydrogen',     Z:1,   N:0,   shells:[1]},
+  {sym:'He', name:'Helium',       Z:2,   N:2,   shells:[2]},
+  {sym:'Li', name:'Lithium',      Z:3,   N:4,   shells:[2,1]},
+  {sym:'Be', name:'Beryllium',    Z:4,   N:5,   shells:[2,2]},
+  {sym:'B',  name:'Boron',        Z:5,   N:6,   shells:[2,3]},
+  {sym:'C',  name:'Carbon',       Z:6,   N:6,   shells:[2,4]},
+  {sym:'N',  name:'Nitrogen',     Z:7,   N:7,   shells:[2,5]},
+  {sym:'O',  name:'Oxygen',       Z:8,   N:8,   shells:[2,6]},
+  {sym:'F',  name:'Fluorine',     Z:9,   N:10,  shells:[2,7]},
+  {sym:'Ne', name:'Neon',         Z:10,  N:10,  shells:[2,8]},
+  {sym:'Na', name:'Sodium',       Z:11,  N:12,  shells:[2,8,1]},
+  {sym:'Mg', name:'Magnesium',    Z:12,  N:12,  shells:[2,8,2]},
+  {sym:'Al', name:'Aluminum',     Z:13,  N:14,  shells:[2,8,3]},
+  {sym:'Si', name:'Silicon',      Z:14,  N:14,  shells:[2,8,4]},
+  {sym:'P',  name:'Phosphorus',   Z:15,  N:16,  shells:[2,8,5]},
+  {sym:'S',  name:'Sulfur',       Z:16,  N:16,  shells:[2,8,6]},
+  {sym:'Cl', name:'Chlorine',     Z:17,  N:18,  shells:[2,8,7]},
+  {sym:'Ar', name:'Argon',        Z:18,  N:22,  shells:[2,8,8]},
+  {sym:'K',  name:'Potassium',    Z:19,  N:20,  shells:[2,8,8,1]},
+  {sym:'Ca', name:'Calcium',      Z:20,  N:20,  shells:[2,8,8,2]},
+  {sym:'Sc', name:'Scandium',     Z:21,  N:24,  shells:[2,8,9,2]},
+  {sym:'Ti', name:'Titanium',     Z:22,  N:26,  shells:[2,8,10,2]},
+  {sym:'V',  name:'Vanadium',     Z:23,  N:28,  shells:[2,8,11,2]},
+  {sym:'Cr', name:'Chromium',     Z:24,  N:28,  shells:[2,8,13,1]},
+  {sym:'Mn', name:'Manganese',    Z:25,  N:30,  shells:[2,8,13,2]},
+  {sym:'Fe', name:'Iron',         Z:26,  N:30,  shells:[2,8,14,2]},
+  {sym:'Co', name:'Cobalt',       Z:27,  N:32,  shells:[2,8,15,2]},
+  {sym:'Ni', name:'Nickel',       Z:28,  N:30,  shells:[2,8,16,2]},
+  {sym:'Cu', name:'Copper',       Z:29,  N:34,  shells:[2,8,18,1]},
+  {sym:'Zn', name:'Zinc',         Z:30,  N:35,  shells:[2,8,18,2]},
+  {sym:'Ga', name:'Gallium',      Z:31,  N:39,  shells:[2,8,18,3]},
+  {sym:'Ge', name:'Germanium',    Z:32,  N:40,  shells:[2,8,18,4]},
+  {sym:'As', name:'Arsenic',      Z:33,  N:42,  shells:[2,8,18,5]},
+  {sym:'Se', name:'Selenium',     Z:34,  N:45,  shells:[2,8,18,6]},
+  {sym:'Br', name:'Bromine',      Z:35,  N:45,  shells:[2,8,18,7]},
+  {sym:'Kr', name:'Krypton',      Z:36,  N:48,  shells:[2,8,18,8]},
+  {sym:'Rb', name:'Rubidium',     Z:37,  N:48,  shells:[2,8,18,8,1]},
+  {sym:'Sr', name:'Strontium',    Z:38,  N:50,  shells:[2,8,18,8,2]},
+  {sym:'Y',  name:'Yttrium',      Z:39,  N:50,  shells:[2,8,18,9,2]},
+  {sym:'Zr', name:'Zirconium',    Z:40,  N:51,  shells:[2,8,18,10,2]},
+  {sym:'Nb', name:'Niobium',      Z:41,  N:52,  shells:[2,8,18,12,1]},
+  {sym:'Mo', name:'Molybdenum',   Z:42,  N:54,  shells:[2,8,18,13,1]},
+  {sym:'Tc', name:'Technetium',   Z:43,  N:55,  shells:[2,8,18,13,2]},
+  {sym:'Ru', name:'Ruthenium',    Z:44,  N:57,  shells:[2,8,18,15,1]},
+  {sym:'Rh', name:'Rhodium',      Z:45,  N:58,  shells:[2,8,18,16,1]},
+  {sym:'Pd', name:'Palladium',    Z:46,  N:60,  shells:[2,8,18,18,0]},
+  {sym:'Ag', name:'Silver',       Z:47,  N:61,  shells:[2,8,18,18,1]},
+  {sym:'Cd', name:'Cadmium',      Z:48,  N:64,  shells:[2,8,18,18,2]},
+  {sym:'In', name:'Indium',       Z:49,  N:66,  shells:[2,8,18,18,3]},
+  {sym:'Sn', name:'Tin',          Z:50,  N:69,  shells:[2,8,18,18,4]},
+  {sym:'Sb', name:'Antimony',     Z:51,  N:71,  shells:[2,8,18,18,5]},
+  {sym:'Te', name:'Tellurium',    Z:52,  N:76,  shells:[2,8,18,18,6]},
+  {sym:'I',  name:'Iodine',       Z:53,  N:74,  shells:[2,8,18,18,7]},
+  {sym:'Xe', name:'Xenon',        Z:54,  N:77,  shells:[2,8,18,18,8]},
+  {sym:'Cs', name:'Cesium',       Z:55,  N:78,  shells:[2,8,18,18,8,1]},
+  {sym:'Ba', name:'Barium',       Z:56,  N:81,  shells:[2,8,18,18,8,2]},
+  {sym:'La', name:'Lanthanum',    Z:57,  N:82,  shells:[2,8,18,18,9,2]},
+  {sym:'Ce', name:'Cerium',       Z:58,  N:82,  shells:[2,8,18,19,9,2]},
+  {sym:'Pr', name:'Praseodymium', Z:59,  N:82,  shells:[2,8,18,21,8,2]},
+  {sym:'Nd', name:'Neodymium',    Z:60,  N:84,  shells:[2,8,18,22,8,2]},
+  {sym:'Pm', name:'Promethium',   Z:61,  N:84,  shells:[2,8,18,23,8,2]},
+  {sym:'Sm', name:'Samarium',     Z:62,  N:88,  shells:[2,8,18,24,8,2]},
+  {sym:'Eu', name:'Europium',     Z:63,  N:89,  shells:[2,8,18,25,8,2]},
+  {sym:'Gd', name:'Gadolinium',   Z:64,  N:93,  shells:[2,8,18,25,9,2]},
+  {sym:'Tb', name:'Terbium',      Z:65,  N:94,  shells:[2,8,18,27,8,2]},
+  {sym:'Dy', name:'Dysprosium',   Z:66,  N:97,  shells:[2,8,18,28,8,2]},
+  {sym:'Ho', name:'Holmium',      Z:67,  N:98,  shells:[2,8,18,29,8,2]},
+  {sym:'Er', name:'Erbium',       Z:68,  N:99,  shells:[2,8,18,30,8,2]},
+  {sym:'Tm', name:'Thulium',      Z:69,  N:100, shells:[2,8,18,31,8,2]},
+  {sym:'Yb', name:'Ytterbium',    Z:70,  N:103, shells:[2,8,18,32,8,2]},
+  {sym:'Lu', name:'Lutetium',     Z:71,  N:104, shells:[2,8,18,32,9,2]},
+  {sym:'Hf', name:'Hafnium',      Z:72,  N:106, shells:[2,8,18,32,10,2]},
+  {sym:'Ta', name:'Tantalum',     Z:73,  N:108, shells:[2,8,18,32,11,2]},
+  {sym:'W',  name:'Tungsten',     Z:74,  N:110, shells:[2,8,18,32,12,2]},
+  {sym:'Re', name:'Rhenium',      Z:75,  N:111, shells:[2,8,18,32,13,2]},
+  {sym:'Os', name:'Osmium',       Z:76,  N:114, shells:[2,8,18,32,14,2]},
+  {sym:'Ir', name:'Iridium',      Z:77,  N:115, shells:[2,8,18,32,15,2]},
+  {sym:'Pt', name:'Platinum',     Z:78,  N:117, shells:[2,8,18,32,17,1]},
+  {sym:'Au', name:'Gold',         Z:79,  N:118, shells:[2,8,18,32,18,1]},
+  {sym:'Hg', name:'Mercury',      Z:80,  N:121, shells:[2,8,18,32,18,2]},
+  {sym:'Tl', name:'Thallium',     Z:81,  N:123, shells:[2,8,18,32,18,3]},
+  {sym:'Pb', name:'Lead',         Z:82,  N:125, shells:[2,8,18,32,18,4]},
+  {sym:'Bi', name:'Bismuth',      Z:83,  N:126, shells:[2,8,18,32,18,5]},
+  {sym:'Po', name:'Polonium',     Z:84,  N:125, shells:[2,8,18,32,18,6]},
+  {sym:'At', name:'Astatine',     Z:85,  N:125, shells:[2,8,18,32,18,7]},
+  {sym:'Rn', name:'Radon',        Z:86,  N:136, shells:[2,8,18,32,18,8]},
+  {sym:'Fr', name:'Francium',     Z:87,  N:136, shells:[2,8,18,32,18,8,1]},
+  {sym:'Ra', name:'Radium',       Z:88,  N:138, shells:[2,8,18,32,18,8,2]},
+  {sym:'Ac', name:'Actinium',     Z:89,  N:138, shells:[2,8,18,32,18,9,2]},
+  {sym:'Th', name:'Thorium',      Z:90,  N:142, shells:[2,8,18,32,18,10,2]},
+  {sym:'Pa', name:'Protactinium', Z:91,  N:140, shells:[2,8,18,32,20,9,2]},
+  {sym:'U',  name:'Uranium',      Z:92,  N:146, shells:[2,8,18,32,21,9,2]},
+  {sym:'Np', name:'Neptunium',    Z:93,  N:144, shells:[2,8,18,32,22,9,2]},
+  {sym:'Pu', name:'Plutonium',    Z:94,  N:150, shells:[2,8,18,32,24,8,2]},
+  {sym:'Am', name:'Americium',    Z:95,  N:148, shells:[2,8,18,32,25,8,2]},
+  {sym:'Cm', name:'Curium',       Z:96,  N:151, shells:[2,8,18,32,25,9,2]},
+  {sym:'Bk', name:'Berkelium',    Z:97,  N:150, shells:[2,8,18,32,27,8,2]},
+  {sym:'Cf', name:'Californium',  Z:98,  N:153, shells:[2,8,18,32,28,8,2]},
+  {sym:'Es', name:'Einsteinium',  Z:99,  N:153, shells:[2,8,18,32,29,8,2]},
+  {sym:'Fm', name:'Fermium',      Z:100, N:157, shells:[2,8,18,32,30,8,2]},
+  {sym:'Md', name:'Mendelevium',  Z:101, N:157, shells:[2,8,18,32,31,8,2]},
+  {sym:'No', name:'Nobelium',     Z:102, N:157, shells:[2,8,18,32,32,8,2]},
+  {sym:'Lr', name:'Lawrencium',   Z:103, N:159, shells:[2,8,18,32,32,8,3]},
+  {sym:'Rf', name:'Rutherfordium',Z:104, N:161, shells:[2,8,18,32,32,10,2]},
+  {sym:'Db', name:'Dubnium',      Z:105, N:163, shells:[2,8,18,32,32,11,2]},
+  {sym:'Sg', name:'Seaborgium',   Z:106, N:165, shells:[2,8,18,32,32,12,2]},
+  {sym:'Bh', name:'Bohrium',      Z:107, N:163, shells:[2,8,18,32,32,13,2]},
+  {sym:'Hs', name:'Hassium',      Z:108, N:169, shells:[2,8,18,32,32,14,2]},
+  {sym:'Mt', name:'Meitnerium',   Z:109, N:169, shells:[2,8,18,32,32,15,2]},
+  {sym:'Ds', name:'Darmstadtium', Z:110, N:171, shells:[2,8,18,32,32,17,1]},
+  {sym:'Rg', name:'Roentgenium',  Z:111, N:169, shells:[2,8,18,32,32,18,1]},
+  {sym:'Cn', name:'Copernicium',  Z:112, N:173, shells:[2,8,18,32,32,18,2]},
+  {sym:'Nh', name:'Nihonium',     Z:113, N:173, shells:[2,8,18,32,32,18,3]},
+  {sym:'Fl', name:'Flerovium',    Z:114, N:175, shells:[2,8,18,32,32,18,4]},
+  {sym:'Mc', name:'Moscovium',    Z:115, N:174, shells:[2,8,18,32,32,18,5]},
+  {sym:'Lv', name:'Livermorium',  Z:116, N:177, shells:[2,8,18,32,32,18,6]},
+  {sym:'Ts', name:'Tennessine',   Z:117, N:177, shells:[2,8,18,32,32,18,7]},
+  {sym:'Og', name:'Oganesson',    Z:118, N:176, shells:[2,8,18,32,32,18,8]},
+  {sym:'Ue', name:'Ununennium',   Z:119, N:178, shells:[2,8,18,32,32,18,8,1]},
+  {sym:'Ubn',name:'Unbinilium',   Z:120, N:180, shells:[2,8,18,32,32,18,8,2]},
+  {sym:'Ubu',name:'Unbiunium',    Z:121, N:182, shells:[2,8,18,32,32,18,9,2]},
+  {sym:'Ubb',name:'Unbibium',     Z:122, N:184, shells:[2,8,18,32,32,18,10,2]},
+  {sym:'Ubt',name:'Unbitrium',    Z:123, N:184, shells:[2,8,18,32,32,18,11,2]},
+  {sym:'Ubq',name:'Unbiquadium',  Z:124, N:186, shells:[2,8,18,32,32,18,12,2]},
+  {sym:'Ubp',name:'Unbipentium',  Z:125, N:188, shells:[2,8,18,32,32,18,13,2]},
+  {sym:'Ubh',name:'Unbihexium',   Z:126, N:190, shells:[2,8,18,32,32,18,14,2]},
+  {sym:'Ubs',name:'Unbiseptium',  Z:127, N:191, shells:[2,8,18,32,32,18,15,2]},
+];
+
+/* Element category for periodic table coloring */
+const ELEM_CAT = [
+  null,'nonmetal','noble','alkali','alkaline','metalloid','nonmetal','nonmetal','nonmetal','nonmetal','noble',
+  'alkali','alkaline','post-transition','metalloid','nonmetal','nonmetal','nonmetal','noble',
+  'alkali','alkaline','transition','transition','transition','transition','transition','transition','transition','transition','transition','transition',
+  'post-transition','metalloid','metalloid','nonmetal','nonmetal','noble',
+  'alkali','alkaline','transition','transition','transition','transition','transition','transition','transition','transition','transition','transition',
+  'post-transition','post-transition','metalloid','nonmetal','nonmetal','noble',
+  'alkali','alkaline','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide','lanthanide',
+  'transition','transition','transition','transition','transition','transition','transition','transition','transition',
+  'post-transition','post-transition','post-transition','post-transition','metalloid','nonmetal','noble',
+  'alkali','alkaline','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide','actinide',
+  'transition','transition','transition','transition','transition','transition','transition','transition','transition',
+  'post-transition','post-transition','post-transition','post-transition','post-transition','nonmetal','noble',
+  'alkali','alkaline','transition','transition','transition','transition','transition','transition','transition',
+];
+
+/* Periodic table layout: [Z, row, col] — standard 18-column layout */
+function buildPeriodicLayout() {
+  // Period start positions [row][col] for element Z
+  const layout = {};
+  // Period 1
+  layout[1]  = [1,1];  layout[2]  = [1,18];
+  // Period 2
+  for (let i=3;i<=4;i++)  layout[i]=[2,i-2];
+  for (let i=5;i<=10;i++) layout[i]=[2,i+8];
+  // Period 3
+  for (let i=11;i<=12;i++) layout[i]=[3,i-10];
+  for (let i=13;i<=18;i++) layout[i]=[3,i+0];
+  // Period 4
+  for (let i=19;i<=36;i++) layout[i]=[4,i-18];
+  // Period 5
+  for (let i=37;i<=54;i++) layout[i]=[5,i-36];
+  // Period 6
+  layout[55]=[6,1]; layout[56]=[6,2];
+  layout[57]=[8,3]; // La in lanthanide row
+  for (let i=58;i<=71;i++) layout[i]=[8,i-55];
+  for (let i=72;i<=86;i++) layout[i]=[6,i-68];
+  // Period 7
+  layout[87]=[7,1]; layout[88]=[7,2];
+  layout[89]=[9,3]; // Ac in actinide row
+  for (let i=90;i<=103;i++) layout[i]=[9,i-87];
+  for (let i=104;i<=118;i++) layout[i]=[7,i-100];
+  // Period 8 (hypothetical)
+  for (let i=119;i<=127;i++) layout[i]=[10, i-118];
+  return layout;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   QUANTUM ORBITAL MATH
+   Based on atom_realtime.cpp by kavang (dartsolarpunk/Atoms)
+   ════════════════════════════════════════════════════════════════════════ */
+
+const a0 = 1.0; // Bohr radius (normalized)
+
+function assocLaguerre(k, alpha, rho) {
+  if (k < 0) return 1.0;
+  if (k === 0) return 1.0;
+  if (k === 1) return 1.0 + alpha - rho;
+  let Lm2 = 1.0, Lm1 = 1.0 + alpha - rho, L = Lm1;
+  for (let j = 2; j <= k; j++) {
+    L = ((2*j - 1 + alpha - rho) * Lm1 - (j - 1 + alpha) * Lm2) / j;
+    Lm2 = Lm1; Lm1 = L;
+  }
+  return L;
+}
+
+function assocLegendre(l, m, x) {
+  let Pmm = 1.0;
+  if (m > 0) {
+    const somx2 = Math.sqrt(Math.max(0, (1.0 - x) * (1.0 + x)));
+    let fact = 1.0;
+    for (let j = 1; j <= m; j++) { Pmm *= -fact * somx2; fact += 2.0; }
+  }
+  if (l === m) return Pmm;
+  let Pm1m = x * (2*m + 1) * Pmm;
+  if (l === m + 1) return Pm1m;
+  let Pll = Pm1m;
+  for (let ll = m + 2; ll <= l; ll++) {
+    Pll = ((2*ll - 1) * x * Pm1m - (ll + m - 1) * Pmm) / (ll - m);
+    Pmm = Pm1m; Pm1m = Pll;
+  }
+  return Pm1m;
+}
+
+// Compute |ψ_nlm(r,θ,φ)|² probability density
+function psiDensity(r, theta, n, l, m) {
+  const rho = 2.0 * r / (n * a0);
+  const k = n - l - 1;
+  const alpha = 2 * l + 1;
+  const L = assocLaguerre(k, alpha, rho);
+  const norm = Math.pow(2.0 / (n * a0), 3) *
+               gamma(n - l) / (2.0 * n * gamma(n + l + 1));
+  const R = Math.sqrt(Math.max(0, norm)) * Math.exp(-rho / 2.0) * Math.pow(rho, l) * L;
+  const x = Math.cos(theta);
+  const Plm = assocLegendre(l, m, x);
+  return R * R * Plm * Plm;
+}
+
+// Simple gamma approximation using Stirling / factorial for small integers
+function gamma(n) {
+  if (n <= 0) return 1e-30;
+  if (n <= 1) return 1.0;
+  if (n <= 20) {
+    let r = 1;
+    for (let i = 1; i < n; i++) r *= i;
+    return r;
+  }
+  // Stirling for larger n
+  return Math.sqrt(2 * Math.PI / n) * Math.pow(n / Math.E, n);
+}
+
+// Pre-build CDFs per (n,l) combination for fast CDF sampling
+// Cache keyed by `${n}_${l}`
+const _rCDFs = {};
+const _tCDFs = {};
+const CDF_R_N = 4096;
+const CDF_T_N = 2048;
+
+function buildRadialCDF(n, l) {
+  const key = `${n}_${l}`;
+  if (_rCDFs[key]) return _rCDFs[key];
+  const rMax = 10.0 * n * n * a0;
+  const dr = rMax / (CDF_R_N - 1);
+  const cdf = new Float64Array(CDF_R_N);
+  let sum = 0;
+  for (let i = 0; i < CDF_R_N; i++) {
+    const r = i * dr;
+    const rho = 2.0 * r / (n * a0);
+    const k = n - l - 1;
+    const alpha = 2 * l + 1;
+    const L = assocLaguerre(k, alpha, rho);
+    const norm = Math.pow(2.0 / (n * a0), 3) * gamma(n - l) / (2.0 * n * gamma(n + l + 1));
+    const R = Math.sqrt(Math.max(0, norm)) * Math.exp(-rho / 2.0) * Math.pow(rho, l) * L;
+    const pdf = r * r * R * R;
+    sum += pdf;
+    cdf[i] = sum;
+  }
+  if (sum > 0) for (let i = 0; i < CDF_R_N; i++) cdf[i] /= sum;
+  return (_rCDFs[key] = { cdf, rMax, dr });
+}
+
+function buildThetaCDF(l, m) {
+  const key = `${l}_${m}`;
+  if (_tCDFs[key]) return _tCDFs[key];
+  const dtheta = Math.PI / (CDF_T_N - 1);
+  const cdf = new Float64Array(CDF_T_N);
+  let sum = 0;
+  for (let i = 0; i < CDF_T_N; i++) {
+    const theta = i * dtheta;
+    const x = Math.cos(theta);
+    const Plm = assocLegendre(l, m, x);
+    const pdf = Math.sin(theta) * Plm * Plm;
+    sum += pdf;
+    cdf[i] = sum;
+  }
+  if (sum > 0) for (let i = 0; i < CDF_T_N; i++) cdf[i] /= sum;
+  return (_tCDFs[key] = { cdf, dtheta });
+}
+
+function sampleCDF(cdf, scale) {
+  const u = Math.random();
+  let lo = 0, hi = cdf.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cdf[mid] < u) lo = mid + 1; else hi = mid;
+  }
+  return lo * scale;
+}
+
+/* Sample a 3D position from orbital ψ_nlm */
+function sampleOrbital(n, l, m) {
+  const { cdf: rcdf, rMax, dr } = buildRadialCDF(n, l);
+  const { cdf: tcdf, dtheta }   = buildThetaCDF(l, Math.abs(m));
+  const r     = sampleCDF(rcdf, dr);
+  const theta = sampleCDF(tcdf, dtheta);
+  const phi   = Math.random() * 2 * Math.PI;
+  const sinT  = Math.sin(theta);
+  return {
+    x: r * sinT * Math.cos(phi),
+    y: r * Math.cos(theta),
+    z: r * sinT * Math.sin(phi),
+    r, theta, phi
+  };
+}
+
+/* Heatmap fire colormap (from atom_realtime.cpp) */
+function heatmapFire(value) {
+  value = Math.max(0, Math.min(1, value));
+  const stops = [
+    [0,0,0],         // black
+    [0.5,0,0.99],    // dark purple
+    [0.8,0,0],       // deep red
+    [1,0.5,0],       // orange
+    [1,1,0],         // yellow
+    [1,1,1],         // white
+  ];
+  const t = value * (stops.length - 1);
+  const i = Math.min(Math.floor(t), stops.length - 2);
+  const f = t - i;
+  return stops[i].map((v, k) => v + f * (stops[i+1][k] - v));
+}
+
+function heatmapCyan(value) {
+  value = Math.max(0, Math.min(1, value));
+  const stops = [[0,0,0],[0,0.1,0.3],[0,0.5,0.8],[0,0.9,1],[1,1,1]];
+  const t = value * (stops.length - 1);
+  const i = Math.min(Math.floor(t), stops.length - 2);
+  const f = t - i;
+  return stops[i].map((v, k) => v + f * (stops[i+1][k] - v));
+}
+
+function heatmapRainbow(value) {
+  value = Math.max(0, Math.min(1, value));
+  const h = value * 300;
+  const s = 1, v = 1;
+  const c = v*s, x = c*(1-Math.abs((h/60)%2-1)), m = v-c;
+  let r=0,g=0,b=0;
+  if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}
+  else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x}
+  return [r+m,g+m,b+m];
+}
+
+/* Shell colors for SHELL mode */
+const SHELL_COLS = [
+  [1,0.2,0.2],[0.2,1,0.4],[0.2,0.6,1],[1,0.8,0],[0.8,0.2,1],[0,1,0.9],[1,0.5,0.1]
+];
+
+let CFG = {
+  colorMode: 'fire',
+  ptsPerOrbital: 2000,
+  ptSize: 1.5,
+  atomScale: 20,
+  opacity: 0.85,
+  showNucleus: true,
+  showShells: false,
+  maxShells: 4,
+  atomSpacing: 0,
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   ORBITAL ASSIGNMENT — Aufbau / shell filling
+   Map electron count to {n,l,m} orbitals and electrons per orbital
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Returns list of {n,l,m,electrons} occupied orbitals for a given electron config (shells array)
+function getOccupiedOrbitals(shellsArr) {
+  // Aufbau order: 1s 2s 2p 3s 3p 4s 3d 4p 5s 4d 5p 6s 4f 5d 6p 7s 5f 6d 7p
+  const aufbau = [
+    {n:1,l:0},{n:2,l:0},{n:2,l:1},{n:3,l:0},{n:3,l:1},{n:4,l:0},{n:3,l:2},
+    {n:4,l:1},{n:5,l:0},{n:4,l:2},{n:5,l:1},{n:6,l:0},{n:4,l:3},{n:5,l:2},
+    {n:6,l:1},{n:7,l:0},{n:5,l:3},{n:6,l:2},{n:7,l:1}
+  ];
+
+  // Count total electrons
+  let totalE = shellsArr.reduce((a, b) => a + b, 0);
+  if (totalE <= 0) return [];
+
+  const result = [];
+  for (const {n, l} of aufbau) {
+    if (totalE <= 0) break;
+    const maxE = 2 * (2*l + 1);
+    const fill = Math.min(totalE, maxE);
+    totalE -= fill;
+    // Assign electrons to m sublevels
+    for (let m = -l; m <= l; m++) {
+      if (fill <= 0) break;
+      const eInM = Math.min(2, fill - (m + l) * 2); // rough distribution
+      const mFill = Math.max(0, Math.min(2, fill));
+      result.push({n, l, m, electrons: mFill > 0 ? 1 : 0});
+    }
+    // Simpler: just add one entry per subshell with total electrons
+    // Remove the m-loop entries, replace with subshell summary
+    // (pop back and do it cleanly)
+    while (result.length > 0 && result[result.length-1].n === n && result[result.length-1].l === l) {
+      result.pop();
+    }
+    result.push({n, l, m: 0, electrons: fill, maxElectrons: maxE});
+  }
+  return result;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   THREE.JS SCENE
+   ════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06101a);
+
+const cam = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 500000);
+scene.add(new THREE.AmbientLight(0x223344, 1.2));
+const dLight = new THREE.DirectionalLight(0x00e5ff, 0.8);
+dLight.position.set(200, 300, 200);
+scene.add(dLight);
+
+/* Starfield background */
+const starGeo = new THREE.BufferGeometry();
+const starPos = new Float32Array(3000);
+for (let i = 0; i < 3000; i++) {
+  const r = 8000 + Math.random() * 4000;
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  starPos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+  starPos[i*3+1] = r * Math.cos(phi);
+  starPos[i*3+2] = r * Math.sin(phi) * Math.sin(theta);
+}
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({color:0x334455,size:3,transparent:true,opacity:0.6})));
+
+/* ── Scene atoms: each atom has a group in scene ── */
+let sceneAtoms = []; // [{elemZ, group, pointsObj, nucleusMesh, shellMeshes}]
+let selectedAtomIdx = -1;
+let viewMode = 'density';
+
+/* ── Build orbital point cloud for one atom ── */
+function buildAtomCloud(elemZ, offsetX) {
+  const elem = ELEMENT_DATA[elemZ];
+  if (!elem) return null;
+  const g = new THREE.Group();
+  g.position.x = offsetX;
+
+  const orbitals = getOccupiedOrbitals(elem.shells);
+  const sc = CFG.atomScale;
+
+  // Accumulate all particles
+  const allPos = [];
+  const allCol = [];
+
+  orbitals.forEach(({n, l, m, electrons, maxElectrons}, oi) => {
+    if (electrons <= 0) return;
+    if (n > CFG.maxShells) return;
+    const pts = Math.round(CFG.ptsPerOrbital * (electrons / Math.max(1, maxElectrons)));
+    for (let i = 0; i < pts; i++) {
+      const s = sampleOrbital(n, l, m);
+      allPos.push(s.x * sc, s.y * sc, s.z * sc);
+
+      // Compute |ψ|² for color
+      const dens = psiDensity(s.r, s.theta, n, l, m);
+      const densScaled = Math.min(1, dens * 1.8 * Math.pow(5, n));
+
+      let rgb;
+      if (CFG.colorMode === 'fire') rgb = heatmapFire(densScaled);
+      else if (CFG.colorMode === 'cyan') rgb = heatmapCyan(densScaled);
+      else if (CFG.colorMode === 'rainbow') rgb = heatmapRainbow(densScaled);
+      else rgb = SHELL_COLS[(n-1) % SHELL_COLS.length]; // shell mode
+
+      allCol.push(...rgb);
+    }
+  });
+
+  if (allPos.length === 0) return g;
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allPos), 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(allCol), 3));
+
+  const mat = new THREE.PointsMaterial({
+    size: CFG.ptSize,
+    vertexColors: true,
+    transparent: true,
+    opacity: CFG.opacity,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const pts = new THREE.Points(geo, mat);
+  g.add(pts);
+
+  // Nucleus mesh
+  let nucMesh = null;
+  if (CFG.showNucleus) {
+    const nucR = Math.max(2, Math.log(elemZ + 1) * 2.5);
+    const nucGeo = new THREE.SphereGeometry(nucR, 16, 12);
+    const nucMat = new THREE.MeshPhongMaterial({
+      color: 0xff3333, emissive: 0xaa1100, emissiveIntensity: 0.6,
+      transparent: true, opacity: 0.9, shininess: 80
+    });
+    nucMesh = new THREE.Mesh(nucGeo, nucMat);
+    g.add(nucMesh);
+  }
+
+  // Shell wireframes
+  const shellMeshes = [];
+  if (CFG.showShells) {
+    elem.shells.forEach((eCount, si) => {
+      if (si >= CFG.maxShells || eCount <= 0) return;
+      const shR = (si + 1) * sc * 3;
+      const shGeo = new THREE.SphereGeometry(shR, 16, 10);
+      const shMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(...SHELL_COLS[si % SHELL_COLS.length]),
+        wireframe: true, transparent: true, opacity: 0.08
+      });
+      const sh = new THREE.Mesh(shGeo, shMat);
+      g.add(sh);
+      shellMeshes.push(sh);
+    });
+  }
+
+  scene.add(g);
+  return { elemZ, group: g, pointsObj: pts, nucleusMesh: nucMesh, shellMeshes };
+}
+
+/* ── Compute atom positions in scene ── */
+function rebuildScene() {
+  // Remove all old groups
+  sceneAtoms.forEach(a => { if (a.group) scene.remove(a.group); });
+
+  const n = sceneAtoms.length;
+  const spacing = CFG.atomSpacing || (CFG.atomScale * 8);
+  const totalW = (n - 1) * spacing;
+  const rebuilt = [];
+
+  sceneAtoms.forEach((a, i) => {
+    const offsetX = -totalW / 2 + i * spacing;
+    const obj = buildAtomCloud(a.elemZ, offsetX);
+    if (obj) rebuilt.push(obj);
+  });
+
+  sceneAtoms = rebuilt;
+  updateScenePanel();
+}
+
+function addAtomToScene(elemZ) {
+  // Keep old data, just push new entry
+  sceneAtoms.push({ elemZ });
+  rebuildScene();
+  document.getElementById('sAtoms').textContent = sceneAtoms.length;
+  updateStats();
+}
+
+function removeAtomFromScene(idx) {
+  if (sceneAtoms[idx] && sceneAtoms[idx].group)
+    scene.remove(sceneAtoms[idx].group);
+  sceneAtoms.splice(idx, 1);
+  rebuildScene();
+  document.getElementById('sAtoms').textContent = sceneAtoms.length;
+  updateStats();
+}
+
+function updateStats() {
+  let total = 0;
+  sceneAtoms.forEach(a => {
+    if (a.pointsObj) total += a.pointsObj.geometry.attributes.position.count;
+  });
+  document.getElementById('sParts').textContent = total.toLocaleString();
+  document.getElementById('sAtoms').textContent = sceneAtoms.length;
+  if (sceneAtoms.length > 0 && selectedAtomIdx >= 0 && selectedAtomIdx < sceneAtoms.length) {
+    const e = ELEMENT_DATA[sceneAtoms[selectedAtomIdx].elemZ];
+    document.getElementById('sElem').textContent = e ? `${e.sym} ${e.name}` : '—';
+  } else if (sceneAtoms.length > 0) {
+    const e = ELEMENT_DATA[sceneAtoms[0].elemZ];
+    document.getElementById('sElem').textContent = e ? `${e.sym} ${e.name}` : '—';
+  } else {
+    document.getElementById('sElem').textContent = '—';
+  }
+}
+
+function updPtSz() {
+  sceneAtoms.forEach(a => {
+    if (a.pointsObj) {
+      a.pointsObj.material.size = CFG.ptSize;
+      a.pointsObj.material.opacity = CFG.opacity;
+    }
+  });
+}
+
+/* ── View mode ── */
+function setViewMode(mode) {
+  viewMode = mode;
+  document.querySelectorAll('.vbtn').forEach(b => b.classList.toggle('on', b.dataset.view === mode));
+  document.getElementById('vind').textContent = {
+    density: 'PROBABILITY DENSITY',
+    phase: 'PHASE ANGLE',
+    nucleus: 'NUCLEUS HIGHLIGHT',
+    wire: 'WIREFRAME SHELLS',
+  }[mode] || mode.toUpperCase();
+
+  sceneAtoms.forEach(a => {
+    if (!a.pointsObj) return;
+    if (mode === 'wire') {
+      a.pointsObj.material.blending = THREE.NormalBlending;
+      a.pointsObj.material.opacity = 0.25;
+    } else {
+      a.pointsObj.material.blending = THREE.AdditiveBlending;
+      a.pointsObj.material.opacity = CFG.opacity;
+    }
+    if (a.nucleusMesh) {
+      a.nucleusMesh.visible = mode !== 'wire';
+    }
+    if (a.shellMeshes) {
+      a.shellMeshes.forEach(s => s.visible = (mode === 'wire' || CFG.showShells));
+    }
+  });
+}
+
+/* ── Color mode ── */
+function setCM(cm) {
+  CFG.colorMode = cm;
+  ['fire','cyan','rainbow','shell'].forEach(k => {
+    document.getElementById('cm-'+k).classList.toggle('on', k === cm);
+  });
+  rebuildScene();
+}
+
+/* ── Resample ── */
+function resample() {
+  // Clear CDF caches to allow fresh sampling (keep CDFs for speed)
+  rebuildScene();
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   ORBIT CAMERA
+   ════════════════════════════════════════════════════════════════════════ */
+const orb = { theta: -0.4, phi: 1.1, r: 600, tgt: new THREE.Vector3(0, 0, 0),
+               drag: false, pan: false, lx: 0, ly: 0, pinch: 0 };
+
+function camUpdate() {
+  const { theta, phi, r, tgt } = orb;
+  const sp = Math.sin(phi);
+  cam.position.set(
+    tgt.x + r * sp * Math.sin(theta),
+    tgt.y + r * Math.cos(phi),
+    tgt.z + r * sp * Math.cos(theta)
+  );
+  cam.lookAt(tgt);
+}
+camUpdate();
+
+canvas.addEventListener('mousedown', e => {
+  if (e.target.closest('#hud')) return;
+  orb.drag = true; orb.pan = e.button === 1 || e.shiftKey;
+  orb.lx = e.clientX; orb.ly = e.clientY;
+  e.preventDefault();
+});
+window.addEventListener('mousemove', e => {
+  if (!orb.drag) return;
+  const dx = e.clientX - orb.lx, dy = e.clientY - orb.ly;
+  orb.lx = e.clientX; orb.ly = e.clientY;
+  if (orb.pan) {
+    const sc = orb.r * 0.001;
+    const rt = new THREE.Vector3().crossVectors(cam.getWorldDirection(new THREE.Vector3()).negate(), cam.up).normalize();
+    orb.tgt.addScaledVector(rt, dx * sc); orb.tgt.y -= dy * sc;
+  } else {
+    orb.theta -= dx * 0.006;
+    orb.phi = Math.max(0.01, Math.min(Math.PI - 0.01, orb.phi - dy * 0.006));
+  }
+  camUpdate();
+});
+window.addEventListener('mouseup', () => { orb.drag = false; });
+canvas.addEventListener('wheel', e => {
+  orb.r = Math.max(20, Math.min(20000, orb.r * (1 + e.deltaY * 0.001)));
+  camUpdate(); e.preventDefault();
+}, { passive: false });
+
+let _t = [];
+canvas.addEventListener('touchstart', e => {
+  if (e.target.closest('#hud')) return;
+  _t = [...e.touches];
+  if (_t.length === 1) { orb.drag = true; orb.pan = false; orb.lx = _t[0].clientX; orb.ly = _t[0].clientY; }
+  else if (_t.length === 2) {
+    orb.drag = false;
+    orb.pinch = Math.hypot(_t[1].clientX-_t[0].clientX, _t[1].clientY-_t[0].clientY);
+    orb.lx = (_t[0].clientX+_t[1].clientX)/2; orb.ly = (_t[0].clientY+_t[1].clientY)/2;
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  if (e.target.closest('#hud')) return;
+  const ts = [...e.touches];
+  if (ts.length === 1 && orb.drag) {
+    const dx = ts[0].clientX-orb.lx, dy = ts[0].clientY-orb.ly;
+    orb.lx = ts[0].clientX; orb.ly = ts[0].clientY;
+    orb.theta -= dx*0.007;
+    orb.phi = Math.max(0.01, Math.min(Math.PI-0.01, orb.phi - dy*0.007));
+    camUpdate();
+  } else if (ts.length === 2) {
+    const d = Math.hypot(ts[1].clientX-ts[0].clientX, ts[1].clientY-ts[0].clientY);
+    orb.r = Math.max(20, Math.min(20000, orb.r * (1 + (orb.pinch-d)*0.008)));
+    orb.pinch = d;
+    const mx = (ts[0].clientX+ts[1].clientX)/2, my = (ts[0].clientY+ts[1].clientY)/2;
+    const pdx = mx-orb.lx, pdy = my-orb.ly;
+    orb.lx = mx; orb.ly = my;
+    const sc = orb.r * 0.0012;
+    const rt = new THREE.Vector3().crossVectors(cam.getWorldDirection(new THREE.Vector3()).negate(), cam.up).normalize();
+    orb.tgt.addScaledVector(rt, pdx*sc); orb.tgt.y += pdy*sc;
+    camUpdate();
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  _t = [...e.touches];
+  if (!_t.length) orb.drag = false;
+  else if (_t.length === 1) { orb.drag = true; orb.lx = _t[0].clientX; orb.ly = _t[0].clientY; }
+  e.preventDefault();
+}, { passive: false });
+
+/* ════════════════════════════════════════════════════════════════════════
+   UI PANEL
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Build element list in panel
+function buildElemList() {
+  const list = document.getElementById('elem-list');
+  list.innerHTML = '';
+  for (let z = 1; z <= 127; z++) {
+    const e = ELEMENT_DATA[z];
+    if (!e) continue;
+    const row = document.createElement('div');
+    row.className = 'elem-row';
+    row.innerHTML = `<span class="elem-z">${z}</span><span class="elem-sym">${e.sym}</span><span class="elem-name">${e.name}</span><span class="elem-e">e: ${e.shells.reduce((a,b)=>a+b,0)}</span>`;
+    row.addEventListener('click', () => { addAtomToScene(z); spawnRip(event.clientX, event.clientY); });
+    list.appendChild(row);
+  }
+}
+
+function updateScenePanel() {
+  const cont = document.getElementById('scene-atoms');
+  if (sceneAtoms.length === 0) {
+    cont.innerHTML = '<div style="font-family:\'Share Tech Mono\',monospace;font-size:var(--cs);color:var(--dim)">NO ATOMS ADDED YET</div>';
+    return;
+  }
+  cont.innerHTML = '';
+  sceneAtoms.forEach((a, i) => {
+    const e = ELEMENT_DATA[a.elemZ];
+    if (!e) return;
+    const chip = document.createElement('div');
+    chip.className = 'scene-atom-chip';
+    chip.innerHTML = `<span class="chip-sym">${e.sym}</span><span class="chip-name">${e.name} (Z=${e.Z})</span>
+      <button class="chip-sel${selectedAtomIdx === i ? ' active' : ''}" onclick="selectAtom(${i})">SEL</button>
+      <button class="chip-rm" onclick="removeAtomFromScene(${i})">✕</button>`;
+    cont.appendChild(chip);
+  });
+}
+
+function selectAtom(idx) {
+  selectedAtomIdx = idx;
+  updateScenePanel();
+  updateStats();
+  // Focus camera on selected atom
+  if (sceneAtoms[idx] && sceneAtoms[idx].group) {
+    orb.tgt.copy(sceneAtoms[idx].group.position);
+    camUpdate();
+  }
+}
+
+// Panel toggle
+document.getElementById('panel-wrap').querySelector('#ptog').addEventListener('click', () => {
+  document.getElementById('panel-wrap').classList.toggle('open');
+});
+
+// View buttons
+document.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () => setViewMode(b.dataset.view)));
+
+// Periodic table
+document.getElementById('periodic-btn').addEventListener('click', () => {
+  document.getElementById('periodic-overlay').classList.remove('hidden');
+});
+document.getElementById('periodic-close').addEventListener('click', () => {
+  document.getElementById('periodic-overlay').classList.add('hidden');
+});
+
+// Clear scene
+document.getElementById('clear-btn').addEventListener('click', () => {
+  sceneAtoms.forEach(a => { if (a.group) scene.remove(a.group); });
+  sceneAtoms = [];
+  updateScenePanel();
+  updateStats();
+});
+
+// Resample
+document.getElementById('gen-btn').addEventListener('click', () => rebuildScene());
+
+/* ── Build periodic table grid ── */
+function buildPeriodicGrid() {
+  const grid = document.getElementById('periodic-grid');
+  grid.innerHTML = '';
+  const layout = buildPeriodicLayout();
+  const maxRow = 10, maxCol = 18;
+  // Create full grid
+  const cells = {};
+  for (let r = 1; r <= maxRow; r++)
+    for (let c = 1; c <= maxCol; c++) cells[`${r}_${c}`] = null;
+
+  // Place elements
+  for (let z = 1; z <= 127; z++) {
+    const pos = layout[z];
+    if (!pos) continue;
+    cells[`${pos[0]}_${pos[1]}`] = z;
+  }
+
+  // Build grid HTML — we use flex-wrapped positioning via absolute grid
+  // Actually use a proper CSS grid with explicit placement
+  for (let r = 1; r <= maxRow; r++) {
+    for (let c = 1; c <= maxCol; c++) {
+      const key = `${r}_${c}`;
+      const z = cells[key];
+      const cell = document.createElement('div');
+      cell.style.gridRow = r;
+      cell.style.gridColumn = c;
+
+      if (z === null) {
+        cell.className = 'pt-cell empty';
+      } else {
+        const e = ELEMENT_DATA[z];
+        const cat = ELEM_CAT[z] || 'transition';
+        cell.className = `pt-cell`;
+        cell.dataset.cat = cat;
+        cell.innerHTML = `<div class="pt-cell-z">${z}</div><div class="pt-cell-sym">${e.sym}</div><div class="pt-cell-name">${e.name.substring(0,8)}</div>`;
+        cell.addEventListener('click', () => {
+          addAtomToScene(z);
+          document.getElementById('periodic-overlay').classList.add('hidden');
+          spawnRip(event.clientX, event.clientY);
+        });
+      }
+      grid.appendChild(cell);
+    }
+  }
+}
+
+function spawnRip(x, y) {
+  const el = document.createElement('div'); el.className = 'rip';
+  el.style.left = x+'px'; el.style.top = y+'px';
+  document.body.appendChild(el); el.addEventListener('animationend', () => el.remove());
+}
+
+/* ── Resize ── */
+window.addEventListener('resize', () => {
+  cam.aspect = innerWidth / innerHeight;
+  cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setSize(innerWidth, innerHeight);
+
+/* ════════════════════════════════════════════════════════════════════════
+   ASYNC INIT: pre-build CDFs for common orbitals, then start
+   ════════════════════════════════════════════════════════════════════════ */
+const loadBar = document.getElementById('load-bar');
+const loadTxt = document.getElementById('load-txt');
+
+async function initCDFs() {
+  // Pre-build CDFs for n=1..5, l=0..n-1 to avoid jank during first add
+  const pairs = [];
+  for (let n = 1; n <= 5; n++)
+    for (let l = 0; l < n; l++)
+      pairs.push({n, l});
+
+  for (let i = 0; i < pairs.length; i++) {
+    const {n, l} = pairs[i];
+    loadTxt.textContent = `BUILDING ψ_${n}${['s','p','d','f','g'][l]} CDF…`;
+    loadBar.style.width = (((i+1)/pairs.length)*100).toFixed(0) + '%';
+    // Yield to UI
+    await new Promise(r => setTimeout(r, 0));
+    buildRadialCDF(n, l);
+    buildThetaCDF(l, 0);
+  }
+
+  document.getElementById('loading').classList.add('hidden');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   MAIN LOOP
+   ════════════════════════════════════════════════════════════════════════ */
+let _frames = 0, _lt = performance.now();
+
+function loop() {
+  requestAnimationFrame(loop);
+  // Slow nucleus pulse
+  sceneAtoms.forEach(a => {
+    if (a.nucleusMesh) {
+      const t = performance.now() * 0.001;
+      const s = 1 + 0.12 * Math.sin(t * 3 + a.elemZ);
+      a.nucleusMesh.scale.setScalar(s);
+    }
+    if (a.group) a.group.rotation.y += 0.002;
+  });
+  renderer.render(scene, cam);
+
+  _frames++;
+  const now = performance.now();
+  if (now - _lt > 500) {
+    document.getElementById('sfps').textContent = Math.round(_frames * 1000 / (now - _lt));
+    _frames = 0; _lt = now;
+  }
+}
+
+/* Bootstrap */
+(async () => {
+  buildElemList();
+  buildPeriodicGrid();
+  await initCDFs();
+  // Add Hydrogen by default
+  addAtomToScene(1);
+  loop();
+})();
+</script>
+</body>
+</html>
