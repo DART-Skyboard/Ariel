@@ -348,10 +348,10 @@ body::after{content:'';position:fixed;inset:0;
         <div class="card">
           <h3>// ORBITAL RENDERING</h3>
           <div class="row am">
-            <label>PARTICLES/ORBITAL</label>
-            <input type="range" id="rPO" min="500" max="8000" step="100" value="2000"
+            <label>PARTICLES/ELECTRON</label>
+            <input type="range" id="rPO" min="50" max="2000" step="50" value="400"
               oninput="CFG.ptsPerOrbital=+this.value;document.getElementById('nPO').value=this.value">
-            <input type="number" id="nPO" value="2000" step="100" min="500" max="8000"
+            <input type="number" id="nPO" value="400" step="50" min="50" max="2000"
               onchange="document.getElementById('rPO').value=this.value;CFG.ptsPerOrbital=+this.value">
           </div>
           <div class="row">
@@ -397,9 +397,9 @@ body::after{content:'';position:fixed;inset:0;
           <h3>// QUANTUM STATE</h3>
           <div class="row">
             <label>N SHELLS (MAX)</label>
-            <input type="range" id="rNS" min="1" max="7" step="1" value="4"
+            <input type="range" id="rNS" min="1" max="7" step="1" value="7"
               oninput="CFG.maxShells=+this.value;document.getElementById('nNS').value=this.value">
-            <input type="number" id="nNS" value="4" step="1" min="1" max="7"
+            <input type="number" id="nNS" value="7" step="1" min="1" max="7"
               onchange="document.getElementById('rNS').value=this.value;CFG.maxShells=+this.value">
           </div>
           <div class="row am">
@@ -796,56 +796,97 @@ const SHELL_COLS = [
 
 let CFG = {
   colorMode: 'fire',
-  ptsPerOrbital: 2000,
+  ptsPerOrbital: 400,   // per electron — heavy atoms have many electrons so keep this modest
   ptSize: 1.5,
   atomScale: 20,
   opacity: 0.85,
   showNucleus: true,
   showShells: false,
-  maxShells: 4,
+  maxShells: 7,
   atomSpacing: 0,
 };
 
 /* ════════════════════════════════════════════════════════════════════════
-   ORBITAL ASSIGNMENT — Aufbau / shell filling
-   Map electron count to {n,l,m} orbitals and electrons per orbital
+   ORBITAL ASSIGNMENT — Aufbau filling, one entry PER ELECTRON per m-sublevel
+   Each entry: {n, l, m, Z_eff} — one actual electron with its own orbital
    ════════════════════════════════════════════════════════════════════════ */
 
-// Returns list of {n,l,m,electrons} occupied orbitals for a given electron config (shells array)
-function getOccupiedOrbitals(shellsArr) {
-  // Aufbau order: 1s 2s 2p 3s 3p 4s 3d 4p 5s 4d 5p 6s 4f 5d 6p 7s 5f 6d 7p
-  const aufbau = [
-    {n:1,l:0},{n:2,l:0},{n:2,l:1},{n:3,l:0},{n:3,l:1},{n:4,l:0},{n:3,l:2},
-    {n:4,l:1},{n:5,l:0},{n:4,l:2},{n:5,l:1},{n:6,l:0},{n:4,l:3},{n:5,l:2},
-    {n:6,l:1},{n:7,l:0},{n:5,l:3},{n:6,l:2},{n:7,l:1}
-  ];
+// Aufbau fill order — each {n,l} subshell in energy order
+const AUFBAU = [
+  {n:1,l:0},{n:2,l:0},{n:2,l:1},{n:3,l:0},{n:3,l:1},
+  {n:4,l:0},{n:3,l:2},{n:4,l:1},{n:5,l:0},{n:4,l:2},
+  {n:5,l:1},{n:6,l:0},{n:4,l:3},{n:5,l:2},{n:6,l:1},
+  {n:7,l:0},{n:5,l:3},{n:6,l:2},{n:7,l:1}
+];
 
-  // Count total electrons
+// Slater's rules: estimate Z_eff for an electron in shell n, for element Z
+// Gives each electron a unique effective nuclear charge → unique orbital radius
+function slaterZeff(Z, n, l) {
+  // Simplified Slater screening: electrons in same shell screen 0.35 each,
+  // inner shells screen differently. This gives distinct radii per shell.
+  let sigma = 0;
+  const totalE = Z; // neutral atom
+  // Count electrons in same group and inner groups
+  if (n === 1) {
+    sigma += (Math.min(totalE, 2) - 1) * 0.30; // other 1s electron
+  } else if (l <= 1) { // s or p
+    const sameShell = countElectronsInShell(totalE, n) - 1;
+    sigma += Math.max(0, sameShell) * 0.35;
+    // n-1 shell
+    sigma += countElectronsInShell(totalE, n - 1) * 0.85;
+    // n-2 and below
+    for (let k = 1; k < n - 1; k++) sigma += countElectronsInShell(totalE, k) * 1.00;
+  } else { // d or f
+    const sameShell = countElectronsInShell(totalE, n) - 1;
+    sigma += Math.max(0, sameShell) * 0.35;
+    for (let k = 1; k < n; k++) sigma += countElectronsInShell(totalE, k) * 1.00;
+  }
+  return Math.max(1, Z - sigma);
+}
+
+function countElectronsInShell(totalE, n) {
+  // Approximate electrons per shell from Aufbau
+  let remaining = totalE, count = 0;
+  for (const {n: an, l: al} of AUFBAU) {
+    if (remaining <= 0) break;
+    const cap = 2 * (2 * al + 1);
+    const fill = Math.min(remaining, cap);
+    if (an === n) count += fill;
+    remaining -= fill;
+  }
+  return count;
+}
+
+// Returns list of individual electrons: [{n, l, m, shellIdx, Z_eff}]
+// One entry per electron — this is what drives the particle sampling
+function getElectronList(elemZ, shellsArr) {
   let totalE = shellsArr.reduce((a, b) => a + b, 0);
   if (totalE <= 0) return [];
 
-  const result = [];
-  for (const {n, l} of aufbau) {
+  const electrons = [];
+
+  for (const {n, l} of AUFBAU) {
     if (totalE <= 0) break;
-    const maxE = 2 * (2*l + 1);
-    const fill = Math.min(totalE, maxE);
+    const cap = 2 * (2 * l + 1); // max electrons in this subshell
+    const fill = Math.min(totalE, cap);
     totalE -= fill;
-    // Assign electrons to m sublevels
-    for (let m = -l; m <= l; m++) {
-      if (fill <= 0) break;
-      const eInM = Math.min(2, fill - (m + l) * 2); // rough distribution
-      const mFill = Math.max(0, Math.min(2, fill));
-      result.push({n, l, m, electrons: mFill > 0 ? 1 : 0});
+
+    // Hund's rule first pass: fill each m with spin-up, then spin-down
+    const mVals = [];
+    for (let m = -l; m <= l; m++) mVals.push(m);
+    // Spin up first
+    let placed = 0;
+    for (let pass = 0; pass < 2 && placed < fill; pass++) {
+      for (const m of mVals) {
+        if (placed >= fill) break;
+        const Zeff = slaterZeff(elemZ, n, l);
+        electrons.push({ n, l, m, shellIdx: n - 1, Z_eff: Zeff });
+        placed++;
+      }
     }
-    // Simpler: just add one entry per subshell with total electrons
-    // Remove the m-loop entries, replace with subshell summary
-    // (pop back and do it cleanly)
-    while (result.length > 0 && result[result.length-1].n === n && result[result.length-1].l === l) {
-      result.pop();
-    }
-    result.push({n, l, m: 0, electrons: fill, maxElectrons: maxE});
   }
-  return result;
+
+  return electrons;
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -886,42 +927,71 @@ let selectedAtomIdx = -1;
 let viewMode = 'density';
 
 /* ── Build orbital point cloud for one atom ── */
+// Each electron gets its own CDF-sampled orbital cloud.
+// Z_eff from Slater scaling contracts/expands radial wavefunction per shell.
+// Particles per electron = CFG.ptsPerOrbital (each electron equally represented).
 function buildAtomCloud(elemZ, offsetX) {
   const elem = ELEMENT_DATA[elemZ];
   if (!elem) return null;
   const g = new THREE.Group();
   g.position.x = offsetX;
 
-  const orbitals = getOccupiedOrbitals(elem.shells);
   const sc = CFG.atomScale;
 
-  // Accumulate all particles
+  // Get one entry per actual electron with quantum numbers + Z_eff
+  const electronList = getElectronList(elemZ, elem.shells);
+
+  // Accumulate all orbital particle positions+colors
   const allPos = [];
   const allCol = [];
 
-  orbitals.forEach(({n, l, m, electrons, maxElectrons}, oi) => {
-    if (electrons <= 0) return;
+  electronList.forEach((elec) => {
+    const { n, l, m, shellIdx, Z_eff } = elec;
     if (n > CFG.maxShells) return;
-    const pts = Math.round(CFG.ptsPerOrbital * (electrons / Math.max(1, maxElectrons)));
-    for (let i = 0; i < pts; i++) {
-      const s = sampleOrbital(n, l, m);
-      allPos.push(s.x * sc, s.y * sc, s.z * sc);
 
-      // Compute |ψ|² for color
-      const dens = psiDensity(s.r, s.theta, n, l, m);
-      const densScaled = Math.min(1, dens * 1.8 * Math.pow(5, n));
+    // Z_eff scales the effective Bohr radius: a_eff = a0 / Z_eff
+    // Radial CDF uses hydrogen-like wavefunctions but we scale output r by 1/Z_eff
+    const { cdf: rcdf, dr } = buildRadialCDF(n, l);
+    const { cdf: tcdf, dtheta } = buildThetaCDF(l, Math.abs(m));
+
+    const pts = CFG.ptsPerOrbital;
+
+    for (let i = 0; i < pts; i++) {
+      // Sample r from hydrogen CDF then divide by Z_eff (contraction for higher Z)
+      const rH = sampleCDF(rcdf, dr);
+      const r  = rH / Z_eff;           // Z_eff contracts the orbital toward nucleus
+      const theta = sampleCDF(tcdf, dtheta);
+      const phi   = Math.random() * 2 * Math.PI;
+      const sinT  = Math.sin(theta);
+
+      allPos.push(
+        r * sinT * Math.cos(phi) * sc,
+        r * Math.cos(theta) * sc,
+        r * sinT * Math.sin(phi) * sc
+      );
+
+      // Color: compute |ψ|² density at sampled (r, theta) using scaled rho
+      const rho_scaled = 2.0 * r * Z_eff / (n * a0); // effective rho
+      const dens = psiDensity(r * Z_eff, theta, n, l, m); // pass Z_eff-scaled r
+      // Scale factor per shell — inner shells are denser → brighter
+      const scaleFac = Math.pow(Z_eff, 3) / Math.pow(n, 3);
+      const densScaled = Math.min(1, dens * scaleFac * 2.5);
 
       let rgb;
-      if (CFG.colorMode === 'fire') rgb = heatmapFire(densScaled);
-      else if (CFG.colorMode === 'cyan') rgb = heatmapCyan(densScaled);
+      if (CFG.colorMode === 'fire')    rgb = heatmapFire(densScaled);
+      else if (CFG.colorMode === 'cyan')    rgb = heatmapCyan(densScaled);
       else if (CFG.colorMode === 'rainbow') rgb = heatmapRainbow(densScaled);
-      else rgb = SHELL_COLS[(n-1) % SHELL_COLS.length]; // shell mode
+      else rgb = SHELL_COLS[shellIdx % SHELL_COLS.length]; // per shell-n color
 
       allCol.push(...rgb);
     }
   });
 
-  if (allPos.length === 0) return g;
+  // Fallback: if element has electrons but nothing rendered (maxShells too low)
+  if (allPos.length === 0) {
+    scene.add(g);
+    return { elemZ, group: g, pointsObj: null, nucleusMesh: null, shellMeshes: [], nucGroup: null };
+  }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allPos), 3));
@@ -936,20 +1006,65 @@ function buildAtomCloud(elemZ, offsetX) {
     blending: THREE.AdditiveBlending,
   });
 
-  const pts = new THREE.Points(geo, mat);
-  g.add(pts);
+  const ptsObj = new THREE.Points(geo, mat);
+  g.add(ptsObj);
 
-  // Nucleus mesh
-  let nucMesh = null;
+  // ── Nucleus: cluster of small proton + neutron spheres ──
+  // Protons = light cyan-blue, Neutrons = dark navy blue
+  // Particle radius ≈ point size of cloud — tiny, not a big sphere
+  let nucGroup = null;
   if (CFG.showNucleus) {
-    const nucR = Math.max(2, Math.log(elemZ + 1) * 2.5);
-    const nucGeo = new THREE.SphereGeometry(nucR, 16, 12);
-    const nucMat = new THREE.MeshPhongMaterial({
-      color: 0xff3333, emissive: 0xaa1100, emissiveIntensity: 0.6,
-      transparent: true, opacity: 0.9, shininess: 80
-    });
-    nucMesh = new THREE.Mesh(nucGeo, nucMat);
-    g.add(nucMesh);
+    nucGroup = new THREE.Group();
+    const numP = elem.Z;
+    const numN = elem.N;
+    const nucR = 0.8; // tiny sphere, comparable to particle point size in world units
+    const clusterR = Math.max(1.5, Math.cbrt(numP + numN) * 1.2); // spread by count
+
+    const protonMat  = new THREE.MeshPhongMaterial({ color: 0x44aaff, emissive: 0x112244, emissiveIntensity: 0.5, shininess: 90 });
+    const neutronMat = new THREE.MeshPhongMaterial({ color: 0x1133aa, emissive: 0x060a22, emissiveIntensity: 0.4, shininess: 60 });
+    const nucGeo = new THREE.SphereGeometry(nucR, 8, 6); // shared geo
+
+    // Place protons + neutrons randomly packed in a small sphere
+    const placed = [];
+    const tryPlace = (mat, attempts = 50) => {
+      for (let t = 0; t < attempts; t++) {
+        const theta = Math.acos(2 * Math.random() - 1);
+        const phi   = Math.random() * 2 * Math.PI;
+        const r     = Math.cbrt(Math.random()) * clusterR;
+        const px    = r * Math.sin(theta) * Math.cos(phi);
+        const py    = r * Math.cos(theta);
+        const pz    = r * Math.sin(theta) * Math.sin(phi);
+        // Simple overlap rejection
+        let ok = true;
+        for (const q of placed) {
+          const d = Math.hypot(px-q[0], py-q[1], pz-q[2]);
+          if (d < nucR * 1.6) { ok = false; break; }
+        }
+        if (ok) { placed.push([px, py, pz]); return [px, py, pz]; }
+      }
+      // Fallback: just random without rejection
+      const theta = Math.acos(2 * Math.random() - 1);
+      const phi   = Math.random() * 2 * Math.PI;
+      const r     = Math.cbrt(Math.random()) * clusterR;
+      return [r*Math.sin(theta)*Math.cos(phi), r*Math.cos(theta), r*Math.sin(theta)*Math.sin(phi)];
+    };
+
+    // Cap display count for performance (max 32 each)
+    const showP = Math.min(numP, 32);
+    const showN = Math.min(numN, 32);
+    for (let i = 0; i < showP; i++) {
+      const [px, py, pz] = tryPlace(protonMat);
+      const m = new THREE.Mesh(nucGeo, protonMat);
+      m.position.set(px, py, pz);
+      nucGroup.add(m);
+    }
+    for (let i = 0; i < showN; i++) {
+      const [px, py, pz] = tryPlace(neutronMat);
+      const m = new THREE.Mesh(nucGeo, neutronMat);
+      m.position.set(px, py, pz);
+      nucGroup.add(m);
+    }
+    g.add(nucGroup);
   }
 
   // Shell wireframes
@@ -961,7 +1076,7 @@ function buildAtomCloud(elemZ, offsetX) {
       const shGeo = new THREE.SphereGeometry(shR, 16, 10);
       const shMat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(...SHELL_COLS[si % SHELL_COLS.length]),
-        wireframe: true, transparent: true, opacity: 0.08
+        wireframe: true, transparent: true, opacity: 0.07
       });
       const sh = new THREE.Mesh(shGeo, shMat);
       g.add(sh);
@@ -970,7 +1085,7 @@ function buildAtomCloud(elemZ, offsetX) {
   }
 
   scene.add(g);
-  return { elemZ, group: g, pointsObj: pts, nucleusMesh: nucMesh, shellMeshes };
+  return { elemZ, group: g, pointsObj: ptsObj, nucleusMesh: null, nucGroup, shellMeshes };
 }
 
 /* ── Compute atom positions in scene ── */
@@ -1057,9 +1172,7 @@ function setViewMode(mode) {
       a.pointsObj.material.blending = THREE.AdditiveBlending;
       a.pointsObj.material.opacity = CFG.opacity;
     }
-    if (a.nucleusMesh) {
-      a.nucleusMesh.visible = mode !== 'wire';
-    }
+    if (a.nucGroup) a.nucGroup.visible = (mode !== 'wire');
     if (a.shellMeshes) {
       a.shellMeshes.forEach(s => s.visible = (mode === 'wire' || CFG.showShells));
     }
@@ -1339,11 +1452,6 @@ function loop() {
   requestAnimationFrame(loop);
   // Slow nucleus pulse
   sceneAtoms.forEach(a => {
-    if (a.nucleusMesh) {
-      const t = performance.now() * 0.001;
-      const s = 1 + 0.12 * Math.sin(t * 3 + a.elemZ);
-      a.nucleusMesh.scale.setScalar(s);
-    }
     if (a.group) a.group.rotation.y += 0.002;
   });
   renderer.render(scene, cam);
