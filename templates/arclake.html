@@ -24245,6 +24245,58 @@ setTimeout(function() {
 (function(){
 'use strict';
 
+/* ── Domain constants & shared SPH state ────────────────────────── */
+// These are shared across LSCFD + ArcCFD. If _cSPH was already set up
+// (LSCFD path), we alias it. Otherwise we create a fresh state object.
+var W_CFD     = (window._cSPH && window._cSPH.W)     || 400;
+var H_CFD     = (window._cSPH && window._cSPH.H)     || 300;
+var D_CFD     = (window._cSPH && window._cSPH.D)     || 300;
+var SCALE     = (window._cSPH && window._cSPH.SCALE)  || 0.8;
+var SCALE_CFD = SCALE;
+var _cfdS     = window._cSPH || window._cfdS || (window._cfdS = {
+  W:W_CFD, H:H_CFD, D:D_CFD, SCALE:SCALE,
+  n: 1200, ts: 1.0, h: 30, rho: 650, pm: 220, npm: 5.0,
+  visc: 0.055, grav: 1.0, damp: 0.72, mf: 14,
+  pts: [], scene: 'dam', hCached: -1,
+  kSp2:0, kSp3:0, kSp2g:0, kSp3g:0, kP6:0
+});
+// Ensure W/H/D are always on _cfdS
+if (!_cfdS.W) { _cfdS.W=W_CFD; _cfdS.H=H_CFD; _cfdS.D=D_CFD; }
+// Foam state
+var _cfdF = window._cfdF || (window._cfdF = {
+  pts:[], rate:0.25, life:2.8, buoy:0.35, bubNbr:7, sprayNbr:2
+});
+// Neighbor cache
+var _CFD_MAX_NB = 256;
+var _cfdNb  = new Int32Array(_CFD_MAX_NB);
+var _cfdNbc = 0;
+var _cfdCells = null;
+var _gx=0,_gy=0,_gz=0,_cs=1,_gW=1,_gH=1,_gD=1;
+var isInteracting=false, iWP=null, stirBtn=0;
+var _cfdAvgRho = 0;
+
+/* ── Physics sync: pull scenePhysicsSettings → _cfdS ────────────── */
+function _cfdSyncPhysics() {
+  var sp = (typeof scenePhysicsSettings !== 'undefined') ? scenePhysicsSettings : null;
+  if (!sp) return;
+  var p = sp.physics;
+  var g = (typeof p.gravity !== 'undefined') ? p.gravity : 9.8;
+  // gravity: normalize Earth=1.0 for SPH
+  _cfdS.grav = g / 9.8;
+  // viscosity from pressure+temp: gas=low, liquid=med, solid=high
+  var tempC = (p.temp - 32) * 5/9;  // F→C
+  var psiNorm = (p.pressure || 14.7) / 14.7;
+  // Simple state estimation: low temp + high pressure = solid/liquid, else gas
+  if (tempC < -50)      { _cfdS.visc = 0.12; _cfdS.rho = 900; _cfdS.pm = 350; }  // solid
+  else if (tempC < 120) { _cfdS.visc = 0.055; _cfdS.rho = 650; _cfdS.pm = 220; } // liquid
+  else                  { _cfdS.visc = 0.012; _cfdS.rho = 200; _cfdS.pm = 80;  }  // gas
+  // scale by pressure
+  _cfdS.rho = Math.max(50, _cfdS.rho * Math.pow(psiNorm, 0.3));
+  // velocity from scene wind/velocity
+  _cfdS._physFlow = (p.windVelocity || p.velocity || 0) * 0.44704; // mph→m/s
+  _cfdS._physTemp = tempC;
+}
+
 /* ── SPH State & Physics (SebLague) ──────────────────────────────── */
 function _cfd_recompKernels(h) {
   const PI = Math.PI;
@@ -25006,53 +25058,102 @@ window.ArcCFD = {
     hdr.appendChild(_r1);
     // Row 2: tab selector + PPU/tab + container dims + spawn + wand
     var _r2=document.createElement('div');
-    _r2.style.cssText='display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;width:100%;margin-top:7px;padding-top:6px;border-top:1px solid rgba(0,229,255,.12);';
-    // Tab selector column
+    _r2.style.cssText='';
+    // ── ROW 2: professional grid layout ───────────────────────────
+    _r2.style.cssText='display:grid;grid-template-columns:minmax(110px,1.6fr) minmax(72px,0.8fr) minmax(140px,1.2fr) auto auto;align-items:end;gap:10px;width:100%;margin-top:8px;padding-top:7px;border-top:1px solid rgba(0,229,255,.13);';
+
+    // ── SCENE TABS selector ──
     var _tabCol=document.createElement('div');
-    _tabCol.style.cssText='display:flex;flex-direction:column;gap:3px;flex:1;min-width:100px;max-width:200px;';
+    _tabCol.style.cssText='display:flex;flex-direction:column;gap:4px;';
+    var _tabLblRow=document.createElement('div');
+    _tabLblRow.style.cssText='display:flex;align-items:center;justify-content:space-between;';
     var _tabLbl=document.createElement('span');
     _tabLbl.textContent='SCENE TABS';
-    _tabLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    _tabLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.65);font-family:Orbitron,sans-serif;font-weight:600;';
+    var _tabCountLbl=document.createElement('span');
+    _tabCountLbl.id='arc-cfd-tab-count';
+    _tabCountLbl.style.cssText='font-size:9px;color:rgba(0,229,255,.5);font-family:Consolas,monospace;';
+    _tabLblRow.appendChild(_tabLbl); _tabLblRow.appendChild(_tabCountLbl);
     var _tabSel=document.createElement('select');
-    _tabSel.id='arc-cfd-tab-sel'; _tabSel.multiple=true; _tabSel.size=1;
-    _tabSel.style.cssText='background:rgba(0,10,25,.92);border:1px solid rgba(0,229,255,.35);color:#00e5ff;font-size:10px;padding:4px 5px;border-radius:4px;width:100%;';
-    _tabCol.appendChild(_tabLbl); _tabCol.appendChild(_tabSel);
+    _tabSel.id='arc-cfd-tab-sel'; _tabSel.multiple=true; _tabSel.size=3;
+    _tabSel.style.cssText='background:rgba(0,10,25,.95);border:1px solid rgba(0,229,255,.4);color:#00e5ff;font-size:10px;padding:3px 5px;border-radius:5px;width:100%;outline:none;font-family:Consolas,monospace;scrollbar-width:thin;scrollbar-color:rgba(0,229,255,.3) transparent;min-height:52px;max-height:72px;';
+    // Wire change event → respawn particles from selected tabs
+    _tabSel.addEventListener('change', function(){
+      _cfdSyncPhysics();
+      window.ArcCFD._spawnDefault();
+      var sel=Array.from(this.selectedOptions);
+      var cnt=document.getElementById('arc-cfd-tab-count');
+      if(cnt) cnt.textContent=sel.length+' selected';
+    });
+    _tabCol.appendChild(_tabLblRow); _tabCol.appendChild(_tabSel);
     _r2.appendChild(_tabCol);
-    // PPU column
+
+    // ── PPU/TAB ──
     var _ppuCol=document.createElement('div');
-    _ppuCol.style.cssText='display:flex;flex-direction:column;gap:3px;';
+    _ppuCol.style.cssText='display:flex;flex-direction:column;gap:4px;';
     var _ppuLbl=document.createElement('span');
-    _ppuLbl.textContent='PPU/TAB';
-    _ppuLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    _ppuLbl.textContent='PPU / TAB';
+    _ppuLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.65);font-family:Orbitron,sans-serif;font-weight:600;';
     var _ppuInp=document.createElement('input');
     _ppuInp.id='arc-cfd-ppu'; _ppuInp.type='number'; _ppuInp.value='3000';
     _ppuInp.min='1'; _ppuInp.max='50000';
-    _ppuInp.style.cssText='width:70px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:4px 5px;border-radius:4px;';
-    _ppuInp.addEventListener('change',function(){window.ArcCFD.setPPU(+this.value);});
+    _ppuInp.style.cssText='width:100%;background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:11px;padding:4px 6px;border-radius:4px;font-family:Consolas,monospace;';
+    _ppuInp.title='Particles per unit volume per scene tab';
+    _ppuInp.addEventListener('change',function(){window.ArcCFD.setPPU(+this.value); window.ArcCFD._spawnDefault();});
     _ppuCol.appendChild(_ppuLbl); _ppuCol.appendChild(_ppuInp);
     _r2.appendChild(_ppuCol);
-    // Container dims column
+
+    // ── CONTAINER dims ──
     var _dimCol=document.createElement('div');
-    _dimCol.style.cssText='display:flex;flex-direction:column;gap:3px;';
+    _dimCol.style.cssText='display:flex;flex-direction:column;gap:4px;';
+    var _dimLblRow=document.createElement('div');
+    _dimLblRow.style.cssText='display:flex;align-items:center;gap:4px;';
     var _dimLbl=document.createElement('span');
-    _dimLbl.textContent='CONTAINER cm';
-    _dimLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    _dimLbl.textContent='CONTAINER';
+    _dimLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.65);font-family:Orbitron,sans-serif;font-weight:600;';
+    var _dimUnit=document.createElement('span');
+    _dimUnit.textContent='cm';
+    _dimUnit.style.cssText='font-size:9px;color:rgba(0,229,255,.35);font-family:Consolas,monospace;';
+    _dimLblRow.appendChild(_dimLbl); _dimLblRow.appendChild(_dimUnit);
     var _dimInputRow=document.createElement('div');
-    _dimInputRow.style.cssText='display:flex;gap:3px;';
-    [['arc-cfd-cx','X'],['arc-cfd-cy','Y'],['arc-cfd-cz','Z']].forEach(function(pair){
+    _dimInputRow.style.cssText='display:flex;gap:4px;align-items:center;';
+    [['arc-cfd-cx','X','60'],['arc-cfd-cy','Y','60'],['arc-cfd-cz','Z','60']].forEach(function(pair){
+      var wrap=document.createElement('div');
+      wrap.style.cssText='display:flex;flex-direction:column;gap:1px;align-items:center;';
+      var axlbl=document.createElement('span');
+      axlbl.textContent=pair[1];
+      axlbl.style.cssText='font-size:8px;color:rgba(0,229,255,.4);font-family:Orbitron,sans-serif;';
       var inp=document.createElement('input');
-      inp.id=pair[0]; inp.type='number'; inp.value='60'; inp.min='1'; inp.max='9999';
+      inp.id=pair[0]; inp.type='number'; inp.value=pair[2]; inp.min='1'; inp.max='9999';
       inp.title='Container '+pair[1]+' (cm)';
-      inp.style.cssText='width:42px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:10px;padding:3px 4px;border-radius:4px;';
-      _dimInputRow.appendChild(inp);
+      inp.style.cssText='width:40px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:10px;padding:3px 4px;border-radius:4px;font-family:Consolas,monospace;text-align:center;';
+      wrap.appendChild(axlbl); wrap.appendChild(inp);
+      _dimInputRow.appendChild(wrap);
     });
-    _dimCol.appendChild(_dimLbl); _dimCol.appendChild(_dimInputRow);
+    _dimCol.appendChild(_dimLblRow); _dimCol.appendChild(_dimInputRow);
     _r2.appendChild(_dimCol);
-    // Spawn + Wand
-    _r2.appendChild(_cfdMkBtn('▶ SPAWN',function(){window.ArcCFD._spawnDefault();},'background:rgba(0,229,255,.18);'));
-    var _wandBtn=_cfdMkBtn('🪄 WAND',function(){window.ArcCFD.toggleStir();},'background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);');
+
+    // ── SPAWN button ──
+    var _spawnBtnWrap=document.createElement('div');
+    _spawnBtnWrap.style.cssText='display:flex;flex-direction:column;gap:4px;';
+    var _spawnLbl=document.createElement('span');
+    _spawnLbl.textContent='SIMULATE';
+    _spawnLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.65);font-family:Orbitron,sans-serif;font-weight:600;';
+    var _spawnBtn=_cfdMkBtn('▶ SPAWN',function(){_cfdSyncPhysics();window.ArcCFD._spawnDefault();},'background:rgba(0,229,255,.18);border:1px solid rgba(0,229,255,.5);font-size:10px;padding:5px 12px;letter-spacing:1px;');
+    _spawnBtnWrap.appendChild(_spawnLbl); _spawnBtnWrap.appendChild(_spawnBtn);
+    _r2.appendChild(_spawnBtnWrap);
+
+    // ── WAND button ──
+    var _wandWrap=document.createElement('div');
+    _wandWrap.style.cssText='display:flex;flex-direction:column;gap:4px;';
+    var _wandLbl=document.createElement('span');
+    _wandLbl.textContent='INTERACT';
+    _wandLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(57,255,122,.55);font-family:Orbitron,sans-serif;font-weight:600;';
+    var _wandBtn=_cfdMkBtn('🪄 WAND',function(){window.ArcCFD.toggleStir();},'background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-size:10px;padding:5px 10px;');
     _wandBtn.id='arc-cfd-stir-btn';
-    _r2.appendChild(_wandBtn);
+    _wandWrap.appendChild(_wandLbl); _wandWrap.appendChild(_wandBtn);
+    _r2.appendChild(_wandWrap);
+
     hdr.appendChild(_r2);
     ov.appendChild(hdr);
 
@@ -25080,6 +25181,7 @@ window.ArcCFD = {
 
   _resume: function(){
     _cfdRunning=true;
+    _cfdSyncPhysics(); // pull scene physics before first spawn
     var self=this;
     // Resize + populate tabs + spawn after DOM settles
     setTimeout(function(){
@@ -25105,10 +25207,22 @@ window.ArcCFD = {
     if(ov) ov.style.display='none';
   },
 
-  // Spawn 3000 pts per tab (PPU per tab) into 60x60x60 cm default container
+  // Spawn particles per selected tab into container with physics-driven initial state
   _spawnDefault: function(){
-    var tabs=this._buildTabList();
+    // Pull physics from scene into sim state FIRST
+    _cfdSyncPhysics();
+
+    var tabs=this._getActiveTabs();
+    if(!tabs.length) tabs=this._buildTabList(); // fallback: all tabs
     _cfdS.pts=[]; _cfdF.pts=[]; _cfdCells=null;
+    // Derive matter state from physics sync
+    var tempC = (_cfdS._physTemp !== undefined) ? _cfdS._physTemp : 20;
+    var flowMS = _cfdS._physFlow || 0;
+    // State-driven particle initial velocity + density
+    var isGas   = tempC >= 120;
+    var isSolid = tempC < -50;
+    var velScale = isGas ? 12 : (isSolid ? 0.3 : 3.5);
+    var spaceMul = isGas ? 1.35 : (isSolid ? 0.75 : 1.0);
     var palette=[[0,0.9,1],[1,0.25,0.4],[0.4,1,0.3],[1,0.7,0],[0.8,0.2,1],
                  [0,1,0.6],[1,0.4,0.1],[0.3,0.7,1],[1,0.9,0.3],[0.6,0.2,1]];
     var cx=parseFloat((document.getElementById('arc-cfd-cx')||{value:'60'}).value)||60;
@@ -25119,22 +25233,33 @@ window.ArcCFD = {
       // Per-tab PPU — check individual input first, fall back to global
       var ppuInp=document.getElementById('arc-cfd-ppu-'+tab.id);
       var n=ppuInp?Math.max(1,parseInt(ppuInp.value)||_cfdPPU):_cfdPPU;
+      // Element-aware color: try to pull from atomGroups elementData
       var col=palette[ti%palette.length];
+      if(tab._tab && tab._tab.atomGroups && tab._tab.atomGroups.length){
+        try{
+          var _ed=JSON.parse(tab._tab.atomGroups[0].elementData||'{}');
+          if(_ed.color){var _hx=_ed.color.replace('#','');
+            col=[parseInt(_hx.substr(0,2),16)/255,parseInt(_hx.substr(2,2),16)/255,parseInt(_hx.substr(4,2),16)/255];
+          }
+        }catch(e){}
+      }
       var side=Math.ceil(Math.cbrt(n));
-      // Scale spawn region by container dims relative to domain
-      var scaleX=Math.min(1,(cx/60)*0.88), scaleY=Math.min(1,(cy/60)*0.82), scaleZ=Math.min(1,(cz/60)*0.88);
-      var sp=Math.min(_cfdS.h*0.6, (W_CFD*scaleX)/side, (H_CFD*scaleY)/side, (D_CFD*scaleZ)/side);
-      // Spread tabs across X axis
+      var scaleX=Math.min(1,(cx/60)*0.88*spaceMul), scaleY=Math.min(1,(cy/60)*0.82*spaceMul), scaleZ=Math.min(1,(cz/60)*0.88*spaceMul);
+      var sp=Math.min(_cfdS.h*0.6*spaceMul, (W_CFD*scaleX)/Math.max(1,side), (H_CFD*scaleY)/Math.max(1,side), (D_CFD*scaleZ)/Math.max(1,side));
       var xOffset=W_CFD*(ti/Math.max(1,tabs.length))*0.7+W_CFD*0.08;
       var x0=xOffset, y0=H_CFD*0.06, z0=(D_CFD-side*sp)/2;
       var k=0;
       for(var d=0;d<side&&k<n;d++)
         for(var r=0;r<side&&k<n;r++)
           for(var cc=0;cc<side&&k<n;cc++,k++,totalSpawned++){
+            var vx=(Math.random()-.5)*velScale+flowMS*0.5;
+            var vy=(Math.random()-.5)*velScale+(isGas?Math.random()*velScale*0.4:0);
+            var vz=(Math.random()-.5)*velScale;
             var pt=_cfd_mkPt(
               x0+cc*sp+(Math.random()-.5)*0.5,
               y0+r*sp+(Math.random()-.5)*0.5,
-              z0+d*sp+(Math.random()-.5)*0.5
+              z0+d*sp+(Math.random()-.5)*0.5,
+              vx,vy,vz
             );
             pt._col=col; _cfdS.pts.push(pt);
           }
@@ -25142,18 +25267,21 @@ window.ArcCFD = {
     _cfdS.n=_cfdS.pts.length;
     if(!_cfdS.pts.length){ _cfd_setScene('dam'); }
     _cfdRebuildGeo();
+    var _stateLabel=isGas?'GAS':(isSolid?'SOLID':'LIQUID');
     var stats=document.getElementById('arc-cfd-stats');
-    if(stats) stats.textContent='pts:'+_cfdS.pts.length+' tabs:'+tabs.length;
+    if(stats) stats.textContent='pts:'+_cfdS.pts.length+' tabs:'+tabs.length+' ['+_stateLabel+']';
+    // update count badge
+    var _selEl=document.getElementById('arc-cfd-tab-sel');
+    var _cntEl=document.getElementById('arc-cfd-tab-count');
+    if(_cntEl&&_selEl) _cntEl.textContent=Array.from(_selEl.selectedOptions).length+' / '+tabs.length;
   },
 
   _getActiveTabs: function(){
     var sel = document.getElementById('arc-cfd-tab-sel');
-    var selected = sel ? Array.from(sel.selectedOptions).map(function(o){return o.value;}) : [];
-    if(!selected.length){
-      // Auto-select all if none chosen
-      if(sel) Array.from(sel.options).forEach(function(o){o.selected=true; selected.push(o.value);});
-    }
-    return selected.map(function(v,i){return {id:v,name:v,idx:i};});
+    var selectedIds = sel ? Array.from(sel.selectedOptions).map(function(o){return o.value;}) : [];
+    var allTabs = this._buildTabList();
+    if(!selectedIds.length) return allTabs; // nothing selected = all included
+    return allTabs.filter(function(t){ return selectedIds.indexOf(t.id)!==-1; });
   },
 
   setScene: function(name){
@@ -25164,16 +25292,25 @@ window.ArcCFD = {
   _populateTabSelect: function(){
     var sel=document.getElementById('arc-cfd-tab-sel');
     if(!sel) return;
+    // preserve current selection by id
+    var prevSelected=Array.from(sel.selectedOptions).map(function(o){return o.value;});
     sel.innerHTML='';
     var tabs=this._buildTabList();
     tabs.forEach(function(t){
       var opt=document.createElement('option');
       opt.value=t.id;
-      opt.textContent=t.name+(t.atomCount?' · '+t.atomCount+' atoms':'');
-      opt.selected=true; // all selected by default
+      var stateIcon = t.atomCount>0 ? '⬡' : '○';
+      opt.textContent=stateIcon+' '+t.name+(t.atomCount?' ('+t.atomCount+' atoms)':'');
+      // select all by default on first open; otherwise restore previous
+      opt.selected = (prevSelected.length===0) ? true : (prevSelected.indexOf(t.id)!==-1);
       sel.appendChild(opt);
     });
-    sel.size=Math.max(1,tabs.length); // show all tabs without scrolling
+    // Clamp size for good UX — show 2–4 rows
+    sel.size=Math.max(2,Math.min(4,tabs.length));
+    // Update count label
+    var cnt=document.getElementById('arc-cfd-tab-count');
+    var selCount=Array.from(sel.selectedOptions).length;
+    if(cnt) cnt.textContent=selCount+' / '+tabs.length;
     // Per-tab PPU controls
     var ptuContainer=document.getElementById('arc-cfd-per-tab-ppu');
     if(ptuContainer){
@@ -25215,6 +25352,7 @@ window.ArcCFD = {
   },
 
   syncTabs: function(){
+    _cfdSyncPhysics();
     var sel=document.getElementById('arc-cfd-tab-sel');
     var selected=sel?Array.from(sel.selectedOptions).map(function(o){return o.value;}):[];
     if(!selected.length){ _cfd_setScene('dam'); _cfdRebuildGeo(); return; }
