@@ -24116,5 +24116,833 @@ setTimeout(function() {
 })(); // end ArcLake v10 Physics+Math Engine
 </script>
 
+
+<script id="arc-cfd-engine">
+/* ═══════════════════════════════════════════════════════════════════════
+   ArcCFD  —  Computational Fluid Dynamics (replaces LSCFD overlay)
+   SPH Physics: SebLague/Fluid-Sim (MIT) · github.com/SebLague/Fluid-Sim
+   Papers: Müller 2003, Clavet 2005 (PVFS), Ihmsen 2012, SPH Tutorial 2019
+   Adapted & wired to ArcLake Mol Canvas / Node Editor
+   by Justin Venable · DART-Skyboard · Radical Deepscale LLC
+═══════════════════════════════════════════════════════════════════════ */
+(function(){
+'use strict';
+
+/* ── SPH State & Physics (SebLague) ──────────────────────────────── */
+function _cfd_recompKernels(h) {
+  const PI = Math.PI;
+  _cfdS.kSp2  = 15 / (2 * PI * Math.pow(h, 5));
+  _cfdS.kSp3  = 15 / (    PI * Math.pow(h, 6));
+  _cfdS.kSp2g = 15 / (    PI * Math.pow(h, 5));
+  _cfdS.kSp3g = 45 / (    PI * Math.pow(h, 6));
+  _cfdS.kP6   = 315 / (64 * PI * Math.pow(h, 9));
+}
+
+// SpikyPow2 (DensityKernel in Lague)
+const _cfd_sp2  = (d, h) => { if (d >= h) return 0; const v = h - d; return v * v * _cfdS.kSp2; };
+// SpikyPow3 (NearDensityKernel)
+const _cfd_sp3  = (d, h) => { if (d >= h) return 0; const v = h - d; return v * v * v * _cfdS.kSp3; };
+// Derivative SpikyPow2 (DensityDerivative)
+const _cfd_dsp2 = (d, h) => { if (d > h)  return 0; const v = h - d; return -v * _cfdS.kSp2g; };
+// Derivative SpikyPow3 (NearDensityDerivative)
+const _cfd_dsp3 = (d, h) => { if (d > h)  return 0; const v = h - d; return -v * v * _cfdS.kSp3g; };
+// Poly6 (SmoothingKernelPoly6, used for viscosity)
+const _cfd_p6   = (d2, h) => { const v = h * h - d2; return v <= 0 ? 0 : v * v * v * _cfdS.kP6; };
+// LinearKernel (used for diffuse influence weight)
+const _cfd_linK = (d, h) => d < h ? 1 - d / h : 0;
+
+
+
+function _cfd_buildGrid() {
+  const h = _cfdS.h, pts = _cfdS.pts, n = pts.length;
+  if (!n) return;
+  let mx = Infinity, my = Infinity, mz = Infinity;
+  let Mx = -Infinity, My = -Infinity, Mz = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    if (p.x < mx) mx = p.x; if (p.x > Mx) Mx = p.x;
+    if (p.y < my) my = p.y; if (p.y > My) My = p.y;
+    if (p.z < mz) mz = p.z; if (p.z > Mz) Mz = p.z;
+  }
+  _gx = mx - h; _gy = my - h; _gz = mz - h; _cs = h;
+  _gW = Math.max(1, Math.ceil((Mx - mx + 2 * h) / h) + 1);
+  _gH = Math.max(1, Math.ceil((My - my + 2 * h) / h) + 1);
+  _gD = Math.max(1, Math.ceil((Mz - mz + 2 * h) / h) + 1);
+  const tot = _gW * _gH * _gD;
+  if (!_cfdCells || _cfdCells.length !== tot) {
+    _cfdCells = Array.from({ length: tot }, () => []);
+  } else {
+    for (let i = 0; i < tot; i++) _cfdCells[i].length = 0;
+  }
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const cx = Math.floor((p.x - _gx) / _cs);
+    const cy = Math.floor((p.y - _gy) / _cs);
+    const cz = Math.floor((p.z - _gz) / _cs);
+    _cfdCells[cx + cy * _gW + cz * _gW * _gH].push(i);
+  }
+}
+
+function _cfd_neighbors(px, py, pz) {
+  _cfdNbc = 0;
+  const cx = Math.floor((px - _gx) / _cs);
+  const cy = Math.floor((py - _gy) / _cs);
+  const cz = Math.floor((pz - _gz) / _cs);
+  for (let oz = -1; oz <= 1; oz++) {
+    const nz = cz + oz; if (nz < 0 || nz >= _gD) continue;
+    const zo = nz * _gW * _gH;
+    for (let oy = -1; oy <= 1; oy++) {
+      const ny = cy + oy; if (ny < 0 || ny >= _gH) continue;
+      const yo = ny * _gW;
+      for (let ox = -1; ox <= 1; ox++) {
+        const nx = cx + ox; if (nx < 0 || nx >= _gW) continue;
+        const cell = _cfdCells[nx + yo + zo];
+        for (let k = 0; k < cell.length; k++) {
+          if (_cfdNbc < _CFD_MAX_NB) _cfdNb[_cfdNbc++] = cell[k];
+        }
+      }
+    }
+  }
+}
+
+
+function _cfd_mkPt(x, y, z, vx = 0, vy = 0, vz = 0) {
+  return { x, y, z, vx, vy, vz, px: 0, py: 0, pz: 0,
+           dens: 0, nDens: 0, press: 0, nPress: 0,
+           spd: 0, ke: 0, nbc: 0 };
+}
+
+function _cfd_spawnGrid(count, startY = H_CFD * 0.12, xFrac = 0.88, zFrac = 0.88) {
+  let side = Math.ceil(Math.cbrt(count));
+  let rows = side, cols = side, deps = side;
+  const spX = (W_CFD * xFrac) / cols;
+  const spY = (H_CFD * 0.85)  / rows;
+  const spZ = (D_CFD * zFrac) / deps;
+  const sp  = Math.min(_cfdS.h * 0.62, spX, spY, spZ);
+  const x0  = (W_CFD - cols * sp) / 2;
+  const z0  = (D_CFD - deps * sp) / 2;
+  let spawned = 0;
+  for (let d = 0; d < deps && spawned < count; d++) {
+    for (let r = 0; r < rows && spawned < count; r++) {
+      for (let c = 0; c < cols && spawned < count; c++) {
+        _cfdS.pts.push(_cfd_mkPt(
+          x0 + c * sp + (Math.random() - .5) * 1.5,
+          startY + r * sp + (Math.random() - .5) * 1.5,
+          z0 + d * sp + (Math.random() - .5) * 1.5
+        ));
+        spawned++;
+      }
+    }
+  }
+}
+
+
+function _cfd_setScene(name) {
+  _cfdS.scene = name;
+  _cfdS.pts = []; _cfdF.pts = []; _cfdCells = null;
+  document.querySelectorAll('.btn[data-scene]').forEach(b =>
+    b.classList.toggle('on', b.dataset.scene === name));
+
+  // Reset gravity to 1G for all presets
+  _cfdS.grav = 1.0;
+  document.getElementById('rG').value = 1.0;
+  document.getElementById('nG').value = '1.0';
+
+  const n = _cfdS.n;
+
+  if (name === 'dam') {
+    // Dam break: left-third block, slight rightward velocity
+    const cols = Math.ceil(Math.cbrt(n * 2));
+    const rows = Math.ceil(n / (cols * cols));
+    const deps = cols;
+    const sp = Math.min(_cfdS.h * 0.6, (W_CFD * 0.38) / cols, (H_CFD * 0.88) / rows, (D_CFD * 0.9) / deps);
+    const x0 = W_CFD * 0.04, y0 = H_CFD * 0.06, z0 = (D_CFD - deps * sp) / 2;
+    let k = 0;
+    for (let d = 0; d < deps && k < n; d++)
+      for (let r = 0; r < rows && k < n; r++)
+        for (let c = 0; c < cols && k < n; c++, k++)
+          _cfdS.pts.push(_cfd_mkPt(x0 + c * sp + (Math.random()-.5), y0 + r * sp + (Math.random()-.5),
+            z0 + d * sp + (Math.random()-.5)));
+
+  } else if (name === 'wave') {
+    _cfd_spawnGrid(n, H_CFD * 0.06, 0.9, 0.9);
+    // Wave: exponential velocity gradient from left
+    _cfdS.pts.forEach(p => { p.vx = Math.exp(-(p.x / W_CFD) * 5.5) * 22; });
+
+  } else if (name === 'drop') {
+    // Pool + falling drop
+    const poolN = Math.floor(n * 0.72);
+    _cfd_spawnGrid(poolN, H_CFD * 0.06, 0.92, 0.92);
+    const dropN = n - _cfdS.pts.length;
+    const ds = Math.ceil(Math.cbrt(dropN));
+    const sp = Math.min(_cfdS.h * 0.62, (W_CFD * 0.45) / ds, (H_CFD * 0.3) / ds, (D_CFD * 0.45) / ds);
+    const x0 = (W_CFD - ds * sp) / 2, z0 = (D_CFD - ds * sp) / 2;
+    let k = 0;
+    for (let d = 0; d < ds && k < dropN; d++)
+      for (let r = 0; r < ds && k < dropN; r++)
+        for (let c = 0; c < ds && k < dropN; c++, k++)
+          _cfdS.pts.push(_cfd_mkPt(x0 + c * sp, H_CFD * 0.54 + r * sp, z0 + d * sp, 0, -8, 0));
+
+  } else if (name === 'jets') {
+    for (let i = 0; i < n; i++) {
+      const left = i % 2 === 0;
+      _cfdS.pts.push(_cfd_mkPt(
+        left ? W_CFD * 0.12 + (Math.random()-.5)*14 : W_CFD * 0.88 + (Math.random()-.5)*14,
+        H_CFD * 0.48 + (Math.random()-.5)*14,
+        D_CFD * 0.5  + (Math.random()-.5)*14,
+        left ? 13 + Math.random()*5 : -13 - Math.random()*5,
+        (Math.random()-.5)*4,
+        (Math.random()-.5)*4
+      ));
+    }
+
+  } else if (name === 'orbit') {
+    const cx = W_CFD/2, cy = H_CFD/2, cz = D_CFD/2;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const b = Math.acos(2 * Math.random() - 1);
+      const r = 38 + Math.random() * 75;
+      const spd = Math.sqrt(0.85 / r) * 195;
+      _cfdS.pts.push(_cfd_mkPt(
+        cx + r * Math.sin(b) * Math.cos(a),
+        cy + r * Math.sin(b) * Math.sin(a),
+        cz + r * Math.cos(b),
+        -Math.sin(a) * spd, Math.cos(a) * spd, 0
+      ));
+    }
+
+  } else if (name === 'fountain') {
+    _cfd_spawnGrid(n, H_CFD * 0.06);
+    _cfdS.pts.forEach(p => { p.vy = 16 + Math.random()*9; p.vx=(Math.random()-.5)*7; p.vz=(Math.random()-.5)*7; });
+  }
+}
+
+
+const s2w = p  => ({ x: (p.x - W_CFD/2) * SCALE, y: p.y * SCALE - 20, z: (p.z - D_CFD/2) * SCALE });
+const w2s = v  => ({ x: v.x / SCALE + W_CFD/2, y: (v.y + 20) / SCALE, z: v.z / SCALE + D_CFD/2 });
+
+
+
+function _cfd_simStep() {
+  const pts = _cfdS.pts, n = pts.length;
+  if (!n) return;
+  if (_cfdS.h !== _cfdS.hCached) { _cfd_recompKernels(_cfdS.h); _cfdS.hCached = _cfdS.h; }
+
+  const h = _cfdS.h, dt = _cfdS.ts;
+  const g = _cfdS.grav * 0.25;       // gravity scaling
+
+  
+  let ms = null;
+  if (isInteracting && iWP)
+    ms = w2s(iWP);
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    p.vy -= g * dt;
+
+    // Orbit attractor
+    if (_cfdS.scene === 'orbit') {
+      const dx = W_CFD/2 - p.x, dy = H_CFD/2 - p.y, dz = D_CFD/2 - p.z;
+      const f = 780 / (dx*dx + dy*dy + dz*dz + 400);
+      p.vx += dx * f * 0.00085 * dt;
+      p.vy += dy * f * 0.00085 * dt;
+      p.vz += dz * f * 0.00085 * dt;
+    }
+
+    // Stir force
+    if (ms) {
+      const dx = ms.x - p.x, dy = ms.y - p.y, dz = ms.z - p.z;
+      const d2 = dx*dx + dy*dy + dz*dz, mr = h * 4.2;
+      if (d2 < mr*mr && d2 > 0.5) {
+        const d = Math.sqrt(d2), str = _cfdS.mf * (1 - d/mr) * dt;
+        const sgn = stirBtn === 2 ? -1 : 1;
+        p.vx += sgn * (dx/d) * str;
+        p.vy += sgn * (dy/d) * str;
+        p.vz += sgn * (dz/d) * str;
+      }
+    }
+
+    p.px = p.x + p.vx * dt * 0.5;
+    p.py = p.y + p.vy * dt * 0.5;
+    p.pz = p.z + p.vz * dt * 0.5;
+  }
+
+  _cfd_buildGrid();
+
+  let sumRho = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    let dens = _cfd_sp2(0, h) + _cfd_sp3(0, h), nDens = _cfd_sp3(0, h), nbc = 0;
+    _cfd_neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _cfdNbc; k++) {
+      const j = _cfdNb[k];
+      const pj = pts[j];
+      const dx = p.px - pj.px, dy = p.py - pj.py, dz = p.pz - pj.pz;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 >= h*h) continue;
+      const d = Math.sqrt(d2);
+      dens  += _cfd_sp2(d, h);
+      nDens += _cfd_sp3(d, h);
+      if (j !== i) nbc++;
+    }
+    p.dens   = dens;
+    p.nDens  = nDens;
+    p.press  = (dens  - _cfdS.rho) * _cfdS.pm;
+    p.nPress = nDens * _cfdS.npm;
+    p.nbc    = nbc;
+    sumRho  += dens;
+  }
+  _cfdAvgRho = n ? (sumRho / n).toFixed(1) : 0;
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    let fx = 0, fy = 0, fz = 0;
+    let vdiff = 0;    // weighted velocity difference (trapped air)
+    _cfd_neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _cfdNbc; k++) {
+      const j = _cfdNb[k]; if (j === i) continue;
+      const pj = pts[j];
+      const dx = p.px - pj.px, dy = p.py - pj.py, dz = p.pz - pj.pz;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 >= h*h || d2 < 1e-6) continue;
+      const d     = Math.sqrt(d2);
+      const invD  = 1 / d;
+      const nx    = dx * invD, ny = dy * invD, nz = dz * invD; // dir to neighbour
+      const sP    = (p.press  + pj.press)  * 0.5;
+      const snP   = (p.nPress + pj.nPress) * 0.5;
+      const rhoj  = Math.max(0.001, pj.dens);
+      const fmag  = sP  * _cfd_dsp2(d, h) * 0.0016 / rhoj
+                  + snP * _cfd_dsp3(d, h) * 0.0006 / rhoj;
+      fx += nx * fmag; fy += ny * fmag; fz += nz * fmag;
+
+      
+      const rvx = p.vx - pj.vx, rvy = p.vy - pj.vy, rvz = p.vz - pj.vz;
+      const rmag = Math.sqrt(rvx*rvx + rvy*rvy + rvz*rvz);
+      if (rmag > 1e-6) {
+        const rix = rvx/rmag, riy = rvy/rmag, riz = rvz/rmag;
+        const cvg = (1 - (rix*(-nx) + riy*(-ny) + riz*(-nz))) * 0.5; // converge weight
+        const inf = _cfd_linK(d, h);
+        vdiff += rmag * cvg * inf;
+      }
+    }
+    p.vx += fx * dt; p.vy += fy * dt; p.vz += fz * dt;
+    // Airborne drag (few neighbours = not submerged)
+    if (p.nbc < 8) { p.vx *= Math.pow(0.92, dt); p.vy *= Math.pow(0.92, dt); p.vz *= Math.pow(0.92, dt); }
+    p.vdiff = vdiff; // store for diffuse spawning
+  }
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    let dvx = 0, dvy = 0, dvz = 0;
+    _cfd_neighbors(p.px, p.py, p.pz);
+    for (let k = 0; k < _cfdNbc; k++) {
+      const j = _cfdNb[k]; if (j === i) continue;
+      const pj = pts[j];
+      const dx = p.px-pj.px, dy = p.py-pj.py, dz = p.pz-pj.pz;
+      const d2 = dx*dx+dy*dy+dz*dz;
+      if (d2 >= h*h) continue;
+      const w = _cfd_p6(d2, h) * _cfdS.visc * 0.00028;
+      dvx += (pj.vx-p.vx)*w; dvy += (pj.vy-p.vy)*w; dvz += (pj.vz-p.vz)*w;
+    }
+    p.vx += dvx*dt; p.vy += dvy*dt; p.vz += dvz*dt;
+  }
+
+  const damp = _cfdS.damp;
+  const VMAX = 30;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
+    if (spd > VMAX) { const inv = VMAX/spd; p.vx*=inv; p.vy*=inv; p.vz*=inv; }
+    p.spd = spd; p.ke = 0.5 * spd * spd;
+    p.x += p.vx*dt; p.y += p.vy*dt; p.z += p.vz*dt;
+    // bounds (AABB, no rotation — matches Lague ResolveCollisions for axis-aligned box)
+    if (p.x < 0)   { p.x = 0;  p.vx =  Math.abs(p.vx)*damp; }
+    if (p.x > W_CFD)   { p.x = W_CFD;  p.vx = -Math.abs(p.vx)*damp; }
+    if (p.y < 0)   { p.y = 0;  p.vy =  Math.abs(p.vy)*damp; }
+    if (p.y > H_CFD)   { p.y = H_CFD;  p.vy = -Math.abs(p.vy)*damp; }
+    if (p.z < 0)   { p.z = 0;  p.vz =  Math.abs(p.vz)*damp; }
+    if (p.z > D_CFD)   { p.z = D_CFD;  p.vz = -Math.abs(p.vz)*damp; }
+  }
+
+  _cfd_updateDiffuse(dt, g);
+}
+
+
+function _cfd_updateDiffuse(dt, g) {
+  const pts = _cfdS.pts, n = pts.length, h = _cfdS.h;
+
+  
+  for (let i = 0; i < n && _cfdF.pts.length < _cfdF.MAX; i++) {
+    const p = pts[i];
+    // Kinetic energy factor (KE must exceed threshold)
+    const keFac = Math.min(1, Math.max(0, (p.ke - 20) / 200));
+    if (keFac < 0.001) continue;
+
+    // Trapped-air factor from vdiff (Ihmsen eq.5)
+    const taf = Math.min(1, p.vdiff / 60);
+    const spawnFac = taf * keFac * _cfdF.rate * dt * 0.9;
+    let spawnN = Math.floor(spawnFac);
+    if (Math.random() < (spawnFac - spawnN)) spawnN++;
+    if (spawnN <= 0) continue;
+
+    
+    const vlen = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz) + 1e-6;
+    const eax = p.vy / vlen, eay = -p.vx / vlen, eaz = 0; // CalculateOrthonormal
+    const ebx = eay*p.vz/vlen - eaz*p.vy/vlen;
+    const eby = eaz*p.vx/vlen - eax*p.vz/vlen;
+    const ebz = eax*p.vy/vlen - eay*p.vx/vlen;
+
+    for (let k = 0; k < Math.min(spawnN, 4); k++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = Math.sqrt(Math.random()) * h;
+      const ox = Math.cos(ang)*eax + Math.sin(ang)*ebx;
+      const oy = Math.cos(ang)*eay + Math.sin(ang)*eby;
+      const oz = Math.cos(ang)*eaz + Math.sin(ang)*ebz;
+      const t  = Math.random();
+      _cfdF.pts.push({
+        x: p.x + ox*rad + p.vx*dt*t,
+        y: p.y + oy*rad + p.vy*dt*t,
+        z: p.z + oz*rad + p.vz*dt*t,
+        vx: p.vx + ox * 1.5,
+        vy: p.vy + oy * 1.5,
+        vz: p.vz + oz * 1.5,
+        life: _cfdF.life * (0.5 + Math.random()*0.5),
+        maxL: _cfdF.life,
+        type: 1 // tentative — reclassified below
+      });
+    }
+  }
+
+  
+  const dead = [];
+  for (let i = 0; i < _cfdF.pts.length; i++) {
+    const fp = _cfdF.pts[i];
+    fp.life -= dt;
+    if (fp.life <= 0 || fp.x<0||fp.x>W_CFD||fp.y<0||fp.y>H_CFD||fp.z<0||fp.z>D_CFD) { dead.push(i); continue; }
+
+    
+    _cfd_neighbors(fp.x, fp.y, fp.z);
+    let lvx = 0, lvy = 0, lvz = 0, wsum = 0, nbc = 0;
+    for (let k = 0; k < _cfdNbc; k++) {
+      const pj = pts[_cfdNb[k]];
+      const dx = fp.x-pj.x, dy = fp.y-pj.y, dz = fp.z-pj.z;
+      const d2 = dx*dx+dy*dy+dz*dz;
+      if (d2 < h*h) {
+        const w = _cfd_p6(d2, h);
+        lvx += pj.vx*w; lvy += pj.vy*w; lvz += pj.vz*w;
+        wsum += w; nbc++;
+      }
+    }
+    if (wsum > 0) { lvx /= wsum; lvy /= wsum; lvz /= wsum; }
+
+    const isBub  = nbc >= _cfdF.bubNbr;
+    const isSpr  = nbc <= _cfdF.sprayNbr;
+    const isFoam = !isBub && !isSpr;
+    fp.type = isBub ? 0 : isSpr ? 1 : 2;
+
+    if (isFoam) {
+      
+      if (wsum > 0) { fp.vx = lvx; fp.vy = lvy; fp.vz = lvz; }
+      fp.life -= dt; // foam dissolves faster
+    } else if (isBub) {
+      
+      const abuoy_y = -g * (1 - _cfdF.buoy);
+      if (wsum > 0) {
+        fp.vx += (lvx - fp.vx) * 3.0 * dt;
+        fp.vy += (lvy - fp.vy) * 3.0 * dt + abuoy_y * dt;
+        fp.vz += (lvz - fp.vz) * 3.0 * dt;
+      } else {
+        fp.vy += abuoy_y * dt;
+      }
+    } else {
+      
+      const spd2 = fp.vx*fp.vx + fp.vy*fp.vy + fp.vz*fp.vz;
+      const spd  = Math.sqrt(spd2) + 1e-6;
+      const drag = 0.035 * spd2;
+      fp.vx += (-fp.vx/spd * drag) * dt;
+      fp.vy += (-g - fp.vy/spd * drag) * dt;
+      fp.vz += (-fp.vz/spd * drag) * dt;
+    }
+
+    fp.x += fp.vx*dt; fp.y += fp.vy*dt; fp.z += fp.vz*dt;
+  }
+
+  // Remove dead (reverse order)
+  for (let i = dead.length - 1; i >= 0; i--) _cfdF.pts.splice(dead[i], 1);
+}
+
+
+/* ── s2w / w2s coordinate utilities ─────────────────────────────── */
+function _cfd_s2w(p){ return {x:(p.x-W_CFD/2)*SCALE_CFD, y:p.y*SCALE_CFD-20, z:(p.z-D_CFD/2)*SCALE_CFD}; }
+function _cfd_w2s(v){ return {x:v.x/SCALE_CFD+W_CFD/2, y:(v.y+20)/SCALE_CFD, z:v.z/SCALE_CFD+D_CFD/2}; }
+
+/* ── Molecule group → particle color map ─────────────────────────── */
+// Each atom in a connected molecule group gets a unique color.
+// Particles-per-unit is configurable; each atom in a bond adds its share.
+var _cfdAtomColors = {};   // atomId → [r,g,b]
+var _cfdPPU = 30;          // particles per unit (user-configurable)
+
+function _cfdBuildColorMap() {
+  _cfdAtomColors = {};
+  // Pull from molCanvasState if available
+  if (typeof molCanvasState === 'undefined') return;
+  var palette = [
+    [0,0.9,1],[1,0.25,0.4],[0.4,1,0.3],[1,0.7,0],[0.8,0.2,1],
+    [0,1,0.6],[1,0.4,0.1],[0.3,0.7,1],[1,0.9,0.3],[0.6,0.2,1]
+  ];
+  molCanvasState.atoms.forEach(function(a,i){
+    _cfdAtomColors[a.id] = palette[i % palette.length];
+  });
+}
+
+function _cfdRespawnFromMolCanvas() {
+  _cfdBuildColorMap();
+  _cfdS.pts = [];
+  _cfdF.pts = [];
+  _cfdCells = null;
+
+  var atomList = (typeof molCanvasState !== 'undefined') ? molCanvasState.atoms : [];
+  if (!atomList.length) {
+    // Fallback: use atomGroups from 3D scene
+    (window.atomGroups||[]).forEach(function(ag,i){
+      var palette=[[0,0.9,1],[1,0.25,0.4],[0.4,1,0.3],[1,0.7,0],[0.8,0.2,1]];
+      _cfdAtomColors['ag'+i]=palette[i%palette.length];
+      atomList.push({id:'ag'+i});
+    });
+  }
+
+  var N = Math.max(200, Math.min(4000, atomList.length * _cfdPPU));
+  _cfdS.n = N;
+  var perAtom = Math.max(1, Math.floor(N / Math.max(1, atomList.length)));
+  var spawned = 0;
+  atomList.forEach(function(atom, ai) {
+    var col = _cfdAtomColors[atom.id] || [0.5,0.5,0.5];
+    var side = Math.ceil(Math.cbrt(perAtom));
+    var sp = Math.min(_cfdS.h*0.6, (W_CFD*0.8)/Math.max(1,atomList.length)/side);
+    var x0 = W_CFD*(0.1+0.8*ai/Math.max(1,atomList.length));
+    var z0 = (D_CFD-side*sp)/2;
+    var k=0;
+    for(var d=0;d<side&&k<perAtom;d++)
+      for(var r=0;r<side&&k<perAtom;r++)
+        for(var c=0;c<side&&k<perAtom;c++,k++,spawned++){
+          var pt=_cfd_mkPt(
+            x0+c*sp+(Math.random()-.5),
+            W_CFD*0.06+r*sp+(Math.random()-.5),
+            z0+d*sp+(Math.random()-.5)
+          );
+          pt._col=col;
+          _cfdS.pts.push(pt);
+        }
+  });
+  if(!_cfdS.pts.length){ _cfd_setScene('dam'); }
+  _cfdRebuildGeo();
+}
+
+/* ── Three.js overlay ────────────────────────────────────────────── */
+var _cfdCanvas, _cfdRenderer, _cfdScene, _cfdCam, _cfdControls;
+var _cfdFluidMesh, _cfdFoamPts, _cfdFloorMesh, _cfdBoxMesh, _cfdStirMesh;
+var _cfdMaxPts = 512;
+var _cfdFoamGeo, _cfdFoamCap = 18000;
+var _cfdRAF = null;
+var _cfdRunning = false;
+var _cfdToolMode = 'orbit'; // 'orbit' | 'stir'
+var _cfdStirActive = false;
+var _cfdStirWP = null;
+var _cfdStirBtn = 0;
+var _cfdRaycaster, _cfdPlane, _cfdMv;
+var _cfdDummy = null, _cfdCol = null;
+var _cfdSphGeo = null;
+
+var _cfdOceanMat, _cfdFoamMat;
+
+function _cfdInitThree(container) {
+  var THREE = window.THREE;
+  if (!THREE) { console.error('ArcCFD: THREE.js not loaded'); return false; }
+
+  _cfdCanvas = document.createElement('canvas');
+  _cfdCanvas.style.cssText = 'width:100%;height:100%;display:block;';
+  container.appendChild(_cfdCanvas);
+
+  _cfdRenderer = new THREE.WebGLRenderer({canvas:_cfdCanvas, antialias:true});
+  _cfdRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  _cfdRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  _cfdRenderer.toneMappingExposure = 1.1;
+
+  _cfdScene = new THREE.Scene();
+  _cfdScene.background = new THREE.Color(0x06080e);
+  _cfdScene.fog = new THREE.Fog(0x06080e, 300, 2000);
+
+  _cfdCam = new THREE.PerspectiveCamera(52, container.clientWidth/Math.max(1,container.clientHeight), 0.1, 50000);
+  _cfdCam.position.set(0, H_CFD*SCALE_CFD*0.6, D_CFD*SCALE_CFD*1.1);
+  _cfdCam.lookAt(0, H_CFD*SCALE_CFD*0.3, 0);
+
+  _cfdScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  var sunL = new THREE.DirectionalLight(0xfffae0, 1.2);
+  sunL.position.set(100,200,80); _cfdScene.add(sunL);
+  var rimL = new THREE.PointLight(0x00e8ff, 1.5, 1200);
+  rimL.position.set(-80,120,-60); _cfdScene.add(rimL);
+
+  if (THREE.OrbitControls) {
+    _cfdControls = new THREE.OrbitControls(_cfdCam, _cfdCanvas);
+    _cfdControls.enableDamping = false;
+    _cfdControls.target.set(0, H_CFD*SCALE_CFD*0.3, 0);
+  }
+
+  _cfdDummy = new THREE.Object3D();
+  _cfdCol = new THREE.Color();
+  _cfdSphGeo = new THREE.SphereGeometry(1,10,7);
+
+  _cfdOceanMat = new THREE.MeshPhysicalMaterial({
+    color:0x0ab8e8, emissive:0x002244, emissiveIntensity:0.18,
+    metalness:0, roughness:0.08, transmission:0.65, ior:1.34,
+    thickness:22, transparent:true, opacity:0.9,
+    depthWrite:false, vertexColors:true
+  });
+
+  _cfdReallocFluid(_cfdS.n || 512);
+
+  // Foam point cloud
+  _cfdFoamGeo = new THREE.BufferGeometry();
+  _cfdFoamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(_cfdFoamCap*3),3).setUsage(THREE.DynamicDrawUsage));
+  _cfdFoamGeo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(_cfdFoamCap*3),3).setUsage(THREE.DynamicDrawUsage));
+  _cfdFoamMat = new THREE.PointsMaterial({size:3.5,vertexColors:true,transparent:true,opacity:0.88,depthWrite:false,blending:THREE.AdditiveBlending});
+  _cfdFoamPts = new THREE.Points(_cfdFoamGeo, _cfdFoamMat);
+  _cfdScene.add(_cfdFoamPts);
+
+  // Floor
+  var flrMat = new THREE.MeshStandardMaterial({color:0x0a1020,roughness:0.5,metalness:0.8});
+  _cfdFloorMesh = new THREE.Mesh(new THREE.PlaneGeometry(5000,5000), flrMat);
+  _cfdFloorMesh.rotation.x = -Math.PI/2;
+  _cfdFloorMesh.position.y = -22;
+  _cfdScene.add(_cfdFloorMesh);
+
+  // Bounds box
+  _cfdBoxMesh = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(W_CFD*SCALE_CFD,H_CFD*SCALE_CFD,D_CFD*SCALE_CFD)),
+    new THREE.LineBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.15})
+  );
+  _cfdBoxMesh.position.set(0, H_CFD*SCALE_CFD/2-22, 0);
+  _cfdScene.add(_cfdBoxMesh);
+
+  // Stir cursor sphere
+  _cfdStirMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(W_CFD*SCALE_CFD*0.035,10,8),
+    new THREE.MeshBasicMaterial({color:0x39ff7a,wireframe:true,transparent:true,opacity:0.45})
+  );
+  _cfdStirMesh.visible = false;
+  _cfdScene.add(_cfdStirMesh);
+
+  _cfdRaycaster = new THREE.Raycaster();
+  _cfdPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+  _cfdMv = new THREE.Vector2();
+
+  _cfdWirePointerEvents();
+  _cfdHandleResize();
+  window.addEventListener('resize', _cfdHandleResize);
+  return true;
+}
+
+function _cfdReallocFluid(n) {
+  if (_cfdFluidMesh && _cfdScene) _cfdScene.remove(_cfdFluidMesh);
+  _cfdMaxPts = Math.max(512, n);
+  _cfdFluidMesh = new THREE.InstancedMesh(_cfdSphGeo, _cfdOceanMat, _cfdMaxPts);
+  _cfdFluidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  _cfdFluidMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(_cfdMaxPts*3),3);
+  _cfdFluidMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+  if (_cfdScene) _cfdScene.add(_cfdFluidMesh);
+}
+
+function _cfdRebuildGeo() {
+  var n = _cfdS.pts.length;
+  if (n > _cfdMaxPts) _cfdReallocFluid(n);
+}
+
+function _cfdUpdateGeo() {
+  var THREE = window.THREE;
+  var pts = _cfdS.pts, n = pts.length;
+  if (!n || !_cfdFluidMesh || !_cfdDummy) return;
+  var sz = 1.6 * SCALE_CFD;
+  _cfdDummy.scale.set(sz,sz,sz);
+  var maxKE=0; for(var i=0;i<n;i++) if(pts[i].ke>maxKE) maxKE=pts[i].ke;
+  for(var i=0;i<n;i++){
+    var p=pts[i], w=_cfd_s2w(p);
+    _cfdDummy.position.set(w.x,w.y,w.z);
+    _cfdDummy.updateMatrix();
+    _cfdFluidMesh.setMatrixAt(i, _cfdDummy.matrix);
+    var col = p._col || [0,0.9,1];
+    var v=maxKE>0?Math.min(1,p.ke/maxKE):0;
+    _cfdFluidMesh.setColorAt(i, _cfdCol.setRGB(
+      Math.min(1,col[0]+v*0.4), Math.min(1,col[1]+v*0.2), Math.min(1,col[2]-v*0.3+0.1)
+    ));
+  }
+  _cfdFluidMesh.count = n;
+  _cfdFluidMesh.instanceMatrix.needsUpdate = true;
+  if(_cfdFluidMesh.instanceColor) _cfdFluidMesh.instanceColor.needsUpdate = true;
+  _cfdFoamPts.visible = false; // simplified for now
+}
+
+function _cfdHandleResize() {
+  var ov = document.getElementById('arc-cfd-overlay');
+  if (!ov || !_cfdRenderer || !_cfdCam) return;
+  var w=ov.clientWidth, h=Math.max(1,ov.clientHeight);
+  _cfdRenderer.setSize(w,h,false);
+  _cfdCam.aspect=w/h; _cfdCam.updateProjectionMatrix();
+}
+
+function _cfdWirePointerEvents() {
+  if (!_cfdCanvas) return;
+  _cfdCanvas.addEventListener('pointerdown', function(e){
+    if(_cfdToolMode!=='stir') return;
+    _cfdStirActive=true; _cfdStirBtn=e.button===2?2:0;
+    _cfdUpdateStirPos(e.clientX,e.clientY); e.stopPropagation();
+  },{capture:true});
+  _cfdCanvas.addEventListener('pointermove', function(e){
+    if(_cfdToolMode!=='stir'||!_cfdStirActive) return;
+    _cfdUpdateStirPos(e.clientX,e.clientY); e.stopPropagation();
+  },{capture:true});
+  _cfdCanvas.addEventListener('pointerup', function(e){
+    if(_cfdToolMode!=='stir') return;
+    _cfdStirActive=false; _cfdStirWP=null;
+    if(_cfdStirMesh) _cfdStirMesh.visible=false; e.stopPropagation();
+  },{capture:true});
+  _cfdCanvas.addEventListener('contextmenu',function(e){if(_cfdToolMode==='stir')e.preventDefault();});
+}
+
+function _cfdUpdateStirPos(cx,cy){
+  if(!_cfdRaycaster||!_cfdMv||!_cfdCam) return;
+  var ov=document.getElementById('arc-cfd-overlay');
+  if(!ov) return;
+  var rect=ov.getBoundingClientRect();
+  _cfdMv.x=((cx-rect.left)/rect.width)*2-1;
+  _cfdMv.y=-((cy-rect.top)/rect.height)*2+1;
+  _cfdRaycaster.setFromCamera(_cfdMv,_cfdCam);
+  var pt=new THREE.Vector3();
+  _cfdRaycaster.ray.intersectPlane(_cfdPlane,pt);
+  if(pt){ _cfdStirWP=pt; if(_cfdStirMesh){_cfdStirMesh.position.copy(pt);_cfdStirMesh.visible=true;} }
+}
+
+function _cfdLoop() {
+  if(!_cfdRunning){ _cfdRAF=null; return; }
+  _cfdRAF=requestAnimationFrame(_cfdLoop);
+  
+  // Apply stir force to sim-space if active
+  if(_cfdStirActive && _cfdStirWP){
+    iWP = _cfd_w2s({x:_cfdStirWP.x,y:_cfdStirWP.y,z:_cfdStirWP.z});
+    isInteracting=true; stirBtn=_cfdStirBtn;
+  } else { isInteracting=false; iWP=null; }
+
+  _cfd_simStep();
+  _cfdUpdateGeo();
+  if(_cfdControls) _cfdControls.update();
+  _cfdRenderer.render(_cfdScene,_cfdCam);
+}
+
+/* ── Public API ─────────────────────────────────────────────────── */
+window.ArcCFD = {
+  open: function(){
+    var existing = document.getElementById('arc-cfd-overlay');
+    if(existing){ existing.style.display='flex'; this._resume(); return; }
+
+    var ov = document.createElement('div');
+    ov.id='arc-cfd-overlay';
+    ov.style.cssText='position:fixed;inset:0;z-index:9500;background:#06080e;display:flex;flex-direction:column;';
+
+    // Header bar
+    var hdr=document.createElement('div');
+    hdr.style.cssText='display:flex;align-items:center;gap:8px;padding:6px 12px;background:rgba(0,229,255,.07);border-bottom:1px solid rgba(0,229,255,.15);flex-shrink:0;flex-wrap:wrap;';
+    hdr.innerHTML='<span style="font-family:Orbitron,sans-serif;font-size:10px;letter-spacing:2px;color:#00e5ff;flex:0 0 auto">◈ CFD</span>'
+      +'<div id="arc-cfd-scene-btns" style="display:flex;gap:4px;flex-wrap:wrap">'
+      +(function(){return ['dam','wave','drop','jets','orbit','fountain'].map(function(sc){
+          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.25);color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 7px;border-radius:3px;cursor:pointer;letter-spacing:.5px">'+sc.toUpperCase()+'</button>';
+        }).join('');})()+'</div>'
+      +'<button id="arc-cfd-mol-btn" onclick="window.ArcCFD.loadMolCanvas()" style="background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.3);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer;letter-spacing:.5px">◈ LOAD MOL CANVAS</button>'
+      +'<label style="font-size:8px;color:rgba(0,229,255,.5);font-family:Orbitron,sans-serif;letter-spacing:.5px">PPU:<input id="arc-cfd-ppu" type="number" value="30" min="1" max="5000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:52px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:3px"></label>'
+      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.07);border:1px solid rgba(57,255,122,.3);color:rgba(57,255,122,.8);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer;letter-spacing:.5px">🪄 WAND OFF</button>'
+      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.45);margin-left:auto"></div>'
+      +'<button onclick="window.ArcCFD.close()" style="margin-left:4px;background:transparent;border:1px solid rgba(255,80,80,.3);color:rgba(255,100,100,.7);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer">✕ CLOSE</button>';
+    ov.appendChild(hdr);
+
+    // Canvas container
+    var cvsCont=document.createElement('div');
+    cvsCont.style.cssText='flex:1;position:relative;overflow:hidden;';
+    ov.appendChild(cvsCont);
+
+    document.body.appendChild(ov);
+
+    if(!_cfdInitThree(cvsCont)){ ov.remove(); return; }
+    _cfd_setScene('dam');
+    this._resume();
+  },
+
+  _resume: function(){
+    _cfdRunning=true;
+    if(!_cfdRAF) _cfdRAF=requestAnimationFrame(_cfdLoop);
+    var stats=document.getElementById('arc-cfd-stats');
+    if(stats){
+      clearInterval(window._cfdStatsTimer);
+      window._cfdStatsTimer=setInterval(function(){
+        if(stats) stats.textContent='pts:'+_cfdS.pts.length+' ρ:'+_cfdAvgRho;
+      },500);
+    }
+  },
+
+  close: function(){
+    _cfdRunning=false;
+    if(_cfdRAF){ cancelAnimationFrame(_cfdRAF); _cfdRAF=null; }
+    clearInterval(window._cfdStatsTimer);
+    var ov=document.getElementById('arc-cfd-overlay');
+    if(ov) ov.style.display='none';
+  },
+
+  setScene: function(name){
+    _cfd_setScene(name);
+    _cfdRebuildGeo();
+  },
+
+  loadMolCanvas: function(){
+    _cfdRespawnFromMolCanvas();
+  },
+
+  setPPU: function(v){
+    _cfdPPU=Math.max(1,Math.min(5000,v));
+  },
+
+  toggleStir: function(){
+    _cfdToolMode = _cfdToolMode==='stir'?'orbit':'stir';
+    var btn=document.getElementById('arc-cfd-stir-btn');
+    if(btn){
+      btn.textContent=_cfdToolMode==='stir'?'🪄 WAND ON':'🪄 WAND OFF';
+      btn.style.background=_cfdToolMode==='stir'?'rgba(57,255,122,.2)':'rgba(57,255,122,.07)';
+    }
+    if(_cfdStirMesh) _cfdStirMesh.visible=false;
+    if(_cfdControls) _cfdControls.enabled=(_cfdToolMode==='orbit');
+  },
+
+  // Called by molCanvasState change hooks and Node Editor sync
+  notifyMolChange: function(){
+    if(!_cfdRunning) return;
+    _cfdRespawnFromMolCanvas();
+  }
+};
+
+// Hook molCanvas changes → live CFD update
+(function(){
+  var _origMolDraw = window.drawMolCanvas;
+  if(typeof _origMolDraw === 'function'){
+    window.drawMolCanvas = function(){
+      var r = _origMolDraw.apply(this,arguments);
+      if(window.ArcCFD && document.getElementById('arc-cfd-overlay') &&
+         document.getElementById('arc-cfd-overlay').style.display!=='none'){
+        clearTimeout(window._cfdMolTimer);
+        window._cfdMolTimer=setTimeout(function(){ window.ArcCFD.notifyMolChange(); },600);
+      }
+      return r;
+    };
+  }
+})();
+
+})();
+</script>
+
 </body>
 </html>
