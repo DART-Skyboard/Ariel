@@ -3081,6 +3081,9 @@
         .nfm-chain .nfm-proton  { color: #e74c3c; font-weight: 700; }
         .nfm-chain .nfm-electron { color: #3498db; font-weight: 700; }
         .nfm-chain .nfm-arrow { color: var(--text-dim); margin: 0 4px; }
+        .mp-eq-input:focus { outline:none; border-color:rgba(0,229,255,.5); background:rgba(0,229,255,.08); }
+        .mp-prop-chain { border-top:1px solid rgba(0,229,255,.07); margin-top:3px; padding-top:3px; }
+        .mp-atom-label { font-size:0.67em; font-weight:600; margin-bottom:2px; }
         #nfm-result-box {
             margin-top: 6px; padding: 7px 10px;
             background: rgba(0,229,255,0.05);
@@ -23497,16 +23500,25 @@ function _viewScaleMeters(val, unit) {
 ══════════════════════════════════════════════════════════════ */
 
 function _getTabAtoms() {
-    // Read from the active tab's atomGroups (not just global) so tab switching works
     var liveGroups = typeof atomGroups !== 'undefined' ? atomGroups : [];
     if (window.SceneTabs && window.SceneTabs.getActive) {
         var t = window.SceneTabs.getActive();
         if (t && !t._isCFDTab && t.atomGroups) liveGroups = t.atomGroups;
     }
     var atoms = [{ value:'env', label:'🌍 Environment' }];
+    // Individual atoms
     liveGroups.forEach(function(g) {
-        atoms.push({ value:g.id, label:g.name || ('Atom ' + g.id) });
+        atoms.push({ value:g.id, label:(g.name || ('Atom ' + g.id)) + ' (' + (g.symbol||'?') + ')' });
     });
+    // Groups from all tabs (SceneTabs groups)
+    if (window.SceneTabs && typeof window.SceneTabs.getAll === 'function') {
+        window.SceneTabs.getAll().forEach(function(tab) {
+            if (tab._isCFDTab) return;
+            if (tab.atomGroups && tab.atomGroups.length > 1) {
+                atoms.push({ value:'group_'+tab.id, label:'⬡ Group: '+( tab.name||tab.id)+' ('+tab.atomGroups.length+' atoms)' });
+            }
+        });
+    }
     return atoms;
 }
 
@@ -23516,23 +23528,38 @@ function _getAtomComponents(groupId) {
             return { value:'env_'+p, label:'Env·'+p.charAt(0).toUpperCase()+p.slice(1) };
         });
     }
-    var g = (typeof atomGroups !== 'undefined')
-        ? atomGroups.find(function(a){ return a.id === groupId; }) : null;
+    var g = null;
+    if (groupId && !groupId.startsWith('group_')) {
+        g = (typeof atomGroups !== 'undefined')
+            ? atomGroups.find(function(a){ return a.id === groupId; }) : null;
+    }
     var opts = [
-        { value:'all',      label:'Whole Atom'  },
-        { value:'neutron',  label:'Neutron(s)'  },
-        { value:'proton',   label:'Proton(s)'   },
-        { value:'electron', label:'Electron(s)' },
+        { value:'all',      label:'Whole Atom / Group' },
+        { value:'neutron',  label:'◎ Neutron(s)'       },
+        { value:'proton',   label:'◉ Proton(s)'        },
+        { value:'electron', label:'⚡ All Electrons'    },
     ];
-    // Electron shells from element data
+    // Individual shell options from element data
+    var shells = [];
     try {
         var ed = g ? (typeof g.elementData === 'string' ? JSON.parse(g.elementData) : g.elementData) : null;
         if (ed && ed.electronOrbits) {
             ed.electronOrbits.forEach(function(cnt, i) {
-                if (cnt > 0) opts.push({ value:'shell_'+SHELL_NAMES[i], label:'Shell '+SHELL_NAMES[i]+' ('+cnt+'e)' });
+                if (cnt > 0) {
+                    shells.push({ value:'shell_'+SHELL_NAMES[i], label:'Shell '+SHELL_NAMES[i]+' ('+cnt+'e)' });
+                }
             });
         }
     } catch(e){}
+    // Add multi-shell combos if more than one shell
+    if (shells.length > 1) {
+        // Outer shells only (last 2)
+        var outerStart = Math.max(0, shells.length - 2);
+        var outerLabels = shells.slice(outerStart).map(function(s){return s.label.split(' ')[1];}).join('+');
+        opts.push({ value:'shells_outer', label:'Outer Shells ('+outerLabels+')' });
+    }
+    if (shells.length > 0) opts.push({ value:'shells_all', label:'All Shells' });
+    shells.forEach(function(s){ opts.push(s); });
     // Physics properties
     PHYS_PROPS.forEach(function(p) {
         opts.push({ value:'phys_'+p, label:p.charAt(0).toUpperCase()+p.slice(1) });
@@ -23608,7 +23635,7 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
     card.dataset.pairIdx = pIdx;
     var allAtoms = _getTabAtoms();
 
-    // Header
+    // ── Header ──────────────────────────────────────────────────────────────
     var hdr = document.createElement('div');
     hdr.className = 'mp-header';
     hdr.innerHTML =
@@ -23618,21 +23645,38 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
             '<span style="color:var(--text-dim,#8899aa);">vs Env</span></label>';
     card.appendChild(hdr);
 
-    // Atom A col + operator col + Atom B col
+    // ── Algebraic equation input ─────────────────────────────────────────────
+    var eqRow = document.createElement('div');
+    eqRow.style.cssText='display:flex;align-items:center;gap:5px;margin-bottom:5px;';
+    var eqInput = document.createElement('input');
+    eqInput.type='text'; eqInput.className='mp-eq-input';
+    eqInput.placeholder='e.g. 6√(b3-2) or A+B or A×B²';
+    eqInput.value=saved.equation||'';
+    eqInput.title='Algebraic equation: use A=Atom A value, B=Atom B value. Supports √, ², ^, +, -, ×, ÷';
+    eqInput.style.cssText='flex:1;background:rgba(0,229,255,.05);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:0.68em;padding:3px 6px;border-radius:3px;font-family:monospace;';
+    var eqHelp = document.createElement('span');
+    eqHelp.title='A=Atom A value, B=Atom B value\nSupports: √, ², ^n, +, −, ×, ÷\nExample: 6√(A³−B) or A×B²';
+    eqHelp.style.cssText='font-size:10px;color:rgba(0,229,255,.4);cursor:help;';
+    eqHelp.textContent='ƒ(A,B)';
+    eqRow.appendChild(eqInput); eqRow.appendChild(eqHelp);
+    card.appendChild(eqRow);
+
+    // ── Atom A | Operator | Atom B ──────────────────────────────────────────
     var body = document.createElement('div');
     body.style.cssText = 'display:flex;gap:4px;align-items:flex-start;';
 
-    // ── Atom A ──
+    // Atom A col
     var colA = document.createElement('div');
     colA.className = 'mp-atom-col';
-    colA.innerHTML = '<div class="mp-atom-label">Atom A</div>';
-    var selA = _buildSelect(allAtoms, 'mp-atom-select mp-atom-a', saved.atomA || atomA.value);
-    var compA = _buildSelect(_getAtomComponents(saved.atomA || atomA.value), 'mp-component-select mp-comp-a', saved.compA || 'all');
-    selA.addEventListener('change', function() { _rebuildSelect(compA, _getAtomComponents(this.value), 'all'); });
+    colA.innerHTML = '<div class="mp-atom-label" style="color:rgba(255,180,60,.85);">◎ Source</div>';
+    var selA = _buildSelect(allAtoms, 'mp-atom-select mp-atom-a', saved.atomA || (atomA && atomA.value));
+    var compA = _buildSelect(_getAtomComponents(saved.atomA || (atomA && atomA.value)), 'mp-component-select mp-comp-a', saved.compA || 'neutron');
+    selA.addEventListener('change', function() { _rebuildSelect(compA, _getAtomComponents(this.value), 'neutron'); _updatePairChain(card); });
+    compA.addEventListener('change', function() { _updatePairChain(card); });
     colA.appendChild(selA); colA.appendChild(compA);
     body.appendChild(colA);
 
-    // ── Operator column ──
+    // Operator col
     var colOp = document.createElement('div');
     colOp.className = 'mp-operator-col';
     var opSel = document.createElement('select');
@@ -23644,7 +23688,6 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
         opSel.appendChild(o);
     });
     colOp.appendChild(opSel);
-    // Radical toggle
     var radRow = document.createElement('div');
     radRow.className = 'mp-radical-row';
     var radId = 'mp-rad-' + pIdx;
@@ -23652,10 +23695,10 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
         '<input type="checkbox" class="mp-rad-chk" id="'+radId+'"'+(saved.radical?' checked':'')+'>'+
         '<label for="'+radId+'" title="Enable root/radical">√</label>';
     var radInp = document.createElement('input');
-    radInp.type = 'number'; radInp.className = 'mp-radical-input'+(saved.radical?' on':'');
-    radInp.value = saved.radN !== undefined ? saved.radN : 0;
-    radInp.step = 'any'; radInp.min = '0'; radInp.placeholder = 'n';
-    radInp.title = 'Root degree (2=√, 3=∛, decimals OK)';
+    radInp.type='number'; radInp.className='mp-radical-input'+(saved.radical?' on':'');
+    radInp.value=saved.radN!==undefined?saved.radN:2;
+    radInp.step='any'; radInp.min='0'; radInp.placeholder='n';
+    radInp.title='Root degree (2=√, 3=∛)';
     radRow.querySelector('input[type=checkbox]').addEventListener('change', function() {
         radInp.classList.toggle('on', this.checked);
     });
@@ -23663,14 +23706,15 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
     colOp.appendChild(radRow);
     body.appendChild(colOp);
 
-    // ── Atom B (or solo note) ──
+    // Atom B col
     var colB = document.createElement('div');
     colB.className = 'mp-atom-col';
     if (atomB) {
-        colB.innerHTML = '<div class="mp-atom-label">Atom B</div>';
-        var selB = _buildSelect(allAtoms, 'mp-atom-select mp-atom-b', saved.atomB || atomB.value);
-        var compB = _buildSelect(_getAtomComponents(saved.atomB || atomB.value), 'mp-component-select mp-comp-b', saved.compB || 'all');
-        selB.addEventListener('change', function() { _rebuildSelect(compB, _getAtomComponents(this.value), 'all'); });
+        colB.innerHTML = '<div class="mp-atom-label" style="color:rgba(100,200,255,.85);">⚡ Target</div>';
+        var selB = _buildSelect(allAtoms, 'mp-atom-select mp-atom-b', saved.atomB || (atomB && atomB.value));
+        var compB = _buildSelect(_getAtomComponents(saved.atomB || (atomB && atomB.value)), 'mp-component-select mp-comp-b', saved.compB || 'electron');
+        selB.addEventListener('change', function() { _rebuildSelect(compB, _getAtomComponents(this.value), 'electron'); _updatePairChain(card); });
+        compB.addEventListener('change', function() { _updatePairChain(card); });
         colB.appendChild(selB); colB.appendChild(compB);
     } else {
         colB.innerHTML = '<div class="mp-atom-label">—</div><div style="font-size:0.67em;color:var(--text-dim,#8899aa);padding-top:10px;">Solo op</div>';
@@ -23678,12 +23722,43 @@ function _buildPairCard(atomA, atomB, pIdx, saved) {
     body.appendChild(colB);
     card.appendChild(body);
 
+    // ── Propagation chain display ────────────────────────────────────────────
+    var chainRow = document.createElement('div');
+    chainRow.className = 'mp-prop-chain';
+    chainRow.style.cssText='font-size:0.62em;color:rgba(255,255,255,.35);padding:3px 4px;margin-top:3px;font-family:monospace;line-height:1.5;min-height:16px;';
+    chainRow.dataset.chainFor = pIdx;
+    card.appendChild(chainRow);
+
     // Result badge
     var badge = document.createElement('div');
     badge.className = 'mp-result-badge';
     badge.dataset.pairResult = pIdx;
     card.appendChild(badge);
+
+    // Init chain display
+    setTimeout(function(){ _updatePairChain(card); }, 0);
     return card;
+}
+
+function _updatePairChain(card) {
+    var chainRow = card.querySelector('.mp-prop-chain');
+    if (!chainRow) return;
+    var selA = card.querySelector('.mp-atom-a'), compA = card.querySelector('.mp-comp-a');
+    var selB = card.querySelector('.mp-atom-b'), compB = card.querySelector('.mp-comp-b');
+    var aName = selA ? (selA.options[selA.selectedIndex]||{}).text || 'A' : 'A';
+    var aComp = compA ? (compA.options[compA.selectedIndex]||{}).text || '' : '';
+    var bName = selB ? (selB.options[selB.selectedIndex]||{}).text || 'B' : '';
+    var bComp = compB ? (compB.options[compB.selectedIndex]||{}).text || '' : '';
+    // Build: Neutron[A] → Proton[A] → Shell[A] ⟷ Neutron[B] → Proton[B] → Shell[B]
+    var aShell = aComp.match(/Shell\s*([A-Z])/i) ? aComp : (aComp.toLowerCase().includes('electron') ? 'e⁻ shells' : aComp);
+    var bShell = bComp.match(/Shell\s*([A-Z])/i) ? bComp : (bComp.toLowerCase().includes('electron') ? 'e⁻ shells' : bComp);
+    var chain = '<span style="color:#f39c12">N</span>→<span style="color:#e74c3c">P</span>→<span style="color:#3498db">'+aShell+'</span>';
+    chain += ' <span style="color:#aaa">['+aName.split(' ')[0]+']</span>';
+    if (bName) {
+        chain += ' <span style="color:rgba(0,229,255,.4)">⟷</span> <span style="color:#f39c12">N</span>→<span style="color:#e74c3c">P</span>→<span style="color:#3498db">'+bShell+'</span>';
+        chain += ' <span style="color:#aaa">['+bName.split(' ')[0]+']</span>';
+    }
+    chainRow.innerHTML = chain;
 }
 
 /* ── SAVE MATH STATE ─────────────────────────────────────────── */
@@ -23693,15 +23768,16 @@ function _saveMathState(tabId) {
     var sets = [];
     cont.querySelectorAll('.math-pair-card').forEach(function(card, i) {
         sets.push({
-            atomA:  (card.querySelector('.mp-atom-a')||{}).value,
-            compA:  (card.querySelector('.mp-comp-a')||{}).value,
-            op:     (card.querySelector('.mp-op-select')||{}).value,
-            radical:(card.querySelector('.mp-rad-chk')||{}).checked,
-            radN:   parseFloat((card.querySelector('.mp-radical-input')||{value:'0'}).value||'0'),
-            atomB:  (card.querySelector('.mp-atom-b')||{}).value,
-            compB:  (card.querySelector('.mp-comp-b')||{}).value,
-            vsEnv:  (card.querySelector('.mp-vs-env')||{}).checked,
-            linked: (_el('mp-link-'+i)||{}).checked,
+            atomA:    (card.querySelector('.mp-atom-a')||{}).value,
+            compA:    (card.querySelector('.mp-comp-a')||{}).value,
+            op:       (card.querySelector('.mp-op-select')||{}).value,
+            radical:  (card.querySelector('.mp-rad-chk')||{}).checked,
+            radN:     parseFloat((card.querySelector('.mp-radical-input')||{value:'2'}).value||'2'),
+            atomB:    (card.querySelector('.mp-atom-b')||{}).value,
+            compB:    (card.querySelector('.mp-comp-b')||{}).value,
+            vsEnv:    (card.querySelector('.mp-vs-env')||{}).checked,
+            linked:   (_el('mp-link-'+i)||{}).checked,
+            equation: (card.querySelector('.mp-eq-input')||{}).value || '',
         });
     });
     _tabMathState[tabId] = {
