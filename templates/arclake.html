@@ -4287,6 +4287,12 @@
 
                 <!-- Element Periodic Table -->
                 <fieldset>
+                    <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:6px;padding:5px 8px;background:rgba(0,229,255,.04);border:1px solid rgba(0,229,255,.12);border-radius:5px;">
+                      <span style="font-family:var(--font-d);font-size:8px;letter-spacing:1px;color:rgba(0,229,255,.55)">CLOUD</span>
+                      <label style="font-size:9px;color:var(--dim);display:flex;align-items:center;gap:3px;" title="Quantum cloud particles per electron">pts/e<input type="number" value="30" min="1" max="500" style="width:44px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;" oninput="window._arcPtsPerE=+this.value"></label>
+                      <label style="font-size:9px;color:var(--dim);display:flex;align-items:center;gap:3px;" title="Electron cloud point size">e px<input type="number" value="0.025" min="0.005" max="0.5" step="0.005" style="width:48px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;" oninput="window._arcElecPtSize=+this.value"></label>
+                      <label style="font-size:9px;color:var(--dim);display:flex;align-items:center;gap:3px;" title="Nucleus point size">nuc<input type="number" value="0.03" min="0.005" max="0.2" step="0.005" style="width:44px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;" oninput="window._arcNucPtSize=+this.value"></label>
+                    </div>
                     <legend>Elements <span id="add-all-elements-btn" style="cursor:pointer;color:var(--accent);font-weight:400;font-size:0.8em;float:right;">(Add All)</span></legend>
                     <div id="periodicTableContainer">
                         <div style="font-size:0.7em;color:var(--text-dim);margin-bottom:6px;padding:3px 4px;background:rgba(0,229,255,0.05);border-radius:4px;border:1px solid rgba(0,229,255,0.1);">
@@ -10287,7 +10293,7 @@ function loadAtom(atom, index, initialPositionArray = null) {
         const _ng=new THREE.BufferGeometry();
         _ng.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_nucPos.map((v,i)=>v-[initialCenter.x,initialCenter.y,initialCenter.z][i%3])),3));
         _ng.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_nucCol),3));
-        const _nm=new THREE.PointsMaterial({size:0.04,vertexColors:true,transparent:true,opacity:1.0,depthWrite:false,sizeAttenuation:true});
+        const _nm=new THREE.PointsMaterial({size:window._arcNucPtSize||0.03,vertexColors:true,transparent:true,opacity:1.0,depthWrite:false,sizeAttenuation:true});
         const _nCloud=new THREE.Points(_ng,_nm);
         _nCloud.userData={type:'_nucleusCloud',atomId};
         _idleGroup.add(_nCloud);
@@ -10306,19 +10312,19 @@ function loadAtom(atom, index, initialPositionArray = null) {
 
     const _allPos=[], _allCol=[];
     _electronList.forEach(({n,l,m,shellIdx,Zeff})=>{
-        const sc=_SHELL_COLS[shellIdx%_SHELL_COLS.length];
-        // Scale so this shell's cloud centers around _shellBase + shellIdx*_shellStep
+        // Shell color: bright sky blue base, shifted per shell (K=cyan, L=violet, M=green, etc.)
+        const _skyBlues=[[0.1,0.85,1],[0.55,0.2,1],[0.2,1,0.6],[1,0.85,0.1],[1,0.3,0.7],[0.3,1,1],[1,0.6,0.2]];
+        const sc=_skyBlues[shellIdx%_skyBlues.length];
         const _shellCenterR = _shellBase + shellIdx * _shellStep;
-        // Compute normalization from ψ_nlm so samples land near _shellCenterR
         const _SCALE = _shellCenterR / Math.max(0.1, _a0 * n * n / Math.max(1,Zeff));
         const _NORM  = 1.0 / (_shellCenterR * 2);
         for(let i=0;i<_PTS_PER_E;i++){
             const {x,y,z,r}=_sampleOrb(n,l,m,Zeff);
             _allPos.push(x*_SCALE, y*_SCALE, z*_SCALE);
             const v=Math.min(1,r*_NORM);
-            const fire=_heatFire(v);
-            const br=1.3;
-            _allCol.push(Math.min(1,fire[0]*0.55*br+sc[0]*0.45),Math.min(1,fire[1]*0.55*br+sc[1]*0.45),Math.min(1,fire[2]*0.55*br+sc[2]*0.45));
+            // Sky blue dominant, heat-tinted toward white at high density
+            const heat=Math.min(1,v*1.4);
+            _allCol.push(Math.min(1,sc[0]+heat*0.3), Math.min(1,sc[1]+heat*0.15), Math.min(1,sc[2]*(1-heat*0.3)+heat*0.3));
         }
     });
 
@@ -10326,7 +10332,7 @@ function loadAtom(atom, index, initialPositionArray = null) {
         const _ptGeo=new THREE.BufferGeometry();
         _ptGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_allPos),3));
         _ptGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_allCol),3));
-        const _ptMat=new THREE.PointsMaterial({size:0.035,vertexColors:true,transparent:true,opacity:0.92,depthWrite:false,sizeAttenuation:true});
+        const _ptMat=new THREE.PointsMaterial({size:window._arcElecPtSize||0.025,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,sizeAttenuation:true});
         const _ptCloud=new THREE.Points(_ptGeo,_ptMat);
         _ptCloud.userData={type:'_orbitalCloud',atomId};
         _idleGroup.add(_ptCloud);
@@ -24615,7 +24621,7 @@ function _cfd_w2s(v){ return {x:v.x/SCALE_CFD+W_CFD/2, y:(v.y+20)/SCALE_CFD, z:v
 // Each atom in a connected molecule group gets a unique color.
 // Particles-per-unit is configurable; each atom in a bond adds its share.
 var _cfdAtomColors = {};   // atomId → [r,g,b]
-var _cfdPPU = 30;          // particles per unit (user-configurable)
+var _cfdPPU = 3000;          // particles per unit (user-configurable)
 
 function _cfdBuildColorMap() {
   _cfdAtomColors = {};
@@ -24890,23 +24896,31 @@ window.ArcCFD = {
     // Default size: 92vw wide, 80vh tall, centered — draggable/resizable
     var _ow=Math.min(window.innerWidth*0.92,900), _oh=Math.min(window.innerHeight*0.82,680);
     var _ox=Math.max(0,(window.innerWidth-_ow)/2), _oy=Math.max(0,(window.innerHeight-_oh)/2);
-    ov.style.cssText='position:fixed;left:'+_ox+'px;top:'+_oy+'px;width:'+_ow+'px;height:'+_oh+'px;min-width:280px;min-height:200px;z-index:9500;background:#06080e;display:flex;flex-direction:column;border:1px solid rgba(0,229,255,.22);border-radius:10px;box-shadow:0 8px 48px rgba(0,0,0,.85);overflow:hidden;resize:both;';
+    ov.style.cssText='position:fixed;left:'+_ox+'px;top:'+_oy+'px;width:'+_ow+'px;height:'+_oh+'px;min-width:280px;min-height:200px;z-index:9500;background:#06080e;display:flex;flex-direction:column;border:1px solid rgba(0,229,255,.22);border-radius:10px;box-shadow:0 8px 48px rgba(0,0,0,.85);overflow:hidden;resize:both;will-change:left,top;';
 
     // Header bar
     var hdr=document.createElement('div');
     hdr.style.cssText='display:flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(0,10,25,.95);border-bottom:1px solid rgba(0,229,255,.22);flex-shrink:0;flex-wrap:wrap;cursor:grab;user-select:none;';
     hdr.title='Drag to move';
-    var _btnS='background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.38);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;letter-spacing:.5px;white-space:nowrap;';
-    hdr.innerHTML='<span style="font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:2px;color:#00e5ff;flex:0 0 auto;margin-right:4px">◈ CFD</span>'
-      +'<div id="arc-cfd-scene-btns" style="display:flex;gap:4px;flex-wrap:wrap">'
+    var _bS='background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.38);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;';
+    hdr.style.flexDirection='column';
+    hdr.innerHTML=''
+      +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;width:100%;">'
+      +'<span style="font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:2px;color:#00e5ff;flex-shrink:0">◈ CFD</span>'
       +(function(){return ['dam','wave','drop','jets','orbit','fountain'].map(function(sc){
-          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="'+_btnS+'font-size:9px;padding:3px 8px;">'+sc.toUpperCase()+'</button>';
-        }).join('');})()+'</div>'
-      +'<button id="arc-cfd-mol-btn" onclick="window.ArcCFD.loadMolCanvas()" style="'+_btnS+'background:rgba(0,229,255,.15);">◈ MOL CANVAS</button>'
-      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;letter-spacing:.5px;white-space:nowrap">PPU&nbsp;<input id="arc-cfd-ppu" type="number" value="30" min="1" max="5000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:55px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;margin-left:3px;"></label>'
-      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-family:Orbitron,sans-serif;font-size:10px;padding:3px 10px;border-radius:4px;cursor:pointer;white-space:nowrap">🪄 WAND</button>'
-      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;padding-right:6px"></div>'
-      +'<button onclick="window.ArcCFD.close()" style="background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-family:Orbitron,sans-serif;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;flex-shrink:0">✕</button>';
+          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="'+_bS+'font-size:9px;padding:3px 7px;">'+sc.toUpperCase()+'</button>';
+        }).join('');})()
+      +'<button onclick="window.ArcCFD.loadMolCanvas()" style="'+_bS+'background:rgba(0,229,255,.16);">◈ MOL</button>'
+      +'<button onclick="try{if(window.CNE)window.CNE.open();else if(typeof openNodeEditor===\'function\')openNodeEditor();}catch(e){}" style="'+_bS+'background:rgba(191,95,255,.14);border-color:rgba(191,95,255,.4);color:#cf8fff;">⬡ NODE</button>'
+      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;"></div>'
+      +'<button onclick="window.ArcCFD.close()" style="background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-family:Orbitron,sans-serif;font-size:13px;padding:3px 10px;border-radius:4px;cursor:pointer;">✕</button>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;width:100%;margin-top:5px;">'
+      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:4px;">TABS<select id="arc-cfd-tab-sel" multiple size="1" style="min-width:90px;max-width:150px;background:rgba(0,10,25,.9);border:1px solid rgba(0,229,255,.35);color:#00e5ff;font-size:9px;padding:2px 4px;border-radius:3px;"></select></label>'
+      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:3px;">PPU<input id="arc-cfd-ppu" type="number" value="3000" min="1" max="50000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:62px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;"></label>'
+      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;">🪄 WAND</button>'
+      +'<button onclick="window.ArcCFD.syncTabs()" style="'+_bS+'background:rgba(0,229,255,.18);">↺ APPLY TABS</button>'
+      +'</div>';
     ov.appendChild(hdr);
 
     // Canvas container
@@ -24940,6 +24954,7 @@ window.ArcCFD = {
 
     if(!_cfdInitThree(cvsCont)){ ov.remove(); return; }
     _cfd_setScene('dam');
+    this._populateTabSelect();
     this._resume();
   },
 
@@ -24967,6 +24982,73 @@ window.ArcCFD = {
 
   setScene: function(name){
     _cfd_setScene(name);
+    _cfdRebuildGeo();
+  },
+
+  _populateTabSelect: function(){
+    var sel=document.getElementById('arc-cfd-tab-sel');
+    if(!sel) return;
+    sel.innerHTML='';
+    // List SceneTabs if available
+    var tabs=(window.SceneTabs&&typeof window.SceneTabs.getAll==='function')?window.SceneTabs.getAll():[];
+    if(!tabs.length){
+      // Fallback: look for tab UI elements
+      document.querySelectorAll('.scene-tab-btn,[data-tab-id]').forEach(function(el){
+        var id=el.dataset.tabId||el.id, name=el.textContent.trim()||id;
+        if(id) tabs.push({id:id,name:name});
+      });
+    }
+    if(!tabs.length){
+      var opt=document.createElement('option');
+      opt.value='scene1'; opt.textContent='Scene 1'; opt.selected=true;
+      sel.appendChild(opt);
+      return;
+    }
+    tabs.forEach(function(t){
+      var opt=document.createElement('option');
+      opt.value=t.id||t.name; opt.textContent=t.name||t.id||'Tab';
+      opt.selected=true; // all checked by default
+      sel.appendChild(opt);
+    });
+    sel.size=Math.min(4,Math.max(1,tabs.length));
+  },
+
+  syncTabs: function(){
+    var sel=document.getElementById('arc-cfd-tab-sel');
+    var selected=sel?Array.from(sel.selectedOptions).map(function(o){return o.value;}):[];
+    if(!selected.length){ _cfd_setScene('dam'); _cfdRebuildGeo(); return; }
+    // Respawn with only selected tabs
+    _cfdS.pts=[]; _cfdF.pts=[]; _cfdCells=null;
+    var allAtoms=(typeof molCanvasState!=='undefined')?molCanvasState.atoms.filter(function(a){
+      // include atom if its tab is selected (or all if no tab info)
+      return !a.tabId || selected.indexOf(a.tabId)!==-1;
+    }):[];
+    if(!allAtoms.length){
+      // Fallback: use atomGroups from selected tabs
+      (window.SceneTabs&&typeof window.SceneTabs.getAll==='function'?window.SceneTabs.getAll():[])
+        .filter(function(t){ return selected.indexOf(t.id||t.name)!==-1; })
+        .forEach(function(t){ (t.atomGroups||[]).forEach(function(ag){ allAtoms.push({id:ag.id||('ag'+Math.random()),_ag:ag}); }); });
+    }
+    if(!allAtoms.length){ _cfdRespawnFromMolCanvas(); return; }
+    _cfdBuildColorMap();
+    var N=Math.max(200,Math.min(40000,allAtoms.length*_cfdPPU));
+    _cfdS.n=N;
+    var perAtom=Math.max(1,Math.floor(N/Math.max(1,allAtoms.length)));
+    allAtoms.forEach(function(atom,ai){
+      var col=_cfdAtomColors[atom.id]||[(ai*37%255)/255,(ai*91%255)/255,(ai*137%255)/255];
+      var side=Math.ceil(Math.cbrt(perAtom));
+      var sp=Math.min(_cfdS.h*0.6,(W_CFD*0.7)/Math.max(1,allAtoms.length)/side);
+      var x0=W_CFD*(0.1+0.8*ai/Math.max(1,allAtoms.length));
+      var z0=(D_CFD-side*sp)/2;
+      var k=0;
+      for(var d=0;d<side&&k<perAtom;d++)
+        for(var r=0;r<side&&k<perAtom;r++)
+          for(var cc=0;cc<side&&k<perAtom;cc++,k++){
+            var pt=_cfd_mkPt(x0+cc*sp+(Math.random()-.5),W_CFD*0.06+r*sp+(Math.random()-.5),z0+d*sp+(Math.random()-.5));
+            pt._col=col; _cfdS.pts.push(pt);
+          }
+    });
+    if(!_cfdS.pts.length) _cfd_setScene('dam');
     _cfdRebuildGeo();
   },
 
