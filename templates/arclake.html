@@ -2084,7 +2084,8 @@
         #lscfd-hud-toggle-row span{font-size:0.8em;color:var(--accent);font-weight:700;letter-spacing:0.05em;}
         #lscfd-hud-toggle-row button{background:none;border:none;color:var(--text-dim);font-size:0.9em;cursor:pointer;padding:0 2px;line-height:1;}
         #lscfd-hud-body{padding:6px 13px 8px;overflow-y:auto;max-height:calc(52vh - 32px);scrollbar-width:thin;scrollbar-color:var(--border-accent) transparent;}
-        #lscfd-mode-bar{display:none;position:fixed;top:0;left:0;right:0;background:rgba(0,149,240,0.18);border-bottom:1px solid rgba(0,149,240,0.5);color:#4ab0ff;font-size:0.76em;font-weight:700;padding:5px 16px;text-align:center;z-index:9000;letter-spacing:0.06em;pointer-events:none}
+        .lscfd-scene-btn.on{background:rgba(0,229,255,.22)!important;border-color:rgba(0,229,255,.6)!important;color:#00e5ff!important;}
+#lscfd-mode-bar{display:none;position:fixed;top:0;left:0;right:0;background:rgba(0,149,240,0.18);border-bottom:1px solid rgba(0,149,240,0.5);color:#4ab0ff;font-size:0.76em;font-weight:700;padding:5px 16px;text-align:center;z-index:9000;letter-spacing:0.06em;pointer-events:none}
         #lscfd-mode-bar.active{display:block}
         #lscfd-canvas{display:none;position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;opacity:0}
         #lscfd-canvas.active{display:block;opacity:1}
@@ -10330,6 +10331,8 @@ function loadAtom(atom, index, initialPositionArray = null) {
     updatePhysicsDropdown(); 
     updateArcEdgeReadout();
     addPrompt(`Loaded Atom: ${atomName} (Mass: ${atomMass.toFixed(2)} AMU, Neutrons: ${neutrons})`);
+    // Notify CFD of atomic change so live particle cloud stays in sync
+    if (window.SceneTabs) { var _ct = window.SceneTabs.getActive(); if (_ct) window.SceneTabs.notifyCFDOfAtomicChange(_ct.id); }
     
     // --- NEW ---
     updateElementCheckboxes(); 
@@ -13334,6 +13337,7 @@ function drawMicFreqCanvas(data) {
   </div>
 </div>
 <div id="lscfd-mode-bar">LARGE SCALE CFD ACTIVE</div>
+<div id="lscfd-mole-display" style="position:fixed;bottom:52px;left:50%;transform:translateX(-50%);background:rgba(5,10,20,.88);border:1px solid rgba(0,229,255,.2);border-radius:6px;padding:4px 14px;font-family:Consolas,monospace;font-size:10px;color:rgba(0,229,255,.7);pointer-events:none;z-index:9990;display:none;letter-spacing:.5px;white-space:nowrap;"></div>
 
 <!-- LEGACY CFD HIDDEN INPUTS — read by buildAndApply / _lscfdChainSummary / applyCFD.
      Invisible; CNE.syncToLegacy() populates them before Apply CFD runs. -->
@@ -13866,6 +13870,10 @@ function _lscfdEnter(count, ptSize, volM3, re, flowMS, envVolM3) {
     // Build arc lines (default: unit mode)
     _lscfdRebuildArcs();
 
+    // Show mole display bar
+    var _moleEl = document.getElementById('lscfd-mole-display');
+    if (_moleEl) { _moleEl.style.display = 'block'; _lscfdUpdateMoleDisplay(); }
+
     // ── Wand / Stir tool (ported from ArcLakeFluidSim.html) ─────────────────
     // Original stir concept by Sebastian Lague (SebLague/Fluid-Sim, MIT License)
     // Adapted for ArcLake LSCFD by Justin / DART-Skyboard · Radical Deepscale LLC
@@ -13959,6 +13967,108 @@ function _lscfdEnter(count, ptSize, volM3, re, flowMS, envVolM3) {
         });
     }
     // ── END Wand tool ─────────────────────────────────────────────────────────
+
+    // ── CFD Scene Presets (ported from ArcLakeFluidSim.html, SebLague SPH) ──
+    // Reshapes particle initial positions to mimic classic CFD scenarios.
+    // Source: ArcLakeFluidSim.html / SebLague/Fluid-Sim (MIT License)
+    // Adapted for LSCFD by Justin / DART-Skyboard · Radical Deepscale LLC
+    window._lscfdSetScene = function(name) {
+        if (!_LSCFD.pts || !_LSCFD.pts.length) return;
+        var n = _LSCFD.pts.length;
+        var sr = _LSCFD.scR || 40;
+        var gd = {x: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cx||0 : 0,
+                  y: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cy||0 : 0,
+                  z: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cz||0 : 0};
+
+        if (name === 'dam') {
+            // Left-third block with rightward velocity
+            var side = Math.ceil(Math.cbrt(n));
+            var sp = sr * 0.55 / side;
+            var x0 = gd.x - sr*0.45, y0 = gd.y - sr*0.4, z0 = gd.z - sr*0.4;
+            var k=0;
+            for(var d=0;d<side&&k<n;d++)for(var r=0;r<side&&k<n;r++)for(var cc=0;cc<side&&k<n;cc++,k++){
+                var p=_LSCFD.pts[k];
+                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp+(Math.random()-.5);p.z=z0+d*sp+(Math.random()-.5);
+                p.vx=8;p.vy=0;p.vz=0;
+            }
+        } else if (name === 'wave') {
+            // Grid with exponential velocity gradient from left
+            var side=Math.ceil(Math.cbrt(n)),sp=sr*1.6/side;
+            var x0=gd.x-sr*.8,y0=gd.y-sr*.4,z0=gd.z-sr*.8;
+            var k=0;
+            for(var d=0;d<side&&k<n;d++)for(var r=0;r<side&&k<n;r++)for(var cc=0;cc<side&&k<n;cc++,k++){
+                var p=_LSCFD.pts[k];
+                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp*(Math.random()*.4+.1);p.z=z0+d*sp+(Math.random()-.5);
+                p.vx=Math.exp(-((p.x-gd.x+sr*.8)/(sr*1.4))*4)*14;p.vy=0;p.vz=0;
+            }
+        } else if (name === 'drop') {
+            // Pool + falling drop from above
+            var poolN=Math.floor(n*.72),dropN=n-poolN;
+            var side=Math.ceil(Math.cbrt(poolN)),sp=sr*1.7/side;
+            var x0=gd.x-sr*.85,y0=gd.y-sr*.5,z0=gd.z-sr*.85,k=0;
+            for(var d=0;d<side&&k<poolN;d++)for(var r=0;r<side&&k<poolN;r++)for(var cc=0;cc<side&&k<poolN;cc++,k++){
+                var p=_LSCFD.pts[k];
+                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp*(Math.random()*.25+.02);p.z=z0+d*sp+(Math.random()-.5);
+                p.vx=0;p.vy=0;p.vz=0;
+            }
+            var ds=Math.ceil(Math.cbrt(dropN)),dsp=sr*.6/ds;
+            var dx0=gd.x-sr*.3,dy0=gd.y+sr*.3,dz0=gd.z-sr*.3;
+            for(var d=0;d<ds&&k<n;d++)for(var r=0;r<ds&&k<n;r++)for(var cc=0;cc<ds&&k<n;cc++,k++){
+                var p=_LSCFD.pts[k];
+                p.x=dx0+cc*dsp;p.y=dy0+r*dsp;p.z=dz0+d*dsp;p.vx=0;p.vy=-12;p.vz=0;
+            }
+        } else if (name === 'orbital') {
+            // Spherical shell orbiting center — Keplerian velocity approximation
+            for(var i=0;i<n;i++){
+                var p=_LSCFD.pts[i];
+                var theta=Math.random()*2*Math.PI,phi=Math.acos(2*Math.random()-1);
+                var r=sr*(0.3+Math.random()*0.6);
+                p.x=gd.x+r*Math.sin(phi)*Math.cos(theta);
+                p.y=gd.y+r*Math.sin(phi)*Math.sin(theta)*0.25;
+                p.z=gd.z+r*Math.cos(phi);
+                var orbV=Math.sqrt(Math.max(0,sr*0.08/Math.max(.01,r)*800));
+                var nx=-Math.sin(theta),nz=Math.cos(theta);
+                p.vx=nx*orbV*(0.8+Math.random()*.4);p.vy=(Math.random()-.5)*orbV*.2;p.vz=nz*orbV*(0.8+Math.random()*.4);
+            }
+        }
+        // Push new positions to GPU buffer
+        if(_LSCFD.threeGeo){
+            var pos=_LSCFD.threeGeo.attributes.position.array;
+            for(var i=0;i<Math.min(n,pos.length/3);i++){
+                pos[i*3]=_LSCFD.pts[i].x;pos[i*3+1]=_LSCFD.pts[i].y;pos[i*3+2]=_LSCFD.pts[i].z;
+            }
+            _LSCFD.threeGeo.attributes.position.needsUpdate=true;
+        }
+        // Update scene preset button states
+        document.querySelectorAll('.lscfd-scene-btn').forEach(function(b){ b.classList.toggle('on', b.dataset.scene===name); });
+    };
+
+    // Inject scene preset buttons into mode bar
+    var _scenePresets = [{k:'dam',l:'DAM'},{k:'wave',l:'WAVE'},{k:'drop',l:'DROP'},{k:'orbital',l:'ORBITAL'}];
+    var _mbScene = document.getElementById('lscfd-mode-bar');
+    if (_mbScene && !document.getElementById('lscfd-scene-dam')) {
+        var _sep = document.createElement('span');
+        _sep.style.cssText='color:rgba(0,229,255,.25);margin:0 4px;font-size:10px';
+        _sep.textContent='|';
+        _mbScene.appendChild(_sep);
+        var _sl = document.createElement('span');
+        _sl.style.cssText='font-size:9px;color:rgba(0,229,255,.4);letter-spacing:1px;margin-right:4px';
+        _sl.textContent='SCENE:';
+        _mbScene.appendChild(_sl);
+        _scenePresets.forEach(function(pr){
+            var _sb=document.createElement('button');
+            _sb.id='lscfd-scene-'+pr.k;
+            _sb.dataset.scene=pr.k;
+            _sb.className='lscfd-scene-btn';
+            _sb.textContent=pr.l;
+            _sb.title='Set particle arrangement to '+pr.l+' configuration';
+            _sb.style.cssText='background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:rgba(0,229,255,.65);font-family:inherit;font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;letter-spacing:.5px;margin-right:2px';
+            _sb.onclick=function(){ window._lscfdSetScene(pr.k); };
+            _sb.addEventListener('mouseover',function(){ this.style.background='rgba(0,229,255,.14)'; });
+            _sb.addEventListener('mouseout',function(){ this.style.background=this.classList.contains('on')?'rgba(0,229,255,.18)':'rgba(0,229,255,.06)'; });
+            _mbScene.appendChild(_sb);
+        });
+    }
 
     // Mode bar
     var mb = document.getElementById('lscfd-mode-bar');
@@ -14107,6 +14217,33 @@ window._cfdTick = function() {
     var damp     = _LSCFD.re>4000?0.990:0.996;
     var rnd      = _LSCFD.render;
     var t        = _LSCFD.frameN * 0.016;
+
+    // ── Dynamic tab→CFD sync: if an atomic tab changed, resync particle element data ──
+    // Runs every 120 frames (~2s) to avoid per-frame overhead
+    if (_LSCFD.frameN % 120 === 0) {
+        var _cfdTab = window.SceneTabs ? window.SceneTabs.getCFDTab() : null;
+        if (_cfdTab && _cfdTab._pendingAtomicUpdate) {
+            _cfdTab._pendingAtomicUpdate = false;
+            // Recompute group probes from updated atomic tab physics
+            var _syncTabs = window.SceneTabs.getAll().filter(function(t){ return !t._isCFDTab && t.includedInCFD && t.atomGroups && t.atomGroups.length; });
+            if (_syncTabs.length && _LSCFD._groupProbes) {
+                _LSCFD._groupProbes.forEach(function(gp) {
+                    var _st = _syncTabs.find(function(t){ return t.id === gp.tabId; });
+                    if (!_st) return;
+                    var tabPhys = (_st.scenePhysicsSettings && _st.scenePhysicsSettings.physics) || {};
+                    var mass = 0;
+                    (_st.atomGroups || []).forEach(function(ag){ mass += (ag.physics && ag.physics.mass) || 1; });
+                    var tempK = ((tabPhys.temp || 72) - 32) * 5/9 + 273.15;
+                    gp.mass = Math.max(1, mass);
+                    gp.tempFactor = Math.max(0.1, tempK / 300);
+                    gp.gravity = tabPhys.gravity || 9.8;
+                    gp.pressure = tabPhys.pressure || 14.7;
+                });
+            }
+            // Update HUD mole display
+            _lscfdUpdateMoleDisplay();
+        }
+    }
 
     var pos  = _LSCFD.threeGeo.attributes.position.array;
     var cols = _LSCFD.threeGeo.attributes.color.array;
@@ -14483,6 +14620,40 @@ window._lscfdToggleCollapse = function() {
     if (btn) btn.textContent = h.classList.contains('collapsed') ? '▼' : '▲';
 };
 
+// ── Real-world mole / quantity display ──────────────────────────────────────
+// Maps particle count → moles using element atomic mass and Avogadro constant.
+// Each particle represents (totalMass_AMU / N_A) / particleCount moles.
+// Reference: NIST Avogadro constant = 6.02214076e23 mol⁻¹
+const _AVOGADRO = 6.02214076e23;
+function _lscfdUpdateMoleDisplay() {
+    var el = document.getElementById('lscfd-mole-display');
+    if (!el || !_LSCFD.pts || !_LSCFD.pts.length) return;
+    var N = _LSCFD.pts.length;
+    // Sum total mass in AMU from group probes
+    var totalMassAMU = 0;
+    if (_LSCFD._groupProbes) _LSCFD._groupProbes.forEach(function(g){ totalMassAMU += g.mass || 1; });
+    if (totalMassAMU <= 0) totalMassAMU = N;
+    // Each particle represents massPerParticle_AMU / (1 AMU in grams) = massPerParticle_AMU * 1.66054e-24 grams
+    var massPerParticle_g = (totalMassAMU / N) * 1.66053906660e-24;
+    var totalMass_g = massPerParticle_g * N;
+    var moles = totalMass_g / (totalMassAMU / _AVOGADRO * _AVOGADRO);
+    // Simpler: moles = totalMassAMU (in unified atomic mass) / molecular weight
+    // For display: use N particles → N * massPerParticle_AMU / Avogadro = moles
+    moles = (totalMassAMU * N) / (_AVOGADRO * N);
+    // Friendly units
+    var molStr, massStr;
+    if (moles >= 1) molStr = moles.toFixed(4) + ' mol';
+    else if (moles >= 1e-3) molStr = (moles * 1e3).toFixed(3) + ' mmol';
+    else if (moles >= 1e-6) molStr = (moles * 1e6).toFixed(2) + ' µmol';
+    else molStr = moles.toExponential(2) + ' mol';
+    var mass_g = totalMassAMU * 1.66053906660e-24 * N;
+    if (mass_g >= 1) massStr = mass_g.toFixed(4) + ' g';
+    else if (mass_g >= 1e-3) massStr = (mass_g * 1e3).toFixed(3) + ' mg';
+    else massStr = mass_g.toExponential(2) + ' g';
+    el.innerHTML = '◈ ' + N.toLocaleString() + ' particles = <strong style="color:#00e5ff">' + molStr + '</strong> · ' + massStr;
+}
+window._lscfdUpdateMoleDisplay = _lscfdUpdateMoleDisplay;
+
 function _lscfdHUD(lines) {
     var hud = document.getElementById('lscfd-hud'); if (!hud) return;
     var isCollapsed = hud.classList.contains('collapsed');
@@ -14564,6 +14735,10 @@ function _lscfdExit() {
     _LSCFD.active = false;
     window._cfdActive = false;
     if (_LSCFD.raf) { cancelAnimationFrame(_LSCFD.raf); _LSCFD.raf=null; }
+
+    // Hide mole display
+    var _moleElX = document.getElementById('lscfd-mole-display');
+    if (_moleElX) _moleElX.style.display = 'none';
 
     // Clean up wand tool
     if (_LSCFD.stir) {
