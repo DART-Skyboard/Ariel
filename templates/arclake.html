@@ -13866,6 +13866,100 @@ function _lscfdEnter(count, ptSize, volM3, re, flowMS, envVolM3) {
     // Build arc lines (default: unit mode)
     _lscfdRebuildArcs();
 
+    // ── Wand / Stir tool (ported from ArcLakeFluidSim.html) ─────────────────
+    // Original stir concept by Sebastian Lague (SebLague/Fluid-Sim, MIT License)
+    // Adapted for ArcLake LSCFD by Justin / DART-Skyboard · Radical Deepscale LLC
+    // Touch a particle → push/pull with SPH-radius force. Two-finger = pull inward.
+    // Toggle via 🪄 button in the LSCFD mode bar. Freeze the scene with a tap,
+    // disturb particles, then untap to resume orbit controls.
+    if (!_LSCFD.stir) _LSCFD.stir = {};
+    _LSCFD.stir.mode    = 'camera'; // 'camera' | 'wand'
+    _LSCFD.stir.active  = false;
+    _LSCFD.stir.btn     = 0;  // 0=push, 2=pull
+    _LSCFD.stir.wp      = null; // world position of wand tip
+
+    // Wand sphere mesh (visual indicator)
+    if (_LSCFD.stir.mesh && typeof scene !== 'undefined') scene.remove(_LSCFD.stir.mesh);
+    if (typeof THREE !== 'undefined' && typeof scene !== 'undefined') {
+        _LSCFD.stir.mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(scR * 0.04, 10, 8),
+            new THREE.MeshBasicMaterial({ color: 0x39ff7a, transparent: true, opacity: 0.55, wireframe: true })
+        );
+        _LSCFD.stir.mesh.visible = false;
+        scene.add(_LSCFD.stir.mesh);
+    }
+
+    // Wand button in mode bar
+    var _mb2 = document.getElementById('lscfd-mode-bar');
+    if (_mb2 && !document.getElementById('lscfd-wand-btn')) {
+        var _wb = document.createElement('button');
+        _wb.id = 'lscfd-wand-btn';
+        _wb.textContent = '🪄 WAND OFF';
+        _wb.title = 'Toggle wand/stir mode — touch to disturb particles';
+        _wb.style.cssText = 'background:rgba(57,255,122,.08);border:1px solid rgba(57,255,122,.3);color:rgba(57,255,122,.8);font-family:inherit;font-size:9px;padding:3px 8px;border-radius:4px;cursor:pointer;letter-spacing:.5px';
+        _wb.onclick = function() {
+            _LSCFD.stir.mode = _LSCFD.stir.mode === 'camera' ? 'wand' : 'camera';
+            _wb.textContent = _LSCFD.stir.mode === 'wand' ? '🪄 WAND ON' : '🪄 WAND OFF';
+            _wb.style.background = _LSCFD.stir.mode === 'wand' ? 'rgba(57,255,122,.22)' : 'rgba(57,255,122,.08)';
+            if (_LSCFD.stir.mode === 'camera' && _LSCFD.stir.mesh) { _LSCFD.stir.mesh.visible = false; _LSCFD.stir.wp = null; }
+        };
+        _mb2.appendChild(_wb);
+    }
+
+    // Raycaster for wand position
+    if (!_LSCFD.stir.ray && typeof THREE !== 'undefined') {
+        _LSCFD.stir.ray = new THREE.Raycaster();
+        _LSCFD.stir.mv  = new THREE.Vector2();
+        _LSCFD.stir.plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+    }
+
+    function _lscfdWandUpdate(clientX, clientY) {
+        if (!_LSCFD.stir.ray || !_LSCFD.stir.active) return;
+        _LSCFD.stir.mv.x = (clientX / innerWidth) * 2 - 1;
+        _LSCFD.stir.mv.y = -(clientY / innerHeight) * 2 + 1;
+        _LSCFD.stir.ray.setFromCamera(_LSCFD.stir.mv, camera);
+        var pt = new THREE.Vector3();
+        _LSCFD.stir.ray.ray.intersectPlane(_LSCFD.stir.plane, pt);
+        if (pt) {
+            _LSCFD.stir.wp = pt;
+            if (_LSCFD.stir.mesh) {
+                _LSCFD.stir.mesh.position.copy(pt);
+                _LSCFD.stir.mesh.visible = true;
+                _LSCFD.stir.mesh.material.color.setHex(_LSCFD.stir.btn === 2 ? 0xff00c8 : 0x39ff7a);
+            }
+        }
+    }
+    _LSCFD.stir._update = _lscfdWandUpdate;
+
+    // Pointer events (wand overrides orbit when active)
+    var _lscfdCanvas = typeof renderer !== 'undefined' ? renderer.domElement : null;
+    if (_lscfdCanvas && !_lscfdCanvas._wandWired) {
+        _lscfdCanvas._wandWired = true;
+        _lscfdCanvas.addEventListener('pointerdown', function(e) {
+            if (_LSCFD.stir.mode !== 'wand') return;
+            _LSCFD.stir.active = true;
+            _LSCFD.stir.btn = e.button === 2 ? 2 : 0;
+            _lscfdWandUpdate(e.clientX, e.clientY);
+            e.stopPropagation();
+        }, {capture:true});
+        _lscfdCanvas.addEventListener('pointermove', function(e) {
+            if (_LSCFD.stir.mode !== 'wand' || !_LSCFD.stir.active) return;
+            _lscfdWandUpdate(e.clientX, e.clientY);
+            e.stopPropagation();
+        }, {capture:true});
+        _lscfdCanvas.addEventListener('pointerup', function(e) {
+            if (_LSCFD.stir.mode !== 'wand') return;
+            _LSCFD.stir.active = false;
+            _LSCFD.stir.wp = null;
+            if (_LSCFD.stir.mesh) _LSCFD.stir.mesh.visible = false;
+            e.stopPropagation();
+        }, {capture:true});
+        _lscfdCanvas.addEventListener('contextmenu', function(e) {
+            if (_LSCFD.stir.mode === 'wand') e.preventDefault();
+        });
+    }
+    // ── END Wand tool ─────────────────────────────────────────────────────────
+
     // Mode bar
     var mb = document.getElementById('lscfd-mode-bar');
     if (mb) {
@@ -14023,6 +14117,23 @@ window._cfdTick = function() {
 
         // Gravity (live-sim modulated)
         p.vy -= effGrav;
+
+        // ── Wand stir force (SebLague/Fluid-Sim stir concept, MIT License) ──────
+        // Original: Assets/Scripts/Simulation/FluidSim.cs — HandleInput → ApplyForce
+        // github.com/SebLague/Fluid-Sim · Adapted for LSCFD by Radical Deepscale LLC
+        if (_LSCFD.stir && _LSCFD.stir.wp) {
+            var _sdx = _LSCFD.stir.wp.x - p.x, _sdy = _LSCFD.stir.wp.y - p.y, _sdz = _LSCFD.stir.wp.z - p.z;
+            var _sd2 = _sdx*_sdx + _sdy*_sdy + _sdz*_sdz;
+            var _sr  = scR * 0.12;  // stir radius = 12% of scene radius
+            if (_sd2 < _sr*_sr && _sd2 > 0.01) {
+                var _sd = Math.sqrt(_sd2);
+                var _sf = 0.006 * (1 - _sd / _sr); // strength falloff
+                var _sgn = _LSCFD.stir.btn === 2 ? -1 : 1;
+                p.vx += _sgn * (_sdx/_sd) * _sf;
+                p.vy += _sgn * (_sdy/_sd) * _sf;
+                p.vz += _sgn * (_sdz/_sd) * _sf;
+            }
+        }
 
         // Temperature-driven expansion pressure
         if (tempPress > 0) {
@@ -14453,6 +14564,16 @@ function _lscfdExit() {
     _LSCFD.active = false;
     window._cfdActive = false;
     if (_LSCFD.raf) { cancelAnimationFrame(_LSCFD.raf); _LSCFD.raf=null; }
+
+    // Clean up wand tool
+    if (_LSCFD.stir) {
+        _LSCFD.stir.mode = 'camera';
+        _LSCFD.stir.active = false;
+        _LSCFD.stir.wp = null;
+        if (_LSCFD.stir.mesh && typeof scene !== 'undefined') { scene.remove(_LSCFD.stir.mesh); _LSCFD.stir.mesh = null; }
+    }
+    var _wb = document.getElementById('lscfd-wand-btn');
+    if (_wb) _wb.remove();
 
     // ── Remove particle cloud and arc overlays from the THREE scene
     //    but DO NOT dispose geometry/material — the CFD tab will re-add them
