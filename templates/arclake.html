@@ -24520,13 +24520,66 @@ function _cfd_simStep() {
     const p = pts[i];
     p.vy -= g * dt;
 
-    // Orbit attractor
+    // ── Scene-based internal dynamics ──────────────────────────────
     if (_cfdS.scene === 'orbit') {
+      // Orbital attractor — centripetal gravity toward container center
       const dx = W_CFD/2 - p.x, dy = H_CFD/2 - p.y, dz = D_CFD/2 - p.z;
       const f = 780 / (dx*dx + dy*dy + dz*dz + 400);
       p.vx += dx * f * 0.00085 * dt;
       p.vy += dy * f * 0.00085 * dt;
       p.vz += dz * f * 0.00085 * dt;
+    }
+    if (_cfdS.scene === 'fountain') {
+      // Fountain: sustained upward jet from base center, weakens with height
+      const cx = W_CFD/2, cz = D_CFD/2;
+      const ddx = p.x - cx, ddz = p.z - cz, r2 = ddx*ddx + ddz*ddz;
+      if (r2 < (W_CFD*0.12)*(W_CFD*0.12)) {
+        const ht = Math.max(0, 1 - p.y / (H_CFD * 0.7));
+        p.vy += 9.5 * ht * dt;
+      }
+    }
+    if (_cfdS.scene === 'jets') {
+      // Dual jets: continuous push from left/right walls — environmental pressure
+      const side = p.x < W_CFD * 0.5 ? 1 : -1;
+      const wallDist = p.x < W_CFD*0.5 ? p.x : W_CFD - p.x;
+      if (wallDist < W_CFD * 0.22) {
+        const str = 5.5 * (1 - wallDist / (W_CFD * 0.22));
+        p.vx += side * str * dt;
+        p.vy += (Math.random() - 0.5) * 1.2 * dt;
+      }
+    }
+
+    // ── External environmental forces (act like outside sources on container) ──
+    // Driven by _cfdEnv.* — toggled by scene preset or persistent across presets.
+    const _t = _cfdEnv.t;
+    if (_cfdEnv.wave > 0) {
+      // Sinusoidal pressure wave from outside left wall — propagates rightward
+      const phase = (p.x / W_CFD) * 6.28 - _t * _cfdEnv.waveFreq;
+      const amp   = _cfdEnv.wave * Math.sin(phase) * (1 - p.y / (H_CFD + 0.001));
+      p.vx += amp * dt;
+      p.vy += amp * 0.28 * dt;
+    }
+    if (_cfdEnv.wind > 0) {
+      // Lateral wind shear — uniform x-axis force, height-weighted
+      const heightFrac = p.y / Math.max(H_CFD, 1);
+      p.vx += _cfdEnv.wind * (0.6 + 0.4 * heightFrac) * dt;
+    }
+    if (_cfdEnv.vortex > 0) {
+      // Tidal vortex source outside +Z wall — curl force around Y axis
+      const cx = W_CFD/2, cz = D_CFD/2;
+      const vdx = p.x - cx, vdz = p.z - cz;
+      const vr2 = vdx*vdx + vdz*vdz + 0.1;
+      const vStr = _cfdEnv.vortex * 280 / vr2;
+      p.vx += (-vdz / Math.sqrt(vr2)) * vStr * dt;
+      p.vz += ( vdx / Math.sqrt(vr2)) * vStr * dt;
+    }
+    if (_cfdEnv.upwelling > 0) {
+      // Upwelling thermal — buoyant column from floor center
+      const cx = W_CFD/2, cz = D_CFD/2;
+      const udx = p.x-cx, udz = p.z-cz, ur2 = udx*udx+udz*udz;
+      if (ur2 < (W_CFD*0.3)*(W_CFD*0.3)) {
+        p.vy += _cfdEnv.upwelling * 4.5 * (1 - ur2/((W_CFD*0.3)*(W_CFD*0.3))) * dt;
+      }
     }
 
     // Stir force
@@ -24825,7 +24878,7 @@ var _cfdMaxPts = 512;
 var _cfdFoamGeo, _cfdFoamCap = 18000;
 var _cfdRAF = null;
 var _cfdRunning = false;
-var _cfdToolMode = 'stir'; // 'orbit' | 'stir' — default stir so touch disturbs particles immediately
+var _cfdToolMode = 'orbit'; // 'orbit' | 'stir' — default orbit; WAND ON to disturb
 var _cfdStirActive = false;
 var _cfdStirWP = null;
 var _cfdStirBtn = 0;
@@ -24869,7 +24922,7 @@ function _cfdInitThree(container) {
 
   if (THREE.OrbitControls) {
     _cfdControls = new THREE.OrbitControls(_cfdCam, _cfdCanvas);
-    _cfdControls.enabled = false; // Start in stir mode; toggle via WAND button
+    _cfdControls.enabled = true; // Orbit by default
     _cfdControls.enableDamping = false;
     _cfdControls.target.set(0, H_CFD*SCALE_CFD*0.3, 0);
   }
@@ -24879,9 +24932,9 @@ function _cfdInitThree(container) {
   _cfdSphGeo = new THREE.SphereGeometry(1,10,7);
 
   _cfdOceanMat = new THREE.MeshPhysicalMaterial({
-    color:0x0ab8e8, emissive:0x002244, emissiveIntensity:0.18,
-    metalness:0, roughness:0.08, transmission:0.65, ior:1.34,
-    thickness:22, transparent:true, opacity:0.9,
+    color:0x1a7fff, emissive:0x0044cc, emissiveIntensity:0.55,
+    metalness:0.05, roughness:0.12, transmission:0.3, ior:1.34,
+    thickness:14, transparent:true, opacity:0.95,
     depthWrite:false, vertexColors:true
   });
 
@@ -24896,7 +24949,7 @@ function _cfdInitThree(container) {
   _cfdScene.add(_cfdFoamPts);
 
   // Floor
-  var flrMat = new THREE.MeshStandardMaterial({color:0x0a1020,roughness:0.5,metalness:0.8});
+  var flrMat = new THREE.MeshStandardMaterial({color:0x2a4a6a,roughness:0.88,metalness:0.06,envMapIntensity:0.1});
   _cfdFloorMesh = new THREE.Mesh(new THREE.PlaneGeometry(5000,5000), flrMat);
   _cfdFloorMesh.rotation.x = -Math.PI/2;
   _cfdFloorMesh.position.y = -22;
@@ -25035,9 +25088,20 @@ function _cfdUpdateStirPos(cx,cy){
   if(pt){ _cfdStirWP=pt; if(_cfdStirMesh){_cfdStirMesh.position.copy(pt);_cfdStirMesh.visible=true;} }
 }
 
+// ── External environment state ──────────────────────────────────────────
+var _cfdEnv = {
+  t: 0,          // simulation time accumulator
+  wave: 0,       // sinusoidal pressure wave intensity  (0 = off)
+  waveFreq: 1.8, // wave frequency multiplier
+  wind: 0,       // lateral wind shear force            (0 = off)
+  vortex: 0,     // tidal vortex curl force             (0 = off)
+  upwelling: 0,  // thermal upwelling column            (0 = off)
+};
+
 function _cfdLoop() {
   if(!_cfdRunning){ _cfdRAF=null; return; }
   _cfdRAF=requestAnimationFrame(_cfdLoop);
+  _cfdEnv.t += _cfdS.ts * 0.016; // advance env time
   
   // Apply stir force to sim-space if active
   if(_cfdStirActive && _cfdStirWP){
@@ -25091,6 +25155,36 @@ window.ArcCFD = {
     var _stats=document.createElement('div'); _stats.id='arc-cfd-stats';
     _stats.style.cssText='font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;';
     _r1.appendChild(_stats);
+    var _maxBtn=_cfdMkBtn('⛶',function(){
+      var ov2=document.getElementById('arc-cfd-overlay');
+      if(!ov2) return;
+      if(ov2._cfdMaximized){
+        ov2.style.cssText=ov2._cfdPrevStyle;
+        ov2._cfdMaximized=false;
+        this.title='Maximize';
+      } else {
+        ov2._cfdPrevStyle=ov2.style.cssText;
+        ov2.style.cssText='position:fixed;left:0;top:0;width:100vw;height:100vh;min-width:0;min-height:0;z-index:9500;background:#06080e;display:flex;flex-direction:column;border:none;border-radius:0;box-shadow:none;overflow:hidden;resize:none;will-change:left,top;';
+        ov2._cfdMaximized=true;
+        this.title='Restore';
+        if(typeof _cfdHandleResize==='function') setTimeout(_cfdHandleResize,60);
+      }
+    },'background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);color:#00e5ff;font-size:12px;flex-shrink:0;padding:4px 8px;');
+    _maxBtn.title='Maximize';
+    _r1.appendChild(_maxBtn);
+    var _maxBtn=_cfdMkBtn('⛶',function(){
+      var ov2=document.getElementById('arc-cfd-overlay'); if(!ov2) return;
+      if(ov2._cfdMaximized){
+        ov2.style.cssText=ov2._cfdPrevStyle; ov2._cfdMaximized=false; this.textContent='⛶'; this.title='Maximize';
+      } else {
+        ov2._cfdPrevStyle=ov2.style.cssText;
+        ov2.style.cssText='position:fixed;left:0;top:0;width:100vw;height:100vh;min-width:0;min-height:0;z-index:9500;background:#06080e;display:flex;flex-direction:column;border:none;border-radius:0;box-shadow:none;overflow:hidden;resize:none;will-change:left,top;';
+        ov2._cfdMaximized=true; this.textContent='⊡'; this.title='Restore';
+        if(typeof _cfdHandleResize==='function') setTimeout(_cfdHandleResize,60);
+      }
+    },'background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);color:#00e5ff;font-size:12px;flex-shrink:0;padding:4px 8px;');
+    _maxBtn.title='Maximize';
+    _r1.appendChild(_maxBtn);
     var _closeBtn=_cfdMkBtn('✕',function(){window.ArcCFD.close();},'background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-size:13px;flex-shrink:0;');
     _r1.appendChild(_closeBtn);
     hdr.appendChild(_r1);
@@ -25197,6 +25291,50 @@ window.ArcCFD = {
     _r2.appendChild(_wandWrap);
 
     hdr.appendChild(_r2);
+
+    // ── Row 3: External Environment Forces ──────────────────────────────────
+    var _r3=document.createElement('div');
+    _r3.style.cssText='display:flex;align-items:center;gap:8px;width:100%;margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,229,255,.1);flex-wrap:wrap;';
+    var _envLbl=document.createElement('span');
+    _envLbl.textContent='ENV FORCES';
+    _envLbl.style.cssText='font-size:8px;letter-spacing:1.5px;color:rgba(0,229,255,.5);font-family:Orbitron,sans-serif;flex-shrink:0;';
+    _r3.appendChild(_envLbl);
+
+    // Helper: toggle env force slider group
+    function _mkEnvCtrl(label, key, max_, color) {
+      var wrap=document.createElement('div');
+      wrap.style.cssText='display:flex;align-items:center;gap:4px;';
+      var lbl=document.createElement('span');
+      lbl.textContent=label;
+      lbl.style.cssText='font-size:8px;color:'+(color||'rgba(0,229,255,.65)')+';white-space:nowrap;font-family:Orbitron,sans-serif;';
+      var sl=document.createElement('input'); sl.type='range'; sl.min=0; sl.max=max_||1; sl.step=0.01; sl.value=0;
+      sl.style.cssText='width:54px;accent-color:'+(color||'#00e5ff')+';cursor:pointer;vertical-align:middle;';
+      sl.addEventListener('input',function(){ _cfdEnv[key]=parseFloat(this.value); });
+      var val=document.createElement('span');
+      val.style.cssText='font-size:7px;color:rgba(255,255,255,.4);width:22px;text-align:right;font-family:monospace;';
+      val.textContent='0.00';
+      sl.addEventListener('input',function(){ val.textContent=parseFloat(this.value).toFixed(2); });
+      wrap.appendChild(lbl); wrap.appendChild(sl); wrap.appendChild(val);
+      return wrap;
+    }
+    _r3.appendChild(_mkEnvCtrl('〜 WAVE',  'wave',    2,   '#00e5ff'));
+    _r3.appendChild(_mkEnvCtrl('→ WIND',   'wind',    3,   '#7ec8e3'));
+    _r3.appendChild(_mkEnvCtrl('↺ VORTEX', 'vortex',  1.5, '#cf8fff'));
+    _r3.appendChild(_mkEnvCtrl('↑ UPWELL', 'upwelling',1.5,'#4ade80'));
+
+    // Wave frequency control
+    var _wfWrap=document.createElement('div');
+    _wfWrap.style.cssText='display:flex;align-items:center;gap:4px;margin-left:4px;';
+    var _wfLbl=document.createElement('span');
+    _wfLbl.textContent='FREQ';
+    _wfLbl.style.cssText='font-size:8px;color:rgba(0,229,255,.4);font-family:Orbitron,sans-serif;';
+    var _wfSl=document.createElement('input'); _wfSl.type='range'; _wfSl.min=0.2; _wfSl.max=6; _wfSl.step=0.1; _wfSl.value=1.8;
+    _wfSl.style.cssText='width:44px;accent-color:#00e5ff;cursor:pointer;vertical-align:middle;';
+    _wfSl.addEventListener('input',function(){ _cfdEnv.waveFreq=parseFloat(this.value); });
+    _wfWrap.appendChild(_wfLbl); _wfWrap.appendChild(_wfSl);
+    _r3.appendChild(_wfWrap);
+
+    hdr.appendChild(_r3);
     ov.appendChild(hdr);
 
     // Canvas container
