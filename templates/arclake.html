@@ -10225,73 +10225,108 @@ function loadAtom(atom, index, initialPositionArray = null) {
     }
     const {_a0,_sampleOrb,_getElectrons,_heatFire,_SHELL_COLS}=window._arcQMath;
 
-    // ── Nucleus: Fibonacci sphere (same as before) ────────────────────────────
-    const _pC = (typeof window.ArcColors!=='undefined') ? window.ArcColors.getProtonHex()  : 0xff4d1a;
-    const _nC = (typeof window.ArcColors!=='undefined') ? window.ArcColors.getNeutronHex() : 0x7aafc4;
-    const _protonMat  = new THREE.MeshPhongMaterial({color:_pC,emissive:Math.max(0,Math.floor(_pC*0.22)&0xffffff),emissiveIntensity:0.75,shininess:90});
-    const _neutronMat = new THREE.MeshPhongMaterial({color:_nC,emissive:Math.max(0,Math.floor(_nC*0.22)&0xffffff),emissiveIntensity:0.55,shininess:90});
-    // Nucleus particles same size as electron cloud points — visible only as dense cluster
-    const _nucGeo = new THREE.SphereGeometry(0.055,6,5);
-    const _eGeo   = new THREE.SphereGeometry(0.05,5,4); // physics proxy — invisible
+    // ── ATOM POINT CLOUD RENDERER ───────────────────────────────────────────────
+    // ALL visuals are point clouds — no Mesh geometry for display.
+    // Nucleus: 1 pt per nucleon (proton=red, neutron=blue), 3px, tight Fibonacci cluster.
+    // Electrons: 30 pts per electron (user-adjustable via window._arcPtsPerE),
+    //   2px, sampled from ψ_nlm CDF, shells starting just outside nucleus edge.
+    //   Shell 0 (K) begins at nucleusEdge; outer shells step outward by shellStep.
+    // Physics proxy meshes (invisible) remain for simulation engine.
 
+    const _eGeo = new THREE.SphereGeometry(0.05,5,4); // physics proxy — invisible only
+
+    // Proton/neutron colors
+    const _pHex = (typeof window.ArcColors!=='undefined') ? window.ArcColors.getProtonHex()  : 0xff4d1a;
+    const _nHex = (typeof window.ArcColors!=='undefined') ? window.ArcColors.getNeutronHex() : 0x7aafc4;
+    function _hexToRGB(h){ return [(h>>16&255)/255,(h>>8&255)/255,(h&255)/255]; }
+    const _pRGB=_hexToRGB(_pHex), _nRGB=_hexToRGB(_nHex);
+
+    // Nucleus radius based on nucleon count
+    const nucleusR = Math.max(0.18, Math.cbrt(totalNucleons) * 0.12);
+    const _nucPos=[], _nucCol=[];
+
+    // Physics bookkeeping — still needs to populate nucleusMeshes for engine
     let nucleonCenterAccumulator = new THREE.Vector3();
     let neutronCenterAccumulator = new THREE.Vector3();
     let totalNucleonCount=0, currentNeutronCount=0;
+    const _invMat0=new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false});
+    const _nucProxyGeo=new THREE.SphereGeometry(0.03,4,3);
 
-    const nucleusR = Math.max(0.55,Math.cbrt(totalNucleons)*0.52);
     for(let i=0;i<totalNucleons;i++){
         const isProton=(i<protons);
         const phi=Math.acos(-1+(2*i)/Math.max(1,totalNucleons-1));
         const theta=Math.sqrt(totalNucleons*Math.PI)*phi;
-        const mesh=new THREE.Mesh(_nucGeo,isProton?_protonMat:_neutronMat);
-        mesh.position.set(nucleusR*Math.sin(phi)*Math.cos(theta),nucleusR*Math.sin(phi)*Math.sin(theta),nucleusR*Math.cos(phi)).add(initialCenter);
-        addPhysicsAttributes(mesh,isProton?'proton':'neutron');
-        atomGroup.nucleusMeshes.push(mesh); scene.add(mesh);
-        nucleonCenterAccumulator.add(mesh.position); totalNucleonCount++;
-        if(!isProton){neutronCenterAccumulator.add(mesh.position);currentNeutronCount++;}
+        const px=nucleusR*Math.sin(phi)*Math.cos(theta)+initialCenter.x;
+        const py=nucleusR*Math.sin(phi)*Math.sin(theta)+initialCenter.y;
+        const pz=nucleusR*Math.cos(phi)+initialCenter.z;
+        _nucPos.push(px,py,pz);
+        const rgb=isProton?_pRGB:_nRGB;
+        _nucCol.push(rgb[0],rgb[1],rgb[2]);
+        // Invisible physics proxy for engine
+        const proxy=new THREE.Mesh(_nucProxyGeo,_invMat0);
+        proxy.position.set(px,py,pz);
+        addPhysicsAttributes(proxy,isProton?'proton':'neutron');
+        atomGroup.nucleusMeshes.push(proxy); scene.add(proxy);
+        nucleonCenterAccumulator.add(proxy.position); totalNucleonCount++;
+        if(!isProton){neutronCenterAccumulator.add(proxy.position);currentNeutronCount++;}
     }
     atomGroup._glowMesh=null;
     if(totalNucleonCount>0) atomGroup.center.copy(nucleonCenterAccumulator.clone().divideScalar(totalNucleonCount));
     atomGroup.neutronCenterOfVolume.copy(currentNeutronCount>0?neutronCenterAccumulator.clone().divideScalar(currentNeutronCount):atomGroup.center.clone());
     atomGroup.nucleusCenter.copy(atomGroup.center);
 
-    // ── Idle group (carries quantum cloud — replaced by physics on sim start) ─
+    // ── Idle group (carries all point clouds) ────────────────────────────────
     const _idleGroup=new THREE.Group();
     _idleGroup.position.copy(initialCenter);
     _idleGroup.userData={isIdleGroup:true,atomId,idleT:0};
     scene.add(_idleGroup);
     atomGroup._idleGroup=_idleGroup;
 
-    // ── Quantum orbital point cloud ───────────────────────────────────────────
-    // One point cloud per atom. Each electron contributes ptsPerElectron particles
-    // sampled from its ψ_nlm CDF with Z_eff Slater contraction.
-    const _shellsArr = orbits.slice(); // electron counts per shell
+    // Nucleus point cloud (protons + neutrons as tiny colored points at core)
+    if(_nucPos.length>0){
+        const _ng=new THREE.BufferGeometry();
+        _ng.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_nucPos.map((v,i)=>v-[initialCenter.x,initialCenter.y,initialCenter.z][i%3])),3));
+        _ng.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_nucCol),3));
+        const _nm=new THREE.PointsMaterial({size:0.04,vertexColors:true,transparent:true,opacity:1.0,depthWrite:false,sizeAttenuation:true});
+        const _nCloud=new THREE.Points(_ng,_nm);
+        _nCloud.userData={type:'_nucleusCloud',atomId};
+        _idleGroup.add(_nCloud);
+        atomGroup._nucleusCloud=_nCloud;
+    }
+
+    // ── Electron orbital point cloud ─────────────────────────────────────────
+    // 30 pts per electron (window._arcPtsPerE to override), ψ_nlm CDF sampling.
+    // Scale starts at nucleusEdge (nucleusR) and spreads outward per shell.
+    const _shellsArr = orbits.slice();
     const _electronList = _getElectrons(protons, _shellsArr);
-    const _PTS_PER_E = Math.max(60, Math.min(300, Math.floor(6000 / Math.max(1,_electronList.length))));
-    const _SCALE = Math.max(1.2, nucleusR * 0.6 + 0.8); // world units per Bohr radius — kept tight to nucleus
-    const _NORM  = 1.0 / Math.max(1, 10 * 1 * 1 * _a0); // for color mapping r
+    const _PTS_PER_E = Math.max(5, Math.min(500, window._arcPtsPerE || 30));
+    // Shell scale: K shell starts just outside nucleus, each shell adds shellStep
+    const _shellStep = Math.max(0.35, nucleusR * 0.8 + 0.3);
+    const _shellBase = nucleusR + 0.15; // inner edge of K shell
 
     const _allPos=[], _allCol=[];
-
     _electronList.forEach(({n,l,m,shellIdx,Zeff})=>{
         const sc=_SHELL_COLS[shellIdx%_SHELL_COLS.length];
+        // Scale so this shell's cloud centers around _shellBase + shellIdx*_shellStep
+        const _shellCenterR = _shellBase + shellIdx * _shellStep;
+        // Compute normalization from ψ_nlm so samples land near _shellCenterR
+        const _SCALE = _shellCenterR / Math.max(0.1, _a0 * n * n / Math.max(1,Zeff));
+        const _NORM  = 1.0 / (_shellCenterR * 2);
         for(let i=0;i<_PTS_PER_E;i++){
             const {x,y,z,r}=_sampleOrb(n,l,m,Zeff);
             _allPos.push(x*_SCALE, y*_SCALE, z*_SCALE);
-            // Color: blend fire heatmap (density) with shell color
-            const v=Math.min(1,r*_NORM*Zeff*0.4);
+            const v=Math.min(1,r*_NORM);
             const fire=_heatFire(v);
-            // Blend 60% fire + 40% shell tint, boosted for visibility
-            const br=1.35; // brightness boost
-            _allCol.push(Math.min(1,fire[0]*0.6*br+sc[0]*0.4), Math.min(1,fire[1]*0.6*br+sc[1]*0.4), Math.min(1,fire[2]*0.6*br+sc[2]*0.4));
+            const br=1.3;
+            _allCol.push(Math.min(1,fire[0]*0.55*br+sc[0]*0.45),Math.min(1,fire[1]*0.55*br+sc[1]*0.45),Math.min(1,fire[2]*0.55*br+sc[2]*0.45));
         }
     });
 
-    if(_allPos.length > 0){
+    if(_allPos.length>0){
         const _ptGeo=new THREE.BufferGeometry();
         _ptGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_allPos),3));
         _ptGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_allCol),3));
-        const _ptMat=new THREE.PointsMaterial({size:0.22,vertexColors:true,transparent:true,opacity:0.96,depthWrite:false,sizeAttenuation:true});
+        const _ptMat=new THREE.PointsMaterial({size:0.035,vertexColors:true,transparent:true,opacity:0.92,depthWrite:false,sizeAttenuation:true});
         const _ptCloud=new THREE.Points(_ptGeo,_ptMat);
         _ptCloud.userData={type:'_orbitalCloud',atomId};
         _idleGroup.add(_ptCloud);
@@ -24660,13 +24695,14 @@ function _cfdInitThree(container) {
   if (!THREE) { console.error('ArcCFD: THREE.js not loaded'); return false; }
 
   _cfdCanvas = document.createElement('canvas');
-  _cfdCanvas.style.cssText = 'width:100%;height:100%;display:block;';
+  _cfdCanvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;';
   container.appendChild(_cfdCanvas);
 
-  _cfdRenderer = new THREE.WebGLRenderer({canvas:_cfdCanvas, antialias:true});
+  _cfdRenderer = new THREE.WebGLRenderer({canvas:_cfdCanvas, antialias:true, alpha:false});
   _cfdRenderer.setPixelRatio(Math.min(devicePixelRatio,2));
   _cfdRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   _cfdRenderer.toneMappingExposure = 1.1;
+  _cfdRenderer.setClearColor(0x06080e, 1);
 
   _cfdScene = new THREE.Scene();
   _cfdScene.background = new THREE.Color(0x06080e);
@@ -24784,9 +24820,15 @@ function _cfdUpdateGeo() {
 function _cfdHandleResize() {
   var ov = document.getElementById('arc-cfd-overlay');
   if (!ov || !_cfdRenderer || !_cfdCam) return;
-  var w=ov.clientWidth, h=Math.max(1,ov.clientHeight);
-  _cfdRenderer.setSize(w,h,false);
-  _cfdCam.aspect=w/h; _cfdCam.updateProjectionMatrix();
+  // Use canvas container, not full overlay (header takes some height)
+  var canvas = _cfdCanvas;
+  if (!canvas) return;
+  var parent = canvas.parentElement;
+  var w = Math.max(1, parent ? parent.clientWidth : ov.clientWidth);
+  var h = Math.max(1, parent ? parent.clientHeight : ov.clientHeight - 46);
+  _cfdRenderer.setSize(w, h, false);
+  _cfdCam.aspect = w / h;
+  _cfdCam.updateProjectionMatrix();
 }
 
 function _cfdWirePointerEvents() {
@@ -24845,21 +24887,26 @@ window.ArcCFD = {
 
     var ov = document.createElement('div');
     ov.id='arc-cfd-overlay';
-    ov.style.cssText='position:fixed;inset:0;z-index:9500;background:#06080e;display:flex;flex-direction:column;';
+    // Default size: 92vw wide, 80vh tall, centered — draggable/resizable
+    var _ow=Math.min(window.innerWidth*0.92,900), _oh=Math.min(window.innerHeight*0.82,680);
+    var _ox=Math.max(0,(window.innerWidth-_ow)/2), _oy=Math.max(0,(window.innerHeight-_oh)/2);
+    ov.style.cssText='position:fixed;left:'+_ox+'px;top:'+_oy+'px;width:'+_ow+'px;height:'+_oh+'px;min-width:280px;min-height:200px;z-index:9500;background:#06080e;display:flex;flex-direction:column;border:1px solid rgba(0,229,255,.22);border-radius:10px;box-shadow:0 8px 48px rgba(0,0,0,.85);overflow:hidden;resize:both;';
 
     // Header bar
     var hdr=document.createElement('div');
-    hdr.style.cssText='display:flex;align-items:center;gap:8px;padding:6px 12px;background:rgba(0,229,255,.07);border-bottom:1px solid rgba(0,229,255,.15);flex-shrink:0;flex-wrap:wrap;';
-    hdr.innerHTML='<span style="font-family:Orbitron,sans-serif;font-size:10px;letter-spacing:2px;color:#00e5ff;flex:0 0 auto">◈ CFD</span>'
+    hdr.style.cssText='display:flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(0,10,25,.95);border-bottom:1px solid rgba(0,229,255,.22);flex-shrink:0;flex-wrap:wrap;cursor:grab;user-select:none;';
+    hdr.title='Drag to move';
+    var _btnS='background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.38);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;letter-spacing:.5px;white-space:nowrap;';
+    hdr.innerHTML='<span style="font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:2px;color:#00e5ff;flex:0 0 auto;margin-right:4px">◈ CFD</span>'
       +'<div id="arc-cfd-scene-btns" style="display:flex;gap:4px;flex-wrap:wrap">'
       +(function(){return ['dam','wave','drop','jets','orbit','fountain'].map(function(sc){
-          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.25);color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 7px;border-radius:3px;cursor:pointer;letter-spacing:.5px">'+sc.toUpperCase()+'</button>';
+          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="'+_btnS+'font-size:9px;padding:3px 8px;">'+sc.toUpperCase()+'</button>';
         }).join('');})()+'</div>'
-      +'<button id="arc-cfd-mol-btn" onclick="window.ArcCFD.loadMolCanvas()" style="background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.3);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer;letter-spacing:.5px">◈ LOAD MOL CANVAS</button>'
-      +'<label style="font-size:8px;color:rgba(0,229,255,.5);font-family:Orbitron,sans-serif;letter-spacing:.5px">PPU:<input id="arc-cfd-ppu" type="number" value="30" min="1" max="5000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:52px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:3px"></label>'
-      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.07);border:1px solid rgba(57,255,122,.3);color:rgba(57,255,122,.8);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer;letter-spacing:.5px">🪄 WAND OFF</button>'
-      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.45);margin-left:auto"></div>'
-      +'<button onclick="window.ArcCFD.close()" style="margin-left:4px;background:transparent;border:1px solid rgba(255,80,80,.3);color:rgba(255,100,100,.7);font-family:Orbitron,sans-serif;font-size:8px;padding:2px 8px;border-radius:3px;cursor:pointer">✕ CLOSE</button>';
+      +'<button id="arc-cfd-mol-btn" onclick="window.ArcCFD.loadMolCanvas()" style="'+_btnS+'background:rgba(0,229,255,.15);">◈ MOL CANVAS</button>'
+      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;letter-spacing:.5px;white-space:nowrap">PPU&nbsp;<input id="arc-cfd-ppu" type="number" value="30" min="1" max="5000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:55px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;margin-left:3px;"></label>'
+      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-family:Orbitron,sans-serif;font-size:10px;padding:3px 10px;border-radius:4px;cursor:pointer;white-space:nowrap">🪄 WAND</button>'
+      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;padding-right:6px"></div>'
+      +'<button onclick="window.ArcCFD.close()" style="background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-family:Orbitron,sans-serif;font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;flex-shrink:0">✕</button>';
     ov.appendChild(hdr);
 
     // Canvas container
@@ -24869,6 +24916,28 @@ window.ArcCFD = {
 
     document.body.appendChild(ov);
 
+    // ── Drag to move ──────────────────────────────────────────────────────────
+    (function(){
+      var hdrEl=ov.querySelector('div');
+      if(!hdrEl) return;
+      var dragging=false,ox=0,oy=0;
+      hdrEl.addEventListener('pointerdown',function(e){
+        if(e.target.tagName==='BUTTON'||e.target.tagName==='INPUT') return;
+        dragging=true; ox=e.clientX-ov.offsetLeft; oy=e.clientY-ov.offsetTop;
+        hdrEl.style.cursor='grabbing'; hdrEl.setPointerCapture(e.pointerId);
+      });
+      hdrEl.addEventListener('pointermove',function(e){
+        if(!dragging) return;
+        var nx=Math.max(0,Math.min(window.innerWidth-50,e.clientX-ox));
+        var ny=Math.max(0,Math.min(window.innerHeight-50,e.clientY-oy));
+        ov.style.left=nx+'px'; ov.style.top=ny+'px';
+      });
+      hdrEl.addEventListener('pointerup',function(e){
+        dragging=false; hdrEl.style.cursor='grab';
+        hdrEl.releasePointerCapture(e.pointerId);
+      });
+    })();
+
     if(!_cfdInitThree(cvsCont)){ ov.remove(); return; }
     _cfd_setScene('dam');
     this._resume();
@@ -24876,6 +24945,8 @@ window.ArcCFD = {
 
   _resume: function(){
     _cfdRunning=true;
+    // Resize after DOM layout settles
+    setTimeout(function(){ _cfdHandleResize(); },50);
     if(!_cfdRAF) _cfdRAF=requestAnimationFrame(_cfdLoop);
     var stats=document.getElementById('arc-cfd-stats');
     if(stats){
