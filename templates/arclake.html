@@ -24918,8 +24918,12 @@ window.ArcCFD = {
       +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;width:100%;margin-top:5px;">'
       +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:4px;">TABS<select id="arc-cfd-tab-sel" multiple size="1" style="min-width:90px;max-width:150px;background:rgba(0,10,25,.9);border:1px solid rgba(0,229,255,.35);color:#00e5ff;font-size:9px;padding:2px 4px;border-radius:3px;"></select></label>'
       +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:3px;">PPU<input id="arc-cfd-ppu" type="number" value="3000" min="1" max="50000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:62px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;"></label>'
+      +'<span style="font-size:9px;color:rgba(0,229,255,.5);font-family:Orbitron,sans-serif;white-space:nowrap;">cm:'
+      +'<input id="arc-cfd-cx" type="number" value="60" min="1" max="9999" title="Container X (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;">'
+      +'<input id="arc-cfd-cy" type="number" value="60" min="1" max="9999" title="Container Y (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;">'
+      +'<input id="arc-cfd-cz" type="number" value="60" min="1" max="9999" title="Container Z (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;"></span>'
+      +'<button onclick="window.ArcCFD._spawnDefault()" style="'+_bS+'background:rgba(0,229,255,.18);">▶ SPAWN</button>'
       +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;">🪄 WAND</button>'
-      +'<button onclick="window.ArcCFD.syncTabs()" style="'+_bS+'background:rgba(0,229,255,.18);">↺ APPLY TABS</button>'
       +'</div>';
     ov.appendChild(hdr);
 
@@ -24930,31 +24934,41 @@ window.ArcCFD = {
 
     document.body.appendChild(ov);
 
-    // ── Drag to move ──────────────────────────────────────────────────────────
+    // ── Drag to move (RAF-throttled, delta from start — no left/top read in loop) ─
     (function(){
       var hdrEl=ov.querySelector('div');
       if(!hdrEl) return;
-      var dragging=false,ox=0,oy=0;
+      var drag=false,sx=0,sy=0,sl=0,st=0,px=0,py=0,raf=null;
+      function commit(){raf=null;ov.style.left=px+'px';ov.style.top=py+'px';}
       hdrEl.addEventListener('pointerdown',function(e){
-        if(e.target.tagName==='BUTTON'||e.target.tagName==='INPUT') return;
-        dragging=true; ox=e.clientX-ov.offsetLeft; oy=e.clientY-ov.offsetTop;
-        hdrEl.style.cursor='grabbing'; hdrEl.setPointerCapture(e.pointerId);
+        var t=e.target.tagName;
+        if(t==='BUTTON'||t==='INPUT'||t==='SELECT'||t==='OPTION') return;
+        e.preventDefault();
+        drag=true; sx=e.clientX; sy=e.clientY;
+        sl=ov.offsetLeft; st=ov.offsetTop;
+        hdrEl.style.cursor='grabbing';
+        hdrEl.setPointerCapture(e.pointerId);
       });
       hdrEl.addEventListener('pointermove',function(e){
-        if(!dragging) return;
-        var nx=Math.max(0,Math.min(window.innerWidth-50,e.clientX-ox));
-        var ny=Math.max(0,Math.min(window.innerHeight-50,e.clientY-oy));
-        ov.style.left=nx+'px'; ov.style.top=ny+'px';
+        if(!drag) return;
+        e.preventDefault();
+        px=Math.max(0,Math.min(window.innerWidth-80, sl+(e.clientX-sx)));
+        py=Math.max(0,Math.min(window.innerHeight-80, st+(e.clientY-sy)));
+        if(!raf) raf=requestAnimationFrame(commit);
       });
-      hdrEl.addEventListener('pointerup',function(e){
-        dragging=false; hdrEl.style.cursor='grab';
-        hdrEl.releasePointerCapture(e.pointerId);
-      });
+      function end(e){
+        if(!drag) return;
+        drag=false; hdrEl.style.cursor='grab';
+        if(raf){cancelAnimationFrame(raf);raf=null;commit();}
+        try{hdrEl.releasePointerCapture(e.pointerId);}catch(_){}
+      }
+      hdrEl.addEventListener('pointerup',end);
+      hdrEl.addEventListener('pointercancel',end);
     })();
 
     if(!_cfdInitThree(cvsCont)){ ov.remove(); return; }
-    _cfd_setScene('dam');
     this._populateTabSelect();
+    this._spawnDefault();
     this._resume();
   },
 
@@ -24978,6 +24992,55 @@ window.ArcCFD = {
     clearInterval(window._cfdStatsTimer);
     var ov=document.getElementById('arc-cfd-overlay');
     if(ov) ov.style.display='none';
+  },
+
+  // Spawn 3000 pts per tab (or per active scene) into 60x60x60 cm default container
+  _spawnDefault: function(){
+    var tabs = this._getActiveTabs();
+    var ppt = _cfdPPU; // particles per tab
+    _cfdS.pts = []; _cfdF.pts = []; _cfdCells = null;
+    var palette = [[0,0.9,1],[1,0.25,0.4],[0.4,1,0.3],[1,0.7,0],[0.8,0.2,1],
+                   [0,1,0.6],[1,0.4,0.1],[0.3,0.7,1],[1,0.9,0.3],[0.6,0.2,1]];
+    if(!tabs.length){ tabs=[{id:'default',name:'Scene',col:palette[0]}]; }
+    // Container: user-specified or default 60×60×60 cm
+    var cx = parseFloat((document.getElementById('arc-cfd-cx')||{value:'60'}).value)||60;
+    var cy = parseFloat((document.getElementById('arc-cfd-cy')||{value:'60'}).value)||60;
+    var cz = parseFloat((document.getElementById('arc-cfd-cz')||{value:'60'}).value)||60;
+    // Map container to sim domain W_CFD×H_CFD×D_CFD
+    tabs.forEach(function(tab,ti){
+      var col = palette[ti % palette.length];
+      var n = ppt;
+      var side = Math.ceil(Math.cbrt(n));
+      var sp = Math.min(_cfdS.h * 0.62,
+        (W_CFD * (cx/60) * 0.88) / side,
+        (H_CFD * (cy/60) * 0.82) / side,
+        (D_CFD * (cz/60) * 0.88) / side);
+      var xOff = W_CFD * (ti / Math.max(1,tabs.length)) * 0.6 + W_CFD * 0.08;
+      var x0 = xOff, y0 = H_CFD * 0.06, z0 = (D_CFD - side*sp) / 2;
+      var k = 0;
+      for(var d=0;d<side&&k<n;d++)
+        for(var r=0;r<side&&k<n;r++)
+          for(var cc=0;cc<side&&k<n;cc++,k++){
+            var pt=_cfd_mkPt(
+              x0+cc*sp+(Math.random()-.5)*0.8,
+              y0+r*sp+(Math.random()-.5)*0.8,
+              z0+d*sp+(Math.random()-.5)*0.8
+            );
+            pt._col=col; _cfdS.pts.push(pt);
+          }
+    });
+    _cfdS.n = _cfdS.pts.length;
+    _cfdRebuildGeo();
+  },
+
+  _getActiveTabs: function(){
+    var sel = document.getElementById('arc-cfd-tab-sel');
+    var selected = sel ? Array.from(sel.selectedOptions).map(function(o){return o.value;}) : [];
+    if(!selected.length){
+      // Auto-select all if none chosen
+      if(sel) Array.from(sel.options).forEach(function(o){o.selected=true; selected.push(o.value);});
+    }
+    return selected.map(function(v,i){return {id:v,name:v,idx:i};});
   },
 
   setScene: function(name){
