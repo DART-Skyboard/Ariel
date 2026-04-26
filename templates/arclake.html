@@ -24978,41 +24978,95 @@ window.ArcCFD = {
     var hdr=document.createElement('div');
     hdr.style.cssText='display:flex;flex-direction:column;align-items:stretch;gap:0;padding:7px 12px 6px;background:rgba(0,10,25,.97);border-bottom:1px solid rgba(0,229,255,.22);flex-shrink:0;cursor:grab;user-select:none;';
     hdr.title='Drag to move';
-    var _bS='background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.38);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;';
-    hdr.style.flexDirection='column';
-    hdr.innerHTML=''
-      +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;width:100%;">'
-      +'<span style="font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:2px;color:#00e5ff;flex-shrink:0">◈ CFD</span>'
-      +(function(){return ['dam','wave','drop','jets','orbit','fountain'].map(function(sc){
-          return '<button data-cfdsc="'+sc+'" onclick="window.ArcCFD.setScene(this.dataset.cfdsc)" style="'+_bS+'font-size:9px;padding:3px 7px;">'+sc.toUpperCase()+'</button>';
-        }).join('');})()
-      +'<button onclick="window.ArcCFD.loadMolCanvas()" style="'+_bS+'background:rgba(0,229,255,.16);">◈ MOL</button>'
-      +'<button onclick="try{if(window.CNE)window.CNE.open();else if(typeof openNodeEditor===\'function\')openNodeEditor();}catch(e){}" style="'+_bS+'background:rgba(191,95,255,.14);border-color:rgba(191,95,255,.4);color:#cf8fff;">⬡ NODE</button>'
-      +'<div id="arc-cfd-stats" style="font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;"></div>'
-      +'<button onclick="window.ArcCFD.close()" style="background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-family:Orbitron,sans-serif;font-size:13px;padding:3px 10px;border-radius:4px;cursor:pointer;">✕</button>'
-      +'</div>'
-      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;width:100%;margin-top:5px;">'
-      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:4px;">TABS<select id="arc-cfd-tab-sel" multiple size="1" style="min-width:90px;max-width:150px;background:rgba(0,10,25,.9);border:1px solid rgba(0,229,255,.35);color:#00e5ff;font-size:9px;padding:2px 4px;border-radius:3px;"></select></label>'
-      +'<label style="font-size:10px;color:rgba(0,229,255,.7);font-family:Orbitron,sans-serif;white-space:nowrap;display:flex;align-items:center;gap:3px;">PPU<input id="arc-cfd-ppu" type="number" value="3000" min="1" max="50000" onchange="window.ArcCFD.setPPU(+this.value)" style="width:62px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;"></label>'
-      +'<span style="font-size:9px;color:rgba(0,229,255,.5);font-family:Orbitron,sans-serif;white-space:nowrap;">cm:'
-      +'<input id="arc-cfd-cx" type="number" value="60" min="1" max="9999" title="Container X (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;">'
-      +'<input id="arc-cfd-cy" type="number" value="60" min="1" max="9999" title="Container Y (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;">'
-      +'<input id="arc-cfd-cz" type="number" value="60" min="1" max="9999" title="Container Z (cm)" style="width:38px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:9px;padding:1px 3px;border-radius:3px;margin-left:2px;"></span>'
-      +'<button onclick="window.ArcCFD._spawnDefault()" style="'+_bS+'background:rgba(0,229,255,.18);">▶ SPAWN</button>'
-      +'<button id="arc-cfd-stir-btn" onclick="window.ArcCFD.toggleStir()" style="background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;">🪄 WAND</button>'
-      +'</div>';
+    // Build header with DOM methods — not innerHTML — so styles persist
+    var _cfdBtnS='background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.38);color:#00e5ff;font-family:Orbitron,sans-serif;font-size:10px;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;';
+    function _cfdMkBtn(txt, onclick_, extra){
+      var b=document.createElement('button'); b.innerHTML=txt;
+      b.setAttribute('style',_cfdBtnS+(extra||''));
+      b.addEventListener('click', onclick_); return b;
+    }
+    // Row 1: title + scene presets + MOL + NODE + stats + close
+    var _r1=document.createElement('div');
+    _r1.style.cssText='display:flex;align-items:center;gap:5px;flex-wrap:wrap;width:100%;';
+    var _title=document.createElement('span');
+    _title.textContent='◈ LCFD';
+    _title.style.cssText='font-family:Orbitron,sans-serif;font-size:12px;letter-spacing:2px;color:#00e5ff;flex-shrink:0;';
+    _r1.appendChild(_title);
+    ['dam','wave','drop','jets','orbit','fountain'].forEach(function(sc){
+      var b=_cfdMkBtn(sc.toUpperCase(),function(){window.ArcCFD.setScene(this._sc);},'font-size:9px;padding:3px 7px;');
+      b._sc=sc; _r1.appendChild(b);
+    });
+    _r1.appendChild(_cfdMkBtn('◈ MOL',function(){window.ArcCFD.loadMolCanvas();},'background:rgba(0,229,255,.16);'));
+    _r1.appendChild(_cfdMkBtn('⬡ NODE',function(){try{if(window.CNE)window.CNE.open();else if(typeof openNodeEditor==='function')openNodeEditor();}catch(e){}},'background:rgba(191,95,255,.14);border-color:rgba(191,95,255,.4);color:#cf8fff;'));
+    var _stats=document.createElement('div'); _stats.id='arc-cfd-stats';
+    _stats.style.cssText='font-family:monospace;font-size:9px;color:rgba(0,229,255,.4);margin-left:auto;white-space:nowrap;';
+    _r1.appendChild(_stats);
+    var _closeBtn=_cfdMkBtn('✕',function(){window.ArcCFD.close();},'background:rgba(255,60,60,.1);border:1px solid rgba(255,80,80,.4);color:rgba(255,120,120,.9);font-size:13px;flex-shrink:0;');
+    _r1.appendChild(_closeBtn);
+    hdr.appendChild(_r1);
+    // Row 2: tab selector + PPU/tab + container dims + spawn + wand
+    var _r2=document.createElement('div');
+    _r2.style.cssText='display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;width:100%;margin-top:7px;padding-top:6px;border-top:1px solid rgba(0,229,255,.12);';
+    // Tab selector column
+    var _tabCol=document.createElement('div');
+    _tabCol.style.cssText='display:flex;flex-direction:column;gap:3px;flex:1;min-width:100px;max-width:200px;';
+    var _tabLbl=document.createElement('span');
+    _tabLbl.textContent='SCENE TABS';
+    _tabLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    var _tabSel=document.createElement('select');
+    _tabSel.id='arc-cfd-tab-sel'; _tabSel.multiple=true; _tabSel.size=1;
+    _tabSel.style.cssText='background:rgba(0,10,25,.92);border:1px solid rgba(0,229,255,.35);color:#00e5ff;font-size:10px;padding:4px 5px;border-radius:4px;width:100%;';
+    _tabCol.appendChild(_tabLbl); _tabCol.appendChild(_tabSel);
+    _r2.appendChild(_tabCol);
+    // PPU column
+    var _ppuCol=document.createElement('div');
+    _ppuCol.style.cssText='display:flex;flex-direction:column;gap:3px;';
+    var _ppuLbl=document.createElement('span');
+    _ppuLbl.textContent='PPU/TAB';
+    _ppuLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    var _ppuInp=document.createElement('input');
+    _ppuInp.id='arc-cfd-ppu'; _ppuInp.type='number'; _ppuInp.value='3000';
+    _ppuInp.min='1'; _ppuInp.max='50000';
+    _ppuInp.style.cssText='width:70px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.3);color:#fff;font-size:10px;padding:4px 5px;border-radius:4px;';
+    _ppuInp.addEventListener('change',function(){window.ArcCFD.setPPU(+this.value);});
+    _ppuCol.appendChild(_ppuLbl); _ppuCol.appendChild(_ppuInp);
+    _r2.appendChild(_ppuCol);
+    // Container dims column
+    var _dimCol=document.createElement('div');
+    _dimCol.style.cssText='display:flex;flex-direction:column;gap:3px;';
+    var _dimLbl=document.createElement('span');
+    _dimLbl.textContent='CONTAINER cm';
+    _dimLbl.style.cssText='font-size:9px;letter-spacing:1px;color:rgba(0,229,255,.55);font-family:Orbitron,sans-serif;';
+    var _dimInputRow=document.createElement('div');
+    _dimInputRow.style.cssText='display:flex;gap:3px;';
+    [['arc-cfd-cx','X'],['arc-cfd-cy','Y'],['arc-cfd-cz','Z']].forEach(function(pair){
+      var inp=document.createElement('input');
+      inp.id=pair[0]; inp.type='number'; inp.value='60'; inp.min='1'; inp.max='9999';
+      inp.title='Container '+pair[1]+' (cm)';
+      inp.style.cssText='width:42px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:#fff;font-size:10px;padding:3px 4px;border-radius:4px;';
+      _dimInputRow.appendChild(inp);
+    });
+    _dimCol.appendChild(_dimLbl); _dimCol.appendChild(_dimInputRow);
+    _r2.appendChild(_dimCol);
+    // Spawn + Wand
+    _r2.appendChild(_cfdMkBtn('▶ SPAWN',function(){window.ArcCFD._spawnDefault();},'background:rgba(0,229,255,.18);'));
+    var _wandBtn=_cfdMkBtn('🪄 WAND',function(){window.ArcCFD.toggleStir();},'background:rgba(57,255,122,.1);border:1px solid rgba(57,255,122,.4);color:rgba(57,255,122,.9);');
+    _wandBtn.id='arc-cfd-stir-btn';
+    _r2.appendChild(_wandBtn);
+    hdr.appendChild(_r2);
     ov.appendChild(hdr);
 
     // Canvas container
+    // Canvas container
     var cvsCont=document.createElement('div');
+    cvsCont.id='arc-cfd-canvas-cont';
     cvsCont.style.cssText='flex:1;position:relative;overflow:hidden;min-height:0;';
-    // Per-tab PPU row (populated after _populateTabSelect)
+    // Per-tab PPU row (dynamically populated by _populateTabSelect)
     var ptuRow=document.createElement('div');
     ptuRow.id='arc-cfd-per-tab-ppu';
-    ptuRow.style.cssText='display:none;gap:6px;flex-wrap:wrap;padding:3px 12px;background:rgba(0,229,255,.03);border-bottom:1px solid rgba(0,229,255,.08);flex-shrink:0;';
+    ptuRow.style.cssText='display:none;gap:6px;flex-wrap:wrap;padding:4px 14px;background:rgba(0,229,255,.03);border-bottom:1px solid rgba(0,229,255,.08);flex-shrink:0;align-items:center;';
     ov.appendChild(ptuRow);
     ov.appendChild(cvsCont);
-
     document.body.appendChild(ov);
 
     // Use same makeDraggable as mol canvas / periodic table — smooth on touch and mouse
@@ -25114,11 +25168,12 @@ window.ArcCFD = {
     var tabs=this._buildTabList();
     tabs.forEach(function(t){
       var opt=document.createElement('option');
-      opt.value=t.id; opt.textContent=t.name+(t.atomCount?' ('+t.atomCount+' atoms)':'');
-      opt.selected=true;
+      opt.value=t.id;
+      opt.textContent=t.name+(t.atomCount?' · '+t.atomCount+' atoms':'');
+      opt.selected=true; // all selected by default
       sel.appendChild(opt);
     });
-    sel.size=Math.min(4,Math.max(1,tabs.length));
+    sel.size=Math.max(1,tabs.length); // show all tabs without scrolling
     // Per-tab PPU controls
     var ptuContainer=document.getElementById('arc-cfd-per-tab-ppu');
     if(ptuContainer){
@@ -25147,12 +25202,14 @@ window.ArcCFD = {
       window.SceneTabs.getAll().forEach(function(t){
         if(t._isCFDTab) return;
         var ag=t.atomGroups||[];
-        tabs.push({id:t.id||t.name||('tab'+tabs.length), name:t.name||t.id||('Tab '+(tabs.length+1)), atomCount:ag.length});
+        // Include ALL tabs (even empty ones) so user can see and select them
+        tabs.push({id:t.id, name:t.name||('Scene '+(tabs.length+1)), atomCount:ag.length, _tab:t});
       });
     }
+    // Always ensure at least one tab entry
     if(!tabs.length){
       var ag=typeof atomGroups!=='undefined'?atomGroups:[];
-      tabs.push({id:'scene1',name:'Scene 1',atomCount:ag.length});
+      tabs.push({id:'scene1',name:'Scene 1',atomCount:ag.length,_tab:null});
     }
     return tabs;
   },
