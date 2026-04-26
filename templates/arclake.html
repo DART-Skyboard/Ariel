@@ -9482,8 +9482,16 @@ function applyNewPhysics() {
         const t = performance.now() * 0.0001;
 
         // ── Step 1: Neutron deviation — full physics at origin ────────────────
+        // Warmup: ramp deviation influence over first 90 frames to prevent scatter
+        if (!group._devWarmup) group._devWarmup = 0;
+        if (group._devWarmup < 90) group._devWarmup++;
+        const _devRamp = group._devWarmup / 90; // 0→1 over first 90 frames
         p_mod.shellInfluence = 1.0; // neutron receives 100% of force
-        const _neutronDev = getArcEdgeDeviation(t, p_mod);
+        const _rawDev = getArcEdgeDeviation(t, p_mod);
+        // Clamp max deviation to 1.5 scene units — prevents explosion on arc edge spike
+        const _devLen = _rawDev.length();
+        if (_devLen > 1.5) _rawDev.multiplyScalar(1.5 / _devLen);
+        const _neutronDev = _rawDev.multiplyScalar(_devRamp);
 
         // ── Step 2: Proton relay — 85% of neutron deviation, radially outward ─
         const _protonRelayFactor = 0.85;
@@ -9507,7 +9515,11 @@ function applyNewPhysics() {
                 ? Math.max(0.1, 1.0 - (shellIndex / totalShells) * 0.7)
                 : 1.0;
             p_mod.shellInfluence = shellAttenuation;
-            const _shellDev = getArcEdgeDeviation(t, p_mod).multiplyScalar(shellAttenuation);
+            const _rawDev = getArcEdgeDeviation(t, p_mod).multiplyScalar(shellAttenuation);
+            // Hard cap on deviation — prevents cloud from flying off before physics warms up
+            const _devMag = _rawDev.length();
+            const _maxDev = (group.maxRadius || 5) * 0.35;
+            const _shellDev = _devMag > _maxDev ? _rawDev.multiplyScalar(_maxDev / _devMag) : _rawDev;
 
             if (!e.userData.initialOffset) e.userData.initialOffset = e.position.clone().sub(group.center);
             const stableOrbitOffset = e.userData.initialOffset.clone();
@@ -10256,7 +10268,7 @@ function loadAtom(atom, index, initialPositionArray = null) {
     const _shellsArr = orbits.slice(); // electron counts per shell
     const _electronList = _getElectrons(protons, _shellsArr);
     const _PTS_PER_E = Math.max(60, Math.min(300, Math.floor(6000 / Math.max(1,_electronList.length))));
-    const _SCALE = Math.max(2.5, nucleusR + 1.5); // world units per Bohr radius
+    const _SCALE = Math.max(1.2, nucleusR * 0.6 + 0.8); // world units per Bohr radius — kept tight to nucleus
     const _NORM  = 1.0 / Math.max(1, 10 * 1 * 1 * _a0); // for color mapping r
 
     const _allPos=[], _allCol=[];
@@ -10376,8 +10388,15 @@ function addPhysicsAttributes(obj, type, orbitIndex = -1, initialRadius = 0, nuc
 }
 
 function startSimulation() {
-    // Hide idle turntable groups so physics meshes take over visually
-    atomGroups.forEach(ag => { if (ag._idleGroup) ag._idleGroup.visible = false; });
+    // Keep _idleGroup visible — it now carries quantum orbital cloud, not idle animation
+    // Physics proxy meshes (invisible) drive forces; orbital cloud follows nucleus position
+    atomGroups.forEach(ag => {
+        if (ag._idleGroup) {
+            // Keep cloud visible; zero rotation so it stays static relative to nucleus
+            ag._idleGroup.rotation.set(0,0,0);
+            ag._idleGroup.visible = true;
+        }
+    });
     // Prevent starting if scrubbing
     if (isScrubbing) {
         addPrompt("Cannot start simulation while scrubbing.");
@@ -10409,7 +10428,7 @@ function startSimulation() {
         // Without this, velocity=0 → arcEdgeInfluenceBase=0 → threshold never exceeded
         // → isNucleusActive stays false → nothing moves. The impulse is sub-pixel
         // visually but allows gravity accumulation to take hold immediately.
-        var _impScale = 0.0008;
+        var _impScale = 0.00005; // minimal seed — just enough to allow gravity accumulation
         group.nucleusVelocity.set(
             (Math.random() - 0.5) * _impScale,
             (Math.random() - 0.5) * _impScale * 0.5,
@@ -10426,9 +10445,19 @@ function startSimulation() {
             var pos = (group.nucleusMeshes&&group.nucleusMeshes[0]) ? group.nucleusMeshes[0].position : new THREE.Vector3();
             group.center = pos.clone();
         }
-        // Reinitialize initialOffset on all meshes so physics deviation works
-        group.electronMeshes.forEach(function(m) { if(m&&m.userData) delete m.userData.initialOffset; });
-        group.nucleusMeshes.forEach(function(m) { if(m&&m.userData) delete m.userData.initialOffset; });
+        // Keep initialOffset intact — these are stable orbital positions relative to atom center
+        // Deleting them caused cloud to fly away when physics started re-deriving from drifted positions
+        // Only recalculate if genuinely missing (first load)
+        group.electronMeshes.forEach(function(m) {
+            if(m && m.userData && !m.userData.initialOffset) {
+                m.userData.initialOffset = m.position.clone().sub(group.center);
+            }
+        });
+        group.nucleusMeshes.forEach(function(m) {
+            if(m && m.userData && !m.userData.initialOffset) {
+                m.userData.initialOffset = m.position.clone().sub(group.center);
+            }
+        });
     });
     
     // NEW: Initialize complex body velocities/state
@@ -13692,421 +13721,369 @@ function _lscfdEnter(count, ptSize, volM3, re, flowMS, envVolM3) {
     if (_LSCFD.active) _lscfdExit();
     _LSCFD.active = true;
 
-    // Optionally remove old bounding box helper
-    if(_LSCFD.bboxHelper && typeof scene!=='undefined') {
-        scene.remove(_LSCFD.bboxHelper);
-        _LSCFD.bboxHelper = null;
+    // ══════════════════════════════════════════════════════════════════════
+    //  CFD — ArcLakeFluidSim SPH Engine (SebLague/Fluid-Sim, MIT License)
+    //  Kernel mathematics: Sebastian Lague · github.com/SebLague/Fluid-Sim
+    //  Papers: Müller et al. 2003 (SCA), Clavet 2005 (PVFS), Ihmsen 2012
+    //  Integrated into ArcLake by Justin / DART-Skyboard · Radical Deepscale LLC
+    //
+    //  Per-element particle colors derived from atom element symbols.
+    //  Molecules (mol canvas groups) share a color family.
+    //  Particles-per-unit scales by user setting × molecule size.
+    // ══════════════════════════════════════════════════════════════════════
+
+    if (_LSCFD.bboxHelper && typeof scene !== 'undefined') { scene.remove(_LSCFD.bboxHelper); _LSCFD.bboxHelper = null; }
+
+    // ── SPH domain (maps to Three.js scene units via SCALE) ───────────────
+    var _cSPH = window._cSPH = {};
+    _cSPH.W = 400; _cSPH.H = 300; _cSPH.D = 300;
+    _cSPH.SCALE = 0.8;
+    _cSPH.n     = Math.max(200, Math.min(6000, count));
+    _cSPH.ts    = 1.0;
+    _cSPH.h     = 30;
+    _cSPH.rho   = 650;
+    _cSPH.pm    = 220;
+    _cSPH.npm   = 5.0;
+    _cSPH.visc  = 0.055;
+    _cSPH.grav  = (typeof envVolM3 !== 'undefined' && window._cfdMasterGrav) ? window._cfdMasterGrav : 1.0;
+    _cSPH.damp  = 0.72;
+    _cSPH.mf    = 14;
+    _cSPH.pts   = [];
+    _cSPH.hCached = -1;
+    _cSPH.scene = 'dam';
+    _cSPH.kSp2=0; _cSPH.kSp3=0; _cSPH.kSp2g=0; _cSPH.kSp3g=0; _cSPH.kP6=0;
+
+    // Kernel constants (SebLague/Fluid-Sim MIT, FluidMaths3D.hlsl)
+    function _cfdKernels(h) {
+        var PI = Math.PI;
+        _cSPH.kSp2  = 15 / (2*PI*Math.pow(h,5));
+        _cSPH.kSp3  = 15 / (  PI*Math.pow(h,6));
+        _cSPH.kSp2g = 15 / (  PI*Math.pow(h,5));
+        _cSPH.kSp3g = 45 / (  PI*Math.pow(h,6));
+        _cSPH.kP6   = 315/ (64*PI*Math.pow(h,9));
+        _cSPH.hCached = h;
+    }
+    _cfdKernels(_cSPH.h);
+    var sp2  = function(d,h){ if(d>=h)return 0; var v=h-d; return v*v*_cSPH.kSp2; };
+    var sp3  = function(d,h){ if(d>=h)return 0; var v=h-d; return v*v*v*_cSPH.kSp3; };
+    var dsp2 = function(d,h){ if(d>h) return 0; var v=h-d; return -v*_cSPH.kSp2g; };
+    var dsp3 = function(d,h){ if(d>h) return 0; var v=h-d; return -v*v*_cSPH.kSp3g; };
+    var p6   = function(d2,h){ var v=h*h-d2; return v<=0?0:v*v*v*_cSPH.kP6; };
+    var linK = function(d,h){ return d<h?1-d/h:0; };
+
+    // Spatial hash grid (matches Lague SpatialHash3D.hlsl)
+    var _cCells=null, _cgx=0, _cgy=0, _cgz=0, _ccs=0, _cgW=0, _cgH=0, _cgD=0;
+    var _MAX_NB=1800, _cnb=new Int32Array(_MAX_NB), _cnbc=0;
+    function _cBuildGrid() {
+        var h=_cSPH.h, pts=_cSPH.pts, n=pts.length;
+        if(!n) return;
+        var mx=Infinity,my=Infinity,mz=Infinity,Mx=-Infinity,My=-Infinity,Mz=-Infinity;
+        for(var i=0;i<n;i++){var p=pts[i];if(p.x<mx)mx=p.x;if(p.x>Mx)Mx=p.x;if(p.y<my)my=p.y;if(p.y>My)My=p.y;if(p.z<mz)mz=p.z;if(p.z>Mz)Mz=p.z;}
+        _cgx=mx-h;_cgy=my-h;_cgz=mz-h;_ccs=h;
+        _cgW=Math.max(1,Math.ceil((Mx-mx+2*h)/h)+1);
+        _cgH=Math.max(1,Math.ceil((My-my+2*h)/h)+1);
+        _cgD=Math.max(1,Math.ceil((Mz-mz+2*h)/h)+1);
+        var tot=_cgW*_cgH*_cgD;
+        if(!_cCells||_cCells.length!==tot){_cCells=Array.from({length:tot},()=>[]);}
+        else{for(var i=0;i<tot;i++)_cCells[i].length=0;}
+        for(var i=0;i<n;i++){var p=pts[i];var cx=Math.floor((p.x-_cgx)/_ccs);var cy=Math.floor((p.y-_cgy)/_ccs);var cz=Math.floor((p.z-_cgz)/_ccs);_cCells[cx+cy*_cgW+cz*_cgW*_cgH].push(i);}
+    }
+    function _cNeighbors(px,py,pz) {
+        _cnbc=0;
+        var cx=Math.floor((px-_cgx)/_ccs),cy=Math.floor((py-_cgy)/_ccs),cz=Math.floor((pz-_cgz)/_ccs);
+        for(var oz=-1;oz<=1;oz++){var nz=cz+oz;if(nz<0||nz>=_cgD)continue;var zo=nz*_cgW*_cgH;
+            for(var oy=-1;oy<=1;oy++){var ny=cy+oy;if(ny<0||ny>=_cgH)continue;var yo=ny*_cgW;
+                for(var ox=-1;ox<=1;ox++){var nx2=cx+ox;if(nx2<0||nx2>=_cgW)continue;
+                    var cell=_cCells[nx2+yo+zo];for(var k=0;k<cell.length;k++){if(_cnbc<_MAX_NB)_cnb[_cnbc++]=cell[k];}}}}
     }
 
-    // Use envVolM3 for the scene spread radius (environment bounding box)
-    // and volM3 (reactive material) for internal density calculations
-    var sceneVolM3 = envVolM3 || volM3;
-
-    // Hide atom meshes across ALL linked atomic tabs (not just current active atomGroups).
-    // Save visibility per-tab so _lscfdExit can restore each tab's meshes correctly.
-    // FIX: Always use _tabVisSave for ALL tabs (including the active tab whose atomGroups
-    // may still only be in the live globals). The legacy savedVis fallback was causing
-    // the active tab's nucleusMeshes to stay hidden after CFD exit.
-    _LSCFD.savedVis = [];      // kept for compatibility but no longer used as fallback
-    _LSCFD._tabVisSave = {};   // keyed by tab.id => { atomGroups ref, vis arrays }
-
-    // First flush the active tab's live atomGroups into its tab object
-    if (window.SceneTabs) {
-        var _activeForFlush = window.SceneTabs.getActive();
-        if (_activeForFlush && !_activeForFlush._isCFDTab) {
-            _activeForFlush.atomGroups = typeof atomGroups !== 'undefined' ? atomGroups : (_activeForFlush.atomGroups || []);
-        }
+    // ── Per-element color assignment ──────────────────────────────────────
+    // Each element symbol gets a unique hue. Molecules share a color family.
+    // Reference: CPK coloring convention extended with DART palette
+    var _ELEM_COLORS = {
+        H:{r:1,g:1,b:1}, He:{r:0.85,g:1,b:1},
+        Li:{r:0.8,g:0.5,b:1}, Be:{r:0.76,g:1,b:0},
+        B:{r:1,g:0.71,b:0.71}, C:{r:0.56,g:0.56,b:0.56},
+        N:{r:0.19,g:0.31,b:0.97}, O:{r:1,g:0.05,b:0.05},
+        F:{r:0.56,g:0.82,b:0.31}, Ne:{r:0.7,g:0.89,b:0.96},
+        Na:{r:0.67,g:0.36,b:0.95}, Mg:{r:0.54,g:1,b:0},
+        Al:{r:0.75,g:0.65,b:0.65}, Si:{r:0.94,g:0.78,b:0.63},
+        P:{r:1,g:0.5,b:0}, S:{r:1,g:1,b:0.19},
+        Cl:{r:0.12,g:0.94,b:0.12}, Ar:{r:0.5,g:0.82,b:0.89},
+        K:{r:0.56,g:0.25,b:0.83}, Ca:{r:0.24,g:1,b:0},
+        Fe:{r:0.88,g:0.4,b:0.2}, Cu:{r:0.78,g:0.5,b:0.2},
+        Zn:{r:0.49,g:0.5,b:0.69}, Ag:{r:0.75,g:0.75,b:0.75},
+        Au:{r:1,g:0.82,b:0.14}, Pb:{r:0.34,g:0.35,b:0.38},
+        U:{r:0.04,g:0.56,b:0.56}
+    };
+    function _elemColor(sym) {
+        var e = _ELEM_COLORS[sym];
+        if (e) return e;
+        // Hash the symbol to a consistent hue
+        var h = 0; for (var i=0; i<sym.length; i++) h = (h*31 + sym.charCodeAt(i)) & 0xffff;
+        var hue = (h / 0xffff) * 360;
+        var r,g,b,c=1,x=1-Math.abs((hue/60)%2-1),m=0.3;
+        if(hue<60){r=c;g=x;b=0;}else if(hue<120){r=x;g=c;b=0;}else if(hue<180){r=0;g=c;b=x;}
+        else if(hue<240){r=0;g=x;b=c;}else if(hue<300){r=x;g=0;b=c;}else{r=c;g=0;b=x;}
+        return {r:r+m,g:g+m,b:b+m};
     }
 
-    // Now collect ALL non-CFD tabs that have atoms and are included in CFD
-    var _allTabsToHide = [];
-    if (window.SceneTabs) {
-        window.SceneTabs.getAll().forEach(function(t) {
-            if (t._isCFDTab) return;
-            // Include tab if it has atoms (regardless of includedInCFD — we hide ALL tab atoms
-            // while CFD is active so none bleed through into the CFD viewport)
-            if (t.atomGroups && t.atomGroups.length) {
-                _allTabsToHide.push(t);
+    // ── Collect atom groups from linked tabs → assign particle slots ───────
+    var _cfdAtoms = []; // [{sym, color, tabId, count, molId}]
+    var _totalPPU = Math.max(1, count); // total particle budget
+    var _syncTabs = window.SceneTabs ? window.SceneTabs.getAll().filter(function(t){return !t._isCFDTab && t.includedInCFD && t.atomGroups && t.atomGroups.length;}) : [];
+
+    if (_syncTabs.length === 0 && typeof atomGroups !== 'undefined' && atomGroups.length) {
+        atomGroups.forEach(function(ag){
+            var sym = (JSON.parse(ag.elementData||'{}')).elementSymbol || 'X';
+            _cfdAtoms.push({sym:sym, color:_elemColor(sym), tabId:'live', count:1, molId:0});
+        });
+    } else {
+        _syncTabs.forEach(function(t,ti){
+            (t.atomGroups||[]).forEach(function(ag){
+                var sym = (JSON.parse(ag.elementData||'{}')).elementSymbol || 'X';
+                _cfdAtoms.push({sym:sym, color:_elemColor(sym), tabId:t.id, count:1, molId:ti});
+            });
+        });
+    }
+    if (!_cfdAtoms.length) _cfdAtoms.push({sym:'H', color:{r:1,g:1,b:1}, tabId:'default', count:1, molId:0});
+
+    // ── Particles-per-unit: each atom in a molecule contributes particles ──
+    // If N atoms in same mol canvas group → N sub-colors per "unit"
+    // ppu = user setting (count input), scaled by molecule complexity
+    var _ppu = Math.max(1, Math.floor(_totalPPU / _cfdAtoms.length));
+    _LSCFD.ppu = _ppu;
+
+    // ── Spawn particles with element-color assignments ─────────────────────
+    function _cMkPt(x,y,z,vx,vy,vz,r,g,b,tabId){
+        return{x:x,y:y,z:z,vx:vx||0,vy:vy||0,vz:vz||0,px:0,py:0,pz:0,
+               dens:0,nDens:0,press:0,nPress:0,spd:0,ke:0,nbc:0,vdiff:0,
+               r:r||1,g:g||1,b:b||1,tabId:tabId||''};
+    }
+    _cSPH.pts = [];
+    var W=_cSPH.W, H=_cSPH.H, D=_cSPH.D, h=_cSPH.h;
+    // Default to dam-break spawn, distributed by element
+    var side = Math.ceil(Math.cbrt(_totalPPU));
+    var sp = Math.min(h*0.6, (W*0.38)/side, (H*0.88)/side, (D*0.9)/side);
+    var x0=W*0.04, y0=H*0.06, z0=(D-side*sp)/2;
+    var k=0, atomIdx=0;
+    for(var d=0;d<side&&k<_totalPPU;d++)
+        for(var r=0;r<side&&k<_totalPPU;r++)
+            for(var cc=0;cc<side&&k<_totalPPU;cc++,k++){
+                var ai = atomIdx % _cfdAtoms.length;
+                var col = _cfdAtoms[ai].color;
+                _cSPH.pts.push(_cMkPt(
+                    x0+cc*sp+(Math.random()-.5),
+                    y0+r*sp+(Math.random()-.5),
+                    z0+d*sp+(Math.random()-.5),
+                    8, 0, 0,
+                    col.r, col.g, col.b,
+                    _cfdAtoms[ai].tabId
+                ));
+                atomIdx++;
             }
-        });
-    }
-    // Fallback: if no tabs found, hide current live atomGroups
-    if (_allTabsToHide.length === 0 && atomGroups && atomGroups.length) {
-        var _fakeTabId = '__live__';
-        var _fbVisArrays = [];
-        atomGroups.forEach(function(ag) {
-            var vs = [];
-            ag.nucleusMeshes.forEach(function(m){vs.push(m.visible); m.visible=false;});
-            ag.electronMeshes.forEach(function(m){vs.push(m.visible); m.visible=false;});
-            if (ag._idleGroup) { vs.push(ag._idleGroup.visible); ag._idleGroup.visible=false; }
-            _fbVisArrays.push(vs);
-        });
-        _LSCFD._tabVisSave[_fakeTabId] = { atomGroups: atomGroups, vis: _fbVisArrays };
-    } else {
-        _allTabsToHide.forEach(function(t) {
-            var tabVisArrays = [];
-            t.atomGroups.forEach(function(ag) {
-                var vs = [];
-                ag.nucleusMeshes.forEach(function(m){vs.push(m.visible); m.visible=false;});
-                ag.electronMeshes.forEach(function(m){vs.push(m.visible); m.visible=false;});
-                if (ag._idleGroup) { vs.push(ag._idleGroup.visible); ag._idleGroup.visible=false; }
-                tabVisArrays.push(vs);
-            });
-            _LSCFD._tabVisSave[t.id] = { atomGroups: t.atomGroups, vis: tabVisArrays };
-        });
-    }
+    _LSCFD.pts = _cSPH.pts; // alias for compatibility
 
-    // Compute scene center from atoms across ALL linked atomic tabs
-    var cx=0, cy=0, cz=0, _cCount=0;
-    var _centerTabs = (window.SceneTabs ? window.SceneTabs.getAll() : []).filter(function(t){ return !t._isCFDTab && t.includedInCFD && t.atomGroups && t.atomGroups.length; });
-    if (_centerTabs.length > 0) {
-        _centerTabs.forEach(function(t){ t.atomGroups.forEach(function(ag){ cx+=ag.center.x; cy+=ag.center.y; cz+=ag.center.z; _cCount++; }); });
-    } else {
-        atomGroups.forEach(function(ag){ cx+=ag.center.x; cy+=ag.center.y; cz+=ag.center.z; _cCount++; });
-    }
-    if (_cCount > 0){ cx/=_cCount; cy/=_cCount; cz/=_cCount; }
-
-    // Scene radius: use environment volume to spread particles across the full domain
-    // scale factor maps cube-root of envVolM3 (in m) to scene units (1e4 converts m→scene)
-    var scR = Math.max(8, Math.min(600, Math.cbrt(sceneVolM3) * 1e4));
-    _LSCFD.scR = scR;
-
-    // Visualize environment bounding box if requested
-    if(_LSCFD.showBbox && typeof THREE!=='undefined' && typeof scene!=='undefined') {
-        var halfR = scR;
-        var bboxGeo = new THREE.BoxGeometry(halfR*2, halfR*2, halfR*2);
-        var edges = new THREE.EdgesGeometry(bboxGeo);
-        var bboxMat = new THREE.LineBasicMaterial({color:0x00e5ff, transparent:true, opacity:0.25});
-        _LSCFD.bboxHelper = new THREE.LineSegments(edges, bboxMat);
-        _LSCFD.bboxHelper.position.set(cx, cy, cz);
-        scene.add(_LSCFD.bboxHelper);
-        bboxGeo.dispose();
-    }
-
-    // Build particle data array — split proportionally across cfd groups so each group's
-    // particles are centered on that group's 3D position within the full environment sphere.
-    // Each particle stores tabId so label-drag can shift its cx/cy/cz in real time.
-    _LSCFD.pts = [];
-    var _spawnGroups = (window.CFDTabManager && window.CFDTabManager.getCFDGroups) ?
-                       window.CFDTabManager.getCFDGroups() : [];
-    var _nGroups = _spawnGroups.length;
-    if (_nGroups < 1) {
-        // No CFD groups yet — fall back to single cloud at scene center
-        _spawnGroups = [{ tabId: '__all__', group: { position: { x: cx, y: cy, z: cz } } }];
-        _nGroups = 1;
-    }
-    var _ppg = Math.max(1, Math.floor(count / _nGroups)); // particles per group
-    var _spawned = 0;
-    for (var gi = 0; gi < _nGroups; gi++) {
-        var _sg = _spawnGroups[gi];
-        var _gcx = (_sg.group && _sg.group.position) ? _sg.group.position.x : cx;
-        var _gcy = (_sg.group && _sg.group.position) ? _sg.group.position.y : cy;
-        var _gcz = (_sg.group && _sg.group.position) ? _sg.group.position.z : cz;
-        var _pCount = (gi === _nGroups - 1) ? (count - _spawned) : _ppg; // last group absorbs remainder
-        for (var pi = 0; pi < _pCount; pi++) {
-            var th=Math.random()*2*Math.PI, ph=Math.acos(2*Math.random()-1);
-            // Particles fill the FULL environment sphere (scR) but centered on their group's position
-            // Reactive material volume (volM3) affects physics/density calcs — NOT spatial confinement
-            var r = Math.cbrt(Math.random()) * scR;
-            _LSCFD.pts.push({
-                x: _gcx + r*Math.sin(ph)*Math.cos(th),
-                y: _gcy + r*Math.sin(ph)*Math.sin(th),
-                z: _gcz + r*Math.cos(ph),
-                vx: (Math.random()-0.5)*flowMS*0.03,
-                vy: (Math.random()-0.5)*0.015,
-                vz: (Math.random()-0.5)*flowMS*0.03,
-                scR: scR,
-                cx: _gcx, cy: _gcy, cz: _gcz,  // confinement center = group position
-                tabId: _sg.tabId,               // track which group this particle belongs to
-                density: 1.0, pressure: 0, mass: 1
-            });
-            _spawned++;
-        }
-    }
-
-    // Build group probes array (cross-group interaction sources, like dartpotentials probes)
-    _LSCFD._groupProbes = _spawnGroups.map(function(sg, idx) {
-        var gpos = sg.group && sg.group.position;
-        // Get physics from the corresponding atomic tab
-        var atomicTab = window.SceneTabs ? window.SceneTabs.getAll().find(function(t){ return t.id===sg.tabId; }) : null;
-        var tabPhys = atomicTab && atomicTab.scenePhysicsSettings && atomicTab.scenePhysicsSettings.physics || {};
-        var mass = 0;
-        (atomicTab && atomicTab.atomGroups || []).forEach(function(ag){ mass += (ag.physics && ag.physics.mass)||1; });
-        var tempF = (tabPhys.temp||72);
-        var tempK = (tempF - 32) * 5/9 + 273.15;
-        return {
-            tabId: sg.tabId,
-            x: gpos ? gpos.x : cx,
-            y: gpos ? gpos.y : cy,
-            z: gpos ? gpos.z : cz,
-            mass: Math.max(1, mass),
-            tempFactor: Math.max(0.1, tempK / 300),   // normalized temperature
-            reactRange: scR * 0.35,                    // reaction range (35% of group radius)
-            gravity: tabPhys.gravity || 9.8,
-            pressure: tabPhys.pressure || 14.7
-        };
-    });
-
-    // Build Three.js point cloud
+    // ── Three.js instanced mesh for SPH particles ──────────────────────────
     if (typeof THREE !== 'undefined' && typeof scene !== 'undefined') {
+        if (_LSCFD.threeObj) scene.remove(_LSCFD.threeObj);
         if (_LSCFD.threeGeo) _LSCFD.threeGeo.dispose();
         if (_LSCFD.threeMat) _LSCFD.threeMat.dispose();
-        if (_LSCFD.threeObj) scene.remove(_LSCFD.threeObj);
 
-        var pos  = new Float32Array(count*3);
-        var cols = new Float32Array(count*3);
-        for (var i=0; i<count; i++) {
-            pos[i*3]=_LSCFD.pts[i].x; pos[i*3+1]=_LSCFD.pts[i].y; pos[i*3+2]=_LSCFD.pts[i].z;
-            _lscfdSetColor(cols, i, count);
+        var _n = _cSPH.pts.length;
+        var _pos = new Float32Array(_n*3);
+        var _col = new Float32Array(_n*3);
+        for(var i=0;i<_n;i++){
+            var p=_cSPH.pts[i];
+            _pos[i*3]=p.x*_cSPH.SCALE; _pos[i*3+1]=p.y*_cSPH.SCALE; _pos[i*3+2]=p.z*_cSPH.SCALE;
+            _col[i*3]=p.r; _col[i*3+1]=p.g; _col[i*3+2]=p.b;
         }
         _LSCFD.threeGeo = new THREE.BufferGeometry();
-        _LSCFD.threeGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        _LSCFD.threeGeo.setAttribute('color',    new THREE.BufferAttribute(cols, 3));
-        _LSCFD.threeGeo.userData = { scR:scR, cx:cx, cy:cy, cz:cz };
-
+        _LSCFD.threeGeo.setAttribute('position', new THREE.BufferAttribute(_pos,3).setUsage(THREE.DynamicDrawUsage));
+        _LSCFD.threeGeo.setAttribute('color',    new THREE.BufferAttribute(_col,3).setUsage(THREE.DynamicDrawUsage));
         _LSCFD.threeMat = new THREE.PointsMaterial({
-            size: ptSize,
-            vertexColors: true,
-            transparent: true,
-            opacity: _LSCFD.render==='gas' ? 0.45 : 0.88,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            sizeAttenuation: false  // size is in PIXELS — always visible at any camera distance
+            size: Math.max(2, ptSize||4),
+            vertexColors: true, transparent:true, opacity:0.92,
+            depthWrite:false, blending:THREE.AdditiveBlending, sizeAttenuation:false
         });
-
         _LSCFD.threeObj = new THREE.Points(_LSCFD.threeGeo, _LSCFD.threeMat);
         _LSCFD.threeObj.name = 'lscfdCloud';
         scene.add(_LSCFD.threeObj);
-    }
 
-    // Build arc lines (default: unit mode)
-    _lscfdRebuildArcs();
-
-    // Show mole display bar
-    var _moleEl = document.getElementById('lscfd-mole-display');
-    if (_moleEl) { _moleEl.style.display = 'block'; _lscfdUpdateMoleDisplay(); }
-
-    // ── Wand / Stir tool (ported from ArcLakeFluidSim.html) ─────────────────
-    // Original stir concept by Sebastian Lague (SebLague/Fluid-Sim, MIT License)
-    // Adapted for ArcLake LSCFD by Justin / DART-Skyboard · Radical Deepscale LLC
-    // Touch a particle → push/pull with SPH-radius force. Two-finger = pull inward.
-    // Toggle via 🪄 button in the LSCFD mode bar. Freeze the scene with a tap,
-    // disturb particles, then untap to resume orbit controls.
-    if (!_LSCFD.stir) _LSCFD.stir = {};
-    _LSCFD.stir.mode    = 'camera'; // 'camera' | 'wand'
-    _LSCFD.stir.active  = false;
-    _LSCFD.stir.btn     = 0;  // 0=push, 2=pull
-    _LSCFD.stir.wp      = null; // world position of wand tip
-
-    // Wand sphere mesh (visual indicator)
-    if (_LSCFD.stir.mesh && typeof scene !== 'undefined') scene.remove(_LSCFD.stir.mesh);
-    if (typeof THREE !== 'undefined' && typeof scene !== 'undefined') {
-        _LSCFD.stir.mesh = new THREE.Mesh(
-            new THREE.SphereGeometry(scR * 0.04, 10, 8),
-            new THREE.MeshBasicMaterial({ color: 0x39ff7a, transparent: true, opacity: 0.55, wireframe: true })
+        // Container wireframe
+        if (_LSCFD._sphBox) scene.remove(_LSCFD._sphBox);
+        _LSCFD._sphBox = new THREE.LineSegments(
+            new THREE.EdgesGeometry(new THREE.BoxGeometry(W*_cSPH.SCALE, H*_cSPH.SCALE, D*_cSPH.SCALE)),
+            new THREE.LineBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.18})
         );
-        _LSCFD.stir.mesh.visible = false;
-        scene.add(_LSCFD.stir.mesh);
+        _LSCFD._sphBox.position.set(0, H*_cSPH.SCALE/2 - 22, 0);
+        scene.add(_LSCFD._sphBox);
+        _LSCFD.threeGeo.userData = {scR:W*_cSPH.SCALE*0.5, cx:W/2, cy:H/2, cz:D/2};
     }
 
-    // Wand button in mode bar
-    var _mb2 = document.getElementById('lscfd-mode-bar');
-    if (_mb2 && !document.getElementById('lscfd-wand-btn')) {
-        var _wb = document.createElement('button');
-        _wb.id = 'lscfd-wand-btn';
-        _wb.textContent = '🪄 WAND OFF';
-        _wb.title = 'Toggle wand/stir mode — touch to disturb particles';
-        _wb.style.cssText = 'background:rgba(57,255,122,.08);border:1px solid rgba(57,255,122,.3);color:rgba(57,255,122,.8);font-family:inherit;font-size:9px;padding:3px 8px;border-radius:4px;cursor:pointer;letter-spacing:.5px';
-        _wb.onclick = function() {
-            _LSCFD.stir.mode = _LSCFD.stir.mode === 'camera' ? 'wand' : 'camera';
-            _wb.textContent = _LSCFD.stir.mode === 'wand' ? '🪄 WAND ON' : '🪄 WAND OFF';
-            _wb.style.background = _LSCFD.stir.mode === 'wand' ? 'rgba(57,255,122,.22)' : 'rgba(57,255,122,.08)';
-            if (_LSCFD.stir.mode === 'camera' && _LSCFD.stir.mesh) { _LSCFD.stir.mesh.visible = false; _LSCFD.stir.wp = null; }
-        };
-        _mb2.appendChild(_wb);
-    }
-
-    // Raycaster for wand position
-    if (!_LSCFD.stir.ray && typeof THREE !== 'undefined') {
-        _LSCFD.stir.ray = new THREE.Raycaster();
-        _LSCFD.stir.mv  = new THREE.Vector2();
-        _LSCFD.stir.plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
-    }
-
-    function _lscfdWandUpdate(clientX, clientY) {
-        if (!_LSCFD.stir.ray || !_LSCFD.stir.active) return;
-        _LSCFD.stir.mv.x = (clientX / innerWidth) * 2 - 1;
-        _LSCFD.stir.mv.y = -(clientY / innerHeight) * 2 + 1;
-        _LSCFD.stir.ray.setFromCamera(_LSCFD.stir.mv, camera);
-        var pt = new THREE.Vector3();
-        _LSCFD.stir.ray.ray.intersectPlane(_LSCFD.stir.plane, pt);
-        if (pt) {
-            _LSCFD.stir.wp = pt;
-            if (_LSCFD.stir.mesh) {
-                _LSCFD.stir.mesh.position.copy(pt);
-                _LSCFD.stir.mesh.visible = true;
-                _LSCFD.stir.mesh.material.color.setHex(_LSCFD.stir.btn === 2 ? 0xff00c8 : 0x39ff7a);
-            }
+    // ── SPH step function (called from _cfdTick every frame) ──────────────
+    var _avgRho = 0;
+    window._cfdSPHStep = function() {
+        var pts=_cSPH.pts, n=pts.length;
+        if(!n) return;
+        if(_cSPH.h !== _cSPH.hCached) { _cfdKernels(_cSPH.h); }
+        var h2=_cSPH.h, dt=_cSPH.ts;
+        var g=_cSPH.grav*0.25;
+        // Read live gravity from CFD master environment
+        if(window._cfdMasterGrav !== undefined) _cSPH.grav = window._cfdMasterGrav;
+        // Stir wand force position
+        var ms = null;
+        if(_LSCFD.stir && _LSCFD.stir.active && _LSCFD.stir.wp) {
+            ms = {x:_LSCFD.stir.wp.x/_cSPH.SCALE, y:(_LSCFD.stir.wp.y+(H*_cSPH.SCALE/2-22))/_cSPH.SCALE, z:_LSCFD.stir.wp.z/_cSPH.SCALE};
         }
-    }
-    _LSCFD.stir._update = _lscfdWandUpdate;
-
-    // Pointer events (wand overrides orbit when active)
-    var _lscfdCanvas = typeof renderer !== 'undefined' ? renderer.domElement : null;
-    if (_lscfdCanvas && !_lscfdCanvas._wandWired) {
-        _lscfdCanvas._wandWired = true;
-        _lscfdCanvas.addEventListener('pointerdown', function(e) {
-            if (_LSCFD.stir.mode !== 'wand') return;
-            _LSCFD.stir.active = true;
-            _LSCFD.stir.btn = e.button === 2 ? 2 : 0;
-            _lscfdWandUpdate(e.clientX, e.clientY);
-            e.stopPropagation();
-        }, {capture:true});
-        _lscfdCanvas.addEventListener('pointermove', function(e) {
-            if (_LSCFD.stir.mode !== 'wand' || !_LSCFD.stir.active) return;
-            _lscfdWandUpdate(e.clientX, e.clientY);
-            e.stopPropagation();
-        }, {capture:true});
-        _lscfdCanvas.addEventListener('pointerup', function(e) {
-            if (_LSCFD.stir.mode !== 'wand') return;
-            _LSCFD.stir.active = false;
-            _LSCFD.stir.wp = null;
-            if (_LSCFD.stir.mesh) _LSCFD.stir.mesh.visible = false;
-            e.stopPropagation();
-        }, {capture:true});
-        _lscfdCanvas.addEventListener('contextmenu', function(e) {
-            if (_LSCFD.stir.mode === 'wand') e.preventDefault();
-        });
-    }
-    // ── END Wand tool ─────────────────────────────────────────────────────────
-
-    // ── CFD Scene Presets (ported from ArcLakeFluidSim.html, SebLague SPH) ──
-    // Reshapes particle initial positions to mimic classic CFD scenarios.
-    // Source: ArcLakeFluidSim.html / SebLague/Fluid-Sim (MIT License)
-    // Adapted for LSCFD by Justin / DART-Skyboard · Radical Deepscale LLC
-    window._lscfdSetScene = function(name) {
-        if (!_LSCFD.pts || !_LSCFD.pts.length) return;
-        var n = _LSCFD.pts.length;
-        var sr = _LSCFD.scR || 40;
-        var gd = {x: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cx||0 : 0,
-                  y: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cy||0 : 0,
-                  z: _LSCFD.threeGeo ? _LSCFD.threeGeo.userData.cz||0 : 0};
-
-        if (name === 'dam') {
-            // Left-third block with rightward velocity
-            var side = Math.ceil(Math.cbrt(n));
-            var sp = sr * 0.55 / side;
-            var x0 = gd.x - sr*0.45, y0 = gd.y - sr*0.4, z0 = gd.z - sr*0.4;
-            var k=0;
-            for(var d=0;d<side&&k<n;d++)for(var r=0;r<side&&k<n;r++)for(var cc=0;cc<side&&k<n;cc++,k++){
-                var p=_LSCFD.pts[k];
-                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp+(Math.random()-.5);p.z=z0+d*sp+(Math.random()-.5);
-                p.vx=8;p.vy=0;p.vz=0;
-            }
-        } else if (name === 'wave') {
-            // Grid with exponential velocity gradient from left
-            var side=Math.ceil(Math.cbrt(n)),sp=sr*1.6/side;
-            var x0=gd.x-sr*.8,y0=gd.y-sr*.4,z0=gd.z-sr*.8;
-            var k=0;
-            for(var d=0;d<side&&k<n;d++)for(var r=0;r<side&&k<n;r++)for(var cc=0;cc<side&&k<n;cc++,k++){
-                var p=_LSCFD.pts[k];
-                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp*(Math.random()*.4+.1);p.z=z0+d*sp+(Math.random()-.5);
-                p.vx=Math.exp(-((p.x-gd.x+sr*.8)/(sr*1.4))*4)*14;p.vy=0;p.vz=0;
-            }
-        } else if (name === 'drop') {
-            // Pool + falling drop from above
-            var poolN=Math.floor(n*.72),dropN=n-poolN;
-            var side=Math.ceil(Math.cbrt(poolN)),sp=sr*1.7/side;
-            var x0=gd.x-sr*.85,y0=gd.y-sr*.5,z0=gd.z-sr*.85,k=0;
-            for(var d=0;d<side&&k<poolN;d++)for(var r=0;r<side&&k<poolN;r++)for(var cc=0;cc<side&&k<poolN;cc++,k++){
-                var p=_LSCFD.pts[k];
-                p.x=x0+cc*sp+(Math.random()-.5);p.y=y0+r*sp*(Math.random()*.25+.02);p.z=z0+d*sp+(Math.random()-.5);
-                p.vx=0;p.vy=0;p.vz=0;
-            }
-            var ds=Math.ceil(Math.cbrt(dropN)),dsp=sr*.6/ds;
-            var dx0=gd.x-sr*.3,dy0=gd.y+sr*.3,dz0=gd.z-sr*.3;
-            for(var d=0;d<ds&&k<n;d++)for(var r=0;r<ds&&k<n;r++)for(var cc=0;cc<ds&&k<n;cc++,k++){
-                var p=_LSCFD.pts[k];
-                p.x=dx0+cc*dsp;p.y=dy0+r*dsp;p.z=dz0+d*dsp;p.vx=0;p.vy=-12;p.vz=0;
-            }
-        } else if (name === 'orbital') {
-            // Spherical shell orbiting center — Keplerian velocity approximation
-            for(var i=0;i<n;i++){
-                var p=_LSCFD.pts[i];
-                var theta=Math.random()*2*Math.PI,phi=Math.acos(2*Math.random()-1);
-                var r=sr*(0.3+Math.random()*0.6);
-                p.x=gd.x+r*Math.sin(phi)*Math.cos(theta);
-                p.y=gd.y+r*Math.sin(phi)*Math.sin(theta)*0.25;
-                p.z=gd.z+r*Math.cos(phi);
-                var orbV=Math.sqrt(Math.max(0,sr*0.08/Math.max(.01,r)*800));
-                var nx=-Math.sin(theta),nz=Math.cos(theta);
-                p.vx=nx*orbV*(0.8+Math.random()*.4);p.vy=(Math.random()-.5)*orbV*.2;p.vz=nz*orbV*(0.8+Math.random()*.4);
-            }
+        // ① Predict
+        for(var i=0;i<n;i++){
+            var p=pts[i]; p.vy-=g*dt;
+            if(ms){var dx=ms.x-p.x,dy=ms.y-p.y,dz=ms.z-p.z,d2=dx*dx+dy*dy+dz*dz,mr=h2*4.2;
+                if(d2<mr*mr&&d2>0.5){var dist=Math.sqrt(d2),str=_cSPH.mf*(1-dist/mr)*dt;var sgn=(_LSCFD.stir.btn===2)?-1:1;p.vx+=sgn*(dx/dist)*str;p.vy+=sgn*(dy/dist)*str;p.vz+=sgn*(dz/dist)*str;}}
+            p.px=p.x+p.vx*dt*0.5; p.py=p.y+p.vy*dt*0.5; p.pz=p.z+p.vz*dt*0.5;
         }
-        // Push new positions to GPU buffer
+        // ② Hash
+        _cBuildGrid();
+        // ③ Density
+        var sumR=0;
+        for(var i=0;i<n;i++){
+            var p=pts[i]; var dens=sp2(0,h2)+sp3(0,h2),nDens=sp3(0,h2);
+            _cNeighbors(p.px,p.py,p.pz);
+            for(var k=0;k<_cnbc;k++){var pj=pts[_cnb[k]];var dx=p.px-pj.px,dy=p.py-pj.py,dz=p.pz-pj.pz;var d2=dx*dx+dy*dy+dz*dz;if(d2>=h2*h2)continue;var dist=Math.sqrt(d2);dens+=sp2(dist,h2);nDens+=sp3(dist,h2);}
+            p.dens=dens;p.nDens=nDens;p.press=(dens-_cSPH.rho)*_cSPH.pm;p.nPress=nDens*_cSPH.npm;sumR+=dens;
+        }
+        _avgRho=n?(sumR/n).toFixed(1):0;
+        // ④ Pressure
+        for(var i=0;i<n;i++){
+            var p=pts[i]; var fx=0,fy=0,fz=0;
+            _cNeighbors(p.px,p.py,p.pz);
+            for(var k=0;k<_cnbc;k++){var j=_cnb[k];if(j===i)continue;var pj=pts[j];var dx=p.px-pj.px,dy=p.py-pj.py,dz=p.pz-pj.pz;var d2=dx*dx+dy*dy+dz*dz;if(d2>=h2*h2||d2<1e-6)continue;var dist=Math.sqrt(d2),invD=1/dist;var nx2=dx*invD,ny2=dy*invD,nz2=dz*invD;var sP=(p.press+pj.press)*0.5,snP=(p.nPress+pj.nPress)*0.5,rhoj=Math.max(0.001,pj.dens);var fmag=sP*dsp2(dist,h2)*0.0016/rhoj+snP*dsp3(dist,h2)*0.0006/rhoj;fx+=nx2*fmag;fy+=ny2*fmag;fz+=nz2*fmag;}
+            p.vx+=fx*dt;p.vy+=fy*dt;p.vz+=fz*dt;
+            if(p.nbc<8){p.vx*=Math.pow(0.92,dt);p.vy*=Math.pow(0.92,dt);p.vz*=Math.pow(0.92,dt);}
+        }
+        // ⑤ Viscosity
+        for(var i=0;i<n;i++){
+            var p=pts[i]; var dvx=0,dvy=0,dvz=0;
+            _cNeighbors(p.px,p.py,p.pz);
+            for(var k=0;k<_cnbc;k++){var j=_cnb[k];if(j===i)continue;var pj=pts[j];var dx=p.px-pj.px,dy=p.py-pj.py,dz=p.pz-pj.pz;var d2=dx*dx+dy*dy+dz*dz;if(d2>=h2*h2)continue;var w=p6(d2,h2)*_cSPH.visc*0.00028;dvx+=(pj.vx-p.vx)*w;dvy+=(pj.vy-p.vy)*w;dvz+=(pj.vz-p.vz)*w;}
+            p.vx+=dvx*dt;p.vy+=dvy*dt;p.vz+=dvz*dt;
+        }
+        // ⑥ Integrate + bounds (AABB — Lague ResolveCollisions)
+        var damp=_cSPH.damp, VMAX=30, W2=_cSPH.W, H2=_cSPH.H, D2=_cSPH.D;
+        for(var i=0;i<n;i++){
+            var p=pts[i]; var spd=Math.sqrt(p.vx*p.vx+p.vy*p.vy+p.vz*p.vz);
+            if(spd>VMAX){var inv2=VMAX/spd;p.vx*=inv2;p.vy*=inv2;p.vz*=inv2;}
+            p.spd=spd;p.x+=p.vx*dt;p.y+=p.vy*dt;p.z+=p.vz*dt;
+            if(p.x<0){p.x=0;p.vx=Math.abs(p.vx)*damp;}if(p.x>W2){p.x=W2;p.vx=-Math.abs(p.vx)*damp;}
+            if(p.y<0){p.y=0;p.vy=Math.abs(p.vy)*damp;}if(p.y>H2){p.y=H2;p.vy=-Math.abs(p.vy)*damp;}
+            if(p.z<0){p.z=0;p.vz=Math.abs(p.vz)*damp;}if(p.z>D2){p.z=D2;p.vz=-Math.abs(p.vz)*damp;}
+        }
+        // ⑦ Upload GPU buffers
         if(_LSCFD.threeGeo){
             var pos=_LSCFD.threeGeo.attributes.position.array;
-            for(var i=0;i<Math.min(n,pos.length/3);i++){
-                pos[i*3]=_LSCFD.pts[i].x;pos[i*3+1]=_LSCFD.pts[i].y;pos[i*3+2]=_LSCFD.pts[i].z;
-            }
+            var sc=_cSPH.SCALE, offY=H2*sc/2-22;
+            for(var i=0;i<n;i++){var p=pts[i];pos[i*3]=p.x*sc-W2*sc/2;pos[i*3+1]=p.y*sc-offY;pos[i*3+2]=p.z*sc-D2*sc/2;}
             _LSCFD.threeGeo.attributes.position.needsUpdate=true;
         }
-        // Update scene preset button states
-        document.querySelectorAll('.lscfd-scene-btn').forEach(function(b){ b.classList.toggle('on', b.dataset.scene===name); });
+        // Mole display
+        if(typeof _lscfdUpdateMoleDisplay==='function') _lscfdUpdateMoleDisplay();
     };
 
-    // Inject scene preset buttons into mode bar
-    var _scenePresets = [{k:'dam',l:'DAM'},{k:'wave',l:'WAVE'},{k:'drop',l:'DROP'},{k:'orbital',l:'ORBITAL'}];
-    var _mbScene = document.getElementById('lscfd-mode-bar');
-    if (_mbScene && !document.getElementById('lscfd-scene-dam')) {
-        var _sep = document.createElement('span');
-        _sep.style.cssText='color:rgba(0,229,255,.25);margin:0 4px;font-size:10px';
-        _sep.textContent='|';
-        _mbScene.appendChild(_sep);
-        var _sl = document.createElement('span');
-        _sl.style.cssText='font-size:9px;color:rgba(0,229,255,.4);letter-spacing:1px;margin-right:4px';
-        _sl.textContent='SCENE:';
-        _mbScene.appendChild(_sl);
-        _scenePresets.forEach(function(pr){
-            var _sb=document.createElement('button');
-            _sb.id='lscfd-scene-'+pr.k;
-            _sb.dataset.scene=pr.k;
-            _sb.className='lscfd-scene-btn';
-            _sb.textContent=pr.l;
-            _sb.title='Set particle arrangement to '+pr.l+' configuration';
-            _sb.style.cssText='background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:rgba(0,229,255,.65);font-family:inherit;font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;letter-spacing:.5px;margin-right:2px';
-            _sb.onclick=function(){ window._lscfdSetScene(pr.k); };
-            _sb.addEventListener('mouseover',function(){ this.style.background='rgba(0,229,255,.14)'; });
-            _sb.addEventListener('mouseout',function(){ this.style.background=this.classList.contains('on')?'rgba(0,229,255,.18)':'rgba(0,229,255,.06)'; });
-            _mbScene.appendChild(_sb);
+    // ── Wire _cfdTick ─────────────────────────────────────────────────────
+    window._cfdTick = window._cfdSPHStep;
+
+    // ── Scene preset reshaper (wired to mode bar buttons) ─────────────────
+    window._lscfdSetScene = function(name) {
+        if(!_cSPH.pts.length) return;
+        var n2=_cSPH.pts.length, W2=_cSPH.W, H2=_cSPH.H, D2=_cSPH.D, h3=_cSPH.h;
+        var atomIdx2=0;
+        function _mkColPt(x,y,z,vx,vy,vz){
+            var ai=atomIdx2%_cfdAtoms.length; atomIdx2++;
+            var col2=_cfdAtoms[ai].color;
+            return _cMkPt(x,y,z,vx,vy,vz,col2.r,col2.g,col2.b,_cfdAtoms[ai].tabId);
+        }
+        if(name==='dam'){
+            var side2=Math.ceil(Math.cbrt(n2)), sp2=Math.min(h3*0.6,(W2*0.38)/side2,(H2*0.88)/side2,(D2*0.9)/side2);
+            var x02=W2*0.04,y02=H2*0.06,z02=(D2-side2*sp2)/2,k2=0;
+            for(var d2=0;d2<side2&&k2<n2;d2++)for(var r2=0;r2<side2&&k2<n2;r2++)for(var c2=0;c2<side2&&k2<n2;c2++,k2++)_cSPH.pts[k2]=_mkColPt(x02+c2*sp2+(Math.random()-.5),y02+r2*sp2+(Math.random()-.5),z02+d2*sp2+(Math.random()-.5),8,0,0);
+        } else if(name==='wave'){
+            var side2=Math.ceil(Math.cbrt(n2)),sp2=h3*0.62,k2=0;
+            for(var d2=0;d2<side2&&k2<n2;d2++)for(var r2=0;r2<side2&&k2<n2;r2++)for(var c2=0;c2<side2&&k2<n2;c2++,k2++){
+                var x2=c2*sp2+(W2-side2*sp2)/2,y2=r2*sp2*0.5+H2*0.06,z2=d2*sp2+(D2-side2*sp2)/2;
+                _cSPH.pts[k2]=_mkColPt(x2+(Math.random()-.5),y2,z2+(Math.random()-.5),Math.exp(-(x2/W2)*5.5)*14,0,0);}
+        } else if(name==='drop'){
+            var pN=Math.floor(n2*.72),dN=n2-pN,side2=Math.ceil(Math.cbrt(pN)),sp2=h3*0.62,k2=0;
+            for(var d2=0;d2<side2&&k2<pN;d2++)for(var r2=0;r2<side2&&k2<pN;r2++)for(var c2=0;c2<side2&&k2<pN;c2++,k2++)_cSPH.pts[k2]=_mkColPt(c2*sp2+(W2-side2*sp2)/2+(Math.random()-.5),r2*sp2*.3+H2*0.06,d2*sp2+(D2-side2*sp2)/2+(Math.random()-.5),0,0,0);
+            var ds=Math.ceil(Math.cbrt(dN)),dsp2=h3*0.62,dx0=(W2-ds*dsp2)/2,dz0=(D2-ds*dsp2)/2;
+            for(var d2=0;d2<ds&&k2<n2;d2++)for(var r2=0;r2<ds&&k2<n2;r2++)for(var c2=0;c2<ds&&k2<n2;c2++,k2++)_cSPH.pts[k2]=_mkColPt(dx0+c2*dsp2,H2*0.54+r2*dsp2,dz0+d2*dsp2,0,-10,0);
+        } else if(name==='orbital'){
+            for(var i=0;i<n2;i++){var theta=Math.random()*2*Math.PI,phi=Math.acos(2*Math.random()-1);var r2=W2*(0.15+Math.random()*0.25);_cSPH.pts[i]=_mkColPt(W2/2+r2*Math.sin(phi)*Math.cos(theta),H2/2+r2*Math.sin(phi)*Math.sin(theta)*0.3,D2/2+r2*Math.cos(phi));var orbV=Math.sqrt(Math.max(0,40/Math.max(1,r2)*1200));var nx2=-Math.sin(theta),nz2=Math.cos(theta);_cSPH.pts[i].vx=nx2*orbV;_cSPH.pts[i].vz=nz2*orbV;}
+        }
+        document.querySelectorAll('.lscfd-scene-btn').forEach(function(b){b.classList.toggle('on',b.dataset.scene===name);});
+    };
+
+    // ── Wand stir mesh ────────────────────────────────────────────────────
+    if (!_LSCFD.stir) _LSCFD.stir = {};
+    _LSCFD.stir.mode='camera'; _LSCFD.stir.active=false; _LSCFD.stir.btn=0; _LSCFD.stir.wp=null;
+    if(_LSCFD.stir.mesh&&typeof scene!=='undefined')scene.remove(_LSCFD.stir.mesh);
+    if(typeof THREE!=='undefined'&&typeof scene!=='undefined'){
+        _LSCFD.stir.mesh=new THREE.Mesh(new THREE.SphereGeometry(22,10,8),new THREE.MeshBasicMaterial({color:0x39ff7a,transparent:true,opacity:0.45,wireframe:true}));
+        _LSCFD.stir.mesh.visible=false; scene.add(_LSCFD.stir.mesh);
+    }
+
+    // Scene preset buttons in mode bar
+    var _mb=document.getElementById('lscfd-mode-bar');
+    if(_mb&&!document.getElementById('lscfd-scene-dam')){
+        var presets=[{k:'dam',l:'DAM'},{k:'wave',l:'WAVE'},{k:'drop',l:'DROP'},{k:'orbital',l:'ORBITAL'}];
+        var sep=document.createElement('span');sep.style.cssText='color:rgba(0,229,255,.25);margin:0 4px;font-size:10px';sep.textContent='|';_mb.appendChild(sep);
+        var sl=document.createElement('span');sl.style.cssText='font-size:9px;color:rgba(0,229,255,.4);letter-spacing:1px;margin-right:4px';sl.textContent='SCENE:';_mb.appendChild(sl);
+        presets.forEach(function(pr){
+            var sb=document.createElement('button');sb.id='lscfd-scene-'+pr.k;sb.dataset.scene=pr.k;sb.className='lscfd-scene-btn';sb.textContent=pr.l;
+            sb.style.cssText='background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.22);color:rgba(0,229,255,.65);font-family:inherit;font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;letter-spacing:.5px;margin-right:2px';
+            sb.onclick=function(){window._lscfdSetScene(pr.k);};_mb.appendChild(sb);
         });
     }
 
-    // Mode bar
-    var mb = document.getElementById('lscfd-mode-bar');
-    if (mb) {
-        mb.textContent = 'LARGE SCALE CFD -- '+_LSCFD.render.toUpperCase()+
-                         ' -- '+count.toLocaleString()+' particles -- orbit controls active';
-        mb.classList.add('active');
+    // Wand toggle button
+    if(_mb&&!document.getElementById('lscfd-wand-btn')){
+        var wb=document.createElement('button');wb.id='lscfd-wand-btn';wb.textContent='🪄 WAND OFF';
+        wb.style.cssText='background:rgba(57,255,122,.08);border:1px solid rgba(57,255,122,.3);color:rgba(57,255,122,.8);font-family:inherit;font-size:9px;padding:3px 8px;border-radius:4px;cursor:pointer;letter-spacing:.5px';
+        wb.onclick=function(){
+            _LSCFD.stir.mode=_LSCFD.stir.mode==='camera'?'wand':'camera';
+            wb.textContent=_LSCFD.stir.mode==='wand'?'🪄 WAND ON':'🪄 WAND OFF';
+            wb.style.background=_LSCFD.stir.mode==='wand'?'rgba(57,255,122,.22)':'rgba(57,255,122,.08)';
+            if(_LSCFD.stir.mode==='camera'&&_LSCFD.stir.mesh){_LSCFD.stir.mesh.visible=false;_LSCFD.stir.wp=null;}
+        };
+        _mb.appendChild(wb);
     }
 
-    // Focus camera on particle cloud
-    if (typeof camera !== 'undefined' && typeof controls !== 'undefined') {
-        controls.target.set(cx, cy, cz);
-        var camDist = scR * 2.2;
-        camera.position.set(cx + camDist*0.6, cy + camDist*0.4, cz + camDist);
-        controls.update();
+    // Pointer events for wand
+    var _cfdCanvas=typeof renderer!=='undefined'?renderer.domElement:null;
+    if(_cfdCanvas&&!_cfdCanvas._cfdWandWired){
+        _cfdCanvas._cfdWandWired=true;
+        var _cfdRay=new THREE.Raycaster();var _cfdMv=new THREE.Vector2();var _cfdPlane=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+        function _cfdWandUpdate(cx,cy){if(!_LSCFD.stir.active)return;_cfdMv.x=(cx/innerWidth)*2-1;_cfdMv.y=-(cy/innerHeight)*2+1;_cfdRay.setFromCamera(_cfdMv,camera);var pt2=new THREE.Vector3();_cfdRay.ray.intersectPlane(_cfdPlane,pt2);if(pt2){_LSCFD.stir.wp=pt2;if(_LSCFD.stir.mesh){_LSCFD.stir.mesh.position.copy(pt2);_LSCFD.stir.mesh.visible=true;_LSCFD.stir.mesh.material.color.setHex(_LSCFD.stir.btn===2?0xff00c8:0x39ff7a);}}}
+        _cfdCanvas.addEventListener('pointerdown',function(e){if(_LSCFD.stir.mode!=='wand')return;_LSCFD.stir.active=true;_LSCFD.stir.btn=e.button===2?2:0;_cfdWandUpdate(e.clientX,e.clientY);e.stopPropagation();},{capture:true});
+        _cfdCanvas.addEventListener('pointermove',function(e){if(_LSCFD.stir.mode!=='wand'||!_LSCFD.stir.active)return;_cfdWandUpdate(e.clientX,e.clientY);e.stopPropagation();},{capture:true});
+        _cfdCanvas.addEventListener('pointerup',function(e){if(_LSCFD.stir.mode!=='wand')return;_LSCFD.stir.active=false;_LSCFD.stir.wp=null;if(_LSCFD.stir.mesh)_LSCFD.stir.mesh.visible=false;e.stopPropagation();},{capture:true});
+        _cfdCanvas.addEventListener('contextmenu',function(e){if(_LSCFD.stir.mode==='wand')e.preventDefault();});
     }
 
-    // Start loop
-    if (_LSCFD.raf) cancelAnimationFrame(_LSCFD.raf);
-    _LSCFD.frameN = 0;
-    // NOTE: We no longer run our own RAF loop.
-    // Instead we hook into the MAIN animate() loop via window._cfdTick
-    // so orbit controls, renderer.render() all happen in one unified loop.
+    // Mole display
+    var _moleEl=document.getElementById('lscfd-mole-display');
+    if(_moleEl){_moleEl.style.display='block';if(typeof _lscfdUpdateMoleDisplay==='function')_lscfdUpdateMoleDisplay();}
+
+    // Arc lines (compat)
+    if(typeof _lscfdRebuildArcs==='function') try{_lscfdRebuildArcs();}catch(e){}
+
+    // Mode bar + final flags
+    var _mbNode=document.getElementById('lscfd-mode-bar');
+    if(_mbNode){_mbNode.textContent='';_mbNode.appendChild(Object.assign(document.createElement('span'),{textContent:'◈ CFD — SPH OCEAN 3D ACTIVE'}));}
+
     window._cfdActive = true;
+    window._LSCFD = _LSCFD;
 }
-
 /* ── ARC MEASURE LINES ───────────────────────────────────── */
 function _lscfdRebuildArcs() {
     if (typeof scene === 'undefined') return;
@@ -15673,6 +15650,8 @@ window.CNE = {
 /* Hook openLSCFD to also call CNE.open */
 var _origOpen = window.openLSCFD;
 window.openLSCFD = function() {
+    // Launch ArcCFD — full ArcLakeFluidSim SPH replacing legacy LSCFD overlay
+    if (window.ArcCFD) { window.ArcCFD.open(); return; }
     if (_origOpen) _origOpen();
     window.CNE.open();
 };
