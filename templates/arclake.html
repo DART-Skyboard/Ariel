@@ -6336,35 +6336,8 @@ function animate() {
     
     // Order: Audio processing, then physics application, then updates, then render
     processMicAudio();
-    // ── Idle turntable: animate electron shells before sim starts ─────────────
-    if (!isSimulating) {
-        const _idleNow = performance.now() * 0.001;
-        atomGroups.forEach(ag => {
-            if (!ag._idleGroup) return;
-            // Slow Y-axis rotation — "slow scarecrow turntable"
-            ag._idleGroup.rotation.y += 0.007;
-            ag._idleGroup.rotation.x = Math.sin(_idleNow * 0.22 + ag.index * 0.5) * 0.14;
-            // Orbit electrons inside the idle group
-            ag._idleGroup.children.forEach(child => {
-                if (child.userData && child.userData.type === '_idleElectron') {
-                    const speed = 0.55 + child.userData.shellIdx * 0.18;
-                    const angle = child.userData.angle0 + _idleNow * speed;
-                    const rx    = child.userData.ringTiltX;
-                    const r     = child.userData.shellR;
-                    child.position.set(
-                        r * Math.cos(angle),
-                        r * Math.sin(angle) * Math.sin(rx) * 0.55,
-                        r * Math.sin(angle) * Math.cos(rx) * 0.9
-                    );
-                    // Keep physics proxy in sync (world space)
-                    if (child.userData._physProxy) {
-                        const wp = child.position.clone().add(ag._idleGroup.position);
-                        child.userData._physProxy.position.copy(wp);
-                    }
-                }
-            });
-        });
-    }
+    // ── Idle state: quantum cloud visible, no animation — hit Play to start physics ─
+    // (Idle turntable removed: atom loads at rest, physics begins on Start)
 
     applyNewPhysics();
     
@@ -9489,35 +9462,71 @@ function applyNewPhysics() {
             if(group._syncOrbitalCloud) group._syncOrbitalCloud();
         }
         
-        // Electron Deviation (Propagate from new atom center)
+        // ── Neutron → Proton → Electron radial wave propagation ─────────────────
+        // Physics origin: neutron center of volume (group.neutronCenterOfVolume)
+        // Forces applied at neutron level propagate outward through proton ring
+        // to electron shells — each shell receives the attenuated waveform result.
+        //
+        // LEATR physics model: neutron is the incoming/outgoing node.
+        // Protons relay the net force outward (0.85× attenuated).
+        // Electrons receive the terminal result proportional to shell radius.
+        // The quantum orbital cloud follows electron proxy positions.
+        //
+        // If math/physics (mic, arc edge, node editor) targets an electron shell,
+        // the force is routed DOWN: electron → proton relay → neutron absorption.
+        // When forces act on the neutron directly (gravity, collision), they
+        // propagate UP: neutron → proton → electrons (waveform spreading).
+
+        const _neutronOrigin = group.neutronCenterOfVolume.clone();
         let totalShells = group.electronMeshes.reduce((max, e) => Math.max(max, e.userData.orbitIndex), -1) + 1;
-        const t = performance.now() * 0.0001; 
+        const t = performance.now() * 0.0001;
 
-        group.electronMeshes.forEach(e => {
-            const shellIndex = e.userData.orbitIndex;
-            const distanceFactor = totalShells > 0 ? (totalShells - shellIndex) / totalShells : 1.0; 
-            p_mod.shellInfluence = distanceFactor; 
-            
-            const deviationVector = getArcEdgeDeviation(t, p_mod); 
-            
-            // Electron stable orbit is relative to the atom's center position (group.center)
-            // Guard: initialOffset may be undefined if electron was loaded from a tab switch
-            if (!e.userData.initialOffset) {
-                e.userData.initialOffset = e.position.clone().sub(group.center);
+        // ── Step 1: Neutron deviation — full physics at origin ────────────────
+        p_mod.shellInfluence = 1.0; // neutron receives 100% of force
+        const _neutronDev = getArcEdgeDeviation(t, p_mod);
+
+        // ── Step 2: Proton relay — 85% of neutron deviation, radially outward ─
+        const _protonRelayFactor = 0.85;
+        const _protonDev = _neutronDev.clone().multiplyScalar(_protonRelayFactor);
+        group.nucleusMeshes.forEach(n => {
+            if (n.userData && n.userData.type === 'proton') {
+                if (!n.userData.initialOffset) n.userData.initialOffset = n.position.clone().sub(group.center);
+                const _protonTarget = group.center.clone().add(n.userData.initialOffset).add(_protonDev);
+                n.position.lerp(_protonTarget, 0.12);
             }
-            const stableOrbitOffset = e.userData.initialOffset.clone();
-            const targetPosition = group.center.clone().add(stableOrbitOffset).add(deviationVector.multiplyScalar(1));
-
-            e.position.lerp(targetPosition, 0.1); 
-            
-             if (isFloorActive && floorPlaneMesh) {
-                 const electronRadius = 0.1; 
-                 const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2);
-                 if (e.position.y - electronRadius < floorY) { 
-                     e.position.y = floorY + electronRadius; 
-                 }
-             }
         });
+
+        // ── Step 3: Electron shells — attenuated by shell distance from neutron ─
+        // Outer shells receive less force (wave attenuation with distance)
+        // Shell 0 (K) = closest = highest amplitude; outer shells diminish
+        group.electronMeshes.forEach(e => {
+            const shellIndex = e.userData.orbitIndex || 0;
+            // Attenuation: shells farther from neutron receive less waveform amplitude
+            // Models real electron response: inner shells couple more strongly to nucleus
+            const shellAttenuation = totalShells > 1
+                ? Math.max(0.1, 1.0 - (shellIndex / totalShells) * 0.7)
+                : 1.0;
+            p_mod.shellInfluence = shellAttenuation;
+            const _shellDev = getArcEdgeDeviation(t, p_mod).multiplyScalar(shellAttenuation);
+
+            if (!e.userData.initialOffset) e.userData.initialOffset = e.position.clone().sub(group.center);
+            const stableOrbitOffset = e.userData.initialOffset.clone();
+            const targetPosition = group.center.clone().add(stableOrbitOffset).add(_shellDev);
+
+            // Lerp rate also attenuates outward — outer electrons respond slower
+            const lerpRate = Math.max(0.04, 0.12 - shellIndex * 0.01);
+            e.position.lerp(targetPosition, lerpRate);
+
+            if (isFloorActive && floorPlaneMesh) {
+                const floorY = FLOOR_Y_POS + (FLOOR_THICKNESS / 2);
+                if (e.position.y - 0.05 < floorY) e.position.y = floorY + 0.05;
+            }
+        });
+
+        // ── Step 4: Sync quantum orbital cloud to updated neutron origin ──────
+        if (group._orbitalCloud && group._idleGroup) {
+            group._idleGroup.position.copy(_neutronOrigin.clone().lerp(group.center, 0.5));
+        }
     });
 
     // --- 6. Apply Physics to Complex Bodies ---
@@ -10209,8 +10218,9 @@ function loadAtom(atom, index, initialPositionArray = null) {
     const _nC = (typeof window.ArcColors!=='undefined') ? window.ArcColors.getNeutronHex() : 0x7aafc4;
     const _protonMat  = new THREE.MeshPhongMaterial({color:_pC,emissive:Math.max(0,Math.floor(_pC*0.22)&0xffffff),emissiveIntensity:0.75,shininess:90});
     const _neutronMat = new THREE.MeshPhongMaterial({color:_nC,emissive:Math.max(0,Math.floor(_nC*0.22)&0xffffff),emissiveIntensity:0.55,shininess:90});
-    const _nucGeo = new THREE.SphereGeometry(0.3,14,12);
-    const _eGeo   = new THREE.SphereGeometry(0.05,5,4); // tiny physics proxy — invisible
+    // Nucleus particles same size as electron cloud points — visible only as dense cluster
+    const _nucGeo = new THREE.SphereGeometry(0.055,6,5);
+    const _eGeo   = new THREE.SphereGeometry(0.05,5,4); // physics proxy — invisible
 
     let nucleonCenterAccumulator = new THREE.Vector3();
     let neutronCenterAccumulator = new THREE.Vector3();
@@ -10259,8 +10269,9 @@ function loadAtom(atom, index, initialPositionArray = null) {
             // Color: blend fire heatmap (density) with shell color
             const v=Math.min(1,r*_NORM*Zeff*0.4);
             const fire=_heatFire(v);
-            // Blend 70% fire + 30% shell tint
-            _allCol.push(fire[0]*0.7+sc[0]*0.3, fire[1]*0.7+sc[1]*0.3, fire[2]*0.7+sc[2]*0.3);
+            // Blend 60% fire + 40% shell tint, boosted for visibility
+            const br=1.35; // brightness boost
+            _allCol.push(Math.min(1,fire[0]*0.6*br+sc[0]*0.4), Math.min(1,fire[1]*0.6*br+sc[1]*0.4), Math.min(1,fire[2]*0.6*br+sc[2]*0.4));
         }
     });
 
@@ -10268,7 +10279,7 @@ function loadAtom(atom, index, initialPositionArray = null) {
         const _ptGeo=new THREE.BufferGeometry();
         _ptGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_allPos),3));
         _ptGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_allCol),3));
-        const _ptMat=new THREE.PointsMaterial({size:0.12,vertexColors:true,transparent:true,opacity:0.82,depthWrite:false,sizeAttenuation:true});
+        const _ptMat=new THREE.PointsMaterial({size:0.22,vertexColors:true,transparent:true,opacity:0.96,depthWrite:false,sizeAttenuation:true});
         const _ptCloud=new THREE.Points(_ptGeo,_ptMat);
         _ptCloud.userData={type:'_orbitalCloud',atomId};
         _idleGroup.add(_ptCloud);
