@@ -968,10 +968,10 @@
     align-items: center;
     gap: 9px;
     padding: 8px 18px 8px 14px;
-    border: 1.5px solid rgba(71,196,241,0.35);
+    border: 1.5px solid rgba(255,255,255,0.55);
     border-radius: 999px;
-    background: rgba(255, 190, 0, 0.26);
-    color: var(--theme-disabled-color);
+    background: rgba(255,255,255,0.22);
+    color: rgba(255,255,255,0.75);
     font-family: 'Orbitron', sans-serif;
     font-size: 0.6rem;
     font-weight: 700;
@@ -996,10 +996,11 @@
   #hp-multi-toggle:hover { border-color: rgba(71,196,241,0.65); color: var(--theme-text); box-shadow: 0 0 14px rgba(71,196,241,0.18); }
   #hp-multi-toggle:hover::before { opacity: 1; }
   #hp-multi-toggle.ms-active {
-    border-color: var(--theme-primary);
-    color: var(--theme-primary);
-    background: rgba(245, 250, 255, 0.46);
-    box-shadow: 0 0 18px rgba(71,196,241,0.28), inset 0 0 8px rgba(71,196,241,0.08);
+    border-color: #47c4f1;
+    color: #47c4f1;
+    background: rgba(71,196,241,0.18);
+    box-shadow: 0 0 22px rgba(71,196,241,0.55), 0 0 8px rgba(71,196,241,0.35), inset 0 0 10px rgba(71,196,241,0.12);
+    text-shadow: 0 0 10px rgba(71,196,241,0.8);
   }
   #hp-multi-toggle.ms-active::before { opacity: 1; }
   .ms-toggle-dot {
@@ -1009,8 +1010,8 @@
     flex-shrink: 0;
   }
   #hp-multi-toggle.ms-active .ms-toggle-dot {
-    background: var(--theme-primary);
-    box-shadow: 0 0 8px var(--theme-primary-glow);
+    background: #47c4f1;
+    box-shadow: 0 0 10px #47c4f1, 0 0 20px rgba(71,196,241,0.6);
   }
 
   #hp-multi-open {
@@ -1288,6 +1289,9 @@
     .hp-group-header { padding: 12px 14px; }
   }
 
+
+  /* Instant-open mode: hide legacy Open/Clear buttons */
+  #hp-multi-open, #hp-multi-clear { display: none !important; }
 </style>
 </head>
 
@@ -2547,8 +2551,8 @@ async function changePassword() {
 }
 
 // Connect Buttons to Functions
-document.getElementById('createBtn').onclick = createAccount;
-document.getElementById('loginBtn').onclick = login;
+var _cb=document.getElementById('createBtn'); if(_cb) _cb.onclick=createAccount;
+var _lb=document.getElementById('loginBtn'); if(_lb) _lb.onclick=login;
 document.getElementById('accountSettingsBtn').addEventListener('click', () => {
   const sec = document.getElementById('accountSettingsSection');
   sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
@@ -2783,7 +2787,9 @@ function toggleMultiSelectMode(e) {
     } else {
         btn.classList.remove('ms-active');
         if (ptable) ptable.classList.remove('ms-mode-active');
+        closeAllMultiCards();
         clearMultiSelection();
+        var bd=document.getElementById('ao-multi-backdrop'); if(bd) bd.classList.remove('ms-open');
     }
     updateMultiUI();
 }
@@ -2794,13 +2800,59 @@ function toggleElementSelection(element, elDiv) {
         if (_msSelected[i].element === element) { idx = i; break; }
     }
     if (idx === -1) {
+        // ADD — instantly open 3D card
         _msSelected.push({ element: element, elDiv: elDiv });
         elDiv.classList.add('ms-selected');
+        _openInstantCard(element, elDiv);
     } else {
+        // REMOVE — destroy its card
         _msSelected.splice(idx, 1);
         elDiv.classList.remove('ms-selected');
+        _closeCardForElement(element);
     }
     updateMultiUI();
+}
+
+function _openInstantCard(element, elDiv) {
+    var layer    = document.getElementById('ao-multi-layer');
+    var backdrop = document.getElementById('ao-multi-backdrop');
+    var n        = _msCards.length;   // cards already open
+    var cardW    = 290, cardH        = 370, gap = 14;
+    var viewW    = window.innerWidth, viewH = window.innerHeight;
+    var cols     = Math.min(n + 1, Math.max(1, Math.floor((viewW - 40) / (cardW + gap))));
+    // Reflow all existing cards + new one into a centred grid
+    var total    = n + 1;
+    cols         = Math.min(total, Math.max(1, Math.floor((viewW - 40) / (cardW + gap))));
+    var gridW    = cols * cardW + (cols - 1) * gap;
+    var startX   = Math.max(10, (viewW - gridW) / 2);
+    var startY   = Math.max(60, (viewH - cardH) / 2 - 20);
+    // Reposition existing cards
+    _msCards.forEach(function(inst, i) {
+        var col = i % cols, row = Math.floor(i / cols);
+        inst.card.style.left = (startX + col * (cardW + gap)) + 'px';
+        inst.card.style.top  = (startY + row * (cardH + gap)) + 'px';
+    });
+    // Build new card at end position
+    var col = n % cols, row = Math.floor(n / cols);
+    _buildMultiCard(element, startX + col * (cardW + gap), startY + row * (cardH + gap), layer);
+    // Enable backdrop (delayed so this tap doesn't immediately close)
+    setTimeout(function() {
+        if (backdrop && _msCards.length > 0) backdrop.classList.add('ms-open');
+    }, 250);
+}
+
+function _closeCardForElement(element) {
+    for (var i = _msCards.length - 1; i >= 0; i--) {
+        if (_msCards[i].element === element || 
+            (_msCards[i].card && _msCards[i].card._element === element)) {
+            _destroyMultiCard(_msCards[i].card);
+            break;
+        }
+    }
+    if (_msCards.length === 0) {
+        var bd = document.getElementById('ao-multi-backdrop');
+        if (bd) bd.classList.remove('ms-open');
+    }
 }
 
 function clearMultiSelection() {
@@ -2903,6 +2955,7 @@ function _buildMultiCard(element, x, y, layer) {
         '</div>';
 
     layer.appendChild(card);
+    card._element = element; // tag for instant-close
 
     card.querySelector('.ao-mc-close').addEventListener('click', function(ev) {
         ev.stopPropagation();
