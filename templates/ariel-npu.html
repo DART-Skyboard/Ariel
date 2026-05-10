@@ -332,7 +332,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
     </div>
     <button id="panel-close" onclick="closePanel()">✕</button>
   </div>
-  <div id="panel-3d"><canvas id="three-canvas"></canvas></div>
+  <div id="panel-3d">
+    <canvas id="three-canvas"></canvas>
+    <canvas id="maze-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;pointer-events:none"></canvas>
+    <div id="tool-icon" style="position:absolute;top:0;right:0;width:48%;height:100%;pointer-events:none;display:none"></div>
+  </div>
   <div id="panel-scroll">
     <div class="p-formula" id="panel-formula">—</div>
     <div class="p-section">
@@ -425,8 +429,16 @@ function clearScene(){
   if(scene){scene.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material.dispose();}});scene=null;}
 }
 
-function buildScene(type,color){
+function buildScene(type,color,toolId){
   clearScene(); initRenderer(); resizeRenderer();
+  // Reset overlays
+  const mc=document.getElementById('maze-canvas');
+  const ti=document.getElementById('tool-icon');
+  mc.style.display='none';
+  mc.style.width='100%';
+  ti.style.display='none';
+  ti.innerHTML='';
+  canvas.style.display='block';
   scene = new THREE.Scene();
   const c = color||0x00e5ff;
   const mat = new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.8});
@@ -509,28 +521,85 @@ function buildScene(type,color){
     function anim(){animId=requestAnimationFrame(anim);t+=0.008;shells[0].rotation.y=t*0.3;shells[1].rotation.y=-t*0.4;shells[1].rotation.x=t*0.2;shells[2].rotation.y=t*0.6;shells[2].rotation.z=-t*0.3;renderer.render(scene,camera);}
     anim();
   } else if(type==='maze'){
-    // Maze-like grid geometry
-    const lines=[];
-    const w=20,h=20;
-    for(let i=0;i<=w;i+=2){for(let j=0;j<=h;j+=2){if(Math.random()>0.4){
-      const pts=[new THREE.Vector3((i-w/2)*0.1,(j-h/2)*0.1,0),new THREE.Vector3((i-w/2+2)*0.1,(j-h/2)*0.1,0)];
-      const g=new THREE.BufferGeometry().setFromPoints(pts);
-      scene.add(new THREE.Line(g,mat)); lines.push(g);
-    }if(Math.random()>0.4){
-      const pts=[new THREE.Vector3((i-w/2)*0.1,(j-h/2)*0.1,0),new THREE.Vector3((i-w/2)*0.1,(j-h/2+2)*0.1,0)];
-      const g=new THREE.BufferGeometry().setFromPoints(pts);
-      scene.add(new THREE.Line(g,mat)); lines.push(g);
-    }}}
-    // Path line
-    const pPts=[];
-    let x=-1,y=-1;
-    for(let i=0;i<30;i++){x+=0.1*(Math.random()>0.5?1:-1);y+=0.1*(Math.random()>0.5?1:-1);pPts.push(new THREE.Vector3(x,y,0.01));}
-    const pGeo=new THREE.BufferGeometry().setFromPoints(pPts);
-    scene.add(new THREE.Line(pGeo,new THREE.LineBasicMaterial({color:0xff6b35,transparent:true,opacity:0.9})));
-    camera.position.z=2; camera.position.x=0; camera.position.y=0;
-    let t=0;
-    function anim(){animId=requestAnimationFrame(anim);t+=0.005;camera.position.z=2+Math.sin(t)*0.3;camera.lookAt(0,0,0);renderer.render(scene,camera);}
-    anim();
+    // ── SURGICAL DFS MAZE (Lead Edge reference logic) ──
+    // Hide Three canvas, show maze canvas
+    canvas.style.display='none';
+    const mc=document.getElementById('maze-canvas');
+    mc.style.display='block';
+    const mctx=mc.getContext('2d');
+    const MW=mc.clientWidth||300, MH=mc.clientHeight||180;
+    mc.width=MW; mc.height=MH;
+    const COLS=18, ROWS=Math.round(COLS*(MH/MW));
+    const CS=MW/COLS;
+    // Build grid
+    const mgrid=[];
+    for(let gy=0;gy<ROWS;gy++){const row=[];for(let gx=0;gx<COLS;gx++)row.push({top:true,right:true,bottom:true,left:true});mgrid.push(row);}
+    // DFS carve
+    function mNeighbors(gx,gy,vis){
+      const n=[];
+      if(gy>0&&!vis.has(`${gx},${gy-1}`))n.push({gx,gy:gy-1,dir:'top'});
+      if(gx<COLS-1&&!vis.has(`${gx+1},${gy}`))n.push({gx:gx+1,gy,dir:'right'});
+      if(gy<ROWS-1&&!vis.has(`${gx},${gy+1}`))n.push({gx,gy:gy+1,dir:'bottom'});
+      if(gx>0&&!vis.has(`${gx-1},${gy}`))n.push({gx:gx-1,gy,dir:'left'});
+      return n;
+    }
+    function removeWallM(g,cx,cy,nx,ny,dir){
+      if(dir==='top'){g[cy][cx].top=false;g[ny][nx].bottom=false;}
+      else if(dir==='right'){g[cy][cx].right=false;g[ny][nx].left=false;}
+      else if(dir==='bottom'){g[cy][cx].bottom=false;g[ny][nx].top=false;}
+      else{g[cy][cx].left=false;g[ny][nx].right=false;}
+    }
+    // Perimeter entry/exit (on opposite sides)
+    function perimCell(side){
+      if(side===0)return{gx:Math.floor(Math.random()*COLS),gy:0,side:'top'};
+      if(side===1)return{gx:COLS-1,gy:Math.floor(Math.random()*ROWS),side:'right'};
+      if(side===2)return{gx:Math.floor(Math.random()*COLS),gy:ROWS-1,side:'bottom'};
+      return{gx:0,gy:Math.floor(Math.random()*ROWS),side:'left'};
+    }
+    const entrySide=Math.floor(Math.random()*4);
+    const exitSide=(entrySide+2)%4; // opposite
+    const entry=perimCell(entrySide);
+    const exit=perimCell(exitSide);
+    // DFS stack
+    const vis=new Set([`${entry.gx},${entry.gy}`]);
+    const stk=[{gx:entry.gx,gy:entry.gy}];
+    while(stk.length){
+      const cur=stk[stk.length-1];
+      const nb=mNeighbors(cur.gx,cur.gy,vis);
+      if(nb.length){
+        const chosen=nb[Math.floor(Math.random()*nb.length)];
+        removeWallM(mgrid,cur.gx,cur.gy,chosen.gx,chosen.gy,chosen.dir);
+        vis.add(`${chosen.gx},${chosen.gy}`);
+        stk.push({gx:chosen.gx,gy:chosen.gy});
+      } else stk.pop();
+    }
+    // Open perimeter walls at entry/exit
+    function openPerim(cell){
+      if(cell.side==='top')mgrid[cell.gy][cell.gx].top=false;
+      else if(cell.side==='right')mgrid[cell.gy][cell.gx].right=false;
+      else if(cell.side==='bottom')mgrid[cell.gy][cell.gx].bottom=false;
+      else mgrid[cell.gy][cell.gx].left=false;
+    }
+    openPerim(entry); openPerim(exit);
+    // Draw
+    mctx.fillStyle='#000c16'; mctx.fillRect(0,0,MW,MH);
+    mctx.strokeStyle='#9c27b0'; mctx.lineWidth=1.2;
+    for(let gy=0;gy<ROWS;gy++){for(let gx=0;gx<COLS;gx++){
+      const cell=mgrid[gy][gx];
+      const px=gx*CS,py=gy*CS;
+      if(cell.top){mctx.beginPath();mctx.moveTo(px,py);mctx.lineTo(px+CS,py);mctx.stroke();}
+      if(cell.right){mctx.beginPath();mctx.moveTo(px+CS,py);mctx.lineTo(px+CS,py+CS);mctx.stroke();}
+      if(cell.bottom){mctx.beginPath();mctx.moveTo(px,py+CS);mctx.lineTo(px+CS,py+CS);mctx.stroke();}
+      if(cell.left){mctx.beginPath();mctx.moveTo(px,py);mctx.lineTo(px,py+CS);mctx.stroke();}
+    }}
+    // Entry/exit markers
+    mctx.fillStyle='#ce93d8';
+    mctx.fillRect(entry.gx*CS+2,entry.gy*CS+2,CS-4,CS-4);
+    mctx.fillStyle='#ff6b35';
+    mctx.fillRect(exit.gx*CS+2,exit.gy*CS+2,CS-4,CS-4);
+    // Outer border
+    mctx.strokeStyle='#ce93d8'; mctx.lineWidth=1.5;
+    mctx.strokeRect(0.75,0.75,MW-1.5,MH-1.5);
   } else if(type==='quantum'){
     // Quantum orbital tori
     const colors2=[0xffd700,0xffa500,0xffcc44];
@@ -598,8 +667,160 @@ function buildScene(type,color){
 }
 
 // ═══════════════════════════════════════════
-// PANEL LOGIC
+// NATURAL TOOL SVG INFOGRAPHICS
 // ═══════════════════════════════════════════
+const TOOL_SVGS = {
+  maze: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="14" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">MAZE ROOT</text>
+    <!-- Simple iconic maze paths -->
+    <rect x="8" y="18" width="64" height="54" rx="2" fill="none" stroke="#ce93d8" stroke-width="1.5"/>
+    <!-- Horizontal walls -->
+    <line x1="8" y1="30" x2="32" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="44" y1="30" x2="72" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="8" y1="42" x2="20" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="32" y1="42" x2="56" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="20" y1="54" x2="44" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="56" y1="54" x2="72" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
+    <!-- Vertical walls -->
+    <line x1="20" y1="18" x2="20" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="20" y1="42" x2="20" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="32" y1="30" x2="32" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="44" y1="18" x2="44" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="44" y1="42" x2="44" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="56" y1="30" x2="56" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
+    <line x1="68" y1="42" x2="68" y2="72" stroke="#ce93d8" stroke-width="1.2"/>
+    <!-- Entry dot -->
+    <circle cx="14" cy="24" r="3" fill="#ce93d8"/>
+    <!-- Exit dot -->
+    <circle cx="62" cy="66" r="3" fill="#ff6b35"/>
+    <!-- Path hint -->
+    <polyline points="14,24 14,36 26,36 26,48 38,48 38,60 50,60 62,60 62,66" fill="none" stroke="#ff6b35" stroke-width="1.2" stroke-dasharray="2,2"/>
+  </svg>`,
+
+  puzzle: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">PUZZLE</text>
+    <!-- Jigsaw puzzle piece outline -->
+    <path d="M18,20 L34,20 L34,28 Q40,24 40,30 Q40,36 34,32 L34,40 L26,40 Q30,46 24,46 Q18,46 22,40 L18,40 Z"
+      fill="#0a0318" stroke="#ce93d8" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Second piece -->
+    <path d="M40,20 L56,20 L56,32 Q62,28 62,34 Q62,40 56,36 L56,48 L48,48 Q52,54 46,54 Q40,54 44,48 L40,48 Z"
+      fill="#0a0318" stroke="#9c27b0" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Third piece -->
+    <path d="M18,48 L34,48 Q30,42 36,42 Q42,42 38,48 L56,48 L56,64 L18,64 Z"
+      fill="#0a0318" stroke="#7b35cc" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Connector dots -->
+    <circle cx="36" cy="30" r="2" fill="#ce93d8"/>
+    <circle cx="24" cy="43" r="2" fill="#9c27b0"/>
+    <circle cx="58" cy="34" r="2" fill="#ce93d8"/>
+  </svg>`,
+
+  envelope: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">ENVELOPE</text>
+    <!-- Envelope body -->
+    <rect x="10" y="22" width="60" height="42" rx="2" fill="#0a0318" stroke="#ce93d8" stroke-width="1.4"/>
+    <!-- Flap triangle (open) -->
+    <polyline points="10,22 40,46 70,22" fill="none" stroke="#ce93d8" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Left diagonal seal line -->
+    <line x1="10" y1="64" x2="32" y2="45" stroke="#9c27b0" stroke-width="1"/>
+    <!-- Right diagonal seal line -->
+    <line x1="70" y1="64" x2="48" y2="45" stroke="#9c27b0" stroke-width="1"/>
+    <!-- Wax seal dot -->
+    <circle cx="40" cy="46" r="4" fill="#7b35cc" stroke="#ce93d8" stroke-width="0.8"/>
+    <!-- Data lines inside -->
+    <line x1="18" y1="52" x2="40" y2="52" stroke="#ce93d8" stroke-width="0.7" opacity="0.4"/>
+    <line x1="18" y1="57" x2="52" y2="57" stroke="#ce93d8" stroke-width="0.7" opacity="0.4"/>
+  </svg>`,
+
+  hammer: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">HAMMER</text>
+    <!-- Handle -->
+    <rect x="36" y="38" width="8" height="32" rx="2" fill="#0a0318" stroke="#9c27b0" stroke-width="1.4" transform="rotate(-15 40 54)"/>
+    <!-- Head body -->
+    <rect x="16" y="18" width="38" height="22" rx="3" fill="#0a0318" stroke="#ce93d8" stroke-width="1.6"/>
+    <!-- Head face highlight (striking face) -->
+    <rect x="16" y="18" width="10" height="22" rx="2" fill="#1a0530" stroke="#ce93d8" stroke-width="0.8"/>
+    <!-- Rock texture lines on head -->
+    <line x1="30" y1="22" x2="30" y2="36" stroke="#7b35cc" stroke-width="0.8"/>
+    <line x1="38" y1="20" x2="38" y2="38" stroke="#7b35cc" stroke-width="0.8"/>
+    <line x1="46" y1="22" x2="46" y2="36" stroke="#7b35cc" stroke-width="0.8"/>
+    <!-- Force indicator lines -->
+    <line x1="8" y1="22" x2="14" y2="26" stroke="#ff6b35" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="6" y1="28" x2="14" y2="30" stroke="#ff6b35" stroke-width="1" stroke-linecap="round"/>
+    <line x1="8" y1="34" x2="14" y2="32" stroke="#ff6b35" stroke-width="0.8" stroke-linecap="round"/>
+  </svg>`,
+
+  stick: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">STICK</text>
+    <!-- Main branch -->
+    <line x1="20" y1="65" x2="60" y2="22" stroke="#ce93d8" stroke-width="3" stroke-linecap="round"/>
+    <!-- Sub-branches -->
+    <line x1="46" y1="35" x2="65" y2="28" stroke="#9c27b0" stroke-width="1.8" stroke-linecap="round"/>
+    <line x1="36" y1="46" x2="52" y2="58" stroke="#9c27b0" stroke-width="1.8" stroke-linecap="round"/>
+    <line x1="52" y1="32" x2="62" y2="42" stroke="#7b35cc" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="30" y1="55" x2="18" y2="48" stroke="#7b35cc" stroke-width="1.2" stroke-linecap="round"/>
+    <!-- Node dots at branch points -->
+    <circle cx="46" cy="35" r="2.5" fill="#ce93d8"/>
+    <circle cx="36" cy="46" r="2.5" fill="#ce93d8"/>
+    <circle cx="52" cy="32" r="1.8" fill="#9c27b0"/>
+    <circle cx="30" cy="55" r="1.8" fill="#9c27b0"/>
+    <!-- Extend arrows -->
+    <polygon points="65,27 70,23 70,31" fill="#ff6b35"/>
+  </svg>`,
+
+  knife: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">KNIFE</text>
+    <!-- Blade -->
+    <path d="M20,60 L62,20 L66,26 L28,64 Z" fill="#0a0318" stroke="#ce93d8" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Blade edge highlight -->
+    <line x1="62" y1="20" x2="28" y2="64" stroke="#7ff8ff" stroke-width="0.7" opacity="0.6"/>
+    <!-- Guard -->
+    <rect x="18" y="56" width="14" height="6" rx="1" fill="#1a0530" stroke="#9c27b0" stroke-width="1.2" transform="rotate(-45 25 59)"/>
+    <!-- Handle -->
+    <rect x="8" y="58" width="20" height="10" rx="3" fill="#0a0318" stroke="#7b35cc" stroke-width="1.4" transform="rotate(-45 18 63)"/>
+    <!-- Handle grip lines -->
+    <line x1="11" y1="72" x2="18" y2="65" stroke="#ce93d8" stroke-width="0.7"/>
+    <line x1="14" y1="74" x2="21" y2="67" stroke="#ce93d8" stroke-width="0.7"/>
+    <!-- Cut / separation indicator -->
+    <line x1="34" y1="40" x2="48" y2="32" stroke="#ff6b35" stroke-width="0.8" stroke-dasharray="2,2"/>
+    <line x1="38" y1="46" x2="52" y2="38" stroke="#ff6b35" stroke-width="0.8" stroke-dasharray="2,2"/>
+  </svg>`,
+
+  scissors: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
+    <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">SCISSORS</text>
+    <!-- Blade 1 -->
+    <path d="M40,42 L16,20 L20,16 L44,40" fill="#0a0318" stroke="#ce93d8" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Blade 2 -->
+    <path d="M40,42 L64,20 L60,16 L36,40" fill="#0a0318" stroke="#9c27b0" stroke-width="1.4" stroke-linejoin="round"/>
+    <!-- Pivot -->
+    <circle cx="40" cy="42" r="4" fill="#0a0318" stroke="#ce93d8" stroke-width="1.6"/>
+    <circle cx="40" cy="42" r="1.5" fill="#ce93d8"/>
+    <!-- Handle rings -->
+    <ellipse cx="28" cy="60" rx="10" ry="7" fill="#0a0318" stroke="#7b35cc" stroke-width="1.4"/>
+    <ellipse cx="52" cy="60" rx="10" ry="7" fill="#0a0318" stroke="#7b35cc" stroke-width="1.4"/>
+    <!-- Handle connectors -->
+    <line x1="33" y1="55" x2="38" y2="46" stroke="#9c27b0" stroke-width="1.2"/>
+    <line x1="47" y1="55" x2="42" y2="46" stroke="#9c27b0" stroke-width="1.2"/>
+    <!-- Cut lines -->
+    <line x1="28" y1="32" x2="52" y2="32" stroke="#ff6b35" stroke-width="0.8" stroke-dasharray="3,2"/>
+  </svg>`
+};
+
+const TOOL_IDS = ['maze','puzzle','envelope','hammer','stick','knife','scissors'];
+
+function showToolIcon(toolId){
+  const ti=document.getElementById('tool-icon');
+  if(!TOOL_SVGS[toolId]){ti.style.display='none';return;}
+  ti.style.display='flex';
+  ti.style.alignItems='center';
+  ti.style.justifyContent='center';
+  ti.innerHTML=TOOL_SVGS[toolId];
+  // Shrink maze canvas to left half when tool icon shown
+  const mc=document.getElementById('maze-canvas');
+  if(mc.style.display!=='none'){
+    mc.style.width='52%';
+    ti.style.width='48%';
+  }
+}
 let currentBlock=null;
 function openPanel(id){
   const d=BLOCKS[id]; if(!d) return;
@@ -622,7 +843,7 @@ function openPanel(id){
   document.getElementById('panel').classList.add('open');
   document.getElementById('backdrop').classList.add('show');
   // Build 3D scene after layout
-  setTimeout(()=>{resizeRenderer();buildScene(d.scene||'nodes',d.color||0x00e5ff);},50);
+  setTimeout(()=>{resizeRenderer();buildScene(d.scene||'nodes',d.color||0x00e5ff,id);if(TOOL_IDS.indexOf(id)>=0)showToolIcon(id);},50);
 }
 function closePanel(){
   document.getElementById('panel').classList.remove('open');
