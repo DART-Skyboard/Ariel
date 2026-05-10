@@ -521,85 +521,93 @@ function buildScene(type,color,toolId){
     function anim(){animId=requestAnimationFrame(anim);t+=0.008;shells[0].rotation.y=t*0.3;shells[1].rotation.y=-t*0.4;shells[1].rotation.x=t*0.2;shells[2].rotation.y=t*0.6;shells[2].rotation.z=-t*0.3;renderer.render(scene,camera);}
     anim();
   } else if(type==='maze'){
-    // ── SURGICAL DFS MAZE (Lead Edge reference logic) ──
-    // Hide Three canvas, show maze canvas
+    // ── SURGICAL DFS MAZE — exact generatePlanar logic from lemac.html ──
     canvas.style.display='none';
     const mc=document.getElementById('maze-canvas');
     mc.style.display='block';
-    const mctx=mc.getContext('2d');
-    const MW=mc.clientWidth||300, MH=mc.clientHeight||180;
+    // Size canvas to actual pixel dimensions
+    const rect=mc.parentElement.getBoundingClientRect();
+    const MW=Math.floor(rect.width)||300, MH=Math.floor(rect.height)||180;
     mc.width=MW; mc.height=MH;
-    const COLS=18, ROWS=Math.round(COLS*(MH/MW));
-    const CS=MW/COLS;
-    // Build grid
-    const mgrid=[];
-    for(let gy=0;gy<ROWS;gy++){const row=[];for(let gx=0;gx<COLS;gx++)row.push({top:true,right:true,bottom:true,left:true});mgrid.push(row);}
-    // DFS carve
-    function mNeighbors(gx,gy,vis){
-      const n=[];
-      if(gy>0&&!vis.has(`${gx},${gy-1}`))n.push({gx,gy:gy-1,dir:'top'});
-      if(gx<COLS-1&&!vis.has(`${gx+1},${gy}`))n.push({gx:gx+1,gy,dir:'right'});
-      if(gy<ROWS-1&&!vis.has(`${gx},${gy+1}`))n.push({gx,gy:gy+1,dir:'bottom'});
-      if(gx>0&&!vis.has(`${gx-1},${gy}`))n.push({gx:gx-1,gy,dir:'left'});
-      return n;
+    const mctx=mc.getContext('2d');
+
+    // Grid dimensions — tighter cells for a denser surgical maze
+    const COLS=20, ROWS=Math.floor(COLS*(MH/MW));
+    const CS=MW/COLS;  // cell size in pixels
+
+    // Build grid with all walls intact + visited flag
+    const grid=[];
+    for(let y=0;y<ROWS;y++){
+      const row=[];
+      for(let x=0;x<COLS;x++) row.push({top:true,right:true,bottom:true,left:true,visited:false});
+      grid.push(row);
     }
-    function removeWallM(g,cx,cy,nx,ny,dir){
-      if(dir==='top'){g[cy][cx].top=false;g[ny][nx].bottom=false;}
-      else if(dir==='right'){g[cy][cx].right=false;g[ny][nx].left=false;}
-      else if(dir==='bottom'){g[cy][cx].bottom=false;g[ny][nx].top=false;}
-      else{g[cy][cx].left=false;g[ny][nx].right=false;}
+
+    // DFS iterative stack — exact lemac.html generatePlanar logic
+    const stack=[{x:0,y:0}];
+    grid[0][0].visited=true;
+    while(stack.length>0){
+      const curr=stack[stack.length-1];
+      const ns=[];
+      if(curr.y>0      && !grid[curr.y-1][curr.x].visited) ns.push({x:curr.x,   y:curr.y-1, d1:'top',    d2:'bottom'});
+      if(curr.y<ROWS-1 && !grid[curr.y+1][curr.x].visited) ns.push({x:curr.x,   y:curr.y+1, d1:'bottom', d2:'top'});
+      if(curr.x>0      && !grid[curr.y][curr.x-1].visited) ns.push({x:curr.x-1, y:curr.y,   d1:'left',   d2:'right'});
+      if(curr.x<COLS-1 && !grid[curr.y][curr.x+1].visited) ns.push({x:curr.x+1, y:curr.y,   d1:'right',  d2:'left'});
+      if(ns.length>0){
+        const next=ns[Math.floor(Math.random()*ns.length)];
+        grid[curr.y][curr.x][next.d1]=false;
+        grid[next.y][next.x][next.d2]=false;
+        grid[next.y][next.x].visited=true;
+        stack.push(next);
+      } else stack.pop();
     }
-    // Perimeter entry/exit (on opposite sides)
-    function perimCell(side){
-      if(side===0)return{gx:Math.floor(Math.random()*COLS),gy:0,side:'top'};
-      if(side===1)return{gx:COLS-1,gy:Math.floor(Math.random()*ROWS),side:'right'};
-      if(side===2)return{gx:Math.floor(Math.random()*COLS),gy:ROWS-1,side:'bottom'};
-      return{gx:0,gy:Math.floor(Math.random()*ROWS),side:'left'};
+
+    // Perimeter entry/exit — same as lemac getRandomPerimeter2D, opposite sides
+    function perim2D(exclude){
+      let res;
+      do {
+        const side=Math.floor(Math.random()*4);
+        if(side===0) res={x:Math.floor(Math.random()*COLS), y:0,      face:'top'};
+        else if(side===1) res={x:Math.floor(Math.random()*COLS), y:ROWS-1, face:'bottom'};
+        else if(side===2) res={x:0,      y:Math.floor(Math.random()*ROWS), face:'left'};
+        else              res={x:COLS-1, y:Math.floor(Math.random()*ROWS), face:'right'};
+      } while(exclude && res.x===exclude.x && res.y===exclude.y);
+      return res;
     }
-    const entrySide=Math.floor(Math.random()*4);
-    const exitSide=(entrySide+2)%4; // opposite
-    const entry=perimCell(entrySide);
-    const exit=perimCell(exitSide);
-    // DFS stack
-    const vis=new Set([`${entry.gx},${entry.gy}`]);
-    const stk=[{gx:entry.gx,gy:entry.gy}];
-    while(stk.length){
-      const cur=stk[stk.length-1];
-      const nb=mNeighbors(cur.gx,cur.gy,vis);
-      if(nb.length){
-        const chosen=nb[Math.floor(Math.random()*nb.length)];
-        removeWallM(mgrid,cur.gx,cur.gy,chosen.gx,chosen.gy,chosen.dir);
-        vis.add(`${chosen.gx},${chosen.gy}`);
-        stk.push({gx:chosen.gx,gy:chosen.gy});
-      } else stk.pop();
-    }
-    // Open perimeter walls at entry/exit
-    function openPerim(cell){
-      if(cell.side==='top')mgrid[cell.gy][cell.gx].top=false;
-      else if(cell.side==='right')mgrid[cell.gy][cell.gx].right=false;
-      else if(cell.side==='bottom')mgrid[cell.gy][cell.gx].bottom=false;
-      else mgrid[cell.gy][cell.gx].left=false;
-    }
-    openPerim(entry); openPerim(exit);
-    // Draw
+    const entry=perim2D(null);
+    const exit=perim2D(entry);
+    // Open the perimeter wall at entry/exit
+    grid[entry.y][entry.x][entry.face]=false;
+    grid[exit.y][exit.x][exit.face]=false;
+
+    // Draw — dark background
     mctx.fillStyle='#000c16'; mctx.fillRect(0,0,MW,MH);
-    mctx.strokeStyle='#9c27b0'; mctx.lineWidth=1.2;
-    for(let gy=0;gy<ROWS;gy++){for(let gx=0;gx<COLS;gx++){
-      const cell=mgrid[gy][gx];
-      const px=gx*CS,py=gy*CS;
-      if(cell.top){mctx.beginPath();mctx.moveTo(px,py);mctx.lineTo(px+CS,py);mctx.stroke();}
-      if(cell.right){mctx.beginPath();mctx.moveTo(px+CS,py);mctx.lineTo(px+CS,py+CS);mctx.stroke();}
-      if(cell.bottom){mctx.beginPath();mctx.moveTo(px,py+CS);mctx.lineTo(px+CS,py+CS);mctx.stroke();}
-      if(cell.left){mctx.beginPath();mctx.moveTo(px,py);mctx.lineTo(px,py+CS);mctx.stroke();}
-    }}
-    // Entry/exit markers
-    mctx.fillStyle='#ce93d8';
-    mctx.fillRect(entry.gx*CS+2,entry.gy*CS+2,CS-4,CS-4);
-    mctx.fillStyle='#ff6b35';
-    mctx.fillRect(exit.gx*CS+2,exit.gy*CS+2,CS-4,CS-4);
+
+    // Draw walls — purple to match natural tools color scheme
+    mctx.strokeStyle='#ce93d8'; mctx.lineWidth=1.1; mctx.lineCap='square';
+    mctx.beginPath();
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        const c=grid[y][x];
+        const px=x*CS, py=y*CS;
+        if(c.top)   {mctx.moveTo(px,py);      mctx.lineTo(px+CS,py);}
+        if(c.right) {mctx.moveTo(px+CS,py);   mctx.lineTo(px+CS,py+CS);}
+        if(c.bottom){mctx.moveTo(px,py+CS);   mctx.lineTo(px+CS,py+CS);}
+        if(c.left)  {mctx.moveTo(px,py);      mctx.lineTo(px,py+CS);}
+      }
+    }
+    mctx.stroke();
+
     // Outer border
-    mctx.strokeStyle='#ce93d8'; mctx.lineWidth=1.5;
+    mctx.strokeStyle='#9c27b0'; mctx.lineWidth=1.5;
     mctx.strokeRect(0.75,0.75,MW-1.5,MH-1.5);
+
+    // Entry marker (cyan) and exit marker (orange-red)
+    const eSize=Math.max(3,CS*0.55);
+    mctx.fillStyle='#00e5ff';
+    mctx.fillRect(entry.x*CS+(CS-eSize)/2, entry.y*CS+(CS-eSize)/2, eSize, eSize);
+    mctx.fillStyle='#ff4466';
+    mctx.fillRect(exit.x*CS+(CS-eSize)/2,  exit.y*CS+(CS-eSize)/2,  eSize, eSize);
   } else if(type==='quantum'){
     // Quantum orbital tori
     const colors2=[0xffd700,0xffa500,0xffcc44];
