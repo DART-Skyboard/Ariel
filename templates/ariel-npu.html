@@ -752,32 +752,7 @@ function buildScene(type,color,toolId){
 // NATURAL TOOL SVG INFOGRAPHICS
 // ═══════════════════════════════════════════
 const TOOL_SVGS = {
-  maze: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
-    <text x="40" y="14" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">MAZE ROOT</text>
-    <!-- Simple iconic maze paths -->
-    <rect x="8" y="18" width="64" height="54" rx="2" fill="none" stroke="#ce93d8" stroke-width="1.5"/>
-    <!-- Horizontal walls -->
-    <line x1="8" y1="30" x2="32" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="44" y1="30" x2="72" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="8" y1="42" x2="20" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="32" y1="42" x2="56" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="20" y1="54" x2="44" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="56" y1="54" x2="72" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
-    <!-- Vertical walls -->
-    <line x1="20" y1="18" x2="20" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="20" y1="42" x2="20" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="32" y1="30" x2="32" y2="42" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="44" y1="18" x2="44" y2="30" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="44" y1="42" x2="44" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="56" y1="30" x2="56" y2="54" stroke="#ce93d8" stroke-width="1.2"/>
-    <line x1="68" y1="42" x2="68" y2="72" stroke="#ce93d8" stroke-width="1.2"/>
-    <!-- Entry dot -->
-    <circle cx="14" cy="24" r="3" fill="#ce93d8"/>
-    <!-- Exit dot -->
-    <circle cx="62" cy="66" r="3" fill="#ff6b35"/>
-    <!-- Path hint -->
-    <polyline points="14,24 14,36 26,36 26,48 38,48 38,60 50,60 62,60 62,66" fill="none" stroke="#ff6b35" stroke-width="1.2" stroke-dasharray="2,2"/>
-  </svg>`,
+  maze: `<canvas id="maze-icon-canvas" style="width:100%;height:100%;display:block"></canvas>`,
 
   puzzle: `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;padding:8px;box-sizing:border-box">
     <text x="40" y="12" text-anchor="middle" font-family="Orbitron,monospace" font-size="7" fill="#ce93d8" font-weight="700">PUZZLE</text>
@@ -901,6 +876,78 @@ function showToolIcon(toolId){
   if(mc.style.display!=='none'){
     mc.style.width='52%';
     ti.style.width='48%';
+  }
+  // For maze: run real DFS generator into the icon canvas
+  if(toolId==='maze'){
+    requestAnimationFrame(()=>{
+      const ic=document.getElementById('maze-icon-canvas');
+      if(!ic) return;
+      const rect=ic.parentElement.getBoundingClientRect();
+      const IW=Math.floor(rect.width*0.48)||140;
+      const IH=Math.floor(rect.height)||170;
+      ic.width=IW; ic.height=IH;
+      const ctx=ic.getContext('2d');
+      // Smaller grid for the mini panel — 10 cols
+      const COLS=10, ROWS=Math.floor(COLS*(IH/IW));
+      const CS=IW/COLS;
+      // Build grid
+      const g=[];
+      for(let y=0;y<ROWS;y++){const r=[];for(let x=0;x<COLS;x++)r.push({top:true,right:true,bottom:true,left:true,visited:false});g.push(r);}
+      // DFS — exact lemac generatePlanar logic
+      const stk=[{x:0,y:0}]; g[0][0].visited=true;
+      while(stk.length){
+        const cur=stk[stk.length-1]; const ns=[];
+        if(cur.y>0      &&!g[cur.y-1][cur.x].visited)ns.push({x:cur.x,  y:cur.y-1,d1:'top',   d2:'bottom'});
+        if(cur.y<ROWS-1 &&!g[cur.y+1][cur.x].visited)ns.push({x:cur.x,  y:cur.y+1,d1:'bottom',d2:'top'});
+        if(cur.x>0      &&!g[cur.y][cur.x-1].visited)ns.push({x:cur.x-1,y:cur.y,  d1:'left',  d2:'right'});
+        if(cur.x<COLS-1 &&!g[cur.y][cur.x+1].visited)ns.push({x:cur.x+1,y:cur.y,  d1:'right', d2:'left'});
+        if(ns.length){const n=ns[Math.floor(Math.random()*ns.length)];g[cur.y][cur.x][n.d1]=false;g[n.y][n.x][n.d2]=false;g[n.y][n.x].visited=true;stk.push(n);}
+        else stk.pop();
+      }
+      // Entry/exit with LOS check
+      function pc(){
+        const side=Math.floor(Math.random()*4);
+        if(side===0)return{x:Math.floor(Math.random()*COLS),y:0,     face:'top'};
+        if(side===1)return{x:Math.floor(Math.random()*COLS),y:ROWS-1,face:'bottom'};
+        if(side===2)return{x:0,     y:Math.floor(Math.random()*ROWS),face:'left'};
+                    return{x:COLS-1,y:Math.floor(Math.random()*ROWS),face:'right'};
+      }
+      function los(a,b){
+        if(a.x===b.x&&(a.face==='top'||a.face==='bottom')&&(b.face==='top'||b.face==='bottom')){
+          const mn=Math.min(a.y,b.y),mx=Math.max(a.y,b.y);
+          for(let cy=mn;cy<mx;cy++)if(g[cy][a.x].bottom)return false; return true;
+        }
+        if(a.y===b.y&&(a.face==='left'||a.face==='right')&&(b.face==='left'||b.face==='right')){
+          const mn=Math.min(a.x,b.x),mx=Math.max(a.x,b.x);
+          for(let cx=mn;cx<mx;cx++)if(g[a.y][cx].right)return false; return true;
+        }
+        return false;
+      }
+      function tooClose(a,b){if(a.face===b.face){if(a.face==='top'||a.face==='bottom')return Math.abs(a.x-b.x)<2;return Math.abs(a.y-b.y)<2;}return false;}
+      let en,ex,att=0;
+      do{en=pc();ex=pc();att++;}
+      while(att<500&&((en.x===ex.x&&en.y===ex.y)||tooClose(en,ex)||los(en,ex)));
+      g[en.y][en.x][en.face]=false; g[ex.y][ex.x][ex.face]=false;
+      // LOS blocker
+      if(en.x===ex.x){const mn=Math.min(en.y,ex.y),mx=Math.max(en.y,ex.y);let hb=false;for(let cy=mn;cy<mx;cy++)if(g[cy][en.x].bottom){hb=true;break;}if(!hb&&mx>mn){const mid=Math.floor((mn+mx)/2);g[mid][en.x].bottom=true;if(mid+1<ROWS)g[mid+1][en.x].top=true;}}
+      else if(en.y===ex.y){const mn=Math.min(en.x,ex.x),mx=Math.max(en.x,ex.x);let hb=false;for(let cx=mn;cx<mx;cx++)if(g[en.y][cx].right){hb=true;break;}if(!hb&&mx>mn){const mid=Math.floor((mn+mx)/2);g[en.y][mid].right=true;if(mid+1<COLS)g[en.y][mid+1].left=true;}}
+      // Draw
+      ctx.fillStyle='#000c16'; ctx.fillRect(0,0,IW,IH);
+      ctx.strokeStyle='#ce93d8'; ctx.lineWidth=1; ctx.lineCap='square';
+      ctx.beginPath();
+      for(let y=0;y<ROWS;y++){for(let x=0;x<COLS;x++){
+        const c=g[y][x],px=x*CS,py=y*CS;
+        if(c.top)   {ctx.moveTo(px,py);   ctx.lineTo(px+CS,py);}
+        if(c.right) {ctx.moveTo(px+CS,py);ctx.lineTo(px+CS,py+CS);}
+        if(c.bottom){ctx.moveTo(px,py+CS);ctx.lineTo(px+CS,py+CS);}
+        if(c.left)  {ctx.moveTo(px,py);   ctx.lineTo(px,py+CS);}
+      }}
+      ctx.stroke();
+      ctx.strokeStyle='#9c27b0'; ctx.lineWidth=1.2; ctx.strokeRect(0.6,0.6,IW-1.2,IH-1.2);
+      const sz=Math.max(2,CS*0.5);
+      ctx.fillStyle='#00e5ff'; ctx.fillRect(en.x*CS+(CS-sz)/2,en.y*CS+(CS-sz)/2,sz,sz);
+      ctx.fillStyle='#ff4466'; ctx.fillRect(ex.x*CS+(CS-sz)/2,ex.y*CS+(CS-sz)/2,sz,sz);
+    });
   }
 }
 let currentBlock=null;
