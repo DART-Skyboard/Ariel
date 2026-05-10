@@ -410,18 +410,27 @@ const BLOCKS = {
 let renderer, camera, scene, animId;
 const canvas = document.getElementById('three-canvas');
 function initRenderer(){
-  if(renderer) return;
+  if(renderer){
+    // Renderer exists — force a size sync in case canvas was hidden/resized
+    const w=canvas.clientWidth||canvas.offsetWidth||300;
+    const h=canvas.clientHeight||canvas.offsetHeight||180;
+    if(w>0&&h>0){ renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+    return;
+  }
   renderer = new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
   renderer.setClearColor(0x000c16,1);
-  camera = new THREE.PerspectiveCamera(60,canvas.clientWidth/canvas.clientHeight,0.1,100);
+  const w=canvas.clientWidth||canvas.offsetWidth||300;
+  const h=canvas.clientHeight||canvas.offsetHeight||180;
+  camera = new THREE.PerspectiveCamera(60,w/h||1.67,0.1,100);
   camera.position.z=3;
+  renderer.setSize(w,h,false);
 }
 function resizeRenderer(){
   if(!renderer) return;
-  const w=canvas.clientWidth, h=canvas.clientHeight;
-  renderer.setSize(w,h,false);
-  camera.aspect=w/h; camera.updateProjectionMatrix();
+  const w=canvas.clientWidth||canvas.offsetWidth||300;
+  const h=canvas.clientHeight||canvas.offsetHeight||180;
+  if(w>0&&h>0){ renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
 }
 
 function clearScene(){
@@ -430,8 +439,8 @@ function clearScene(){
 }
 
 function buildScene(type,color,toolId){
-  clearScene(); initRenderer(); resizeRenderer();
-  // Reset overlays
+  clearScene();
+  // Reset overlays — make three-canvas visible FIRST so clientWidth is valid
   const mc=document.getElementById('maze-canvas');
   const ti=document.getElementById('tool-icon');
   mc.style.display='none';
@@ -439,6 +448,8 @@ function buildScene(type,color,toolId){
   ti.style.display='none';
   ti.innerHTML='';
   canvas.style.display='block';
+  // Now init/resize with correct dimensions
+  initRenderer(); resizeRenderer();
   scene = new THREE.Scene();
   const c = color||0x00e5ff;
   const mat = new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.8});
@@ -968,11 +979,18 @@ function openPanel(id){
   const tagsEl=document.getElementById('panel-tags');
   tagsEl.innerHTML='';
   (d.tags||[]).forEach(t=>{const s=document.createElement('span');s.className='p-tag';s.textContent=t;tagsEl.appendChild(s);});
-  // Open panel + backdrop
+  // Open panel + backdrop first, then build scene after slide animation (300ms)
   document.getElementById('panel').classList.add('open');
   document.getElementById('backdrop').classList.add('show');
-  // Build 3D scene after layout
-  setTimeout(()=>{resizeRenderer();buildScene(d.scene||'nodes',d.color||0x00e5ff,id);if(TOOL_IDS.indexOf(id)>=0)showToolIcon(id);},50);
+  // Wait for panel CSS transition to finish before building — prevents 0-size canvas
+  setTimeout(()=>{
+    canvas.style.display='block';
+    resizeRenderer();
+    buildScene(d.scene||'nodes',d.color||0x00e5ff,id);
+    if(TOOL_IDS.indexOf(id)>=0) showToolIcon(id);
+    // Second resize pass after any layout shifts from showToolIcon
+    setTimeout(()=>resizeRenderer(), 60);
+  }, 320);
 }
 function closePanel(){
   document.getElementById('panel').classList.remove('open');
