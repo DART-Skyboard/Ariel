@@ -562,23 +562,97 @@ function buildScene(type,color,toolId){
       } else stack.pop();
     }
 
-    // Perimeter entry/exit — same as lemac getRandomPerimeter2D, opposite sides
-    function perim2D(exclude){
-      let res;
-      do {
-        const side=Math.floor(Math.random()*4);
-        if(side===0) res={x:Math.floor(Math.random()*COLS), y:0,      face:'top'};
-        else if(side===1) res={x:Math.floor(Math.random()*COLS), y:ROWS-1, face:'bottom'};
-        else if(side===2) res={x:0,      y:Math.floor(Math.random()*ROWS), face:'left'};
-        else              res={x:COLS-1, y:Math.floor(Math.random()*ROWS), face:'right'};
-      } while(exclude && res.x===exclude.x && res.y===exclude.y);
-      return res;
+    // ── SURGICAL entry/exit placement ──────────────────────────────────────
+    // Rules:
+    //  1. Never on same row/col with direct line-of-sight (facing walls removed
+    //     between them with no blocking wall in between).
+    //  2. If on the same side, minimum gap of 2 cells between them so the
+    //     perimeter wall segment separates them AND an inner wall will exist.
+    //  3. After placement, guarantee at least one inner wall exists in the
+    //     straight corridor between them — if not, force-restore that wall.
+
+    function perimCell2D(){
+      const side=Math.floor(Math.random()*4);
+      if(side===0) return{x:Math.floor(Math.random()*COLS), y:0,      face:'top',    axis:'x'};
+      if(side===1) return{x:Math.floor(Math.random()*COLS), y:ROWS-1, face:'bottom', axis:'x'};
+      if(side===2) return{x:0,      y:Math.floor(Math.random()*ROWS), face:'left',   axis:'y'};
+                   return{x:COLS-1, y:Math.floor(Math.random()*ROWS), face:'right',  axis:'y'};
     }
-    const entry=perim2D(null);
-    const exit=perim2D(entry);
+
+    // Check if two openings have direct line-of-sight through the maze.
+    // Straight line-of-sight exists when they share the same row or col
+    // AND every cell between them has no wall blocking that corridor.
+    function hasLineOfSight(a, b){
+      // Same column, both on horizontal perimeters (top/bottom) — vertical corridor
+      if(a.x===b.x && (a.face==='top'||a.face==='bottom') && (b.face==='top'||b.face==='bottom')){
+        // Check every cell in that column between them has no horizontal wall
+        const minY=Math.min(a.y,b.y), maxY=Math.max(a.y,b.y);
+        for(let cy=minY;cy<maxY;cy++) if(grid[cy][a.x].bottom) return false; // wall blocks
+        return true; // clear corridor
+      }
+      // Same row, both on vertical perimeters (left/right) — horizontal corridor
+      if(a.y===b.y && (a.face==='left'||a.face==='right') && (b.face==='left'||b.face==='right')){
+        const minX=Math.min(a.x,b.x), maxX=Math.max(a.x,b.x);
+        for(let cx=minX;cx<maxX;cx++) if(grid[a.y][cx].right) return false;
+        return true;
+      }
+      return false; // different sides or axes — no straight LOS possible
+    }
+
+    // Same-side minimum gap check
+    function tooClose(a, b){
+      if(a.face===b.face){
+        if(a.face==='top'||a.face==='bottom') return Math.abs(a.x-b.x)<2;
+        return Math.abs(a.y-b.y)<2;
+      }
+      return false;
+    }
+
+    let entry, exit, attempts=0;
+    do {
+      entry=perimCell2D();
+      exit=perimCell2D();
+      attempts++;
+      if(attempts>2000) break; // safety
+    } while(
+      (entry.x===exit.x && entry.y===exit.y) || // same cell
+      tooClose(entry,exit) ||                    // adjacent on same side
+      hasLineOfSight(entry,exit)                 // direct line-of-sight
+    );
+
     // Open the perimeter wall at entry/exit
     grid[entry.y][entry.x][entry.face]=false;
     grid[exit.y][exit.x][exit.face]=false;
+
+    // ── Post-placement LOS blocker ──────────────────────────────────────────
+    // If entry and exit ended up in the same row (horizontal corridor), ensure
+    // at least one vertical wall (cell.right) exists between them in that row.
+    // If in same col (vertical corridor), ensure at least one horizontal wall.
+    // This covers the case where the DFS happened to carve a clear run.
+    function ensureLOSBlock(){
+      if(entry.x===exit.x){
+        // same column — need a bottom wall somewhere between them
+        const minY=Math.min(entry.y,exit.y), maxY=Math.max(entry.y,exit.y);
+        let hasBlock=false;
+        for(let cy=minY;cy<maxY;cy++) if(grid[cy][entry.x].bottom){hasBlock=true;break;}
+        if(!hasBlock && maxY-minY>0){
+          const midY=Math.floor((minY+maxY)/2);
+          grid[midY][entry.x].bottom=true;
+          grid[midY+1<ROWS?midY+1:midY][entry.x].top=true;
+        }
+      } else if(entry.y===exit.y){
+        // same row — need a right wall somewhere between them
+        const minX=Math.min(entry.x,exit.x), maxX=Math.max(entry.x,exit.x);
+        let hasBlock=false;
+        for(let cx=minX;cx<maxX;cx++) if(grid[entry.y][cx].right){hasBlock=true;break;}
+        if(!hasBlock && maxX-minX>0){
+          const midX=Math.floor((minX+maxX)/2);
+          grid[entry.y][midX].right=true;
+          grid[entry.y][midX+1<COLS?midX+1:midX].left=true;
+        }
+      }
+    }
+    ensureLOSBlock();
 
     // Draw — dark background
     mctx.fillStyle='#000c16'; mctx.fillRect(0,0,MW,MH);
