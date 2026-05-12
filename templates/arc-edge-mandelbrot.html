@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Arc Edge — 3D Mandelbrot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Exo+2:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --cyan:#00e5ff;--gold:#ffb347;--bg:#040810;--panel:rgba(4,8,16,.92);
+  --border:rgba(0,229,255,.14);--text:#E0F4FF;--dim:rgba(224,244,255,.5);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Exo 2',sans-serif}
+
+/* ── Canvas layers ── */
+#gl-canvas{position:fixed;inset:0;width:100%;height:100%;z-index:0}
+#arc-canvas{position:fixed;inset:0;width:100%;height:100%;z-index:1;pointer-events:none}
+
+/* ── Header ── */
+header{
+  position:fixed;top:0;left:0;right:0;z-index:10;
+  display:flex;align-items:center;gap:12px;
+  padding:10px 16px;
+  background:rgba(4,8,16,.88);
+  border-bottom:1px solid var(--border);
+  backdrop-filter:blur(10px);
+}
+.hdr-title{
+  font-family:'Orbitron',monospace;font-size:11px;letter-spacing:3px;
+  color:var(--cyan);font-weight:700;
+}
+.hdr-sub{font-size:10px;color:var(--dim);letter-spacing:1px}
+.hdr-back{
+  font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;
+  color:rgba(0,229,255,.6);text-decoration:none;padding:5px 10px;
+  border:1px solid rgba(0,229,255,.2);border-radius:4px;
+  transition:all .2s;margin-left:auto;
+}
+.hdr-back:hover{color:var(--cyan);border-color:rgba(0,229,255,.5)}
+
+/* ── Control Panel ── */
+#ctrl-panel{
+  position:fixed;left:0;top:52px;bottom:0;
+  width:220px;z-index:10;
+  background:var(--panel);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow-y:auto;
+}
+.cp-section{padding:12px 14px;border-bottom:1px solid var(--border)}
+.cp-label{
+  font-family:'Orbitron',monospace;font-size:8px;letter-spacing:2.5px;
+  color:rgba(0,229,255,.5);text-transform:uppercase;margin-bottom:8px;
+}
+.cp-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.cp-key{font-size:11px;color:var(--dim)}
+.cp-val{
+  font-family:'Orbitron',monospace;font-size:11px;color:var(--cyan);
+  min-width:50px;text-align:right;
+}
+input[type=range]{
+  width:100%;margin:4px 0;
+  accent-color:var(--cyan);
+}
+input[type=number]{
+  background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);
+  border-radius:4px;color:var(--text);font-family:'Orbitron',monospace;
+  font-size:11px;padding:4px 8px;width:80px;text-align:right;
+}
+
+/* ── Buttons ── */
+.btn{
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;
+  padding:8px 12px;border-radius:5px;cursor:pointer;transition:all .2s;
+  border:1px solid;width:100%;margin-bottom:6px;text-transform:uppercase;
+}
+.btn-generate{
+  border-color:rgba(0,229,255,.5);background:rgba(0,229,255,.1);color:var(--cyan);
+}
+.btn-generate:hover,.btn-generate.active{background:rgba(0,229,255,.2);border-color:var(--cyan)}
+.btn-measure{
+  border-color:rgba(255,179,71,.5);background:rgba(255,179,71,.08);color:var(--gold);
+}
+.btn-measure:hover{background:rgba(255,179,71,.18);border-color:var(--gold)}
+.btn-stop{
+  border-color:rgba(255,60,80,.4);background:rgba(255,60,80,.08);color:#ff4050;
+}
+.btn-stop:hover{background:rgba(255,60,80,.18)}
+.btn-reset{
+  border-color:rgba(0,229,255,.2);background:transparent;color:rgba(0,229,255,.5);
+  font-size:8px;
+}
+
+/* ── Measurement readout ── */
+#measure-panel{
+  position:fixed;right:0;top:52px;
+  width:200px;z-index:10;
+  background:var(--panel);
+  border-left:1px solid var(--border);
+}
+.mp-header{
+  padding:10px 14px;border-bottom:1px solid var(--border);
+  font-family:'Orbitron',monospace;font-size:8px;letter-spacing:3px;
+  color:rgba(0,229,255,.5);
+}
+.mp-row{
+  padding:8px 14px;border-bottom:1px solid rgba(0,229,255,.06);
+  display:flex;flex-direction:column;gap:2px;
+}
+.mp-metric{font-size:9px;color:var(--dim);letter-spacing:1px}
+.mp-value{
+  font-family:'Orbitron',monospace;font-size:14px;color:var(--cyan);font-weight:700;
+}
+.mp-unit{font-size:9px;color:rgba(0,229,255,.5)}
+#measure-log{
+  height:160px;overflow-y:auto;padding:8px 14px;
+  font-size:10px;color:rgba(0,229,255,.45);font-family:monospace;
+  line-height:1.6;
+}
+
+/* ── Status bar ── */
+#status-bar{
+  position:fixed;bottom:0;left:220px;right:200px;z-index:10;
+  display:flex;align-items:center;gap:16px;
+  padding:6px 16px;
+  background:rgba(4,8,16,.9);
+  border-top:1px solid var(--border);
+  font-family:'Orbitron',monospace;font-size:9px;
+}
+.sb-item{display:flex;align-items:center;gap:5px;color:var(--dim)}
+.sb-val{color:var(--cyan)}
+#progress-bar{
+  flex:1;height:3px;background:rgba(0,229,255,.1);
+  border-radius:2px;overflow:hidden;
+}
+#progress-fill{height:100%;background:var(--cyan);width:0%;transition:width .1s}
+
+/* Mobile adjust */
+@media(max-width:600px){
+  #ctrl-panel{width:170px}
+  #measure-panel{display:none}
+  #status-bar{left:170px;right:0}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="hdr-title">ARC EDGE — 3D MANDELBROT</div>
+    <div class="hdr-sub">Mandelbulb · Arc Measurement · DOC 3.0</div>
+  </div>
+  <a href="/arc-edge" class="hdr-back">← ARC EDGE</a>
+</header>
+
+<!-- WebGL fractal canvas -->
+<canvas id="gl-canvas"></canvas>
+<!-- Arc Edge overlay canvas -->
+<canvas id="arc-canvas"></canvas>
+
+<!-- Controls -->
+<div id="ctrl-panel">
+
+  <div class="cp-section">
+    <div class="cp-label">Generation</div>
+    <button class="btn btn-generate" id="btn-gen" onclick="startGeneration()">▶ GENERATE</button>
+    <button class="btn btn-stop"     id="btn-stop" onclick="stopGeneration()" style="display:none">■ STOP</button>
+    <button class="btn btn-reset"    onclick="resetView()">↺ RESET VIEW</button>
+  </div>
+
+  <div class="cp-section">
+    <div class="cp-label">Duration</div>
+    <div class="cp-row">
+      <span class="cp-key">Seconds</span>
+      <input type="number" id="dur-input" value="60" min="5" max="3600" style="width:70px">
+    </div>
+    <div class="cp-row">
+      <span class="cp-key">Elapsed</span>
+      <span class="cp-val" id="elapsed-val">0s</span>
+    </div>
+    <div class="cp-row" style="align-items:center">
+      <span class="cp-key">Infinite</span>
+      <input type="checkbox" id="infinite-chk" style="accent-color:var(--cyan)">
+    </div>
+  </div>
+
+  <div class="cp-section">
+    <div class="cp-label">Fractal Parameters</div>
+    <div class="cp-row">
+      <span class="cp-key">Power (n)</span>
+      <span class="cp-val" id="power-val">8</span>
+    </div>
+    <input type="range" id="power-sl" min="2" max="16" step="1" value="8"
+      oninput="document.getElementById('power-val').textContent=this.value; updateUniforms()">
+    <div class="cp-row">
+      <span class="cp-key">Iterations</span>
+      <span class="cp-val" id="iter-val">80</span>
+    </div>
+    <input type="range" id="iter-sl" min="10" max="200" step="5" value="80"
+      oninput="document.getElementById('iter-val').textContent=this.value; updateUniforms()">
+    <div class="cp-row">
+      <span class="cp-key">Bailout</span>
+      <span class="cp-val" id="bail-val">4.0</span>
+    </div>
+    <input type="range" id="bail-sl" min="2" max="16" step="0.5" value="4"
+      oninput="document.getElementById('bail-val').textContent=parseFloat(this.value).toFixed(1); updateUniforms()">
+  </div>
+
+  <div class="cp-section">
+    <div class="cp-label">Camera / Scale</div>
+    <div class="cp-row">
+      <span class="cp-key">Zoom</span>
+      <span class="cp-val" id="zoom-val">3.00</span>
+    </div>
+    <input type="range" id="zoom-sl" min="0.5" max="8" step="0.05" value="3"
+      oninput="camDist=parseFloat(this.value);document.getElementById('zoom-val').textContent=camDist.toFixed(2)">
+    <div class="cp-row">
+      <span class="cp-key">Auto-zoom</span>
+      <span class="cp-val" id="autozoom-rate-val">1.0x</span>
+    </div>
+    <input type="range" id="zoom-rate-sl" min="0.1" max="5" step="0.1" value="1"
+      oninput="document.getElementById('autozoom-rate-val').textContent=parseFloat(this.value).toFixed(1)+'x'">
+  </div>
+
+  <div class="cp-section">
+    <div class="cp-label">Arc Measurement</div>
+    <button class="btn btn-measure" onclick="measureContour()">◎ MEASURE CONTOUR</button>
+    <div class="cp-row">
+      <span class="cp-key">Show arcs</span>
+      <input type="checkbox" id="show-arcs-chk" checked style="accent-color:var(--cyan)"
+        onchange="drawArcOverlay()">
+    </div>
+    <div class="cp-row">
+      <span class="cp-key">Arc density</span>
+      <span class="cp-val" id="arc-density-val">32</span>
+    </div>
+    <input type="range" id="arc-density-sl" min="8" max="128" step="8" value="32"
+      oninput="document.getElementById('arc-density-val').textContent=this.value;drawArcOverlay()">
+  </div>
+
+</div>
+
+<!-- Measurement readout -->
+<div id="measure-panel">
+  <div class="mp-header">◎ ARC MEASUREMENT</div>
+  <div class="mp-row">
+    <div class="mp-metric">TOTAL PERIMETER</div>
+    <div><span class="mp-value" id="mp-perimeter">—</span> <span class="mp-unit">DOC units</span></div>
+  </div>
+  <div class="mp-row">
+    <div class="mp-metric">ARC COUNT</div>
+    <div><span class="mp-value" id="mp-arcs">—</span></div>
+  </div>
+  <div class="mp-row">
+    <div class="mp-metric">VENABLE D (avg)</div>
+    <div><span class="mp-value" id="mp-d">—</span></div>
+  </div>
+  <div class="mp-row">
+    <div class="mp-metric">ZOOM LEVEL</div>
+    <div><span class="mp-value" id="mp-zoom">1.00×</span></div>
+  </div>
+  <div id="measure-log"></div>
+</div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <div class="sb-item">FRAME <span class="sb-val" id="sb-frame">0</span></div>
+  <div class="sb-item">FPS <span class="sb-val" id="sb-fps">0</span></div>
+  <div class="sb-item">ZOOM <span class="sb-val" id="sb-zoom">1.000×</span></div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+  <div class="sb-item" id="sb-status">READY</div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   ARC EDGE — 3D MANDELBROT (MANDELBULB)
+   DART Meadow · Radical Deepscale LLC
+   Arc measurement uses DOC = 3.0 (venableCircumference)
+═══════════════════════════════════════════════════════════════════ */
+
+// ── DOC = 3.0 Arc Measurement ────────────────────────────────────
+function venableCircumference(d){ return Math.sqrt(Math.pow(d*3,2)); } // = d*3
+function venableArea(d)         { return Math.pow(venableCircumference(d),2); }
+function venableD(segLen)       {
+  // Solve venableCircumference(d)/8 = segLen → d = segLen*8/3
+  return Math.round((segLen * 8) / 3);
+}
+
+// ── WebGL setup ──────────────────────────────────────────────────
+const glC = document.getElementById('gl-canvas');
+const arcC = document.getElementById('arc-canvas');
+const gl = glC.getContext('webgl2') || glC.getContext('webgl');
+const ax = arcC.getContext('2d');
+
+let W, H;
+function resize(){
+  W = glC.width  = arcC.width  = innerWidth;
+  H = glC.height = arcC.height = innerHeight;
+  if(gl) gl.viewport(0,0,W,H);
+}
+resize(); window.addEventListener('resize',resize);
+
+// ── GLSL shaders ─────────────────────────────────────────────────
+const VS = `
+  attribute vec2 aPos;
+  void main(){ gl_Position = vec4(aPos,0,1); }
+`;
+
+const FS = `
+  precision highp float;
+  uniform vec2  uRes;
+  uniform float uTime;
+  uniform float uPower;
+  uniform int   uMaxIter;
+  uniform float uBailout;
+  uniform float uZoom;
+  uniform float uCamAngle;
+
+  // Mandelbulb SDF
+  float mandelbulbDE(vec3 pos){
+    vec3 z = pos;
+    float dr = 1.0, r = 0.0;
+    float pw = uPower;
+    for(int i=0; i<200; i++){
+      if(i >= uMaxIter) break;
+      r = length(z);
+      if(r > uBailout) break;
+      float theta = acos(clamp(z.z/r,-1.0,1.0));
+      float phi   = atan(z.y, z.x);
+      dr = pow(r, pw-1.0)*pw*dr + 1.0;
+      float zr = pow(r, pw);
+      theta *= pw; phi *= pw;
+      z = zr*vec3(sin(theta)*cos(phi), sin(phi)*sin(theta), cos(theta)) + pos;
+    }
+    return 0.5*log(r)*r/dr;
+  }
+
+  // Camera ray from UV
+  vec3 getRay(vec2 uv, vec3 ro, vec3 ta){
+    vec3 ww = normalize(ta-ro);
+    vec3 uu = normalize(cross(ww, vec3(0,1,0)));
+    vec3 vv = cross(uu, ww);
+    float fov = 1.2;
+    return normalize(uv.x*uu + uv.y*vv + fov*ww);
+  }
+
+  // Normal estimation
+  vec3 getNormal(vec3 p){
+    float e = 0.001;
+    return normalize(vec3(
+      mandelbulbDE(p+vec3(e,0,0)) - mandelbulbDE(p-vec3(e,0,0)),
+      mandelbulbDE(p+vec3(0,e,0)) - mandelbulbDE(p-vec3(0,e,0)),
+      mandelbulbDE(p+vec3(0,0,e)) - mandelbulbDE(p-vec3(0,0,e))
+    ));
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy - uRes*.5) / min(uRes.x,uRes.y);
+
+    // Camera orbit
+    float ca = uCamAngle;
+    float cd = uZoom;
+    vec3 ro = vec3(cd*sin(ca), cd*0.35, cd*cos(ca));
+    vec3 ta = vec3(0,0,0);
+    vec3 rd = getRay(uv, ro, ta);
+
+    // Ray march
+    vec3 col = vec3(0.02, 0.04, 0.08);
+    float t = 0.0, eps = 0.0005;
+    bool hit = false;
+    int hitIter = 0;
+
+    for(int i=0; i<256; i++){
+      vec3 p = ro + rd*t;
+      float d = mandelbulbDE(p);
+      if(d < eps){ hit = true; hitIter = i; break; }
+      if(t > 20.0) break;
+      t += max(d*0.7, eps);
+    }
+
+    if(hit){
+      vec3 p = ro + rd*t;
+      vec3 n = getNormal(p);
+      vec3 ld = normalize(vec3(1,1.5,0.5));
+      float diff = max(0.0, dot(n,ld));
+      float spec = pow(max(0.0, dot(reflect(-ld,n),-rd)), 24.0);
+      float ao   = float(hitIter)/32.0;
+
+      // Arc Edge cyan palette
+      vec3 baseCol = mix(
+        vec3(0.0, 0.56, 0.72),  // deep cyan
+        vec3(0.5, 0.95, 1.0),   // bright cyan
+        clamp(ao,0.0,1.0)
+      );
+      col = baseCol*(diff*0.85+0.15) + vec3(0.8,0.95,1.0)*spec*0.6;
+      col += vec3(0.0,0.08,0.12)*(1.0-diff);  // ambient
+    }
+
+    // Subtle vignette
+    float vig = 1.0 - dot(uv,uv)*0.4;
+    col *= vig;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+// ── Compile & link ───────────────────────────────────────────────
+function makeShader(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, makeShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, makeShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+// Full-screen quad
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog,'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+// Uniform locations
+const U = {
+  res:      gl.getUniformLocation(prog,'uRes'),
+  time:     gl.getUniformLocation(prog,'uTime'),
+  power:    gl.getUniformLocation(prog,'uPower'),
+  maxIter:  gl.getUniformLocation(prog,'uMaxIter'),
+  bailout:  gl.getUniformLocation(prog,'uBailout'),
+  zoom:     gl.getUniformLocation(prog,'uZoom'),
+  camAngle: gl.getUniformLocation(prog,'uCamAngle')
+};
+
+// ── State ────────────────────────────────────────────────────────
+let camDist     = 3.0;
+let camAngle    = 0.4;
+let running     = false;
+let startTime   = 0;
+let elapsed     = 0;
+let frame       = 0;
+let fpsCount    = 0;
+let fpsLast     = performance.now();
+let fps         = 0;
+let zoomLevel   = 1.0;     // current auto-zoom multiplier
+let rafId       = null;
+let autoZooming = false;
+let genStart    = 0;
+
+function updateUniforms(){
+  gl.uniform2f(U.res, W, H);
+  gl.uniform1f(U.power, parseFloat(document.getElementById('power-sl').value));
+  gl.uniform1i(U.maxIter, parseInt(document.getElementById('iter-sl').value));
+  gl.uniform1f(U.bailout, parseFloat(document.getElementById('bail-sl').value));
+  gl.uniform1f(U.zoom, camDist / zoomLevel);
+  gl.uniform1f(U.camAngle, camAngle);
+}
+
+// ── Render loop ──────────────────────────────────────────────────
+function render(ts){
+  rafId = requestAnimationFrame(render);
+  frame++;
+
+  // FPS
+  fpsCount++;
+  if(ts - fpsLast > 500){
+    fps = Math.round(fpsCount*1000/(ts-fpsLast));
+    fpsCount=0; fpsLast=ts;
+    document.getElementById('sb-fps').textContent = fps;
+  }
+
+  // Auto-zoom during generation
+  if(autoZooming){
+    const dur = parseInt(document.getElementById('dur-input').value)*1000;
+    const infinite = document.getElementById('infinite-chk').checked;
+    elapsed = ts - genStart;
+    const t = elapsed/dur;
+
+    if(!infinite && t >= 1.0){
+      // Generation complete
+      stopGeneration();
+      measureContour();
+      return;
+    }
+
+    // Exponential zoom in — deeper into fractal
+    const rate = parseFloat(document.getElementById('zoom-rate-sl').value);
+    zoomLevel = infinite ? (1 + Math.pow(t % 1, 1.5)*8*rate) : (1 + t*8*rate);
+
+    // Slow orbit rotation
+    camAngle += 0.002 * rate;
+
+    // Update UI
+    const elapsedSec = Math.round(elapsed/1000);
+    document.getElementById('elapsed-val').textContent = elapsedSec+'s';
+    document.getElementById('sb-zoom').textContent = zoomLevel.toFixed(3)+'×';
+    document.getElementById('mp-zoom').textContent = zoomLevel.toFixed(2)+'×';
+    document.getElementById('sb-status').textContent = infinite ? 'GENERATING ∞' : 'GENERATING '+(t*100).toFixed(0)+'%';
+    document.getElementById('progress-fill').style.width = (infinite ? ((t%1)*100) : (t*100))+'%';
+
+    if(!infinite) elapsed = ts - genStart;
+  } else {
+    // Idle — slow orbit
+    camAngle += 0.003;
+  }
+
+  gl.uniform1f(U.time, ts/1000);
+  updateUniforms();
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  document.getElementById('sb-frame').textContent = frame;
+}
+
+// ── Generation controls ──────────────────────────────────────────
+function startGeneration(){
+  autoZooming = true;
+  genStart = performance.now();
+  zoomLevel = 1.0;
+  document.getElementById('btn-gen').style.display  = 'none';
+  document.getElementById('btn-stop').style.display = 'flex';
+  document.getElementById('sb-status').textContent  = 'GENERATING…';
+  logMeasure('Generation started — DOC 3.0 measurement active');
+}
+
+function stopGeneration(){
+  autoZooming = false;
+  document.getElementById('btn-gen').style.display  = 'flex';
+  document.getElementById('btn-stop').style.display = 'none';
+  document.getElementById('sb-status').textContent  = 'STOPPED';
+  document.getElementById('progress-fill').style.width = '100%';
+}
+
+function resetView(){
+  camDist = 3.0; camAngle = 0.4; zoomLevel = 1.0;
+  document.getElementById('zoom-sl').value = 3;
+  document.getElementById('zoom-val').textContent = '3.00';
+  document.getElementById('sb-zoom').textContent = '1.000×';
+  stopGeneration();
+  clearArcOverlay();
+  document.getElementById('elapsed-val').textContent = '0s';
+}
+
+// ── Arc overlay ──────────────────────────────────────────────────
+let arcPoints = [];
+
+function clearArcOverlay(){ ax.clearRect(0,0,W,H); arcPoints=[]; }
+
+function drawArcOverlay(){
+  ax.clearRect(0,0,W,H);
+  if(!document.getElementById('show-arcs-chk').checked) return;
+  if(arcPoints.length < 3) return;
+
+  const density = parseInt(document.getElementById('arc-density-sl').value);
+  const step = Math.max(1, Math.floor(arcPoints.length / density));
+
+  ax.strokeStyle = 'rgba(0,229,255,0.7)';
+  ax.lineWidth = 1.5;
+  ax.shadowColor = '#00e5ff';
+  ax.shadowBlur = 6;
+
+  for(let i=0; i<arcPoints.length; i+=step){
+    const a = arcPoints[i];
+    const b = arcPoints[(i+step) % arcPoints.length];
+    const c = arcPoints[(i+step*2) % arcPoints.length];
+    // Quadratic bezier arc
+    ax.beginPath();
+    ax.moveTo(a.x, a.y);
+    ax.quadraticCurveTo(b.x, b.y, c.x, c.y);
+    ax.stroke();
+  }
+
+  // Draw arc junction dots
+  ax.fillStyle = '#00e5ff';
+  ax.shadowBlur = 4;
+  for(let i=0; i<arcPoints.length; i+=step){
+    ax.beginPath();
+    ax.arc(arcPoints[i].x, arcPoints[i].y, 2.5, 0, Math.PI*2);
+    ax.fill();
+  }
+  ax.shadowBlur = 0;
+}
+
+// ── Contour extraction (CPU pixel sampling) ─────────────────────
+function extractContour(){
+  // Sample the WebGL frame via pixel readback
+  const pxW = Math.min(W, 400), pxH = Math.min(H, 300);
+  const scaleX = W/pxW, scaleY = H/pxH;
+  const pixels = new Uint8Array(pxW*pxH*4);
+  gl.readPixels(0, 0, pxW, pxH, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+  // Detect fractal boundary: pixels with significant luminance vs background
+  const boundary = [];
+  for(let y=1; y<pxH-1; y++){
+    for(let x=1; x<pxW-1; x++){
+      const i=(y*pxW+x)*4;
+      const lum = (pixels[i]+pixels[i+1]+pixels[i+2])/3;
+      const iN=((y-1)*pxW+x)*4; const lumN=(pixels[iN]+pixels[iN+1]+pixels[iN+2])/3;
+      const iS=((y+1)*pxW+x)*4; const lumS=(pixels[iS]+pixels[iS+1]+pixels[iS+2])/3;
+      const iE=(y*pxW+x+1)*4;   const lumE=(pixels[iE]+pixels[iE+1]+pixels[iE+2])/3;
+      const iW=(y*pxW+x-1)*4;   const lumW=(pixels[iW]+pixels[iW+1]+pixels[iW+2])/3;
+      const maxDiff = Math.max(Math.abs(lum-lumN),Math.abs(lum-lumS),
+                                Math.abs(lum-lumE),Math.abs(lum-lumW));
+      if(maxDiff > 25){
+        boundary.push({ x: x*scaleX, y: (pxH-y)*scaleY }); // flip Y (WebGL bottom-up)
+      }
+    }
+  }
+
+  // Sort boundary points into approximate perimeter order
+  if(boundary.length < 3) return [];
+  const cx = boundary.reduce((s,p)=>s+p.x,0)/boundary.length;
+  const cy = boundary.reduce((s,p)=>s+p.y,0)/boundary.length;
+  boundary.sort((a,b)=>Math.atan2(a.y-cy,a.x-cx)-Math.atan2(b.y-cy,b.x-cx));
+  return boundary;
+}
+
+// ── Measurement ─────────────────────────────────────────────────
+function measureContour(){
+  const pts = extractContour();
+  if(pts.length < 6){
+    logMeasure('ERR: Insufficient boundary points. Generate fractal first.');
+    return;
+  }
+  arcPoints = pts;
+
+  // Measure total perimeter using venableCircumference (DOC=3.0)
+  let totalLen = 0;
+  let totalD   = 0;
+  const segResults = [];
+  const step = Math.max(1, Math.floor(pts.length/64));
+
+  for(let i=0; i<pts.length; i+=step){
+    const a = pts[i];
+    const b = pts[(i+step)%pts.length];
+    const segLen = Math.hypot(b.x-a.x, b.y-a.y);
+    const d = venableD(segLen);
+    const circ = venableCircumference(d);
+    totalLen += segLen;
+    totalD   += d;
+    segResults.push({segLen: segLen.toFixed(1), d, circ: circ.toFixed(1)});
+  }
+
+  const arcCount = segResults.length;
+  const avgD = (totalD/arcCount).toFixed(1);
+  const docPerimeter = (totalLen * 3 / Math.PI).toFixed(2); // convert px to DOC units
+
+  // Update readout
+  document.getElementById('mp-perimeter').textContent = docPerimeter;
+  document.getElementById('mp-arcs').textContent      = arcCount;
+  document.getElementById('mp-d').textContent         = avgD;
+  document.getElementById('mp-zoom').textContent      = zoomLevel.toFixed(2)+'×';
+
+  logMeasure('──────────────');
+  logMeasure('ZOOM: '+zoomLevel.toFixed(3)+'× | ARCS: '+arcCount);
+  logMeasure('PERIMETER: '+docPerimeter+' DOC units');
+  logMeasure('AVG D: '+avgD+' | TOTAL PX: '+totalLen.toFixed(1));
+  logMeasure('SEG sample: d='+segResults[0].d+' circ='+segResults[0].circ);
+
+  drawArcOverlay();
+}
+
+function logMeasure(msg){
+  const el = document.getElementById('measure-log');
+  el.textContent = msg + '\n' + el.textContent;
+  el.textContent = el.textContent.slice(0,2000);
+}
+
+// ── Touch/mouse orbit ────────────────────────────────────────────
+let drag=false, lastX=0, lastY=0;
+glC.addEventListener('mousedown',e=>{drag=true;lastX=e.clientX;lastY=e.clientY});
+glC.addEventListener('mouseup',  ()=>drag=false);
+glC.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  camAngle+=(e.clientX-lastX)*0.01;
+  camDist = Math.max(0.6, camDist-(e.clientY-lastY)*0.02);
+  document.getElementById('zoom-sl').value  = Math.min(8,Math.max(0.5,camDist));
+  document.getElementById('zoom-val').textContent = camDist.toFixed(2);
+  lastX=e.clientX; lastY=e.clientY;
+});
+glC.addEventListener('wheel',e=>{
+  camDist = Math.max(0.6, Math.min(8, camDist+e.deltaY*0.005));
+  document.getElementById('zoom-sl').value  = camDist;
+  document.getElementById('zoom-val').textContent = camDist.toFixed(2);
+},{passive:true});
+
+let tLast=null;
+glC.addEventListener('touchstart',e=>{if(e.touches.length===1){drag=true;lastX=e.touches[0].clientX;lastY=e.touches[0].clientY;}tLast=null;},{passive:true});
+glC.addEventListener('touchend',  ()=>{drag=false;tLast=null;},{passive:true});
+glC.addEventListener('touchmove', e=>{
+  if(e.touches.length===1&&drag){
+    camAngle+=(e.touches[0].clientX-lastX)*0.012;
+    lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+  }
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                       e.touches[0].clientY-e.touches[1].clientY);
+    if(tLast){ camDist=Math.max(0.6,Math.min(8,camDist-(d-tLast)*0.01)); }
+    tLast=d;
+  }
+},{passive:true});
+
+// ── Expose global for Autumn integration ────────────────────────
+window.arcEdgeMandelbrot = {
+  start: startGeneration,
+  stop:  stopGeneration,
+  reset: resetView,
+  measure: measureContour,
+  setDuration: function(s){ document.getElementById('dur-input').value=s; },
+  setPower: function(n){ document.getElementById('power-sl').value=n; updateUniforms(); },
+  getPerimeter: function(){ return document.getElementById('mp-perimeter').textContent; }
+};
+
+// ── Boot ─────────────────────────────────────────────────────────
+updateUniforms();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
