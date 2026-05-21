@@ -820,7 +820,7 @@ body {
           <div>MODEL: <span style="color:var(--cyan)">Ariel NPU v1</span></div>
           <div>ARCH: <span style="color:var(--magenta)">Circle Transistor</span></div>
           <div>LAYERS: <span style="color:var(--gold)">4-Layer PCB</span></div>
-          <div>DIMS: <span style="color:var(--green)">42 × 38 mm</span></div>
+          <div>DIMS: <span style="color:var(--green)">42 × 52 mm KITE</span></div>
           <div id="cam-info">CAM: ORBIT ACTIVE</div>
         </div>
       </div>
@@ -1427,6 +1427,40 @@ function setPcbLayer(layer) {
   drawPCB();
 }
 
+// ── KITE BOARD SHAPE ──────────────────────────────────────────────────────
+// Derived from Charm.stl: pointed bottom tip, broad rounded top arc
+// Real-world dims: ~42mm wide × 52mm tall (aspect 0.8 → scaled to fit)
+function kiteOutlinePath(ctx, cx, cy, bw, bh) {
+  // bw = total width, bh = total height
+  // The kite: symmetrical, pointed at bottom (cy+bh/2), curved arc top
+  // Key vertices in board-local coords (0,0 = center):
+  //   tip:   (0, +bh/2)          — bottom point
+  //   left:  (-bw/2, -bh*0.12)   — widest left point
+  //   right: (+bw/2, -bh*0.12)   — widest right point
+  //   top:   (0, -bh/2)          — top center (rounded arc)
+  const tip_y  =  bh * 0.50;
+  const wide_y = -bh * 0.12;
+  const top_y  = -bh * 0.50;
+  const hw     =  bw * 0.50;
+  // Shoulder corners (where arc meets straight sides)
+  const sh_x   =  bw * 0.46;
+  const sh_y   = -bh * 0.28;
+
+  ctx.beginPath();
+  // Start at bottom tip
+  ctx.moveTo(cx, cy + tip_y);
+  // Left straight edge up to left widest point then curve to top-left shoulder
+  ctx.lineTo(cx - hw, cy + wide_y);
+  ctx.quadraticCurveTo(cx - hw, cy + sh_y, cx - sh_x, cy + sh_y);
+  // Top arc from left shoulder to right shoulder through top center
+  ctx.quadraticCurveTo(cx - bw*0.20, cy + top_y, cx, cy + top_y);
+  ctx.quadraticCurveTo(cx + bw*0.20, cy + top_y, cx + sh_x, cy + sh_y);
+  // Right curve down to widest point then straight to tip
+  ctx.quadraticCurveTo(cx + hw, cy + sh_y, cx + hw, cy + wide_y);
+  ctx.lineTo(cx, cy + tip_y);
+  ctx.closePath();
+}
+
 function drawPCB() {
   if (!pcbCtx) { initPCB(); return; }
   resizePCB();
@@ -1438,133 +1472,224 @@ function drawPCB() {
   ctx.translate(pcbPanX + W/2, pcbPanY + H/2);
   ctx.scale(pcbZoomLevel, pcbZoomLevel);
 
-  const scale = 4.2; // px per mm (at zoom=1)
-  const bw = 42 * scale, bh = 38 * scale;
+  // Kite board: 42 mm wide × 52 mm tall (scaled at 4.2 px/mm)
+  const scale = 4.0;
+  const bw = 42 * scale;   // 168 px
+  const bh = 52 * scale;   // 208 px
+  const cx = 0, cy = 0;
 
-  // Board outline
-  const ox = -bw/2, oy = -bh/2;
-  ctx.strokeStyle = '#8844cc'; ctx.lineWidth = 1.5;
-  ctx.fillStyle = pcbCurrentLayer === 'silk' ? '#fafafa' : '#03080d';
+  // ── Board fill + outline (clip to kite shape) ──────────────────────────
+  ctx.strokeStyle = '#8844cc';
+  ctx.lineWidth   = 1.8;
+  ctx.fillStyle   = pcbCurrentLayer === 'silk' ? '#f0ede5' : '#021008';
 
-  // Rounded rect board
-  const r = 6;
-  ctx.beginPath();
-  ctx.moveTo(ox + r, oy);
-  ctx.lineTo(ox + bw - r, oy);
-  ctx.arcTo(ox + bw, oy, ox + bw, oy + r, r);
-  ctx.lineTo(ox + bw, oy + bh - r);
-  ctx.arcTo(ox + bw, oy + bh, ox + bw - r, oy + bh, r);
-  ctx.lineTo(ox + r, oy + bh);
-  ctx.arcTo(ox, oy + bh, ox, oy + bh - r, r);
-  ctx.lineTo(ox, oy + r);
-  ctx.arcTo(ox, oy, ox + r, oy, r);
-  ctx.closePath();
+  kiteOutlinePath(ctx, cx, cy, bw, bh);
   ctx.fill();
   ctx.stroke();
 
-  // Mounting holes
-  const mhPos = [[ox+8, oy+8], [ox+bw-8, oy+8], [ox+8, oy+bh-8], [ox+bw-8, oy+bh-8]];
-  mhPos.forEach(([mx, my]) => {
-    ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI*2);
-    ctx.strokeStyle = '#556677'; ctx.lineWidth = 1;
-    ctx.fillStyle = '#020810'; ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(mx, my, 8, 0, Math.PI*2);
-    ctx.strokeStyle = '#33445566'; ctx.lineWidth = 0.5; ctx.stroke();
-  });
+  // Clip all inner content to the board outline
+  ctx.save();
+  kiteOutlinePath(ctx, cx, cy, bw, bh);
+  ctx.clip();
 
-  // === TOP COPPER LAYER ===
-  if (pcbCurrentLayer === 'all' || pcbCurrentLayer === 'top') {
-    ctx.globalAlpha = 1;
-    // Main MCU pad
-    ctx.fillStyle = '#cc3333'; ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 0.5;
-    ctx.fillRect(ox + 60, oy + 55, 60, 50);
-    ctx.strokeRect(ox + 60, oy + 55, 60, 50);
-    // QFN pads around MCU
-    for (let i = 0; i < 15; i++) {
-      // top pads
-      ctx.fillStyle = '#aa2222';
-      ctx.fillRect(ox + 63 + i * 3.8, oy + 52, 2.8, 3); 
-      // bottom pads
-      ctx.fillRect(ox + 63 + i * 3.8, oy + 105, 2.8, 3);
-      if (i < 12) {
-        // left pads
-        ctx.fillRect(ox + 57, oy + 58 + i * 3.8, 3, 2.8);
-        // right pads  
-        ctx.fillRect(ox + 120, oy + 58 + i * 3.8, 3, 2.8);
-      }
-    }
-    // USB-C connector
-    ctx.fillStyle = '#884400'; ctx.strokeStyle = '#cc6600'; ctx.lineWidth = 0.5;
-    ctx.fillRect(ox + 120, oy + 130, 40, 22);
-    ctx.strokeRect(ox + 120, oy + 130, 40, 22);
-    // USB pads
-    for (let i = 0; i < 9; i++) { ctx.fillStyle='#553300'; ctx.fillRect(ox+122+i*4, oy+150, 2.5, 4); }
+  const hw = bw/2, hh = bh/2;
 
-    // Decoupling caps
-    const capPositions = [[ox+140, oy+60], [ox+145, oy+65], [ox+150, oy+60], [ox+140, oy+100], [ox+145, oy+100]];
-    capPositions.forEach(([cx, cy]) => {
-      ctx.fillStyle = '#334466'; ctx.strokeStyle = '#4466aa'; ctx.lineWidth = 0.3;
-      ctx.fillRect(cx, cy, 4, 2.5); ctx.strokeRect(cx, cy, 4, 2.5);
-    });
-    // Resistors
-    const resPositions = [[ox+20, oy+60], [ox+25, oy+60], [ox+30, oy+65], [ox+20, oy+75], [ox+25, oy+75]];
-    resPositions.forEach(([rx, ry]) => {
-      ctx.fillStyle = '#553300'; ctx.strokeStyle = '#886622'; ctx.lineWidth = 0.3;
-      ctx.fillRect(rx, ry, 6, 2.5); ctx.strokeRect(rx, ry, 6, 2.5);
-    });
-    // Traces
-    ctx.strokeStyle = '#cc333388'; ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(ox+90, oy+55); ctx.lineTo(ox+90, oy+35); ctx.lineTo(ox+130, oy+35);
-    ctx.moveTo(ox+120, oy+80); ctx.lineTo(ox+140, oy+80); ctx.lineTo(ox+140, oy+65);
-    ctx.moveTo(ox+80, oy+105); ctx.lineTo(ox+80, oy+130); ctx.lineTo(ox+120, oy+130);
-    ctx.stroke();
-    // Vias
-    const viaPositions = [[ox+90, oy+35], [ox+60, oy+35], [ox+110, oy+115], [ox+130, oy+55]];
-    viaPositions.forEach(([vx, vy]) => {
-      ctx.beginPath(); ctx.arc(vx, vy, 2.5, 0, Math.PI*2);
-      ctx.fillStyle = '#cc333355'; ctx.fill();
-      ctx.strokeStyle = '#ff555555'; ctx.lineWidth = 0.5; ctx.stroke();
-      ctx.beginPath(); ctx.arc(vx, vy, 1, 0, Math.PI*2);
-      ctx.fillStyle = '#222'; ctx.fill();
-    });
-    // LEDs
-    [[ox+25, oy+110],[ox+30, oy+110],[ox+35, oy+110],[ox+40, oy+110]].forEach(([lx,ly], i) => {
-      const cols = ['#0000ff','#00ff00','#ff0000','#ffaa00'];
-      ctx.beginPath(); ctx.arc(lx, ly, 2.5, 0, Math.PI*2);
-      ctx.fillStyle = cols[i]; ctx.fill();
-    });
-    // Silkscreen text
-    if (pcbCurrentLayer === 'all') {
-      ctx.fillStyle = '#ccaa5555'; ctx.font = `${3.5/pcbZoomLevel*2}px Share Tech Mono`;
-      ctx.textAlign = 'center';
-      const fs = Math.max(4, 7/pcbZoomLevel);
-      ctx.font = `${fs}px Share Tech Mono`;
-      ctx.fillStyle = '#ccaa44';
-      ctx.fillText('Ariel NPU Debug Probe V1', 0, oy + bh - 8);
-      ctx.fillStyle = '#666'; ctx.font = `${fs*0.75}px Share Tech Mono`;
-      ctx.fillText('GND', ox+75, oy+130); ctx.fillText('SWCLK', ox+75, oy+120);
-      ctx.fillText('SWDIO', ox+75, oy+110); ctx.fillText('IO18', ox+75, oy+100);
-      ctx.fillText('+3V3', ox+75, oy+90);
-    }
-  }
-
-  // === BOTTOM LAYER ===
+  // ── Inner PCB layer guide (subtle) ────────────────────────────────────
   if (pcbCurrentLayer === 'all' || pcbCurrentLayer === 'bot') {
-    ctx.globalAlpha = pcbCurrentLayer === 'all' ? 0.4 : 1;
-    ctx.strokeStyle = '#8844cc'; ctx.lineWidth = 1;
+    ctx.globalAlpha = pcbCurrentLayer === 'all' ? 0.25 : 0.7;
+    ctx.strokeStyle = '#8844cc'; ctx.lineWidth = 0.8;
+    // Horizontal power/gnd planes
     ctx.beginPath();
-    ctx.moveTo(ox+15, oy+20); ctx.lineTo(ox+bw-15, oy+20);
-    ctx.moveTo(ox+15, oy+bh-20); ctx.lineTo(ox+bw-15, oy+bh-20);
-    ctx.moveTo(ox+20, oy+15); ctx.lineTo(ox+20, oy+bh-15);
+    ctx.moveTo(-hw+14, -hh+30); ctx.lineTo(hw-14, -hh+30);
+    ctx.moveTo(-hw+14, hh-30);  ctx.lineTo(hw-14, hh-30);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
 
-  // Board edge indicator dots
-  ctx.fillStyle = '#00c8ff'; ctx.font = `${Math.max(5, 8/pcbZoomLevel)}px Share Tech Mono`;
-  ctx.textAlign = 'left';
-  ctx.fillText(`42 × 38 mm`, ox + 2, oy - 4);
+  // ── TOP COPPER ─────────────────────────────────────────────────────────
+  if (pcbCurrentLayer === 'all' || pcbCurrentLayer === 'top') {
+
+    // === MCU — RP2350 QFN-60-EP, centered in upper half ===
+    // Board center is (0,0); MCU at (0, -30) = upper-center
+    const mx = 0, my = -hh*0.28;   // x=0 (centered), y slightly above center
+    const mw = 58, mh = 58;
+
+    ctx.fillStyle = '#cc3333'; ctx.strokeStyle = '#ff5555'; ctx.lineWidth = 0.6;
+    ctx.fillRect(mx-mw/2, my-mh/2, mw, mh);
+    ctx.strokeRect(mx-mw/2, my-mh/2, mw, mh);
+
+    // EP (exposed pad) center
+    ctx.fillStyle = '#aa2020';
+    ctx.fillRect(mx-18, my-18, 36, 36);
+
+    // QFN-60 pads: 15 per side
+    ctx.fillStyle = '#cc4444';
+    const padW=3.2, padH=2.4, padStep=3.8;
+    for (let i=0; i<15; i++) {
+      const px = mx - mw/2 + 1.5 + padStep*i/14*(mw-3);
+      // top pads
+      ctx.fillRect(px-padW/2, my-mh/2-padH, padW, padH);
+      // bottom pads
+      ctx.fillRect(px-padW/2, my+mh/2,      padW, padH);
+    }
+    for (let i=0; i<15; i++) {
+      const py = my - mh/2 + 1.5 + padStep*i/14*(mh-3);
+      // left pads
+      ctx.fillRect(mx-mw/2-padH, py-padW/2, padH, padW);
+      // right pads
+      ctx.fillRect(mx+mw/2,      py-padW/2, padH, padW);
+    }
+
+    // MCU silkscreen label
+    ctx.fillStyle = '#ffcc44'; ctx.font = '7px Share Tech Mono'; ctx.textAlign = 'center';
+    ctx.fillText('U2', mx, my-mh/2-8);
+    ctx.fillStyle = '#cc8844'; ctx.font = '6px Share Tech Mono';
+    ctx.fillText('RP2350', mx, my-6);
+    ctx.fillStyle = '#886644'; ctx.font = '5px Share Tech Mono';
+    ctx.fillText('QFN-60-EP', mx, my+5);
+
+    // === USB-C — bottom of board (above tip), centered ===
+    const ux = 0, uy = hh*0.55;
+    ctx.fillStyle = '#884400'; ctx.strokeStyle = '#cc7700'; ctx.lineWidth = 0.6;
+    ctx.fillRect(ux-22, uy-10, 44, 20);
+    ctx.strokeRect(ux-22, uy-10, 44, 20);
+    for (let i=0; i<9; i++) {
+      ctx.fillStyle='#553300';
+      ctx.fillRect(ux-18+i*4.5, uy+9, 3, 4);
+    }
+    ctx.fillStyle='#cc8844'; ctx.font='6px Share Tech Mono'; ctx.textAlign='center';
+    ctx.fillText('X1 USB-C', ux, uy-13);
+
+    // === LDO Voltage Reg — left shoulder ===
+    const lx = -hw*0.52, ly = -hh*0.05;
+    ctx.fillStyle = '#0a3020'; ctx.strokeStyle = '#44aa66'; ctx.lineWidth = 0.5;
+    ctx.fillRect(lx-10, ly-8, 20, 16); ctx.strokeRect(lx-10, ly-8, 20, 16);
+    ctx.fillStyle = '#44cc88'; ctx.font='5px Share Tech Mono'; ctx.textAlign='center';
+    ctx.fillText('U3', lx, ly-10); ctx.fillText('LDO', lx, ly);
+
+    // === Crystal — right of MCU ===
+    const zx = hw*0.44, zy = my;
+    ctx.fillStyle='#111028'; ctx.strokeStyle='#9966cc'; ctx.lineWidth=0.5;
+    ctx.fillRect(zx-5, zy-10, 10, 20); ctx.strokeRect(zx-5, zy-10, 10, 20);
+    ctx.fillStyle='#9966cc'; ctx.font='5px Share Tech Mono'; ctx.textAlign='center';
+    ctx.fillText('ZQ1', zx, zy-13);
+    ctx.fillStyle='#666'; ctx.font='4px Share Tech Mono';
+    ctx.fillText('12MHz', zx, zy+16);
+
+    // === JTAG/SWD Header — left of MCU ===
+    const jx = -hw*0.46, jy = my;
+    ctx.fillStyle='#0a1020'; ctx.strokeStyle='#55ff88'; ctx.lineWidth=0.5;
+    ctx.fillRect(jx-5, jy-20, 10, 40); ctx.strokeRect(jx-5, jy-20, 10, 40);
+    for (let i=0; i<5; i++) {
+      ctx.beginPath(); ctx.arc(jx, jy-16+i*8, 1.5, 0, Math.PI*2);
+      ctx.fillStyle='#886622'; ctx.fill();
+    }
+    ctx.fillStyle='#55ff88'; ctx.font='4px Share Tech Mono'; ctx.textAlign='center';
+    ctx.fillText('X2', jx, jy-23);
+    ctx.fillText('SWD', jx, jy+28);
+
+    // === Decoupling caps (0402) — clustered around MCU ===
+    const capPos = [
+      [mx+mw/2+12, my-14], [mx+mw/2+12, my-7], [mx+mw/2+12, my],
+      [mx+mw/2+12, my+7],  [mx+mw/2+12, my+14],
+      [mx-mw/2-12, my-10], [mx-mw/2-12, my-3], [mx-mw/2-12, my+4],
+      [mx, my-mh/2-16],    [mx-10, my-mh/2-16],[mx+10, my-mh/2-16],
+    ];
+    capPos.forEach(([cpx,cpy]) => {
+      ctx.fillStyle='#334466'; ctx.strokeStyle='#4466aa'; ctx.lineWidth=0.3;
+      ctx.fillRect(cpx-3, cpy-1.5, 6, 3); ctx.strokeRect(cpx-3, cpy-1.5, 6, 3);
+      ctx.fillStyle='#556699';
+      ctx.fillRect(cpx-3.5,cpy-1,1.2,2);
+      ctx.fillRect(cpx+2.3,cpy-1,1.2,2);
+    });
+
+    // === Resistors (0402) — upper-left area ===
+    const resPos = [
+      [-hw*0.35, -hh*0.55], [-hw*0.25, -hh*0.55],
+      [-hw*0.35, -hh*0.48], [-hw*0.25, -hh*0.48],
+      [-hw*0.15, -hh*0.52],
+    ];
+    resPos.forEach(([rpx,rpy]) => {
+      ctx.fillStyle='#553300'; ctx.strokeStyle='#886622'; ctx.lineWidth=0.3;
+      ctx.fillRect(rpx-3.5,rpy-1.5,7,3); ctx.strokeRect(rpx-3.5,rpy-1.5,7,3);
+    });
+
+    // === LEDs — row across upper arc ===
+    const ledCols=['#0044ff','#00ff44','#ff2200','#ffaa00'];
+    const ledBase_y = -hh*0.65;
+    [-18,-6,6,18].forEach((lox,i) => {
+      ctx.beginPath(); ctx.arc(lox, ledBase_y, 3, 0, Math.PI*2);
+      ctx.fillStyle=ledCols[i]; ctx.fill();
+    });
+
+    // === Tactile buttons — top arc ===
+    [[0, -hh*0.78], [-15, -hh*0.78]].forEach(([bx,by],i) => {
+      ctx.beginPath(); ctx.arc(bx, by, 3.5, 0, Math.PI*2);
+      ctx.fillStyle='#223'; ctx.strokeStyle='#ffaa00'; ctx.lineWidth=0.5;
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#ffaa00'; ctx.font='4px Share Tech Mono'; ctx.textAlign='center';
+      ctx.fillText(i===0?'SW1':'SW2', bx, by+7);
+    });
+
+    // === Test pads (SWD breakout) — right of USB ===
+    const padLabels=['GND','SWCLK','SWDIO','IO18','+3V3'];
+    padLabels.forEach((lbl,i) => {
+      const tpx = hw*0.35, tpy = hh*0.3 + i*7;
+      ctx.beginPath(); ctx.arc(tpx, tpy, 2, 0, Math.PI*2);
+      ctx.fillStyle='#886622'; ctx.fill();
+      ctx.fillStyle='#666'; ctx.font='4px Share Tech Mono'; ctx.textAlign='left';
+      ctx.fillText(lbl, tpx+4, tpy+1.5);
+    });
+
+    // === Traces ===
+    ctx.strokeStyle='#cc333388'; ctx.lineWidth=1.0;
+    ctx.beginPath();
+    // VDD bus from LDO to MCU
+    ctx.moveTo(lx+10,ly); ctx.lineTo(mx-mw/2-16,my-10);
+    // USB data lines to MCU
+    ctx.moveTo(ux-10,uy-10); ctx.lineTo(mx-20,my+mh/2+5);
+    ctx.moveTo(ux+10,uy-10); ctx.lineTo(mx+20,my+mh/2+5);
+    ctx.stroke();
+
+    // GND trace
+    ctx.strokeStyle='#2266aa88'; ctx.lineWidth=1.4;
+    ctx.beginPath();
+    ctx.moveTo(ux,uy-10); ctx.lineTo(0,my+mh/2+25);
+    ctx.stroke();
+
+    // ── Vias ──
+    const viaPos = [[mx-mw/2-16,my-10],[0,my+mh/2+25],[mx+mw/2+16,my-10],[mx,my-mh/2-20]];
+    viaPos.forEach(([vx,vy]) => {
+      ctx.beginPath(); ctx.arc(vx,vy,2.8,0,Math.PI*2);
+      ctx.fillStyle='#cc333344'; ctx.fill();
+      ctx.strokeStyle='#ff555544'; ctx.lineWidth=0.5; ctx.stroke();
+      ctx.beginPath(); ctx.arc(vx,vy,1,0,Math.PI*2);
+      ctx.fillStyle='#111'; ctx.fill();
+    });
+
+    // === Mounting hole — single top-center via hole ===
+    ctx.beginPath(); ctx.arc(0, -hh*0.88, 5, 0, Math.PI*2);
+    ctx.fillStyle='#020810'; ctx.strokeStyle='#556677'; ctx.lineWidth=1;
+    ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, -hh*0.88, 8, 0, Math.PI*2);
+    ctx.strokeStyle='#33445555'; ctx.lineWidth=0.5; ctx.stroke();
+  }
+
+  // ── Silkscreen ──
+  if (pcbCurrentLayer === 'all') {
+    const fs = Math.max(4.5, 8/pcbZoomLevel);
+    ctx.fillStyle='#ccaa44'; ctx.font=`bold ${fs}px Share Tech Mono`; ctx.textAlign='center';
+    ctx.fillText('Ariel NPU · LEATR v1.0', 0, hh*0.78);
+    ctx.fillStyle='#555'; ctx.font=`${fs*0.8}px Share Tech Mono`;
+    ctx.fillText('Radical Deepscale LLC', 0, hh*0.78+fs*1.3);
+  }
+
+  ctx.restore(); // end clip
+
+  // Board dimension annotation (outside clip)
+  const fs2 = Math.max(5, 8/pcbZoomLevel);
+  ctx.fillStyle='#00c8ff'; ctx.font=`${fs2}px Share Tech Mono`; ctx.textAlign='left';
+  ctx.fillText(`42 × 52 mm  KITE`, -bw/2, -bh/2 - 6);
 
   ctx.restore();
 }
@@ -1646,8 +1771,29 @@ function createArielScene(engine, canvas) {
   matSilver.specularColor = new BABYLON.Color3(0.9, 0.9, 1);
   matSilver.specularPower = 200;
 
-  // === PCB Board ===
-  const board = BABYLON.MeshBuilder.CreateBox("board", {width: 8.4, height: 0.2, depth: 7.6}, scene);
+  // === PCB Board — Kite shape extruded polygon ===
+  // Kite outline in Babylon units (1 unit ≈ 5mm): 42mm wide × 52mm tall → 8.4 × 10.4
+  const bw3 = 8.4, bh3 = 10.4;
+  const hw3 = bw3/2, hh3 = bh3/2;
+  const kiteShape = [
+    new BABYLON.Vector3(0,       0,  hh3*1.00),  // bottom tip
+    new BABYLON.Vector3(-hw3,    0,  hh3*0.24),  // left wide
+    new BABYLON.Vector3(-hw3,    0, -hh3*0.16),  // left shoulder bottom
+    new BABYLON.Vector3(-hw3*0.92, 0, -hh3*0.56),// left shoulder top
+    new BABYLON.Vector3(-hw3*0.40, 0, -hh3*1.00),// left top arc
+    new BABYLON.Vector3(0,       0, -hh3*1.00),  // top center
+    new BABYLON.Vector3( hw3*0.40, 0, -hh3*1.00),// right top arc
+    new BABYLON.Vector3( hw3*0.92, 0, -hh3*0.56),// right shoulder top
+    new BABYLON.Vector3( hw3,    0, -hh3*0.16),  // right shoulder bottom
+    new BABYLON.Vector3( hw3,    0,  hh3*0.24),  // right wide
+  ];
+
+  const board = BABYLON.MeshBuilder.ExtrudePolygon('board', {
+    shape: kiteShape,
+    depth: 0.2,
+    sideOrientation: BABYLON.Mesh.DOUBLESIDE
+  }, scene);
+  board.position.y = -0.1;
   board.material = matPCB;
 
   // Silkscreen text plane
@@ -1873,48 +2019,84 @@ function snapshot3D() {
 function drawDraftsman() {
   const wrap = document.getElementById('draft-svg-wrap');
   wrap.innerHTML = `
-    <svg viewBox="0 0 400 280" width="400" height="280" xmlns="http://www.w3.org/2000/svg" style="font-family:'Share Tech Mono',monospace">
-      <rect x="1" y="1" width="398" height="278" fill="none" stroke="#333" stroke-width="1"/>
-      <!-- Board outline -->
-      <rect x="20" y="20" width="240" height="200" rx="8" fill="#f8f5ee" stroke="#333" stroke-width="2"/>
-      <!-- Copper traces suggestion -->
-      <rect x="80" y="60" width="80" height="70" fill="#cc444422" stroke="#cc4444" stroke-width="1"/>
-      <!-- MCU label -->
-      <text x="120" y="98" text-anchor="middle" font-size="7" fill="#333">RP2350</text>
-      <text x="120" y="107" text-anchor="middle" font-size="6" fill="#666">QFN-60-EP</text>
-      <!-- USB-C -->
-      <rect x="200" y="160" width="40" height="20" fill="#88888822" stroke="#888" stroke-width="1"/>
-      <text x="220" y="173" text-anchor="middle" font-size="5" fill="#666">USB-C</text>
-      <!-- Header -->
-      <rect x="20" y="130" width="12" height="40" fill="#44884422" stroke="#448844" stroke-width="0.5"/>
-      <text x="26" y="154" text-anchor="middle" font-size="5" fill="#448844" transform="rotate(-90,26,154)">JTAG</text>
-      <!-- Mounting holes -->
-      <circle cx="32" cy="32" r="5" fill="none" stroke="#555" stroke-width="1"/>
-      <circle cx="32" cy="32" r="2" fill="#888"/>
-      <circle cx="248" cy="32" r="5" fill="none" stroke="#555" stroke-width="1"/>
-      <circle cx="248" cy="32" r="2" fill="#888"/>
-      <circle cx="32" cy="208" r="5" fill="none" stroke="#555" stroke-width="1"/>
-      <circle cx="32" cy="208" r="2" fill="#888"/>
-      <circle cx="248" cy="208" r="5" fill="none" stroke="#555" stroke-width="1"/>
-      <circle cx="248" cy="208" r="2" fill="#888"/>
-      <!-- Dims -->
-      <line x1="20" y1="230" x2="260" y2="230" stroke="#333" stroke-width="0.5" marker-end="url(#arr)"/>
-      <text x="140" y="240" text-anchor="middle" font-size="7" fill="#333">42.00 mm</text>
-      <line x1="268" y1="20" x2="268" y2="220" stroke="#333" stroke-width="0.5"/>
-      <text x="278" y="124" text-anchor="middle" font-size="7" fill="#333" transform="rotate(90,278,124)">38.00 mm</text>
+    <svg viewBox="0 0 400 310" width="400" height="310" xmlns="http://www.w3.org/2000/svg" style="font-family:'Share Tech Mono',monospace">
+      <rect x="1" y="1" width="398" height="308" fill="none" stroke="#333" stroke-width="1"/>
+      <text x="140" y="22" text-anchor="middle" font-size="9" fill="#333" font-weight="bold">ARIEL NPU — LEAD EDGE ASH TREE REFLEX</text>
+      <text x="140" y="34" text-anchor="middle" font-size="6" fill="#666">View: Top (Scale 3:1) · Kite Cutout — Charm.stl</text>
+      <!-- Kite board outline centered at (140,175) -->
+      <path d="M 140,290 L 30,168 Q 30,118 55,96 Q 80,68 140,64 Q 200,68 225,96 Q 250,118 250,168 Z"
+        fill="#f8f5ee" stroke="#333" stroke-width="2"/>
+      <!-- MCU RP2350 QFN-60-EP (upper center) -->
+      <rect x="108" y="120" width="64" height="64" fill="#cc444422" stroke="#cc4444" stroke-width="1"/>
+      <rect x="120" y="132" width="40" height="40" fill="#aa222218" stroke="#cc3333" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="140" y="149" text-anchor="middle" font-size="7" fill="#333">RP2350</text>
+      <text x="140" y="158" text-anchor="middle" font-size="5" fill="#666">QFN-60-EP</text>
+      <!-- QFN pad stubs -->
+      <line x1="108" y1="120" x2="172" y2="120" stroke="#cc4444" stroke-width="3.5" stroke-dasharray="3.5,2"/>
+      <line x1="108" y1="184" x2="172" y2="184" stroke="#cc4444" stroke-width="3.5" stroke-dasharray="3.5,2"/>
+      <line x1="108" y1="120" x2="108" y2="184" stroke="#cc4444" stroke-width="3.5" stroke-dasharray="3.5,2"/>
+      <line x1="172" y1="120" x2="172" y2="184" stroke="#cc4444" stroke-width="3.5" stroke-dasharray="3.5,2"/>
+      <!-- USB-C (bottom center, above tip) -->
+      <rect x="118" y="248" width="44" height="18" fill="#88888822" stroke="#888" stroke-width="1"/>
+      <text x="140" y="260" text-anchor="middle" font-size="5.5" fill="#666">X1 USB-C</text>
+      <!-- LDO (left shoulder) -->
+      <rect x="50" y="162" width="22" height="14" fill="#44884422" stroke="#448844" stroke-width="0.6"/>
+      <text x="61" y="172" text-anchor="middle" font-size="4.5" fill="#448844">U3 LDO</text>
+      <!-- JTAG/SWD header (left of MCU) -->
+      <rect x="72" y="138" width="11" height="40" fill="#44884422" stroke="#448844" stroke-width="0.5"/>
+      <text x="77" y="162" text-anchor="middle" font-size="4" fill="#448844" transform="rotate(-90,77,162)">X2 SWD</text>
+      <!-- Crystal (right of MCU) -->
+      <rect x="184" y="140" width="11" height="22" fill="#99668822" stroke="#9966cc" stroke-width="0.5"/>
+      <text x="189" y="134" text-anchor="middle" font-size="4" fill="#9966cc">ZQ1 12M</text>
+      <!-- Test pads (right side) -->
+      <rect x="220" y="190" width="14" height="36" fill="#88662222" stroke="#886622" stroke-width="0.5"/>
+      <text x="227" y="213" text-anchor="middle" font-size="3.5" fill="#886622" transform="rotate(90,227,213)">SWD PADS</text>
+      <!-- Decoupling caps cluster -->
+      <rect x="176" y="138" width="5.5" height="3" fill="#334466" stroke="#4466aa" stroke-width="0.3"/>
+      <rect x="176" y="143" width="5.5" height="3" fill="#334466" stroke="#4466aa" stroke-width="0.3"/>
+      <rect x="176" y="148" width="5.5" height="3" fill="#334466" stroke="#4466aa" stroke-width="0.3"/>
+      <rect x="176" y="153" width="5.5" height="3" fill="#334466" stroke="#4466aa" stroke-width="0.3"/>
+      <rect x="176" y="158" width="5.5" height="3" fill="#334466" stroke="#4466aa" stroke-width="0.3"/>
+      <!-- Resistor cluster (upper left) -->
+      <rect x="100" y="106" width="7" height="3" fill="#553300" stroke="#886622" stroke-width="0.3"/>
+      <rect x="109" y="106" width="7" height="3" fill="#553300" stroke="#886622" stroke-width="0.3"/>
+      <rect x="118" y="106" width="7" height="3" fill="#553300" stroke="#886622" stroke-width="0.3"/>
+      <!-- LEDs (upper arc) -->
+      <circle cx="122" cy="97" r="3" fill="#0044ff44" stroke="#0044ff" stroke-width="0.5"/>
+      <circle cx="132" cy="91" r="3" fill="#00cc4444" stroke="#00cc44" stroke-width="0.5"/>
+      <circle cx="142" cy="89" r="3" fill="#cc220044" stroke="#cc2200" stroke-width="0.5"/>
+      <circle cx="152" cy="91" r="3" fill="#cc880044" stroke="#cc8800" stroke-width="0.5"/>
+      <!-- Tactile buttons -->
+      <circle cx="130" cy="79" r="4" fill="#22333344" stroke="#ffaa00" stroke-width="0.6"/>
+      <circle cx="148" cy="77" r="4" fill="#22333344" stroke="#ffaa00" stroke-width="0.6"/>
+      <text x="130" y="72" text-anchor="middle" font-size="3.5" fill="#888">SW1</text>
+      <text x="148" y="70" text-anchor="middle" font-size="3.5" fill="#888">SW2</text>
+      <!-- Mounting hole (top center) -->
+      <circle cx="140" cy="72" r="5.5" fill="none" stroke="#555" stroke-width="1"/>
+      <circle cx="140" cy="72" r="2" fill="#888"/>
+      <!-- Dimension: width -->
+      <line x1="30" y1="300" x2="250" y2="300" stroke="#333" stroke-width="0.6"/>
+      <line x1="30" y1="296" x2="30" y2="304" stroke="#333" stroke-width="0.6"/>
+      <line x1="250" y1="296" x2="250" y2="304" stroke="#333" stroke-width="0.6"/>
+      <text x="140" y="308" text-anchor="middle" font-size="7" fill="#333">42.00 mm</text>
+      <!-- Dimension: height -->
+      <line x1="260" y1="64" x2="260" y2="290" stroke="#333" stroke-width="0.6"/>
+      <line x1="256" y1="64" x2="264" y2="64" stroke="#333" stroke-width="0.6"/>
+      <line x1="256" y1="290" x2="264" y2="290" stroke="#333" stroke-width="0.6"/>
+      <text x="282" y="182" text-anchor="middle" font-size="7" fill="#333" transform="rotate(90,282,182)">52.00 mm</text>
       <!-- Legend -->
-      <rect x="270" y="50" width="120" height="90" fill="white" stroke="#333" stroke-width="0.5"/>
-      <text x="280" y="65" font-size="7" fill="#333" font-weight="bold">NOTES:</text>
-      <text x="280" y="78" font-size="5.5" fill="#555">1. 4-Layer PCB</text>
-      <text x="280" y="88" font-size="5.5" fill="#555">2. IPC-A-600 Class 2</text>
-      <text x="280" y="98" font-size="5.5" fill="#555">3. Finish: HASL</text>
-      <text x="280" y="108" font-size="5.5" fill="#555">4. Silkscreen: Top</text>
-      <text x="280" y="118" font-size="5.5" fill="#555">5. Min trace: 0.1mm</text>
-      <text x="280" y="128" font-size="5.5" fill="#555">6. LEATR v1.0 arch.</text>
-      <!-- Scale note -->
-      <text x="140" y="215" text-anchor="middle" font-size="7" fill="#555">View from Top side (Scale 3:1)</text>
-      <!-- Radical Deepscale stamp -->
-      <text x="330" y="265" text-anchor="middle" font-size="6" fill="#8844cc" font-weight="bold">Radical Deepscale</text>
+      <rect x="270" y="50" width="122" height="110" fill="white" stroke="#333" stroke-width="0.5"/>
+      <text x="281" y="64" font-size="7" fill="#333" font-weight="bold">NOTES:</text>
+      <text x="281" y="76" font-size="5.5" fill="#555">1. 4-Layer PCB</text>
+      <text x="281" y="86" font-size="5.5" fill="#555">2. IPC-A-600 Class 2</text>
+      <text x="281" y="96" font-size="5.5" fill="#555">3. Finish: ENIG</text>
+      <text x="281" y="106" font-size="5.5" fill="#555">4. Outline: KITE (Charm.stl)</text>
+      <text x="281" y="116" font-size="5.5" fill="#555">5. Min trace: 0.1mm</text>
+      <text x="281" y="126" font-size="5.5" fill="#555">6. LEATR v1.0 arch.</text>
+      <text x="281" y="136" font-size="5.5" fill="#555">7. 1× M2 mount hole</text>
+      <text x="281" y="146" font-size="5.5" fill="#555">8. All top-side assembly</text>
+      <!-- Stamp -->
+      <text x="330" y="298" text-anchor="middle" font-size="6" fill="#8844cc" font-weight="bold">Radical Deepscale LLC</text>
     </svg>`;
 }
 
