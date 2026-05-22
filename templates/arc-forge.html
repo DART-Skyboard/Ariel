@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ARC FORGE — Radical Deepscale EDA</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babylonjs/6.26.0/babylon.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babylonjs/6.26.0/babylon.gui.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/controls/OrbitControls.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@200;400;600;700;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
@@ -36,34 +36,46 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── PWA Layout Root ───────────────────────────────────────────────────
+   --app-h set by JS to window.innerHeight so the layout never gets pushed
+   off-screen by Android's address bar or PWA chrome.
+   body is a fixed 3-row flex column:
+     row 1: #titlebar + #menubar  (flex-shrink:0, always visible)
+     row 2: #main                 (flex:1 1 0, min-height:0 — fills space)
+     row 3: #props-panel          (flex-shrink:0, 72px)
+     row 4: #statusbar            (flex-shrink:0, 20px footer)
+   Total = --app-h, nothing overflows. */
 body {
   background: var(--bg-deep);
   color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: 13px;
-  height: 100vh;
-  max-height: 100vh;
+  width: 100vw;
+  height: var(--app-h, 100dvh);
+  max-height: var(--app-h, 100dvh);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   user-select: none;
   position: fixed;
   inset: 0;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 /* ===== TOP TITLEBAR ===== */
 #titlebar {
   height: 38px;
+  min-height: 38px;
   background: linear-gradient(90deg, #020c16 0%, #040f1a 50%, #020c16 100%);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  gap: 12px;
+  padding: 0 10px;
+  gap: 8px;
   flex-shrink: 0;
-  position: relative;
   z-index: 100;
-  min-height: 38px;
+  overflow: hidden;
 }
 #titlebar::after {
   content: '';
@@ -128,16 +140,20 @@ body {
 /* ===== MENU BAR ===== */
 #menubar {
   height: 26px;
+  min-height: 26px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 6px;
   gap: 2px;
   flex-shrink: 0;
   z-index: 99;
-  min-height: 26px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
+#menubar::-webkit-scrollbar { display: none; }
 .menu-item {
   padding: 2px 10px;
   font-family: var(--font-ui);
@@ -158,21 +174,32 @@ body {
   display: flex;
   flex: 1 1 0;
   overflow: hidden;
-  min-height: 0;   /* critical: lets flex child shrink below content size */
+  min-height: 0;
 }
 
 /* ===== LEFT SIDEBAR ===== */
 #sidebar {
-  width: 160px;
+  width: 155px;
+  min-width: 155px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  overflow: hidden;   /* children scroll internally */
+  height: 100%;
+}
+/* scrollable tree area inside sidebar */
+#sidebar-scroll {
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,200,255,0.2) transparent;
 }
+#sidebar-scroll::-webkit-scrollbar { width: 3px; }
+#sidebar-scroll::-webkit-scrollbar-thumb { background: rgba(0,200,255,0.2); border-radius: 3px; }
 .sidebar-section {
   border-bottom: 1px solid var(--border);
 }
@@ -213,7 +240,7 @@ body {
 .tree-item.folder { color: var(--gold); font-weight: 700; font-size: 10px; letter-spacing: 1px; padding-left: 10px; }
 .tree-item .ti-icon { font-size: 10px; opacity: 0.7; flex-shrink: 0; }
 .tree-item .ti-badge { margin-left: auto; font-size: 9px; background: var(--border); padding: 1px 4px; border-radius: 2px; }
-.sidebar-bottom { flex: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 8px; gap: 5px; margin-top: auto; }
+.sidebar-bottom { flex-shrink: 0; display: flex; flex-direction: column; gap: 5px; padding: 8px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.25); }
 .sidebar-tool-btn {
   display: flex;
   align-items: center;
@@ -243,6 +270,7 @@ body {
   overflow: hidden;
   min-height: 0;
   min-width: 0;
+  height: 100%;
 }
 
 /* ===== TAB BAR ===== */
@@ -528,7 +556,7 @@ body {
 }
 .npu-tagline { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); letter-spacing: 2px; }
 
-/* ===== PROPERTIES PANEL — now bottom bar ===== */
+/* ===== PROPERTIES PANEL — bottom bar (ArcLake footer pattern) ===== */
 #props-panel {
   width: 100%;
   background: var(--bg-panel);
@@ -537,9 +565,12 @@ body {
   flex-direction: row;
   flex-shrink: 0;
   overflow: hidden;
-  height: 80px;
-  min-height: 80px;
+  height: 72px;
+  min-height: 72px;
   z-index: 50;
+}
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  #props-panel { padding-bottom: max(0px, env(safe-area-inset-bottom)); }
 }
 .props-header {
   padding: 4px 10px;
@@ -584,7 +615,7 @@ body {
 }
 .prop-value:focus { border-color: var(--cyan); }
 
-/* ===== STATUSBAR ===== */
+/* ===== STATUSBAR — pinned footer ===== */
 #statusbar {
   height: 20px;
   min-height: 20px;
@@ -593,12 +624,14 @@ body {
   display: flex;
   align-items: center;
   padding: 0 10px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   gap: 14px;
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--text-muted);
   z-index: 51;
+  overflow: hidden;
 }
 .sb-item { display: flex; align-items: center; gap: 4px; }
 .sb-val { color: var(--text-secondary); }
@@ -755,6 +788,7 @@ body {
 
   <!-- LEFT SIDEBAR -->
   <div id="sidebar">
+    <div id="sidebar-scroll">
     <div class="sidebar-section">
       <div class="sidebar-section-header">▾ &nbsp;PROJECT</div>
       <div class="sidebar-tree">
@@ -791,6 +825,7 @@ body {
         <div class="tree-item"><span style="color:#555">■</span> Board Outline</div>
       </div>
     </div>
+    </div><!-- /sidebar-scroll -->
     <div class="sidebar-bottom">
       <button class="sidebar-tool-btn" onclick="openImport()">⬆ Import CAD File</button>
       <button class="sidebar-tool-btn" onclick="exportDesign()">⬇ Export / Gerber</button>
@@ -1127,391 +1162,305 @@ let schZoomLevel = 1, schPanX = 0, schPanY = 0;
 let pcbZoomLevel = 1, pcbPanX = 0, pcbPanY = 0;
 let schPanning = false, schLastX = 0, schLastY = 0;
 let pcbPanning = false, pcbLastX = 0, pcbLastY = 0;
-let babylonEngine = null, babylonScene = null;
+let _3d = null; // { renderer, scene, camera, controls, animId, board, wireframe }
+let babylonEngine = null; // kept for compat checks (null = Three.js active)
 let pcbCurrentLayer = 'all';
 
 // ===== TAB SWITCHING =====
 function switchTab(tab) {
-  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('tab-' + tab).classList.add('active');
-  document.getElementById('view-' + tab).classList.add('active');
-  document.getElementById('sb-mode').textContent = tab.toUpperCase() + ' VIEW';
   currentTab = tab;
-  if (tab === '3d') { setTimeout(function(){
-    if(!babylonEngine) { initBabylon(); }
-    else {
-      const c = document.getElementById('babylon-canvas');
-      const p = document.getElementById('view-3d');
-      c.width = p.clientWidth; c.height = p.clientHeight;
-      babylonEngine.resize();
-    }
-  }, 100); }
-  if (tab === 'sch') { setTimeout(drawSchematic, 50); }
-  if (tab === 'pcb') { setTimeout(drawPCB, 50); }
-  if (tab === 'draft') { setTimeout(drawDraftsman, 50); }
-  // update sidebar active
-  document.querySelectorAll('.tree-item').forEach(i => {
-    if (i.getAttribute('onclick') === "switchTab('"+tab+"')") i.classList.add('active');
-    else if (i.getAttribute('onclick') && i.getAttribute('onclick').startsWith('switchTab')) i.classList.remove('active');
-  });
-}
-
-// =============================================
-// SCHEMATIC DRAWING ENGINE
-// =============================================
-let schCanvas, schCtx, schW, schH;
-
-function initSch() {
-  schCanvas = document.getElementById('sch-canvas');
-  schCtx = schCanvas.getContext('2d');
-  resizeSch();
-  drawSchematic();
-
-  schCanvas.addEventListener('wheel', e => {
-    e.preventDefault();
-    const f = e.deltaY < 0 ? 1.1 : 0.9;
-    schZoomLevel = Math.max(0.2, Math.min(8, schZoomLevel * f));
-    drawSchematic();
-  });
-  schCanvas.addEventListener('mousedown', e => {
-    if (e.button === 1 || e.button === 2) { schPanning = true; schLastX = e.clientX; schLastY = e.clientY; e.preventDefault(); }
-  });
-  schCanvas.addEventListener('mousemove', e => {
-    const r = schCanvas.getBoundingClientRect();
-    const wx = (e.clientX - r.left - schPanX) / schZoomLevel;
-    const wy = (e.clientY - r.top - schPanY) / schZoomLevel;
-    document.getElementById('sb-x').textContent = wx.toFixed(3);
-    document.getElementById('sb-y').textContent = wy.toFixed(3);
-    if (schPanning) {
-      schPanX += e.clientX - schLastX;
-      schPanY += e.clientY - schLastY;
-      schLastX = e.clientX; schLastY = e.clientY;
-      drawSchematic();
-    }
-  });
-  document.addEventListener('mouseup', () => { schPanning = false; pcbPanning = false; });
-}
-
-function resizeSch() {
-  const wrap = document.querySelector('.sch-canvas-wrap');
-  if (!wrap) return;
-  schCanvas.width = wrap.clientWidth;
-  schCanvas.height = wrap.clientHeight;
-  schW = schCanvas.width;
-  schH = schCanvas.height;
-}
-
-function schZoom(f) { schZoomLevel = Math.max(0.2, Math.min(8, schZoomLevel * f)); drawSchematic(); }
-function schFit() { schZoomLevel = 1; schPanX = 0; schPanY = 0; drawSchematic(); }
-
-function drawSchematic() {
-  if (!schCtx) { initSch(); return; }
-  resizeSch();
-  const ctx = schCtx;
-  const W = schW, H = schH;
-  ctx.save();
-  ctx.fillStyle = '#080f18';
-  ctx.fillRect(0, 0, W, H);
-
-  // Grid
-  ctx.save();
-  ctx.translate(schPanX + W/2, schPanY + H/2);
-  ctx.scale(schZoomLevel, schZoomLevel);
-  const gridSize = 20;
-  const gx0 = -W/schZoomLevel, gx1 = W/schZoomLevel;
-  const gy0 = -H/schZoomLevel, gy1 = H/schZoomLevel;
-  ctx.strokeStyle = 'rgba(0,100,160,0.18)';
-  ctx.lineWidth = 0.3;
-  for (let x = Math.floor(gx0/gridSize)*gridSize; x < gx1; x+=gridSize) {
-    ctx.beginPath(); ctx.moveTo(x,gy0); ctx.lineTo(x,gy1); ctx.stroke();
+  document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+  const panel = document.getElementById('view-' + tab);
+  const tabEl = document.getElementById('tab-' + tab);
+  if (panel) panel.classList.add('active');
+  if (tabEl)  tabEl.classList.add('active');
+  if (tab === '3d') {
+    setTimeout(function() {
+      if (!_3d) { init3D(); }
+      else {
+        const p = document.getElementById('view-3d');
+        _3d.renderer.setSize(p.clientWidth, p.clientHeight);
+        _3d.camera.aspect = p.clientWidth / p.clientHeight;
+        _3d.camera.updateProjectionMatrix();
+      }
+    }, 80);
   }
-  for (let y = Math.floor(gy0/gridSize)*gridSize; y < gy1; y+=gridSize) {
-    ctx.beginPath(); ctx.moveTo(gx0,y); ctx.lineTo(gx1,y); ctx.stroke();
+  if (tab === 'sch') setTimeout(function(){ resizeSch(); drawSchematic(); }, 50);
+  if (tab === 'pcb') setTimeout(function(){ resizePCB(); drawPCB(); }, 50);
+  if (tab === 'draft') setTimeout(drawDraftsman, 50);
+}
+
+// ── Three.js 3D Scene ─────────────────────────────────────────────────────
+function init3D() {
+  if (_3d) return;
+  const canvas = document.getElementById('babylon-canvas');
+  const parent = document.getElementById('view-3d');
+  if (!canvas || !parent) return;
+  const W = parent.clientWidth  || window.innerWidth;
+  const H = parent.clientHeight || window.innerHeight;
+
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.setClearColor(0x020508, 1);
+
+  // Scene + fog
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x020508, 30, 80);
+
+  // Camera
+  const camera = new THREE.PerspectiveCamera(42, W / H, 0.1, 200);
+  camera.position.set(0, 18, 12);
+  camera.lookAt(0, 0, 0);
+
+  // Orbit controls
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 4;
+  controls.maxDistance = 55;
+  controls.target.set(0, 0, 0);
+
+  // Lights
+  scene.add(new THREE.AmbientLight(0x1a2a44, 0.7));
+  const key = new THREE.DirectionalLight(0x00c8ff, 1.6);
+  key.position.set(8, 20, 10); key.castShadow = true;
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0xff0090, 0.5);
+  fill.position.set(-10, 6, -8); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.25);
+  rim.position.set(0, -4, 14); scene.add(rim);
+
+  // ── Kite board shape ────────────────────────────────────────────────────
+  // Reference: Charm.stl + Image 1 (spearhead kite)
+  // Shape: wide flat top (~120° apex), straight angled sides, VERY sharp bottom tip.
+  // Proportions: width ≈ 0.80 × height, top ~40% of height, bottom 60% tapers to point.
+  // All coords in XY (shape extruded along Z), then rotated to lie flat.
+  const W2 = 5.2,  // half-width at widest point
+        Htop = 3.2, // distance from center to top flat edge
+        Hbot = 7.8; // distance from center to bottom tip (elongated)
+
+  // Top edge: slight inward angle creating the "kite top" flat-ish peak
+  // Left side straight from top-left corner down through widest, then straight to tip
+  const kPts = [
+    new THREE.Vector2( 0,       Htop),      // top center peak
+    new THREE.Vector2(-W2*0.55, Htop),      // top-left
+    new THREE.Vector2(-W2,      Htop*0.15), // left widest (near top-center)
+    new THREE.Vector2(-W2*0.18,-Hbot*0.20), // left lower
+    new THREE.Vector2( 0,      -Hbot),      // bottom sharp tip
+    new THREE.Vector2( W2*0.18,-Hbot*0.20), // right lower
+    new THREE.Vector2( W2,      Htop*0.15), // right widest
+    new THREE.Vector2( W2*0.55, Htop),      // top-right
+  ];
+
+  const boardShape = new THREE.Shape(kPts);
+
+  // Mounting hole at top
+  const hole = new THREE.Path();
+  hole.absarc(0, Htop * 0.72, 0.28, 0, Math.PI * 2, false);
+  boardShape.holes.push(hole);
+
+  const extCfg = { depth: 0.22, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2 };
+  const boardGeo = new THREE.ExtrudeGeometry(boardShape, extCfg);
+  boardGeo.rotateX(-Math.PI / 2);
+  boardGeo.center();
+
+  const boardMat = new THREE.MeshStandardMaterial({ color: 0x021208, metalness: 0.08, roughness: 0.6 });
+  const board = new THREE.Mesh(boardGeo, boardMat);
+  board.receiveShadow = true; board.castShadow = true;
+  scene.add(board);
+
+  // Copper layer (top face)
+  const copperPts = kPts.map(p => new THREE.Vector2(p.x * 0.96, p.y * 0.96));
+  const copperShape = new THREE.Shape(copperPts);
+  const copperGeo = new THREE.ShapeGeometry(copperShape);
+  copperGeo.rotateX(-Math.PI / 2);
+  const copperMat = new THREE.MeshStandardMaterial({ color: 0xb83000, metalness: 0.55, roughness: 0.4, transparent: true, opacity: 0.7 });
+  const copper = new THREE.Mesh(copperGeo, copperMat);
+  copper.position.y = 0.12;
+  scene.add(copper);
+
+  // ── MCU (RP2350 QFN-60) — upper center ─────────────────────────────────
+  const mcuMat = new THREE.MeshStandardMaterial({ color: 0x0d0d0d, metalness: 0.3, roughness: 0.85 });
+  const mcu = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.16, 2.2), mcuMat);
+  mcu.position.set(0, 0.20, -0.6);
+  mcu.castShadow = true; scene.add(mcu);
+  // EP pad
+  const epMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, metalness: 0.9, roughness: 0.15 });
+  const ep = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.03, 1.2), epMat);
+  ep.position.set(0, 0.30, -0.6); scene.add(ep);
+
+  // QFN pads (simplified — rows of gold pads around MCU)
+  const padMat = new THREE.MeshStandardMaterial({ color: 0xc8900a, metalness: 0.85, roughness: 0.2 });
+  const padGeo = new THREE.BoxGeometry(0.18, 0.04, 0.38);
+  for (let i = 0; i < 15; i++) {
+    const t = -1.0 + i * (2.0 / 14);
+    [-1.16, 1.16].forEach(side => {
+      const pad = new THREE.Mesh(padGeo, padMat);
+      pad.position.set(side, 0.22, t - 0.6);
+      scene.add(pad);
+    });
+  }
+  const padGeoV = new THREE.BoxGeometry(0.38, 0.04, 0.18);
+  for (let i = 0; i < 15; i++) {
+    const t = -1.0 + i * (2.0 / 14);
+    [-1.16, 1.16].forEach(side => {
+      const pad = new THREE.Mesh(padGeoV, padMat);
+      pad.position.set(t, 0.22, side - 0.6);
+      scene.add(pad);
+    });
   }
 
-  // Border
-  ctx.strokeStyle = '#1a3a5a'; ctx.lineWidth = 1;
-  ctx.strokeRect(-280, -220, 560, 440);
+  // MCU silkscreen label (plane with emissive text-like material)
+  const labelMat = new THREE.MeshStandardMaterial({ color: 0xddcc88, emissive: 0x443300, roughness: 1 });
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.4), labelMat);
+  label.rotation.x = -Math.PI / 2;
+  label.position.set(0, 0.30, -0.6);
+  scene.add(label);
 
-  // Title block
-  ctx.fillStyle = '#0a1a2a';
-  ctx.fillRect(180, 150, 100, 60);
-  ctx.strokeStyle = '#1a4a7a'; ctx.lineWidth = 0.5;
-  ctx.strokeRect(180, 150, 100, 60);
-  ctx.fillStyle = '#4a8aaa'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'left';
-  ctx.fillText('TITLE', 183, 158);
-  ctx.fillStyle = '#00c8ff'; ctx.font = 'bold 6px Share Tech Mono';
-  ctx.fillText('Ariel NPU v1.0', 183, 168);
-  ctx.fillStyle = '#4a8aaa'; ctx.font = '5px Share Tech Mono';
-  ctx.fillText('Radical Deepscale LLC', 183, 178);
-  ctx.fillText('Rev: A.1', 183, 186);
-  ctx.fillText('Date: 2025-05-21', 183, 194);
-  ctx.fillText('Sheet 1 / 1', 183, 202);
+  // ── USB-C (lower center, near tip) ─────────────────────────────────────
+  const usbMat = new THREE.MeshStandardMaterial({ color: 0x553300, metalness: 0.5, roughness: 0.4 });
+  const usb = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.22, 0.75), usbMat);
+  usb.position.set(0, 0.18, 4.2);
+  usb.castShadow = true; scene.add(usb);
 
-  // === DRAW COMPONENTS ===
-  drawSchIC(ctx, -150, -80, 'U1', 'RP2350', 60, 100, '#cc4444');
-  drawSchIC(ctx, 80, -80, 'U2', 'QFN-60-EP\nMicro\nController', 50, 80, '#cc7744');
-  drawSchVReg(ctx, -220, -40, 'U3', 'LDO 3.3V');
-  drawSchCap(ctx, 60, 60, 'C1', '4.7uF');
-  drawSchCap(ctx, 80, 60, 'C2', '100nF');
-  drawSchCap(ctx, 100, 60, 'C3', '100pF');
-  drawSchRes(ctx, -60, 60, 'R1', '33R');
-  drawSchRes(ctx, -40, 60, 'R2', '10k');
-  drawSchRes(ctx, -20, 60, 'R3', '100R');
-  drawSchCrystal(ctx, 140, -30, 'ZQ1', '12MHz');
-  drawSchConnector(ctx, -250, -130, 'X1', 'USB-C', 8);
-  drawSchConnector(ctx, 190, -130, 'X2', 'JTAG/SWD', 10);
-  drawSchLED(ctx, -60, -130, 'VD1', 'BLUE');
-  drawSchLED(ctx, -40, -130, 'VD2', 'GREEN');
-  drawSchLED(ctx, -20, -130, 'VD3', 'RED');
-  drawSchTransistor(ctx, 160, 80, 'VT1', 'NMOS');
-  drawSchButton(ctx, 80, -140, 'SW1', 'RESET');
-  drawSchButton(ctx, 100, -140, 'SW2', 'BOOT');
+  // ── LDO (left shoulder) ─────────────────────────────────────────────────
+  const ldoMat = new THREE.MeshStandardMaterial({ color: 0x112a11, metalness: 0.1, roughness: 0.7 });
+  const ldo = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.16, 0.6), ldoMat);
+  ldo.position.set(-2.8, 0.20, 0.4); scene.add(ldo);
 
-  // Nets / wires
-  ctx.strokeStyle = '#00aa66'; ctx.lineWidth = 1.5;
-  // VDD net
-  ctx.beginPath(); ctx.moveTo(-190, -110); ctx.lineTo(-190, -130); ctx.lineTo(250, -130); ctx.stroke();
-  // GND net
-  ctx.strokeStyle = '#2266aa';
-  ctx.beginPath(); ctx.moveTo(-190, 100); ctx.lineTo(250, 100); ctx.stroke();
-  // Signal bus
-  ctx.strokeStyle = '#cc6600'; ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(-90, -80); ctx.lineTo(-90, -50); ctx.lineTo(80, -50);
-  ctx.stroke();
-  ctx.fillStyle = '#cc6600'; ctx.font = 'bold 7px Share Tech Mono';
-  ctx.textAlign = 'center'; ctx.fillText('MCU_BUS', -5, -45);
-  ctx.strokeStyle = '#0088cc'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(-90, 20); ctx.lineTo(160, 20); ctx.stroke();
+  // ── Crystal (right of MCU) ──────────────────────────────────────────────
+  const xtalMat = new THREE.MeshStandardMaterial({ color: 0x1a1128, metalness: 0.3, roughness: 0.5 });
+  const xtal = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.2, 0.82), xtalMat);
+  xtal.position.set(1.6, 0.22, -0.6); scene.add(xtal);
 
-  // Net labels
-  drawNetLabel(ctx, -190, -110, '+3V3', '#ff8844');
-  drawNetLabel(ctx, -190, 100, 'GND', '#4488cc');
-  drawNetLabel(ctx, 180, -50, 'SWDIO', '#00ff88');
-  drawNetLabel(ctx, 180, -40, 'SWCLK', '#00ff88');
-  drawNetLabel(ctx, 180, -30, 'IO18', '#00ff88');
-
-  ctx.restore();
-  ctx.restore();
-}
-
-function drawSchIC(ctx, x, y, ref, val, w, h, col) {
-  ctx.fillStyle = '#0a1a2a'; ctx.strokeStyle = col; ctx.lineWidth = 1.2;
-  ctx.fillRect(x - w/2, y - h/2, w, h);
-  ctx.strokeRect(x - w/2, y - h/2, w, h);
-  ctx.fillStyle = col; ctx.font = 'bold 8px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x, y - h/2 + 10);
-  ctx.fillStyle = '#88aacc'; ctx.font = '6px Share Tech Mono';
-  ctx.fillText(val, x, y);
-  // Pins left
-  const pinCount = 8;
-  for (let i = 0; i < pinCount; i++) {
-    const py = y - h/2 + (h / (pinCount+1)) * (i+1);
-    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
-    ctx.beginPath(); ctx.moveTo(x - w/2 - 12, py); ctx.lineTo(x - w/2, py); ctx.stroke();
-    ctx.fillStyle = '#446688'; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'right';
-    ctx.fillText('P' + (i+1), x - w/2 - 14, py + 1.5);
-  }
-  // Pins right
-  for (let i = 0; i < pinCount; i++) {
-    const py = y - h/2 + (h / (pinCount+1)) * (i+1);
-    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
-    ctx.beginPath(); ctx.moveTo(x + w/2, py); ctx.lineTo(x + w/2 + 12, py); ctx.stroke();
-    ctx.fillStyle = '#446688'; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'left';
-    ctx.fillText('Q' + (i+1), x + w/2 + 14, py + 1.5);
-  }
-}
-
-function drawSchVReg(ctx, x, y, ref, val) {
-  ctx.fillStyle = '#0a1520'; ctx.strokeStyle = '#44aa66'; ctx.lineWidth = 1;
-  ctx.fillRect(x, y - 20, 40, 40); ctx.strokeRect(x, y - 20, 40, 40);
-  ctx.fillStyle = '#44aa66'; ctx.font = 'bold 6px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x + 20, y - 8);
-  ctx.fillStyle = '#88aacc'; ctx.font = '5px Share Tech Mono';
-  ctx.fillText(val, x + 20, y + 4);
-  ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
-  ctx.beginPath(); ctx.moveTo(x, y-10); ctx.lineTo(x-15, y-10); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+40, y-10); ctx.lineTo(x+55, y-10); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+20, y+20); ctx.lineTo(x+20, y+35); ctx.stroke();
-}
-
-function drawSchCap(ctx, x, y, ref, val) {
-  ctx.strokeStyle = '#44aacc'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x, y - 5); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x - 8, y - 5); ctx.lineTo(x + 8, y - 5); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 10); ctx.stroke();
-  ctx.fillStyle = '#44aacc'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x, y - 18);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
-  ctx.fillText(val, x, y + 15);
-}
-
-function drawSchRes(ctx, x, y, ref, val) {
-  ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 12); ctx.stroke();
-  ctx.fillStyle = '#0a1520'; ctx.strokeStyle = '#f5a623';
-  ctx.fillRect(x - 5, y - 12, 10, 24); ctx.strokeRect(x - 5, y - 12, 10, 24);
-  ctx.beginPath(); ctx.moveTo(x, y + 12); ctx.lineTo(x, y + 20); ctx.stroke();
-  ctx.fillStyle = '#f5a623'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x + 8, y - 14);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
-  ctx.fillText(val, x + 8, y);
-}
-
-function drawSchCrystal(ctx, x, y, ref, val) {
-  ctx.strokeStyle = '#cc88ff'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 10); ctx.stroke();
-  ctx.fillStyle = '#0a1020'; ctx.strokeStyle = '#cc88ff';
-  ctx.fillRect(x - 6, y - 10, 12, 20); ctx.strokeRect(x - 6, y - 10, 12, 20);
-  ctx.beginPath(); ctx.moveTo(x, y + 10); ctx.lineTo(x, y + 20); ctx.stroke();
-  ctx.fillStyle = '#cc88ff'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x, y - 22);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
-  ctx.fillText(val, x, y + 26);
-}
-
-function drawSchConnector(ctx, x, y, ref, val, pins) {
-  ctx.fillStyle = '#0a1020'; ctx.strokeStyle = '#55ff88'; ctx.lineWidth = 1;
-  const h = pins * 8;
-  ctx.fillRect(x, y, 24, h); ctx.strokeRect(x, y, 24, h);
-  ctx.fillStyle = '#55ff88'; ctx.font = 'bold 5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x + 12, y - 4);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
-  ctx.fillText(val, x + 12, y + h + 7);
-  for (let i = 0; i < pins; i++) {
-    const py = y + 4 + i * 8;
-    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.6;
-    ctx.beginPath(); ctx.moveTo(x + 24, py); ctx.lineTo(x + 36, py); ctx.stroke();
-    ctx.fillStyle = '#556677'; ctx.font = '3.5px Share Tech Mono'; ctx.textAlign = 'left';
-    ctx.fillText((i+1), x + 3, py + 1.5);
-  }
-}
-
-function drawSchLED(ctx, x, y, ref, col) {
-  const c = col === 'BLUE' ? '#0044ff' : col === 'GREEN' ? '#00ff44' : '#ff2200';
-  ctx.strokeStyle = c; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 5); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x - 6, y - 5); ctx.lineTo(x + 6, y + 5); ctx.lineTo(x - 6, y + 5); ctx.closePath(); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x - 6, y - 5); ctx.lineTo(x + 6, y - 5); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 12); ctx.stroke();
-  ctx.fillStyle = c; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x, y - 14);
-}
-
-function drawSchTransistor(ctx, x, y, ref, type) {
-  ctx.strokeStyle = '#88aaff'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y + 20); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x - 15, y); ctx.lineTo(x, y); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x + 15, y - 20); ctx.lineTo(x + 15, y - 30); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x, y + 10); ctx.lineTo(x + 15, y + 20); ctx.lineTo(x + 15, y + 30); ctx.stroke();
-  ctx.fillStyle = '#88aaff'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x - 8, y - 22);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono'; ctx.fillText(type, x + 18, y);
-}
-
-function drawSchButton(ctx, x, y, ref, val) {
-  ctx.strokeStyle = '#ffaa00'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 5); ctx.stroke();
-  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 12); ctx.stroke();
-  ctx.fillStyle = '#ffaa00'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
-  ctx.fillText(ref, x, y - 14);
-  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono'; ctx.fillText(val, x, y + 18);
-}
-
-function drawNetLabel(ctx, x, y, label, col) {
-  ctx.fillStyle = col || '#00ff88';
-  ctx.font = 'bold 7px Share Tech Mono'; ctx.textAlign = 'left';
-  ctx.fillText(label, x + 3, y + 3);
-  ctx.strokeStyle = col || '#00ff88'; ctx.lineWidth = 0.8;
-  ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x, y); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x, y - 4); ctx.lineTo(x - 8, y); ctx.lineTo(x, y + 4); ctx.closePath();
-  ctx.stroke();
-}
-
-// =============================================
-// PCB CANVAS ENGINE
-// =============================================
-let pcbCanvas, pcbCtx, pcbW, pcbH;
-
-function initPCB() {
-  pcbCanvas = document.getElementById('pcb-canvas');
-  if (!pcbCanvas) return;
-  pcbCtx = pcbCanvas.getContext('2d');
-  resizePCB();
-  drawPCB();
-
-  pcbCanvas.addEventListener('wheel', e => {
-    e.preventDefault();
-    const f = e.deltaY < 0 ? 1.1 : 0.9;
-    pcbZoomLevel = Math.max(0.3, Math.min(15, pcbZoomLevel * f));
-    drawPCB();
+  // ── Decoupling caps (0402, tiny beige blocks) ───────────────────────────
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x334466, metalness: 0.1, roughness: 0.8 });
+  const capGeo = new THREE.BoxGeometry(0.22, 0.12, 0.12);
+  [[1.4,-0.3,-1.5],[1.4,-0.3,-1.1],[1.4,-0.3,-0.7],[1.4,-0.3,-0.3],[1.4,-0.3,0.1],
+   [-1.4,-0.3,-1.5],[-1.4,-0.3,-1.1],[-1.4,-0.3,-0.7],
+   [0.4,-0.3,-1.8],[0,-0.3,-1.8],[-0.4,-0.3,-1.8]].forEach(([x,y,z]) => {
+    const c = new THREE.Mesh(capGeo, capMat);
+    c.position.set(x, 0.18+y*0, z); scene.add(c);
   });
-  pcbCanvas.addEventListener('mousedown', e => {
-    if (e.button === 1 || e.button === 2) { pcbPanning = true; pcbLastX = e.clientX; pcbLastY = e.clientY; e.preventDefault(); }
+
+  // ── LEDs (top arc) ──────────────────────────────────────────────────────
+  const ledColors = [0x0000ff, 0x00ff44, 0xff2200, 0xffaa00];
+  ledColors.forEach((col, i) => {
+    const m = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.6, roughness: 0.3 });
+    const led = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.1, 8), m);
+    led.position.set(-0.6 + i * 0.4, 0.22, -2.2);
+    scene.add(led);
   });
-  pcbCanvas.addEventListener('mousemove', e => {
-    if (pcbPanning) {
-      pcbPanX += e.clientX - pcbLastX;
-      pcbPanY += e.clientY - pcbLastY;
-      pcbLastX = e.clientX; pcbLastY = e.clientY;
-      drawPCB();
+
+  // ── PCB traces (thin flat strips) ───────────────────────────────────────
+  const traceMat = new THREE.MeshStandardMaterial({ color: 0xcc3300, metalness: 0.6, roughness: 0.3, transparent: true, opacity: 0.85 });
+  const traces = [
+    { x: 0, z: 1.5, w: 0.06, l: 2.4 },   // VDD vertical
+    { x: -1.2, z: 0.0, w: 1.8, l: 0.06 }, // GND horizontal left
+    { x:  1.2, z: 0.0, w: 1.8, l: 0.06 }, // GND horizontal right
+    { x: 0, z: -1.5, w: 0.06, l: 1.2 },   // SWD vertical
+  ];
+  traces.forEach(t => {
+    const tg = new THREE.BoxGeometry(t.w, 0.02, t.l);
+    const tm = new THREE.Mesh(tg, traceMat);
+    tm.position.set(t.x, 0.14, t.z);
+    scene.add(tm);
+  });
+
+  // ── Vias (small cylinders) ──────────────────────────────────────────────
+  const viaMat = new THREE.MeshStandardMaterial({ color: 0xcc4400, metalness: 0.7, roughness: 0.2 });
+  const viaGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.28, 8);
+  [[0, 2.5],[0, -2.0],[-1.8, -0.8],[1.8, -0.8]].forEach(([x, z]) => {
+    const v = new THREE.Mesh(viaGeo, viaMat);
+    v.position.set(x, 0.0, z); scene.add(v);
+  });
+
+  // ── Grid floor ──────────────────────────────────────────────────────────
+  const gridHelper = new THREE.GridHelper(30, 30, 0x0d2030, 0x071018);
+  gridHelper.position.y = -1.2;
+  scene.add(gridHelper);
+
+  // ── Animate loop ────────────────────────────────────────────────────────
+  let animId = null;
+  function animate() {
+    animId = requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // ── Store refs ──────────────────────────────────────────────────────────
+  _3d = { renderer, scene, camera, controls, board, copper, animId, wireframe: false, exploded: false };
+
+  // ── Resize on window resize ─────────────────────────────────────────────
+  window.addEventListener('resize', function() {
+    const p = document.getElementById('view-3d');
+    if (!p || !_3d) return;
+    _3d.renderer.setSize(p.clientWidth, p.clientHeight);
+    _3d.camera.aspect = p.clientWidth / p.clientHeight;
+    _3d.camera.updateProjectionMatrix();
+  });
+}
+
+// 3D controls wired to overlay buttons
+function resetCamera() {
+  if (!_3d) return;
+  _3d.camera.position.set(0, 18, 12);
+  _3d.controls.target.set(0, 0, 0);
+  _3d.controls.update();
+}
+function toggleWireframe() {
+  if (!_3d) return;
+  _3d.wireframe = !_3d.wireframe;
+  _3d.scene.traverse(o => { if (o.isMesh && o.material) o.material.wireframe = _3d.wireframe; });
+}
+function toggleXray() {
+  if (!_3d) return;
+  _3d.scene.traverse(o => {
+    if (o.isMesh && o.material) {
+      o.material.transparent = !o.material.transparent;
+      o.material.opacity = o.material.opacity < 0.5 ? 0.85 : 0.22;
     }
   });
 }
-
-function resizePCB() {
-  const wrap = document.querySelector('.pcb-canvas-wrap');
-  if (!wrap) return;
-  pcbCanvas.width = wrap.clientWidth;
-  pcbCanvas.height = wrap.clientHeight;
-  pcbW = pcbCanvas.width; pcbH = pcbCanvas.height;
+function toggleExplode() {
+  if (!_3d) return;
+  _3d.exploded = !_3d.exploded;
+  _3d.scene.children.forEach((o, i) => {
+    if (o.isMesh) o.position.y += _3d.exploded ? i * 0.12 : -i * 0.12;
+  });
+}
+function snapshot3D() {
+  if (!_3d) return;
+  _3d.renderer.render(_3d.scene, _3d.camera);
+  const a = document.createElement('a');
+  a.href = _3d.renderer.domElement.toDataURL('image/png');
+  a.download = 'ariel-npu-3d.png';
+  a.click();
 }
 
-function pcbZoom(f) { pcbZoomLevel = Math.max(0.3, Math.min(15, pcbZoomLevel * f)); drawPCB(); }
-function pcbFit() { pcbZoomLevel = 1; pcbPanX = 0; pcbPanY = 0; drawPCB(); }
-function setPcbLayer(layer) {
-  pcbCurrentLayer = layer;
-  document.querySelectorAll('[id^="pcb-btn-"]').forEach(b => b.classList.remove('active'));
-  document.getElementById('pcb-btn-' + layer).classList.add('active');
-  drawPCB();
-}
-
-// ── KITE BOARD SHAPE ──────────────────────────────────────────────────────
-// Derived from Charm.stl: pointed bottom tip, broad rounded top arc
-// Real-world dims: ~42mm wide × 52mm tall (aspect 0.8 → scaled to fit)
 function kiteOutlinePath(ctx, cx, cy, bw, bh) {
-  // bw = total width, bh = total height
-  // The kite: symmetrical, pointed at bottom (cy+bh/2), curved arc top
-  // Key vertices in board-local coords (0,0 = center):
-  //   tip:   (0, +bh/2)          — bottom point
-  //   left:  (-bw/2, -bh*0.12)   — widest left point
-  //   right: (+bw/2, -bh*0.12)   — widest right point
-  //   top:   (0, -bh/2)          — top center (rounded arc)
-  const tip_y  =  bh * 0.50;
-  const wide_y = -bh * 0.12;
-  const top_y  = -bh * 0.50;
-  const hw     =  bw * 0.50;
-  // Shoulder corners (where arc meets straight sides)
-  const sh_x   =  bw * 0.46;
-  const sh_y   = -bh * 0.28;
+  // SPEARHEAD / KITE — matches Charm.stl reference image exactly:
+  //   • Wide flat-ish top (angled inward from peak to widest point)
+  //   • Widest point at ~35% from top
+  //   • Straight sides converging sharply to bottom tip
+  //   • Aspect ratio: width ≈ 0.62 × height (tall & narrow spear)
+  const hw = bw * 0.50;          // half-width at widest
+  const topY  = cy - bh * 0.50;  // top peak center
+  const wideY = cy - bh * 0.15;  // widest point Y (35% from top)
+  const tipY  = cy + bh * 0.50;  // bottom sharp tip
 
   ctx.beginPath();
-  // Start at bottom tip
-  ctx.moveTo(cx, cy + tip_y);
-  // Left straight edge up to left widest point then curve to top-left shoulder
-  ctx.lineTo(cx - hw, cy + wide_y);
-  ctx.quadraticCurveTo(cx - hw, cy + sh_y, cx - sh_x, cy + sh_y);
-  // Top arc from left shoulder to right shoulder through top center
-  ctx.quadraticCurveTo(cx - bw*0.20, cy + top_y, cx, cy + top_y);
-  ctx.quadraticCurveTo(cx + bw*0.20, cy + top_y, cx + sh_x, cy + sh_y);
-  // Right curve down to widest point then straight to tip
-  ctx.quadraticCurveTo(cx + hw, cy + sh_y, cx + hw, cy + wide_y);
-  ctx.lineTo(cx, cy + tip_y);
+  ctx.moveTo(cx,        topY);              // top center peak
+  ctx.lineTo(cx - hw*0.52, topY);          // top-left flat
+  ctx.lineTo(cx - hw,   wideY);            // left widest
+  ctx.lineTo(cx,        tipY);             // bottom tip (straight line both sides → sharp)
+  ctx.lineTo(cx + hw,   wideY);            // right widest
+  ctx.lineTo(cx + hw*0.52, topY);          // top-right flat
   ctx.closePath();
 }
 
@@ -1527,9 +1476,10 @@ function drawPCB() {
   ctx.scale(pcbZoomLevel, pcbZoomLevel);
 
   // Kite board: 42 mm wide × 52 mm tall (scaled at 4.2 px/mm)
-  const scale = 4.0;
-  const bw = 42 * scale;   // 168 px
-  const bh = 52 * scale;   // 208 px
+  // Auto-scale so board fills ~80% of the shorter canvas dimension
+  const maxDim = Math.min(pcbW, pcbH) * 0.78;
+  const bh = maxDim;           // height drives scale (tall spear)
+  const bw = bh * 0.62;       // width = 62% of height (spearhead ratio)
   const cx = 0, cy = 0;
 
   // ── Board fill + outline (clip to kite shape) ──────────────────────────
