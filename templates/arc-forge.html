@@ -1162,6 +1162,350 @@ let schZoomLevel = 1, schPanX = 0, schPanY = 0;
 let pcbZoomLevel = 1, pcbPanX = 0, pcbPanY = 0;
 let schPanning = false, schLastX = 0, schLastY = 0;
 let pcbPanning = false, pcbLastX = 0, pcbLastY = 0;
+let schCanvas = null, schCtx = null, schW = 0, schH = 0;
+let pcbCanvas = null, pcbCtx = null, pcbW = 0, pcbH = 0;
+
+// ── Restored canvas drawing functions (from original) ─────────────────────
+
+function initSch() {
+  schCanvas = document.getElementById('sch-canvas');
+  schCtx = schCanvas.getContext('2d');
+  resizeSch();
+  drawSchematic();
+
+  schCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.1 : 0.9;
+    schZoomLevel = Math.max(0.2, Math.min(8, schZoomLevel * f));
+    drawSchematic();
+  });
+  schCanvas.addEventListener('mousedown', e => {
+    if (e.button === 1 || e.button === 2) { schPanning = true; schLastX = e.clientX; schLastY = e.clientY; e.preventDefault(); }
+  });
+  schCanvas.addEventListener('mousemove', e => {
+    const r = schCanvas.getBoundingClientRect();
+    const wx = (e.clientX - r.left - schPanX) / schZoomLevel;
+    const wy = (e.clientY - r.top - schPanY) / schZoomLevel;
+    document.getElementById('sb-x').textContent = wx.toFixed(3);
+    document.getElementById('sb-y').textContent = wy.toFixed(3);
+    if (schPanning) {
+      schPanX += e.clientX - schLastX;
+      schPanY += e.clientY - schLastY;
+      schLastX = e.clientX; schLastY = e.clientY;
+      drawSchematic();
+    }
+  });
+  document.addEventListener('mouseup', () => { schPanning = false; pcbPanning = false; });
+}
+
+
+function resizeSch() {
+  const wrap = document.querySelector('.sch-canvas-wrap');
+  if (!wrap) return;
+  schCanvas.width = wrap.clientWidth;
+  schCanvas.height = wrap.clientHeight;
+  schW = schCanvas.width;
+  schH = schCanvas.height;
+}
+
+
+function schZoom(f) { schZoomLevel = Math.max(0.2, Math.min(8, schZoomLevel * f)); drawSchematic(); }
+
+function schFit() { schZoomLevel = 1; schPanX = 0; schPanY = 0; drawSchematic(); }
+
+
+function drawSchematic() {
+  if (!schCtx) { initSch(); return; }
+  resizeSch();
+  const ctx = schCtx;
+  const W = schW, H = schH;
+  ctx.save();
+  ctx.fillStyle = '#080f18';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.save();
+  ctx.translate(schPanX + W/2, schPanY + H/2);
+  ctx.scale(schZoomLevel, schZoomLevel);
+  const gridSize = 20;
+  const gx0 = -W/schZoomLevel, gx1 = W/schZoomLevel;
+  const gy0 = -H/schZoomLevel, gy1 = H/schZoomLevel;
+  ctx.strokeStyle = 'rgba(0,100,160,0.18)';
+  ctx.lineWidth = 0.3;
+  for (let x = Math.floor(gx0/gridSize)*gridSize; x < gx1; x+=gridSize) {
+    ctx.beginPath(); ctx.moveTo(x,gy0); ctx.lineTo(x,gy1); ctx.stroke();
+  }
+  for (let y = Math.floor(gy0/gridSize)*gridSize; y < gy1; y+=gridSize) {
+    ctx.beginPath(); ctx.moveTo(gx0,y); ctx.lineTo(gx1,y); ctx.stroke();
+  }
+
+  // Border
+  ctx.strokeStyle = '#1a3a5a'; ctx.lineWidth = 1;
+  ctx.strokeRect(-280, -220, 560, 440);
+
+  // Title block
+  ctx.fillStyle = '#0a1a2a';
+  ctx.fillRect(180, 150, 100, 60);
+  ctx.strokeStyle = '#1a4a7a'; ctx.lineWidth = 0.5;
+  ctx.strokeRect(180, 150, 100, 60);
+  ctx.fillStyle = '#4a8aaa'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'left';
+  ctx.fillText('TITLE', 183, 158);
+  ctx.fillStyle = '#00c8ff'; ctx.font = 'bold 6px Share Tech Mono';
+  ctx.fillText('Ariel NPU v1.0', 183, 168);
+  ctx.fillStyle = '#4a8aaa'; ctx.font = '5px Share Tech Mono';
+  ctx.fillText('Radical Deepscale LLC', 183, 178);
+  ctx.fillText('Rev: A.1', 183, 186);
+  ctx.fillText('Date: 2025-05-21', 183, 194);
+  ctx.fillText('Sheet 1 / 1', 183, 202);
+
+  // === DRAW COMPONENTS ===
+  drawSchIC(ctx, -150, -80, 'U1', 'RP2350', 60, 100, '#cc4444');
+  drawSchIC(ctx, 80, -80, 'U2', 'QFN-60-EP\nMicro\nController', 50, 80, '#cc7744');
+  drawSchVReg(ctx, -220, -40, 'U3', 'LDO 3.3V');
+  drawSchCap(ctx, 60, 60, 'C1', '4.7uF');
+  drawSchCap(ctx, 80, 60, 'C2', '100nF');
+  drawSchCap(ctx, 100, 60, 'C3', '100pF');
+  drawSchRes(ctx, -60, 60, 'R1', '33R');
+  drawSchRes(ctx, -40, 60, 'R2', '10k');
+  drawSchRes(ctx, -20, 60, 'R3', '100R');
+  drawSchCrystal(ctx, 140, -30, 'ZQ1', '12MHz');
+  drawSchConnector(ctx, -250, -130, 'X1', 'USB-C', 8);
+  drawSchConnector(ctx, 190, -130, 'X2', 'JTAG/SWD', 10);
+  drawSchLED(ctx, -60, -130, 'VD1', 'BLUE');
+  drawSchLED(ctx, -40, -130, 'VD2', 'GREEN');
+  drawSchLED(ctx, -20, -130, 'VD3', 'RED');
+  drawSchTransistor(ctx, 160, 80, 'VT1', 'NMOS');
+  drawSchButton(ctx, 80, -140, 'SW1', 'RESET');
+  drawSchButton(ctx, 100, -140, 'SW2', 'BOOT');
+
+  // Nets / wires
+  ctx.strokeStyle = '#00aa66'; ctx.lineWidth = 1.5;
+  // VDD net
+  ctx.beginPath(); ctx.moveTo(-190, -110); ctx.lineTo(-190, -130); ctx.lineTo(250, -130); ctx.stroke();
+  // GND net
+  ctx.strokeStyle = '#2266aa';
+  ctx.beginPath(); ctx.moveTo(-190, 100); ctx.lineTo(250, 100); ctx.stroke();
+  // Signal bus
+  ctx.strokeStyle = '#cc6600'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(-90, -80); ctx.lineTo(-90, -50); ctx.lineTo(80, -50);
+  ctx.stroke();
+  ctx.fillStyle = '#cc6600'; ctx.font = 'bold 7px Share Tech Mono';
+  ctx.textAlign = 'center'; ctx.fillText('MCU_BUS', -5, -45);
+  ctx.strokeStyle = '#0088cc'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-90, 20); ctx.lineTo(160, 20); ctx.stroke();
+
+  // Net labels
+  drawNetLabel(ctx, -190, -110, '+3V3', '#ff8844');
+  drawNetLabel(ctx, -190, 100, 'GND', '#4488cc');
+  drawNetLabel(ctx, 180, -50, 'SWDIO', '#00ff88');
+  drawNetLabel(ctx, 180, -40, 'SWCLK', '#00ff88');
+  drawNetLabel(ctx, 180, -30, 'IO18', '#00ff88');
+
+  ctx.restore();
+  ctx.restore();
+}
+
+
+function drawSchIC(ctx, x, y, ref, val, w, h, col) {
+  ctx.fillStyle = '#0a1a2a'; ctx.strokeStyle = col; ctx.lineWidth = 1.2;
+  ctx.fillRect(x - w/2, y - h/2, w, h);
+  ctx.strokeRect(x - w/2, y - h/2, w, h);
+  ctx.fillStyle = col; ctx.font = 'bold 8px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x, y - h/2 + 10);
+  ctx.fillStyle = '#88aacc'; ctx.font = '6px Share Tech Mono';
+  ctx.fillText(val, x, y);
+  // Pins left
+  const pinCount = 8;
+  for (let i = 0; i < pinCount; i++) {
+    const py = y - h/2 + (h / (pinCount+1)) * (i+1);
+    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x - w/2 - 12, py); ctx.lineTo(x - w/2, py); ctx.stroke();
+    ctx.fillStyle = '#446688'; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'right';
+    ctx.fillText('P' + (i+1), x - w/2 - 14, py + 1.5);
+  }
+  // Pins right
+  for (let i = 0; i < pinCount; i++) {
+    const py = y - h/2 + (h / (pinCount+1)) * (i+1);
+    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x + w/2, py); ctx.lineTo(x + w/2 + 12, py); ctx.stroke();
+    ctx.fillStyle = '#446688'; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'left';
+    ctx.fillText('Q' + (i+1), x + w/2 + 14, py + 1.5);
+  }
+}
+
+
+function drawSchVReg(ctx, x, y, ref, val) {
+  ctx.fillStyle = '#0a1520'; ctx.strokeStyle = '#44aa66'; ctx.lineWidth = 1;
+  ctx.fillRect(x, y - 20, 40, 40); ctx.strokeRect(x, y - 20, 40, 40);
+  ctx.fillStyle = '#44aa66'; ctx.font = 'bold 6px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x + 20, y - 8);
+  ctx.fillStyle = '#88aacc'; ctx.font = '5px Share Tech Mono';
+  ctx.fillText(val, x + 20, y + 4);
+  ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(x, y-10); ctx.lineTo(x-15, y-10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+40, y-10); ctx.lineTo(x+55, y-10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+20, y+20); ctx.lineTo(x+20, y+35); ctx.stroke();
+}
+
+
+function drawSchCap(ctx, x, y, ref, val) {
+  ctx.strokeStyle = '#44aacc'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x, y - 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 8, y - 5); ctx.lineTo(x + 8, y - 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 10); ctx.stroke();
+  ctx.fillStyle = '#44aacc'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x, y - 18);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
+  ctx.fillText(val, x, y + 15);
+}
+
+
+function drawSchRes(ctx, x, y, ref, val) {
+  ctx.strokeStyle = '#f5a623'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 12); ctx.stroke();
+  ctx.fillStyle = '#0a1520'; ctx.strokeStyle = '#f5a623';
+  ctx.fillRect(x - 5, y - 12, 10, 24); ctx.strokeRect(x - 5, y - 12, 10, 24);
+  ctx.beginPath(); ctx.moveTo(x, y + 12); ctx.lineTo(x, y + 20); ctx.stroke();
+  ctx.fillStyle = '#f5a623'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x + 8, y - 14);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
+  ctx.fillText(val, x + 8, y);
+}
+
+
+function drawSchCrystal(ctx, x, y, ref, val) {
+  ctx.strokeStyle = '#cc88ff'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 10); ctx.stroke();
+  ctx.fillStyle = '#0a1020'; ctx.strokeStyle = '#cc88ff';
+  ctx.fillRect(x - 6, y - 10, 12, 20); ctx.strokeRect(x - 6, y - 10, 12, 20);
+  ctx.beginPath(); ctx.moveTo(x, y + 10); ctx.lineTo(x, y + 20); ctx.stroke();
+  ctx.fillStyle = '#cc88ff'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x, y - 22);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
+  ctx.fillText(val, x, y + 26);
+}
+
+
+function drawSchConnector(ctx, x, y, ref, val, pins) {
+  ctx.fillStyle = '#0a1020'; ctx.strokeStyle = '#55ff88'; ctx.lineWidth = 1;
+  const h = pins * 8;
+  ctx.fillRect(x, y, 24, h); ctx.strokeRect(x, y, 24, h);
+  ctx.fillStyle = '#55ff88'; ctx.font = 'bold 5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x + 12, y - 4);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono';
+  ctx.fillText(val, x + 12, y + h + 7);
+  for (let i = 0; i < pins; i++) {
+    const py = y + 4 + i * 8;
+    ctx.strokeStyle = '#335577'; ctx.lineWidth = 0.6;
+    ctx.beginPath(); ctx.moveTo(x + 24, py); ctx.lineTo(x + 36, py); ctx.stroke();
+    ctx.fillStyle = '#556677'; ctx.font = '3.5px Share Tech Mono'; ctx.textAlign = 'left';
+    ctx.fillText((i+1), x + 3, py + 1.5);
+  }
+}
+
+
+function drawSchLED(ctx, x, y, ref, col) {
+  const c = col === 'BLUE' ? '#0044ff' : col === 'GREEN' ? '#00ff44' : '#ff2200';
+  ctx.strokeStyle = c; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 6, y - 5); ctx.lineTo(x + 6, y + 5); ctx.lineTo(x - 6, y + 5); ctx.closePath(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 6, y - 5); ctx.lineTo(x + 6, y - 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 12); ctx.stroke();
+  ctx.fillStyle = c; ctx.font = '4px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x, y - 14);
+}
+
+
+function drawSchTransistor(ctx, x, y, ref, type) {
+  ctx.strokeStyle = '#88aaff'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 20); ctx.lineTo(x, y + 20); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 15, y); ctx.lineTo(x, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x + 15, y - 20); ctx.lineTo(x + 15, y - 30); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y + 10); ctx.lineTo(x + 15, y + 20); ctx.lineTo(x + 15, y + 30); ctx.stroke();
+  ctx.fillStyle = '#88aaff'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x - 8, y - 22);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono'; ctx.fillText(type, x + 18, y);
+}
+
+
+function drawSchButton(ctx, x, y, ref, val) {
+  ctx.strokeStyle = '#ffaa00'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 5); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 12); ctx.stroke();
+  ctx.fillStyle = '#ffaa00'; ctx.font = '5px Share Tech Mono'; ctx.textAlign = 'center';
+  ctx.fillText(ref, x, y - 14);
+  ctx.fillStyle = '#888'; ctx.font = '4px Share Tech Mono'; ctx.fillText(val, x, y + 18);
+}
+
+
+function drawNetLabel(ctx, x, y, label, col) {
+  ctx.fillStyle = col || '#00ff88';
+  ctx.font = 'bold 7px Share Tech Mono'; ctx.textAlign = 'left';
+  ctx.fillText(label, x + 3, y + 3);
+  ctx.strokeStyle = col || '#00ff88'; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x, y); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x, y - 4); ctx.lineTo(x - 8, y); ctx.lineTo(x, y + 4); ctx.closePath();
+  ctx.stroke();
+}
+
+// =============================================
+// PCB CANVAS ENGINE
+// =============================================
+let pcbCanvas, pcbCtx, pcbW, pcbH;
+
+
+function initPCB() {
+  pcbCanvas = document.getElementById('pcb-canvas');
+  if (!pcbCanvas) return;
+  pcbCtx = pcbCanvas.getContext('2d');
+  resizePCB();
+  drawPCB();
+
+  pcbCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.1 : 0.9;
+    pcbZoomLevel = Math.max(0.3, Math.min(15, pcbZoomLevel * f));
+    drawPCB();
+  });
+  pcbCanvas.addEventListener('mousedown', e => {
+    if (e.button === 1 || e.button === 2) { pcbPanning = true; pcbLastX = e.clientX; pcbLastY = e.clientY; e.preventDefault(); }
+  });
+  pcbCanvas.addEventListener('mousemove', e => {
+    if (pcbPanning) {
+      pcbPanX += e.clientX - pcbLastX;
+      pcbPanY += e.clientY - pcbLastY;
+      pcbLastX = e.clientX; pcbLastY = e.clientY;
+      drawPCB();
+    }
+  });
+}
+
+
+function resizePCB() {
+  const wrap = document.querySelector('.pcb-canvas-wrap');
+  if (!wrap) return;
+  pcbCanvas.width = wrap.clientWidth;
+  pcbCanvas.height = wrap.clientHeight;
+  pcbW = pcbCanvas.width; pcbH = pcbCanvas.height;
+}
+
+
+function pcbZoom(f) { pcbZoomLevel = Math.max(0.3, Math.min(15, pcbZoomLevel * f)); drawPCB(); }
+
+function pcbFit() { pcbZoomLevel = 1; pcbPanX = 0; pcbPanY = 0; drawPCB(); }
+
+function setPcbLayer(layer) {
+  pcbCurrentLayer = layer;
+  document.querySelectorAll('[id^="pcb-btn-"]').forEach(b => b.classList.remove('active'));
+  document.getElementById('pcb-btn-' + layer).classList.add('active');
+  drawPCB();
+}
+
+
 let _3d = null; // { renderer, scene, camera, controls, animId, board, wireframe }
 let babylonEngine = null; // kept for compat checks (null = Three.js active)
 let pcbCurrentLayer = 'all';
@@ -1396,14 +1740,7 @@ function init3D() {
   // ── Store refs ──────────────────────────────────────────────────────────
   _3d = { renderer, scene, camera, controls, board, copper, animId, wireframe: false, exploded: false };
 
-  // ── Resize on window resize ─────────────────────────────────────────────
-  window.addEventListener('resize', function() {
-    const p = document.getElementById('view-3d');
-    if (!p || !_3d) return;
-    _3d.renderer.setSize(p.clientWidth, p.clientHeight);
-    _3d.camera.aspect = p.clientWidth / p.clientHeight;
-    _3d.camera.updateProjectionMatrix();
-  });
+  // resize handled by global listener above
 }
 
 // 3D controls wired to overlay buttons
@@ -1701,325 +2038,6 @@ function drawPCB() {
 // =============================================
 // 3D BABYLON ENGINE
 // =============================================
-function initBabylon() {
-  const canvas = document.getElementById('babylon-canvas');
-  if (!canvas || babylonEngine) return;
-  try {
-    babylonEngine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true });
-    babylonScene = createArielScene(babylonEngine, canvas);
-    babylonEngine.runRenderLoop(() => { if (babylonScene) babylonScene.render(); });
-    window.addEventListener('resize', () => babylonEngine.resize());
-  } catch(e) {
-    console.warn('Babylon init error:', e);
-    // Fallback: draw 3D with canvas2D
-    draw3DFallback(canvas);
-  }
-}
-
-function createArielScene(engine, canvas) {
-  const scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0.008, 0.02, 0.03, 1);
-
-  // Camera
-  const camera = new BABYLON.ArcRotateCamera("cam", -Math.PI/3, Math.PI/3.5, 22, BABYLON.Vector3.Zero(), scene);
-  camera.attachControl(canvas, true);
-  camera.lowerRadiusLimit = 5;
-  camera.upperRadiusLimit = 80;
-  camera.wheelPrecision = 50;
-
-  // Lighting
-  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
-  hemi.intensity = 0.3;
-  hemi.diffuse = new BABYLON.Color3(0.5, 0.8, 1.0);
-  hemi.groundColor = new BABYLON.Color3(0.05, 0.1, 0.2);
-
-  const spot1 = new BABYLON.PointLight("spot1", new BABYLON.Vector3(10, 15, 5), scene);
-  spot1.intensity = 1.2;
-  spot1.diffuse = new BABYLON.Color3(0, 0.78, 1.0);
-
-  const spot2 = new BABYLON.PointLight("spot2", new BABYLON.Vector3(-8, 10, -8), scene);
-  spot2.intensity = 0.8;
-  spot2.diffuse = new BABYLON.Color3(1.0, 0, 0.56);
-
-  const matPCB = new BABYLON.StandardMaterial("matPCB", scene);
-  matPCB.diffuseColor = new BABYLON.Color3(0.04, 0.08, 0.05);
-  matPCB.specularColor = new BABYLON.Color3(0.1, 0.2, 0.15);
-  matPCB.specularPower = 64;
-
-  const matCopper = new BABYLON.StandardMaterial("matCopper", scene);
-  matCopper.diffuseColor = new BABYLON.Color3(0.9, 0.55, 0.15);
-  matCopper.specularColor = new BABYLON.Color3(0.8, 0.5, 0.1);
-  matCopper.specularPower = 128;
-  matCopper.emissiveColor = new BABYLON.Color3(0.1, 0.05, 0);
-
-  const matIC = new BABYLON.StandardMaterial("matIC", scene);
-  matIC.diffuseColor = new BABYLON.Color3(0.1, 0.08, 0.05);
-  matIC.specularColor = new BABYLON.Color3(0.5, 0.4, 0.2);
-  matIC.specularPower = 200;
-
-  const matCyan = new BABYLON.StandardMaterial("matCyan", scene);
-  matCyan.emissiveColor = new BABYLON.Color3(0, 0.7, 1);
-  matCyan.diffuseColor = new BABYLON.Color3(0, 0.4, 0.6);
-
-  const matMag = new BABYLON.StandardMaterial("matMag", scene);
-  matMag.emissiveColor = new BABYLON.Color3(0.8, 0, 0.5);
-
-  const matGreen = new BABYLON.StandardMaterial("matGreen", scene);
-  matGreen.emissiveColor = new BABYLON.Color3(0, 0.9, 0.4);
-
-  const matRed = new BABYLON.StandardMaterial("matRed", scene);
-  matRed.emissiveColor = new BABYLON.Color3(0.9, 0.1, 0);
-
-  const matSilver = new BABYLON.StandardMaterial("matSilver", scene);
-  matSilver.diffuseColor = new BABYLON.Color3(0.7, 0.7, 0.75);
-  matSilver.specularColor = new BABYLON.Color3(0.9, 0.9, 1);
-  matSilver.specularPower = 200;
-
-  // === PCB Board — Kite shape extruded polygon ===
-  // Kite outline in Babylon units (1 unit ≈ 5mm): 42mm wide × 52mm tall → 8.4 × 10.4
-  const bw3 = 8.4, bh3 = 10.4;
-  const hw3 = bw3/2, hh3 = bh3/2;
-  const kiteShape = [
-    new BABYLON.Vector3(0,       0,  hh3*1.00),  // bottom tip
-    new BABYLON.Vector3(-hw3,    0,  hh3*0.24),  // left wide
-    new BABYLON.Vector3(-hw3,    0, -hh3*0.16),  // left shoulder bottom
-    new BABYLON.Vector3(-hw3*0.92, 0, -hh3*0.56),// left shoulder top
-    new BABYLON.Vector3(-hw3*0.40, 0, -hh3*1.00),// left top arc
-    new BABYLON.Vector3(0,       0, -hh3*1.00),  // top center
-    new BABYLON.Vector3( hw3*0.40, 0, -hh3*1.00),// right top arc
-    new BABYLON.Vector3( hw3*0.92, 0, -hh3*0.56),// right shoulder top
-    new BABYLON.Vector3( hw3,    0, -hh3*0.16),  // right shoulder bottom
-    new BABYLON.Vector3( hw3,    0,  hh3*0.24),  // right wide
-  ];
-
-  const board = BABYLON.MeshBuilder.ExtrudePolygon('board', {
-    shape: kiteShape,
-    depth: 0.2,
-    sideOrientation: BABYLON.Mesh.DOUBLESIDE
-  }, scene);
-  board.position.y = -0.1;
-  board.material = matPCB;
-
-  // Silkscreen text plane
-  const silkPlane = BABYLON.MeshBuilder.CreatePlane("silk", {width: 7, height: 6}, scene);
-  silkPlane.position.y = 0.11;
-  silkPlane.rotation.x = Math.PI / 2;
-  const matSilk = new BABYLON.StandardMaterial("matSilk", scene);
-  matSilk.diffuseColor = new BABYLON.Color3(0.85, 0.78, 0.3);
-  matSilk.emissiveColor = new BABYLON.Color3(0.15, 0.12, 0.02);
-  matSilk.alpha = 0.15;
-  silkPlane.material = matSilk;
-
-  // === Main MCU (RP2350) ===
-  const mcu = BABYLON.MeshBuilder.CreateBox("mcu", {width: 2.4, height: 0.6, depth: 2.4}, scene);
-  mcu.position = new BABYLON.Vector3(0.5, 0.4, 0.2);
-  mcu.material = matIC;
-  // QFN pins
-  for (let i = 0; i < 15; i++) {
-    const pin = BABYLON.MeshBuilder.CreateBox("pin"+i, {width: 0.08, height: 0.05, depth: 0.2}, scene);
-    pin.position = new BABYLON.Vector3(-1.2 + i * 0.17, 0.125, 1.3);
-    pin.material = matCopper;
-    const pin2 = pin.clone("pin2_"+i);
-    pin2.position.z = -0.9;
-    if (i < 12) {
-      const pin3 = pin.clone("pin3_"+i);
-      pin3.position = new BABYLON.Vector3(1.3, 0.125, -0.8 + i * 0.17);
-      pin3.rotation.y = Math.PI/2;
-      pin3.scaling.z = 1;
-      const pin4 = pin3.clone("pin4_"+i);
-      pin4.position.x = -0.7;
-    }
-  }
-
-  // === Decoupling caps ===
-  const capPositions3D = [[2.5,0.4,0.5],[2.5,0.4,0],[2.8,0.4,0.3],[2.5,0.4,-0.5],[2.8,0.4,-0.3]];
-  capPositions3D.forEach(([cx,cy,cz], i) => {
-    const cap = BABYLON.MeshBuilder.CreateBox("cap"+i, {width: 0.22, height: 0.18, depth: 0.12}, scene);
-    cap.position = new BABYLON.Vector3(cx, cy, cz);
-    cap.material = matIC;
-    const p1 = BABYLON.MeshBuilder.CreateBox("cp1"+i, {width: 0.04, height: 0.02, depth: 0.12}, scene);
-    p1.position = new BABYLON.Vector3(cx-0.13, cy, cz); p1.material = matCopper;
-    const p2 = p1.clone("cp2"+i); p2.position.x = cx+0.13; p2.material = matCopper;
-  });
-
-  // === Resistors ===
-  const resPositions3D = [[-3,0.4,1],[-3,0.4,0.5],[-3.2,0.4,0.8],[-3,0.4,-0.2],[-3,0.4,-0.6]];
-  resPositions3D.forEach(([rx,ry,rz],i) => {
-    const res = BABYLON.MeshBuilder.CreateBox("res"+i, {width: 0.35, height: 0.2, depth: 0.2}, scene);
-    res.position = new BABYLON.Vector3(rx, ry, rz);
-    const matR = new BABYLON.StandardMaterial("mr"+i, scene);
-    matR.diffuseColor = new BABYLON.Color3(0.35, 0.25, 0.15);
-    matR.emissiveColor = new BABYLON.Color3(0.03, 0.02, 0.01);
-    res.material = matR;
-    [rx-0.2, rx+0.2].forEach((x,j) => {
-      const lead = BABYLON.MeshBuilder.CreateBox("rl"+i+j, {width: 0.04, height: 0.01, depth: 0.2}, scene);
-      lead.position = new BABYLON.Vector3(x, ry-0.08, rz);
-      lead.material = matCopper;
-    });
-  });
-
-  // === USB-C Connector ===
-  const usb = BABYLON.MeshBuilder.CreateBox("usb", {width: 1.2, height: 0.45, depth: 0.65}, scene);
-  usb.position = new BABYLON.Vector3(3.6, 0.32, -2.5);
-  usb.material = matSilver;
-  const usbInner = BABYLON.MeshBuilder.CreateBox("usbInner", {width: 0.9, height: 0.25, depth: 0.3}, scene);
-  usbInner.position = new BABYLON.Vector3(3.6, 0.32, -2.75);
-  const matUsbI = new BABYLON.StandardMaterial("musbI", scene);
-  matUsbI.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
-  usbInner.material = matUsbI;
-
-  // === JTAG/SWD Header ===
-  for (let i = 0; i < 5; i++) {
-    const pin = BABYLON.MeshBuilder.CreateBox("jhdr"+i, {width: 0.2, height: 0.8, depth: 0.2}, scene);
-    pin.position = new BABYLON.Vector3(-3.2, 0.5, -1.5 + i*0.45);
-    pin.material = matCopper;
-    const base = BABYLON.MeshBuilder.CreateBox("jbase"+i, {width: 0.3, height: 0.3, depth: 0.3}, scene);
-    base.position = new BABYLON.Vector3(-3.2, 0.22, -1.5 + i*0.45);
-    const matJB = new BABYLON.StandardMaterial("mjb"+i, scene);
-    matJB.diffuseColor = new BABYLON.Color3(0.1, 0.05, 0.02);
-    base.material = matJB;
-  }
-
-  // === Crystal ===
-  const xtal = BABYLON.MeshBuilder.CreateCylinder("xtal", {height:0.6, diameter:0.5, tessellation:12}, scene);
-  xtal.position = new BABYLON.Vector3(2.5, 0.4, -1.2);
-  const matXtal = new BABYLON.StandardMaterial("mxtal", scene);
-  matXtal.diffuseColor = new BABYLON.Color3(0.7, 0.7, 0.8);
-  matXtal.specularColor = new BABYLON.Color3(0.9, 0.9, 1);
-  matXtal.specularPower = 256;
-  xtal.material = matXtal;
-
-  // === Tactile Button ===
-  const btn = BABYLON.MeshBuilder.CreateCylinder("btn", {height:0.6, diameter:0.5, tessellation:16}, scene);
-  btn.position = new BABYLON.Vector3(1.5, 0.4, 2.5);
-  const matBtn = new BABYLON.StandardMaterial("mbtn", scene);
-  matBtn.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.3);
-  btn.material = matBtn;
-
-  // === LEDs ===
-  const ledData = [[matCyan, [-1,0.4,2.6]], [matGreen, [-0.5,0.4,2.6]], [matRed, [0,0.4,2.6]], [matMag, [0.5,0.4,2.6]]];
-  ledData.forEach(([mat, pos]) => {
-    const led = BABYLON.MeshBuilder.CreateBox("led", {width:0.2, height:0.25, depth:0.3}, scene);
-    led.position = new BABYLON.Vector3(...pos);
-    led.material = mat;
-    // Glow effect
-    const glow = new BABYLON.GlowLayer("glow", scene);
-    glow.intensity = 0.6;
-  });
-
-  // === Mounting holes (visual cylinders) ===
-  const mhPos3D = [[-3.8, 0, -3.2],  [3.8, 0, -3.2], [-3.8, 0, 3.2], [3.8, 0, 3.2]];
-  mhPos3D.forEach(([mx,my,mz]) => {
-    const mh = BABYLON.MeshBuilder.CreateCylinder("mh", {height: 0.3, diameter: 0.8, tessellation: 16}, scene);
-    mh.position = new BABYLON.Vector3(mx, my, mz);
-    const matMH = new BABYLON.StandardMaterial("mmh", scene);
-    matMH.diffuseColor = new BABYLON.Color3(0.4, 0.4, 0.5);
-    mh.material = matMH;
-  });
-
-  // === Test pads ===
-  const padLabels = ['GND','SWCLK','SWDIO','IO18','+3V3'];
-  padLabels.forEach((lbl, i) => {
-    const pad = BABYLON.MeshBuilder.CreateCylinder("pad"+i, {height:0.05, diameter:0.4, tessellation:12}, scene);
-    pad.position = new BABYLON.Vector3(3.2, 0.125, 1.2 - i*0.45);
-    pad.material = matCopper;
-  });
-
-  // === Copper pours (traces) ===
-  const trace1 = BABYLON.MeshBuilder.CreateBox("trace1", {width:4, height:0.01, depth:0.08}, scene);
-  trace1.position = new BABYLON.Vector3(0, 0.11, -0.5);
-  trace1.material = matCopper;
-  trace1.material = matCopper;
-
-  // subtle PCB edge glow
-  const edgeMat = new BABYLON.StandardMaterial("edgeMat", scene);
-  edgeMat.emissiveColor = new BABYLON.Color3(0, 0.2, 0.4);
-  edgeMat.alpha = 0.2;
-
-  // === Glow layer ===
-  const glow = new BABYLON.GlowLayer("globalGlow", scene);
-  glow.intensity = 0.5;
-
-  // Animate subtle camera bob
-  let t = 0;
-  scene.registerBeforeRender(() => {
-    t += 0.008;
-    hemi.intensity = 0.28 + Math.sin(t) * 0.02;
-  });
-
-  return scene;
-}
-
-function draw3DFallback(canvas) {
-  // Simple 3D-like isometric board render as fallback
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = '#020508'; ctx.fillRect(0,0,W,H);
-  ctx.save();
-  ctx.translate(W/2 - 80, H/2 + 40);
-  // Isometric board
-  ctx.strokeStyle = '#00c8ff'; ctx.lineWidth = 1.5;
-  ctx.fillStyle = '#03100a';
-  ctx.beginPath();
-  ctx.moveTo(0,-40); ctx.lineTo(160,-40-60); ctx.lineTo(320,-40); ctx.lineTo(160,20); ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(0,-40); ctx.lineTo(0,40); ctx.lineTo(160,100); ctx.lineTo(160,20); ctx.closePath();
-  ctx.fillStyle='#021208'; ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(320,-40); ctx.lineTo(320,40); ctx.lineTo(160,100); ctx.lineTo(160,20); ctx.closePath();
-  ctx.fillStyle='#020e07'; ctx.fill(); ctx.stroke();
-  // MCU chip
-  ctx.fillStyle='#110a04'; ctx.strokeStyle='#884422';
-  ctx.fillRect(100,-20,60,40); ctx.strokeRect(100,-20,60,40);
-  ctx.fillStyle='#00c8ff'; ctx.font='10px Share Tech Mono'; ctx.textAlign='center';
-  ctx.fillText('Ariel NPU', 130, -2);
-  ctx.fillStyle='#ff0090'; ctx.font='7px Share Tech Mono';
-  ctx.fillText('RP2350', 130, 8);
-  ctx.restore();
-  ctx.fillStyle='#4a8aaa'; ctx.font='12px Exo 2'; ctx.textAlign='center';
-  ctx.fillText('3D View — Babylon.js rendering Ariel NPU', W/2, H-20);
-}
-
-let wireframeMode = false, xrayMode = false, explodeMode = false;
-function resetCamera() {
-  if (babylonScene) {
-    const cam = babylonScene.cameras[0];
-    cam.alpha = -Math.PI/3; cam.beta = Math.PI/3.5; cam.radius = 22;
-    cam.target = BABYLON.Vector3.Zero();
-  }
-}
-function toggleWireframe() {
-  wireframeMode = !wireframeMode;
-  if (babylonScene) babylonScene.meshes.forEach(m => { if (m.material) m.material.wireframe = wireframeMode; });
-}
-function toggleXray() {
-  xrayMode = !xrayMode;
-  if (babylonScene) babylonScene.meshes.forEach(m => { if (m.material) m.material.alpha = xrayMode ? 0.4 : 1; });
-}
-function toggleExplode() {
-  explodeMode = !explodeMode;
-  if (babylonScene) {
-    babylonScene.meshes.forEach((m, i) => {
-      if (m.name !== 'board') {
-        const orig = m.metadata?.origY || m.position.y;
-        if (!m.metadata) m.metadata = {};
-        m.metadata.origY = orig;
-        const target = explodeMode ? orig + (i % 3) * 0.6 : orig;
-        BABYLON.Animation.CreateAndStartAnimation('explode'+i, m, 'position.y', 60, 40, m.position.y, target, 0);
-      }
-    });
-  }
-}
-function snapshot3D() {
-  if (babylonEngine) {
-    BABYLON.Tools.CreateScreenshotUsingRenderTarget(babylonEngine, babylonScene.cameras[0], 1920);
-  }
-}
-
-// =============================================
-// DRAFTSMAN VIEW
-// =============================================
 function drawDraftsman() {
   const wrap = document.getElementById('draft-svg-wrap');
   wrap.innerHTML = `
@@ -2250,7 +2268,16 @@ document.addEventListener('DOMContentLoaded', () => {
     initSch();
     initPCB();
     drawDraftsman();
-  }, 100);
+  }, 150);
+});
+
+window.addEventListener('resize', () => {
+  if (currentTab === 'sch') { resizeSch(); drawSchematic(); }
+  if (currentTab === 'pcb') { resizePCB(); drawPCB(); }
+  if (_3d) {
+    const p = document.getElementById('view-3d');
+    if (p) { _3d.renderer.setSize(p.clientWidth, p.clientHeight); _3d.camera.aspect = p.clientWidth/p.clientHeight; _3d.camera.updateProjectionMatrix(); }
+  }
 });
 </script>
 </body>
