@@ -59,7 +59,7 @@
         #editor{z-index:2;color:transparent;background:transparent;caret-color:var(--cyan);border:none;resize:none;outline:none}
         #highlighting{z-index:1;color:var(--bright);background:rgba(2,10,20,.9)}
         /* Syntax tokens */
-        .token-keyword{color:#c586c0;font-weight:bold}.token-function-def{color:#dcdcaa}.token-comment{color:#6a9955}.token-string{color:#ce9178}.token-variable{color:#9cdcfe}.token-number{color:#b5cea8}.token-operator{color:var(--dim)}.token-delimiter{color:#ffd700}.token-node-block-start,.token-node-block-end{color:var(--cyan);font-weight:bold}.token-error{color:var(--red);background:rgba(255,68,102,.1)}
+        .token-keyword{color:#c586c0;font-weight:bold}.token-declaration{color:#569cd6;font-weight:bold}.token-function-def{color:#dcdcaa}.token-comment{color:#6a9955}.token-string{color:#ce9178}.token-variable{color:#9cdcfe}.token-number{color:#b5cea8}.token-operator{color:var(--dim)}.token-delimiter{color:#ffd700}.token-node-block-start,.token-node-block-end{color:var(--cyan);font-weight:bold}.token-error{color:var(--red);background:rgba(255,68,102,.1)}
         /* Output panels */
         .output-node{border:1px solid rgba(0,255,204,.2);border-radius:var(--r);margin:8px 0;background:rgba(0,255,204,.03)}
         .node-header,.node-footer{background:rgba(0,255,204,.08);padding:4px 10px;font-weight:bold;color:var(--cyan);font-family:var(--font-d);font-size:.52rem;letter-spacing:1px}
@@ -1067,6 +1067,12 @@ button, a, [role="button"], input[type="submit"], input[type="button"] {
                 this.renderOutput('node_end', { name: node.name });
             },
 
+            executeVarDeclaration(node) {
+                // Structural declarations (with, var, when, etc.) are compile-time only.
+                // They register variable scope but do not emit runtime output or errors.
+                DART_PROCESSOR.log('DECLARATION', `${node.keyword} ${node.arguments.join(' ').trim()}`);
+            },
+
             executeKeywordStatement(node) {
                 const map = DART_PROCESSOR.executionMap?.keyword_functions;
                 if(map && map[node.keyword]) {
@@ -1158,10 +1164,21 @@ button, a, [role="button"], input[type="submit"], input[type="button"] {
                         block.body = this.parse(blockTokens).body;
                         ast.body.push(block);
 
+                    } else if (token.type === 'declaration') {
+                        // Structural/declaration keywords (with, var, when, etc.) — collect tokens until
+                        // the next declaration, keyword, or block boundary and register as VarDeclaration
+                        let args = [];
+                        let j = i + 1;
+                        while(j < tokens.length && tokens[j].type !== 'declaration' && tokens[j].type !== 'keyword' && tokens[j].type !== nodeBlockRule.start_token && tokens[j].type !== nodeBlockRule.end_token) {
+                            args.push(tokens[j].value);
+                            j++;
+                        }
+                        ast.body.push({ type: 'VarDeclaration', keyword: token.value, arguments: args });
+                        i = j - 1;
                     } else if (token.type === 'keyword') {
                         let args = [];
                         let j = i + 1;
-                        while(j < tokens.length && tokens[j].type !== 'keyword' && tokens[j].type !== nodeBlockRule.start_token && tokens[j].type !== nodeBlockRule.end_token) {
+                        while(j < tokens.length && tokens[j].type !== 'keyword' && tokens[j].type !== 'declaration' && tokens[j].type !== nodeBlockRule.start_token && tokens[j].type !== nodeBlockRule.end_token) {
                             args.push(tokens[j].value);
                             j++;
                         }
@@ -1614,25 +1631,31 @@ button, a, [role="button"], input[type="submit"], input[type="button"] {
 
 
         // --- IDE EVENT LISTENERS & INITIALIZATION ---
-        const DEFAULT_EDITOR_CODE = `// Welcome! Upload the three JSON/TXT definition files to begin.
-// Files: https://github.com/DART-Skyboard/Ariel/tree/main/dartide
-// 1. syntaxdefinitions.txt
-// 2. instructionset.txt
-// 3. outputdefinitions.txt
+        const DEFAULT_EDITOR_CODE = `// ASH TREE IDE — LEATR Universal Framework
+// Compiler Standard: github.com/DART-Skyboard/Ariel/tree/main/dartide
+// ─────────────────────────────────────────────────────────────────────
+// SYNTAX GUIDE:
+//   (NodeName):-:{  ...  }|';'|    ← Node Block container
+//   with / var (name)               ← Declaration (structural, compile-time)
+//   irin ("data")                   ← Input data into node
+//   thenplace                       ← Execution bridge — connects irin to irout
+//   irout ("result")                ← Output result from node
+// ─────────────────────────────────────────────────────────────────────
 
 (CoreParameterNode):-:{
     with
-        var (ti) //Tool (Sets)
+        var (ti)   // Tool Sets
+        var (ic)   // Input Context
 
     {
         irin ("Initial Data Set")
         thenplace
-        irout ("Result: placeto (s)")
+        irout ("Result: processed via CoreParameterNode")
     }
 }|';'|
 
-// You can still use the legacy visualizer commands
-maze_generate(width: 10, height: 10)
+// Press AUTO LOAD ASH first to load compiler definitions,
+// then BUILD & RUN to execute this node.
 `;
         const GITHUB_RAW_BASE_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/dartide/";
         const SYNTAX_DEFS_URL = GITHUB_RAW_BASE_URL + "syntaxdefinitions.txt";
@@ -3074,8 +3097,8 @@ function idePreviewPopout() {
 'use strict';
 
 // ── LEATR CONSTANTS ──────────────────────────────────────────
-const LEATR_KW = new Set(['irin','irout','thenplace','place','with','when','where',
-    'and','or','not','for','else','is','if','end','var','import','return','Research','Report']);
+const LEATR_KW = new Set(['irin','irout','thenplace']);
+const LEATR_DECL = new Set(['with','when','where','and','or','not','for','else','is','if','end','var','Var','Input','import','return','place','Research','Report']);
 const LEATR_NT = new Set(['Maze','Puzzle','Envelope','Hammer','Stick','Knife','Scissors']);
 const LEATR_OOO = [
     {n:'01',name:'Maze',      group:'TOOL',   color:'#00ffcc'},
