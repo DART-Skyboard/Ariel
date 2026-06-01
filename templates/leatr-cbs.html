@@ -607,6 +607,127 @@ footer {
 .oc-net  { color: var(--green); }
 .oc-poly { color: var(--purple); }
 .oc-dim  { color: var(--dim); }
+/* ── ASH RUNTIME TERMINAL ── */
+#ash-terminal {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  width: min(520px, calc(100vw - 32px));
+  background: #020c14;
+  border: 1px solid var(--cyan);
+  border-radius: 10px;
+  box-shadow: 0 0 40px rgba(0,229,255,0.25), 0 8px 32px rgba(0,0,0,0.7);
+  z-index: 9999;
+  font-family: var(--fc);
+  font-size: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: termSlideIn 0.28s cubic-bezier(0.22,1,0.36,1);
+  user-select: none;
+}
+@keyframes termSlideIn {
+  from { opacity:0; transform: translateY(40px) scale(0.96); }
+  to   { opacity:1; transform: translateY(0)   scale(1); }
+}
+#ash-term-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(90deg, rgba(0,229,255,0.08), rgba(255,149,0,0.04));
+  border-bottom: 1px solid rgba(0,229,255,0.2);
+  cursor: grab;
+  flex-shrink: 0;
+}
+#ash-term-header:active { cursor: grabbing; }
+.ash-term-dots { display:flex; gap:6px; flex-shrink:0; }
+.ash-dot {
+  width: 13px; height: 13px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; cursor: pointer; transition: filter 0.15s;
+  font-family: var(--fb);
+}
+.ash-dot:hover { filter: brightness(1.4); }
+.ash-dot-r { background: #ff5f56; color: #7a0000; }
+.ash-dot-y { background: #ffbd2e; color: #7a5000; }
+.ash-dot-g { background: #27c93f; color: #005010; }
+#ash-term-title {
+  flex: 1;
+  font-family: var(--fn);
+  font-size: 0.5rem;
+  letter-spacing: 0.12em;
+  color: var(--cyan);
+  text-align: center;
+  pointer-events: none;
+}
+#ash-term-drag-hint {
+  font-size: 0.42rem;
+  color: var(--dim);
+  letter-spacing: 0.1em;
+  pointer-events: none;
+}
+#ash-term-body {
+  display: flex;
+  flex-direction: column;
+  height: 280px;
+  max-height: 60vh;
+}
+#ash-term-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,229,255,0.2) transparent;
+}
+.atl-line { line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+.atl-sys  { color: var(--cyan);   opacity: 0.7; }
+.atl-out  { color: #e8f8f0;       font-weight: 600; }
+.atl-dim  { color: var(--dim); }
+.atl-err  { color: var(--red); }
+.atl-usr  { color: var(--orange); }
+#ash-term-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(0,229,255,0.15);
+  background: rgba(0,0,0,0.3);
+  flex-shrink: 0;
+}
+#ash-term-prompt {
+  color: var(--cyan);
+  opacity: 0.7;
+  flex-shrink: 0;
+  letter-spacing: 0.05em;
+}
+#ash-term-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--orange);
+  font-family: var(--fc);
+  font-size: 0.72rem;
+  caret-color: var(--cyan);
+}
+#ash-term-input::placeholder { color: rgba(74,96,112,0.6); }
+#ash-term-send {
+  background: rgba(0,229,255,0.1);
+  border: 1px solid rgba(0,229,255,0.3);
+  color: var(--cyan);
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+  font-family: var(--fc);
+  font-size: 0.7rem;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+#ash-term-send:hover { background: rgba(0,229,255,0.22); }
+
 </style>
 </head>
 <body>
@@ -1736,6 +1857,338 @@ function runCompile(code, netMode=false) {
   log(`<br><span class="oc-ok">═══ BUILD COMPLETE: ${nodeCount} nodes compiled ═══</span>`);
   playTone(440, 0.15, 'sine', 0.12);
   playTone(660, 0.2, 'sine', 0.08);
+
+  // ── Launch app runtime terminal after successful build ──
+  if (nodeCount > 0) {
+    setTimeout(() => launchAppRuntime(ast), 420);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  APP RUNTIME TERMINAL — floating draggable OS window
+// ═══════════════════════════════════════════════════════════
+
+// Extract runtime metadata from compiled AST
+function buildRuntimeManifest(ast) {
+  const manifest = {
+    appName: 'Ash App',
+    env: '',
+    nodes: [],
+    vars: [],
+    irinStrings: [],
+    iroutStrings: [],
+    appType: 'generic',  // hello | counter | physics | network | generic
+  };
+
+  // Top-level env tag
+  ast.tags.outer.forEach(t => {
+    const m = t.match(/\{\{env:([^}]+)\}\}/);
+    if (m) manifest.env = m[1];
+  });
+
+  ast.nodes.forEach(n => {
+    if (n.type !== 'NodeBlock') return;
+    manifest.nodes.push(n.name);
+    manifest.appName = n.name.replace(/Node$/,'').replace(/([A-Z])/g,' $1').trim();
+
+    // Pull var names
+    for (let i = 0; i < n.body.length; i++) {
+      const tok = n.body[i];
+      if (tok.t === 'kw' && tok.v === 'var' && n.body[i+1]) {
+        const vname = n.body[i+1].v || '';
+        if (vname) manifest.vars.push(vname.replace(/[()]/g,''));
+      }
+      if (tok.t === 'kw' && tok.v === 'irin') {
+        // grab string after irin
+        for (let j = i+1; j < Math.min(i+5, n.body.length); j++) {
+          if (n.body[j].t === 'str') { manifest.irinStrings.push(n.body[j].v.replace(/"/g,'')); break; }
+        }
+      }
+      if (tok.t === 'kw' && tok.v === 'irout') {
+        for (let j = i+1; j < Math.min(i+5, n.body.length); j++) {
+          if (n.body[j].t === 'str') { manifest.iroutStrings.push(n.body[j].v.replace(/"/g,'')); break; }
+        }
+      }
+    }
+  });
+
+  // Detect app type from name/env
+  const sig = (manifest.appName + manifest.env).toLowerCase();
+  if (sig.includes('hello') || sig.includes('world'))       manifest.appType = 'hello';
+  else if (sig.includes('count'))                           manifest.appType = 'counter';
+  else if (sig.includes('calc') || sig.includes('math'))    manifest.appType = 'calculator';
+  else if (sig.includes('gravity') || sig.includes('phys')) manifest.appType = 'physics';
+  else if (sig.includes('net') || sig.includes('sync'))     manifest.appType = 'network';
+  else if (sig.includes('autumn') || sig.includes('core'))  manifest.appType = 'autumn';
+
+  return manifest;
+}
+
+// Per-app runtime handlers — process terminal input and return output
+function createAppRuntime(manifest, printFn) {
+  const type = manifest.appType;
+  let state = {};
+
+  // Boot message per app type
+  const boots = {
+    hello:      () => { printFn('sys', `${manifest.appName} — LEATR runtime initialised`); printFn('out', `Hello, World!`); printFn('dim', `Program complete. Type 'run' to execute again or 'exit' to close.`); },
+    counter:    () => { state.count=0; state.step=1; printFn('sys', `Counter App — vars: count=${state.count}, step=${state.step}`); printFn('dim', `Commands: set step <n> · increment · reset · run · exit`); },
+    calculator: () => { printFn('sys', `Calculator — LEATR math engine ready`); printFn('dim', `Enter expressions: 12 + 4 · 100 / 5 · 3 ^ 2 · sqrt 16 · type 'exit' to close`); },
+    physics:    () => { state.mass=1; state.gravity=9.81; printFn('sys', `Physics Sim — GravityNode initialised`); printFn('out', `Gravity: ${state.gravity} m/s² | Mass: ${state.mass} kg`); printFn('dim', `Commands: set mass <n> · set gravity <n> · run · exit`); },
+    network:    () => { state.iter=0; printFn('sys', `NetworkSyncNode — [net:log-iter] active`); printFn('dim', `Commands: send <payload> · sync · status · exit`); },
+    autumn:     () => { printFn('sys', `Autumn Core — BRPN interface`); printFn('dim', `Commands: query <text> · analyse · exit`); },
+    generic:    () => { printFn('sys', `${manifest.appName} — runtime ready`); printFn('dim', `Commands: run · info · exit`); },
+  };
+
+  function handle(input) {
+    const cmd = input.trim().toLowerCase();
+    const parts = cmd.split(/\s+/);
+
+    if (cmd === 'exit' || cmd === 'quit') return '__EXIT__';
+
+    switch (type) {
+      case 'hello':
+        if (cmd === 'run') { printFn('out', 'Hello, World!'); return; }
+        printFn('err', `Unknown command '${input}'. Try: run · exit`); return;
+
+      case 'counter': {
+        if (cmd === 'run' || cmd === 'increment') {
+          state.count += state.step;
+          printFn('out', `Count: ${state.count}`);
+        } else if (cmd === 'reset') {
+          state.count = 0; printFn('sys', `Count reset to 0`);
+        } else if (parts[0]==='set' && parts[1]==='step') {
+          const v = parseFloat(parts[2]);
+          if (!isNaN(v)) { state.step=v; printFn('sys', `Step set to ${v}`); }
+          else printFn('err', 'Usage: set step <number>');
+        } else if (parts[0]==='set' && parts[1]==='count') {
+          const v = parseFloat(parts[2]);
+          if (!isNaN(v)) { state.count=v; printFn('sys', `Count set to ${v}`); }
+          else printFn('err', 'Usage: set count <number>');
+        } else if (cmd === 'status') {
+          printFn('sys', `count=${state.count}  step=${state.step}`);
+        } else printFn('err', `Unknown command. Try: increment · set step <n> · reset · status · exit`);
+        return;
+      }
+
+      case 'calculator': {
+        if (cmd === 'run') { printFn('dim', 'Enter an expression to evaluate.'); return; }
+        // Simple safe expression evaluator
+        try {
+          let expr = input.trim();
+          // Keyword aliases
+          expr = expr.replace(/\bsqrt\s+/gi, 'Math.sqrt(').replace(/\bsqrt\(/gi, 'Math.sqrt(');
+          if (expr.startsWith('Math.sqrt(') && !expr.includes(')')) expr += ')';
+          expr = expr.replace(/\^/g, '**');
+          // Only allow safe chars
+          if (!/^[\d\s\+\-\*\/\(\)\.\,Math\.sqrt]+$/.test(expr) && !/^Math\.sqrt/.test(expr)) {
+            printFn('err', 'Only numeric expressions allowed. e.g. 3 + 4 * 2');
+            return;
+          }
+          // eslint-disable-next-line no-new-func
+          const result = Function('"use strict"; return (' + expr + ')')();
+          printFn('out', `→ ${result}`);
+        } catch(e) { printFn('err', `Parse error: ${e.message}`); }
+        return;
+      }
+
+      case 'physics': {
+        if (parts[0]==='set' && parts[1]==='mass') {
+          const v=parseFloat(parts[2]); if(!isNaN(v)){state.mass=v;printFn('sys',`mass = ${v} kg`);}
+          else printFn('err','Usage: set mass <kg>');
+        } else if (parts[0]==='set' && parts[1]==='gravity') {
+          const v=parseFloat(parts[2]); if(!isNaN(v)){state.gravity=v;printFn('sys',`gravity = ${v} m/s²`);}
+          else printFn('err','Usage: set gravity <m/s²>');
+        } else if (cmd==='run') {
+          const weight = state.mass * state.gravity;
+          const vel = Math.sqrt(2 * state.gravity * state.mass);
+          printFn('out', `Mass: ${state.mass} kg  ·  Gravity: ${state.gravity} m/s²`);
+          printFn('out', `Weight (W=mg): ${weight.toFixed(4)} N`);
+          printFn('out', `Velocity (v=√2gm): ${vel.toFixed(4)} m/s`);
+          printFn('out', `Encode: (${state.mass}×g²√${state.mass}×g)-1 = ${(encode(state.mass, state.gravity)).toFixed(6)}`);
+        } else if (cmd==='status') {
+          printFn('sys',`mass=${state.mass} kg  gravity=${state.gravity} m/s²`);
+        } else printFn('err','Try: set mass <n> · set gravity <n> · run · status · exit');
+        return;
+      }
+
+      case 'network': {
+        if (parts[0]==='send') {
+          state.iter++;
+          const payload = parts.slice(1).join(' ') || 'packet';
+          const lv = Math.log(state.iter + 1);
+          const enc = encode(lv, state.iter);
+          printFn('sys', `[net iter ${state.iter}] sending: "${payload}"`);
+          printFn('out', `log(n)=${lv.toFixed(4)}  encode=${enc.toFixed(4)}`);
+          printFn('out', `→ synced to LocalProcessNode`);
+        } else if (cmd==='sync') {
+          printFn('sys', `Sync complete — ${state.iter} packets processed`);
+        } else if (cmd==='status') {
+          printFn('sys', `Packets: ${state.iter} | [net:log-iter] active`);
+        } else if (cmd==='run') {
+          printFn('dim','Use: send <payload> to push data through the network node');
+        } else printFn('err','Try: send <payload> · sync · status · exit');
+        return;
+      }
+
+      case 'autumn': {
+        if (parts[0]==='query') {
+          const q = parts.slice(1).join(' ');
+          printFn('sys', `BRPN → Maze(${q}) → Puzzle`);
+          printFn('out', `Cognition node active. Input "${q}" encoded.`);
+          printFn('out', `thenplace var(s) with var(ti) → irout: processed`);
+        } else if (cmd==='analyse') {
+          printFn('sys', 'Running 25 OOO...');
+          ['Maze','Puzzle','Envelope','Hammer','Stick','Knife','Scissors'].forEach((t,i)=>{
+            setTimeout(()=>printFn('out',`OOO-${String(i+1).padStart(2,'0')} ${t}: ✓`),(i+1)*180);
+          });
+          setTimeout(()=>printFn('out','Photosynthesis: ✓  |  BUILD COMPLETE'),8*180);
+        } else if (cmd==='run') {
+          printFn('dim','Use: query <text> · analyse · exit');
+        } else printFn('err','Try: query <text> · analyse · exit');
+        return;
+      }
+
+      default:
+        if (cmd==='run') { printFn('out', `${manifest.appName} executed.`); return; }
+        if (cmd==='info') {
+          printFn('sys', `App: ${manifest.appName}`);
+          printFn('sys', `Env: ${manifest.env || '(none)'}`);
+          printFn('sys', `Nodes: ${manifest.nodes.join(', ')}`);
+          printFn('sys', `Vars: ${manifest.vars.join(', ') || '(none)'}`);
+          return;
+        }
+        printFn('err', `Unknown command '${input}'. Try: run · info · exit`);
+    }
+  }
+
+  return { boot: boots[type] || boots.generic, handle };
+}
+
+function launchAppRuntime(ast) {
+  const manifest = buildRuntimeManifest(ast);
+
+  // Remove any existing terminal
+  const existing = document.getElementById('ash-terminal');
+  if (existing) existing.remove();
+
+  // ── Build terminal DOM ──
+  const term = document.createElement('div');
+  term.id = 'ash-terminal';
+  term.innerHTML = `
+    <div id="ash-term-header">
+      <div class="ash-term-dots">
+        <span class="ash-dot ash-dot-r" id="ash-term-close" title="Close">✕</span>
+        <span class="ash-dot ash-dot-y" id="ash-term-min"   title="Minimise">─</span>
+        <span class="ash-dot ash-dot-g" id="ash-term-max"   title="Expand">⛶</span>
+      </div>
+      <div id="ash-term-title">▶ ${manifest.appName.toUpperCase()} — LEATR RUNTIME</div>
+      <div id="ash-term-drag-hint">drag</div>
+    </div>
+    <div id="ash-term-body">
+      <div id="ash-term-log"></div>
+      <div id="ash-term-input-row">
+        <span id="ash-term-prompt">ash&nbsp;▸&nbsp;</span>
+        <input id="ash-term-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="type a command…">
+        <button id="ash-term-send">↵</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(term);
+
+  // ── Terminal state ──
+  let minimised = false;
+  const logEl   = document.getElementById('ash-term-log');
+  const inputEl = document.getElementById('ash-term-input');
+  const body    = document.getElementById('ash-term-body');
+  const history = []; let histIdx = -1;
+
+  function print(type, text) {
+    const cls = { sys:'atl-sys', out:'atl-out', dim:'atl-dim', err:'atl-err', usr:'atl-usr' }[type] || 'atl-dim';
+    const prefix = { sys:'[SYS] ', out:'  →  ', dim:'     ', err:'[ERR] ', usr:'ash ▸ ' }[type] || '     ';
+    const line = document.createElement('div');
+    line.className = `atl-line ${cls}`;
+    line.textContent = prefix + text;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // Boot the app
+  print('sys', `══════════════════════════════════`);
+  print('sys', `LEATR App Runtime v1.0`);
+  print('sys', `Compiled: ${manifest.nodes.length} node(s)  Env: ${manifest.env || 'local'}`);
+  print('sys', `══════════════════════════════════`);
+
+  const runtime = createAppRuntime(manifest, print);
+  runtime.boot();
+
+  function submit() {
+    const raw = inputEl.value.trim();
+    if (!raw) return;
+    print('usr', raw);
+    history.unshift(raw); histIdx = -1;
+    inputEl.value = '';
+    const result = runtime.handle(raw);
+    if (result === '__EXIT__') {
+      print('sys', 'Runtime closed.');
+      setTimeout(() => term.remove(), 600);
+    }
+  }
+
+  document.getElementById('ash-term-send').addEventListener('click', submit);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { submit(); return; }
+    if (e.key === 'ArrowUp')   { histIdx = Math.min(histIdx+1, history.length-1); inputEl.value = history[histIdx]||''; }
+    if (e.key === 'ArrowDown') { histIdx = Math.max(histIdx-1, -1); inputEl.value = histIdx<0?'':history[histIdx]; }
+  });
+  document.getElementById('ash-term-close').addEventListener('click', () => term.remove());
+  document.getElementById('ash-term-min').addEventListener('click', () => {
+    minimised = !minimised;
+    body.style.display = minimised ? 'none' : 'flex';
+    term.style.height = minimised ? 'auto' : '';
+  });
+  document.getElementById('ash-term-max').addEventListener('click', () => {
+    const isMax = term.dataset.maximised === '1';
+    if (isMax) {
+      term.dataset.maximised = '0';
+      Object.assign(term.style, { top:term.dataset.ot, left:term.dataset.ol, width:term.dataset.ow, height:'' });
+    } else {
+      term.dataset.maximised = '1';
+      term.dataset.ot = term.style.top; term.dataset.ol = term.style.left; term.dataset.ow = term.style.width;
+      Object.assign(term.style, { top:'10px', left:'10px', width:'calc(100vw - 20px)', height:'calc(100vh - 20px)' });
+    }
+  });
+
+  // ── Drag ──
+  const header = document.getElementById('ash-term-header');
+  let drag = null;
+  header.addEventListener('mousedown', e => {
+    if (e.target.closest('.ash-dot')) return;
+    drag = { ox: e.clientX - term.offsetLeft, oy: e.clientY - term.offsetTop };
+  });
+  header.addEventListener('touchstart', e => {
+    if (e.target.closest('.ash-dot')) return;
+    const t = e.touches[0];
+    drag = { ox: t.clientX - term.offsetLeft, oy: t.clientY - term.offsetTop };
+  }, {passive:true});
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    term.style.left = (e.clientX - drag.ox) + 'px';
+    term.style.top  = (e.clientY - drag.oy) + 'px';
+  });
+  document.addEventListener('touchmove', e => {
+    if (!drag) return;
+    const t = e.touches[0];
+    term.style.left = (t.clientX - drag.ox) + 'px';
+    term.style.top  = (t.clientY - drag.oy) + 'px';
+  }, {passive:true});
+  document.addEventListener('mouseup',  () => { drag = null; });
+  document.addEventListener('touchend', () => { drag = null; });
+
+  // Focus input
+  setTimeout(() => inputEl.focus(), 100);
+  playTone(300, 0.1, 'sine', 0.1);
+  playTone(480, 0.15, 'sine', 0.08);
 }
 
 // ═══════════════════════════════════════════════════════════

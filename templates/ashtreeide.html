@@ -3368,6 +3368,15 @@ window.leatrCompile = function(code, netMode) {
     const bar=document.getElementById('lh-bar');
     if(bar){bar.style.width='100%';setTimeout(()=>bar.style.width='20%',1200);}
     log(`\n<span class="log-header">═══ BUILD COMPLETE: ${nodeCount} nodes ═══</span>`);
+
+    // ── Launch app runtime terminal ──
+    if (nodeCount > 0) {
+      setTimeout(() => {
+        if (typeof window.launchAshTerminal === 'function') {
+          window.launchAshTerminal(ast);
+        }
+      }, 400);
+    }
 };
 
 // ── ENHANCED SYNTAX HIGHLIGHTER ──────────────────────────────
@@ -3570,6 +3579,250 @@ const LEATR_DEFAULT_SAMPLE = `// Ash Tree IDE — LEATR v2 · Radical Deepscale 
 
 }|';'|
 `;
+
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════
+     ASH RUNTIME TERMINAL — floating draggable OS window
+═══════════════════════════════════════════════════════ -->
+<style>
+#ash-terminal {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  width: min(520px, calc(100vw - 32px));
+  background: #020c14;
+  border: 1px solid #00ffcc;
+  border-radius: 10px;
+  box-shadow: 0 0 40px rgba(0,255,204,0.2), 0 8px 32px rgba(0,0,0,0.8);
+  z-index: 9999;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: ashTermIn 0.28s cubic-bezier(0.22,1,0.36,1);
+  user-select: none;
+}
+@keyframes ashTermIn {
+  from { opacity:0; transform:translateY(40px) scale(0.96); }
+  to   { opacity:1; transform:translateY(0)   scale(1); }
+}
+#ash-term-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(90deg, rgba(0,255,204,0.08), rgba(0,136,255,0.04));
+  border-bottom: 1px solid rgba(0,255,204,0.2);
+  cursor: grab; flex-shrink: 0;
+}
+#ash-term-header:active { cursor: grabbing; }
+.ash-term-dots { display:flex; gap:6px; flex-shrink:0; }
+.ash-dot { width:13px; height:13px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.5rem; cursor:pointer; transition:filter 0.15s; }
+.ash-dot:hover { filter:brightness(1.4); }
+.ash-dot-r { background:#ff5f56; }
+.ash-dot-y { background:#ffbd2e; }
+.ash-dot-g { background:#27c93f; }
+#ash-term-title { flex:1; font-family:'Orbitron',monospace; font-size:0.48rem; letter-spacing:0.12em; color:#00ffcc; text-align:center; pointer-events:none; }
+#ash-term-drag-hint { font-size:0.42rem; color:#3a5060; pointer-events:none; }
+#ash-term-body { display:flex; flex-direction:column; height:280px; max-height:60vh; }
+#ash-term-log { flex:1; overflow-y:auto; padding:10px 14px 6px; display:flex; flex-direction:column; gap:2px; scrollbar-width:thin; scrollbar-color:rgba(0,255,204,0.2) transparent; }
+.atl-line { line-height:1.55; white-space:pre-wrap; word-break:break-all; }
+.atl-sys  { color:#00ffcc; opacity:0.7; }
+.atl-out  { color:#e8f8f0; font-weight:600; }
+.atl-dim  { color:#3a5060; }
+.atl-err  { color:#ff4444; }
+.atl-usr  { color:#ff9500; }
+#ash-term-input-row { display:flex; align-items:center; gap:6px; padding:8px 10px; border-top:1px solid rgba(0,255,204,0.15); background:rgba(0,0,0,0.3); flex-shrink:0; }
+#ash-term-prompt { color:#00ffcc; opacity:0.7; flex-shrink:0; }
+#ash-term-input { flex:1; background:transparent; border:none; outline:none; color:#ff9500; font-family:'Courier New',monospace; font-size:0.72rem; caret-color:#00ffcc; }
+#ash-term-input::placeholder { color:rgba(58,80,96,0.6); }
+#ash-term-send { background:rgba(0,255,204,0.1); border:1px solid rgba(0,255,204,0.3); color:#00ffcc; border-radius:4px; padding:3px 9px; cursor:pointer; font-family:'Courier New',monospace; font-size:0.7rem; transition:background 0.15s; flex-shrink:0; }
+#ash-term-send:hover { background:rgba(0,255,204,0.22); }
+</style>
+
+<script>
+(function() {
+'use strict';
+
+function _termBuildManifest(ast) {
+  const m = { appName:'Ash App', env:'', nodes:[], vars:[], irinStrings:[], appType:'generic' };
+  if (!ast || !ast.nodes) return m;
+  (ast.tags?.outer||[]).forEach(t => { const r=t.match(/\{\{env:([^}]+)\}\}/); if(r) m.env=r[1]; });
+  ast.nodes.forEach(n => {
+    if (n.type !== 'NodeBlock') return;
+    m.nodes.push(n.name);
+    m.appName = n.name.replace(/Node$/,'').replace(/([A-Z])/g,' $1').trim();
+    const body = n.body || [];
+    for (let i=0;i<body.length;i++) {
+      const tok=body[i];
+      if ((tok.t==='kw'||tok.t==='id') && tok.v==='var' && body[i+1]) m.vars.push((body[i+1].v||'').replace(/[()]/g,''));
+      if ((tok.t==='kw'||tok.t==='id') && tok.v==='irin') { for(let j=i+1;j<Math.min(i+5,body.length);j++){if(body[j].t==='str'){m.irinStrings.push(body[j].v.replace(/"/g,''));break;}} }
+    }
+  });
+  const sig=(m.appName+m.env).toLowerCase();
+  if (sig.includes('hello')||sig.includes('world')) m.appType='hello';
+  else if (sig.includes('count'))                   m.appType='counter';
+  else if (sig.includes('calc')||sig.includes('math')) m.appType='calculator';
+  else if (sig.includes('gravity')||sig.includes('phys')) m.appType='physics';
+  else if (sig.includes('net')||sig.includes('sync'))  m.appType='network';
+  else if (sig.includes('autumn')||sig.includes('core')) m.appType='autumn';
+  return m;
+}
+
+function _termCreateRuntime(m, print) {
+  const type=m.appType;
+  let state={};
+  const encode=(x,a)=>isNaN(x*a*a*Math.sqrt(Math.abs(x*a)))?0:(x*a*a*Math.sqrt(Math.abs(x*a)))-1;
+  const boots = {
+    hello:      ()=>{ print('sys',`${m.appName} — runtime ready`); print('out','Hello, World!'); print('dim',"Type 'run' again or 'exit' to close."); },
+    counter:    ()=>{ state={count:0,step:1}; print('sys','Counter App — count=0, step=1'); print('dim','Commands: increment · set step <n> · set count <n> · reset · status · exit'); },
+    calculator: ()=>{ print('sys','Calculator — math engine ready'); print('dim','Enter any expression: 12+4 · 100/5 · 3^2 · sqrt 16 · exit'); },
+    physics:    ()=>{ state={mass:1,gravity:9.81}; print('sys','Physics Sim — GravityNode ready'); print('out',`Gravity: 9.81 m/s²  Mass: 1 kg`); print('dim','Commands: set mass <n> · set gravity <n> · run · status · exit'); },
+    network:    ()=>{ state={iter:0}; print('sys','NetworkSyncNode — [net:log-iter] active'); print('dim','Commands: send <payload> · sync · status · exit'); },
+    autumn:     ()=>{ print('sys','Autumn Core — BRPN interface'); print('dim','Commands: query <text> · analyse · exit'); },
+    generic:    ()=>{ print('sys',`${m.appName} — runtime ready`); print('dim','Commands: run · info · exit'); },
+  };
+  function handle(input) {
+    const cmd=input.trim().toLowerCase(), parts=cmd.split(/\s+/);
+    if (cmd==='exit'||cmd==='quit') return '__EXIT__';
+    switch(type){
+      case 'hello':
+        if(cmd==='run'){print('out','Hello, World!');return;}
+        print('err',`Unknown: '${input}'. Try: run · exit`); return;
+      case 'counter':
+        if(cmd==='run'||cmd==='increment'){state.count+=state.step;print('out',`Count: ${state.count}`);}
+        else if(cmd==='reset'){state.count=0;print('sys','Count reset to 0');}
+        else if(cmd==='status'){print('sys',`count=${state.count}  step=${state.step}`);}
+        else if(parts[0]==='set'&&parts[1]==='step'){const v=parseFloat(parts[2]);if(!isNaN(v)){state.step=v;print('sys',`Step = ${v}`);}else print('err','Usage: set step <number>');}
+        else if(parts[0]==='set'&&parts[1]==='count'){const v=parseFloat(parts[2]);if(!isNaN(v)){state.count=v;print('sys',`Count = ${v}`);}else print('err','Usage: set count <number>');}
+        else print('err','Try: increment · set step <n> · reset · status · exit');
+        return;
+      case 'calculator':
+        if(cmd==='run'){print('dim','Enter an expression.');return;}
+        try {
+          let expr=input.trim().replace(/\bsqrt\s+(\S+)/gi,'Math.sqrt($1)').replace(/\^/g,'**');
+          if(!/^[0-9\s\+\-\*\/\(\)\.Math\.sqrt]+$/.test(expr)&&!/^Math\.sqrt/.test(expr)){print('err','Numeric expressions only.');return;}
+          // eslint-disable-next-line no-new-func
+          const r=Function('"use strict";return('+expr+')')();
+          print('out',`→ ${r}`);
+        } catch(e){print('err',`Error: ${e.message}`);}
+        return;
+      case 'physics':
+        if(parts[0]==='set'&&parts[1]==='mass'){const v=parseFloat(parts[2]);if(!isNaN(v)){state.mass=v;print('sys',`mass = ${v} kg`);}else print('err','Usage: set mass <kg>');}
+        else if(parts[0]==='set'&&parts[1]==='gravity'){const v=parseFloat(parts[2]);if(!isNaN(v)){state.gravity=v;print('sys',`gravity = ${v} m/s²`);}else print('err','Usage: set gravity <n>');}
+        else if(cmd==='run'){
+          const w=state.mass*state.gravity,v=Math.sqrt(2*state.gravity*state.mass);
+          print('out',`Mass: ${state.mass} kg  Gravity: ${state.gravity} m/s²`);
+          print('out',`Weight: ${w.toFixed(4)} N  |  Velocity: ${v.toFixed(4)} m/s`);
+          print('out',`Encode: ${encode(state.mass,state.gravity).toFixed(6)}`);
+        }
+        else if(cmd==='status') print('sys',`mass=${state.mass} kg  gravity=${state.gravity} m/s²`);
+        else print('err','Try: set mass <n> · set gravity <n> · run · status · exit');
+        return;
+      case 'network':
+        if(parts[0]==='send'){state.iter++;const p=parts.slice(1).join(' ')||'packet';const lv=Math.log(state.iter+1);print('sys',`[net iter ${state.iter}] "${p}"`);print('out',`log(n)=${lv.toFixed(4)}  encode=${encode(lv,state.iter).toFixed(4)}`);print('out','→ synced to LocalProcessNode');}
+        else if(cmd==='sync')  print('sys',`Sync — ${state.iter} packets`);
+        else if(cmd==='status') print('sys',`Packets: ${state.iter}`);
+        else if(cmd==='run')   print('dim','Use: send <payload>');
+        else print('err','Try: send <payload> · sync · status · exit');
+        return;
+      case 'autumn':
+        if(parts[0]==='query'){const q=parts.slice(1).join(' ');print('sys',`BRPN → Maze(${q}) → Puzzle`);print('out',`"${q}" encoded and placed.`);}
+        else if(cmd==='analyse'){print('sys','Running 25 OOO...');['Maze','Puzzle','Envelope','Hammer','Stick','Knife','Scissors'].forEach((t,i)=>setTimeout(()=>print('out',`OOO-${String(i+1).padStart(2,'0')} ${t}: ✓`),(i+1)*180));setTimeout(()=>print('out','Photosynthesis: ✓  |  COMPLETE'),8*180);}
+        else if(cmd==='run')   print('dim','Use: query <text> · analyse');
+        else print('err','Try: query <text> · analyse · exit');
+        return;
+      default:
+        if(cmd==='run'){print('out',`${m.appName} executed.`);return;}
+        if(cmd==='info'){print('sys',`App: ${m.appName}`);print('sys',`Env: ${m.env||'(none)'}`);print('sys',`Nodes: ${m.nodes.join(', ')}`);return;}
+        print('err',`Unknown '${input}'. Try: run · info · exit`);
+    }
+  }
+  return { boot: boots[type]||boots.generic, handle };
+}
+
+window.launchAshTerminal = function(ast) {
+  const existing=document.getElementById('ash-terminal');
+  if(existing) existing.remove();
+  const m = _termBuildManifest(ast);
+
+  const term=document.createElement('div');
+  term.id='ash-terminal';
+  term.innerHTML=`
+    <div id="ash-term-header">
+      <div class="ash-term-dots">
+        <span class="ash-dot ash-dot-r" id="ash-term-close" title="Close">✕</span>
+        <span class="ash-dot ash-dot-y" id="ash-term-min"   title="Minimise">─</span>
+        <span class="ash-dot ash-dot-g" id="ash-term-max"   title="Expand">⛶</span>
+      </div>
+      <div id="ash-term-title">▶ ${m.appName.toUpperCase()} — LEATR RUNTIME</div>
+      <div id="ash-term-drag-hint">drag</div>
+    </div>
+    <div id="ash-term-body">
+      <div id="ash-term-log"></div>
+      <div id="ash-term-input-row">
+        <span id="ash-term-prompt">ash&nbsp;▸&nbsp;</span>
+        <input id="ash-term-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="type a command…">
+        <button id="ash-term-send">↵</button>
+      </div>
+    </div>`;
+  document.body.appendChild(term);
+
+  const logEl=document.getElementById('ash-term-log');
+  const inputEl=document.getElementById('ash-term-input');
+  const body=document.getElementById('ash-term-body');
+  let minimised=false;
+  const history=[]; let histIdx=-1;
+
+  function print(type,text){
+    const cls={sys:'atl-sys',out:'atl-out',dim:'atl-dim',err:'atl-err',usr:'atl-usr'}[type]||'atl-dim';
+    const pfx={sys:'[SYS] ',out:'  →  ',dim:'     ',err:'[ERR] ',usr:'ash ▸ '}[type]||'     ';
+    const ln=document.createElement('div');
+    ln.className=`atl-line ${cls}`; ln.textContent=pfx+text;
+    logEl.appendChild(ln); logEl.scrollTop=logEl.scrollHeight;
+  }
+
+  print('sys','══════════════════════════════════');
+  print('sys','LEATR App Runtime v1.0');
+  print('sys',`Compiled: ${m.nodes.length} node(s)  Env: ${m.env||'local'}`);
+  print('sys','══════════════════════════════════');
+
+  const rt=_termCreateRuntime(m,print);
+  rt.boot();
+
+  function submit(){
+    const raw=inputEl.value.trim(); if(!raw)return;
+    print('usr',raw); history.unshift(raw); histIdx=-1; inputEl.value='';
+    if(rt.handle(raw)==='__EXIT__'){print('sys','Runtime closed.');setTimeout(()=>term.remove(),600);}
+  }
+
+  document.getElementById('ash-term-send').addEventListener('click',submit);
+  inputEl.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){submit();return;}
+    if(e.key==='ArrowUp'){histIdx=Math.min(histIdx+1,history.length-1);inputEl.value=history[histIdx]||'';}
+    if(e.key==='ArrowDown'){histIdx=Math.max(histIdx-1,-1);inputEl.value=histIdx<0?'':history[histIdx];}
+  });
+  document.getElementById('ash-term-close').addEventListener('click',()=>term.remove());
+  document.getElementById('ash-term-min').addEventListener('click',()=>{
+    minimised=!minimised; body.style.display=minimised?'none':'flex'; term.style.height=minimised?'auto':'';
+  });
+  document.getElementById('ash-term-max').addEventListener('click',()=>{
+    const isMax=term.dataset.maximised==='1';
+    if(isMax){term.dataset.maximised='0';Object.assign(term.style,{top:term.dataset.ot,left:term.dataset.ol,width:term.dataset.ow,height:''});}
+    else{term.dataset.maximised='1';term.dataset.ot=term.style.top;term.dataset.ol=term.style.left;term.dataset.ow=term.style.width;Object.assign(term.style,{top:'10px',left:'10px',width:'calc(100vw - 20px)',height:'calc(100vh - 20px)'});}
+  });
+
+  const header=document.getElementById('ash-term-header');
+  let drag=null;
+  header.addEventListener('mousedown',e=>{if(e.target.closest('.ash-dot'))return;drag={ox:e.clientX-term.offsetLeft,oy:e.clientY-term.offsetTop};});
+  header.addEventListener('touchstart',e=>{if(e.target.closest('.ash-dot'))return;const t=e.touches[0];drag={ox:t.clientX-term.offsetLeft,oy:t.clientY-term.offsetTop};},{passive:true});
+  document.addEventListener('mousemove',e=>{if(!drag)return;term.style.left=(e.clientX-drag.ox)+'px';term.style.top=(e.clientY-drag.oy)+'px';});
+  document.addEventListener('touchmove',e=>{if(!drag)return;const t=e.touches[0];term.style.left=(t.clientX-drag.ox)+'px';term.style.top=(t.clientY-drag.oy)+'px';},{passive:true});
+  document.addEventListener('mouseup',()=>{drag=null;});
+  document.addEventListener('touchend',()=>{drag=null;});
+
+  setTimeout(()=>inputEl.focus(),100);
+};
 
 })();
 </script>
