@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>MP3 → WAV Converter | Ariel Studio</title>
+<link rel="icon" href="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/favicon.ico" type="image/x-icon">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root {
+  --pink: #ff6eb4;
+  --cyan: #47c4f1;
+  --purple: #c840ff;
+  --bg: #07080f;
+  --panel: rgba(20,14,38,0.88);
+  --border: rgba(200,64,255,0.25);
+  --text: #e0f4ff;
+  --muted: #8aa0b0;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+html,body{
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Share Tech Mono',monospace;
+  overflow-x:hidden;
+}
+
+/* Animated mesh background */
+body::before{
+  content:'';
+  position:fixed;inset:0;
+  background:
+    radial-gradient(ellipse 60% 50% at 15% 20%, rgba(200,64,255,0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 60% at 85% 80%, rgba(71,196,241,0.1) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 40% at 50% 50%, rgba(255,110,180,0.06) 0%, transparent 70%);
+  pointer-events:none;z-index:0;
+}
+
+/* Scanline overlay */
+body::after{
+  content:'';
+  position:fixed;inset:0;
+  background:repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+  pointer-events:none;z-index:0;
+}
+
+.page{
+  position:relative;z-index:1;
+  max-width:820px;margin:0 auto;
+  padding:32px 20px 80px;
+  display:flex;flex-direction:column;align-items:center;gap:28px;
+}
+
+/* Back button */
+.back-btn{
+  align-self:flex-start;
+  background:none;border:1px solid var(--border);
+  color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:13px;
+  padding:8px 16px;border-radius:6px;cursor:pointer;
+  text-decoration:none;display:inline-flex;align-items:center;gap:8px;
+  transition:all 0.2s;
+}
+.back-btn:hover{border-color:var(--cyan);color:var(--cyan);}
+
+/* Header */
+.header{
+  display:flex;flex-direction:column;align-items:center;gap:12px;
+  padding:8px 0;
+}
+.logo-wrap{
+  width:110px;height:110px;
+  filter:drop-shadow(0 0 18px rgba(200,64,255,0.5)) drop-shadow(0 0 36px rgba(71,196,241,0.2));
+  animation:logoPulse 4s ease-in-out infinite;
+}
+@keyframes logoPulse{
+  0%,100%{filter:drop-shadow(0 0 18px rgba(200,64,255,0.5)) drop-shadow(0 0 36px rgba(71,196,241,0.2));}
+  50%{filter:drop-shadow(0 0 28px rgba(200,64,255,0.8)) drop-shadow(0 0 50px rgba(71,196,241,0.35));}
+}
+
+h1{
+  font-family:'Orbitron',sans-serif;font-size:clamp(20px,5vw,32px);font-weight:900;
+  letter-spacing:6px;text-transform:uppercase;
+  background:linear-gradient(90deg,var(--pink),var(--purple),var(--cyan));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  text-align:center;
+}
+.subtitle{
+  color:var(--muted);font-size:12px;letter-spacing:3px;text-align:center;
+  text-transform:uppercase;
+}
+
+/* Platform badges */
+.platforms{
+  display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
+  padding:4px 0;
+}
+.plat-badge{
+  font-size:10px;letter-spacing:2px;text-transform:uppercase;
+  padding:5px 12px;border-radius:20px;
+  border:1px solid;
+  font-family:'Orbitron',sans-serif;font-weight:700;
+}
+.plat-spotify{border-color:#1db954;color:#1db954;background:rgba(29,185,84,0.08);}
+.plat-apple{border-color:#fc3c44;color:#fc3c44;background:rgba(252,60,68,0.08);}
+.plat-youtube{border-color:#ff0000;color:#ff0000;background:rgba(255,0,0,0.08);}
+.plat-soundcloud{border-color:#ff5500;color:#ff5500;background:rgba(255,85,0,0.08);}
+.plat-tidal{border-color:#00ffff;color:#00ffff;background:rgba(0,255,255,0.08);}
+.plat-amazon{border-color:#1a9fff;color:#1a9fff;background:rgba(26,159,255,0.08);}
+
+/* Main panel */
+.panel{
+  width:100%;
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:28px;
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  box-shadow:0 8px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+/* Drop zone */
+#dropZone{
+  border:2px dashed rgba(200,64,255,0.4);
+  border-radius:12px;padding:48px 24px;
+  display:flex;flex-direction:column;align-items:center;gap:14px;
+  cursor:pointer;transition:all 0.25s;
+  background:rgba(200,64,255,0.04);
+  position:relative;overflow:hidden;
+}
+#dropZone::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(200,64,255,0.05),rgba(71,196,241,0.05));
+  opacity:0;transition:opacity 0.25s;
+}
+#dropZone:hover,#dropZone.drag-over{
+  border-color:var(--purple);
+  background:rgba(200,64,255,0.08);
+  box-shadow:0 0 24px rgba(200,64,255,0.15);
+}
+#dropZone:hover::before,#dropZone.drag-over::before{opacity:1;}
+#dropZone.drag-over{border-style:solid;}
+
+.drop-icon{font-size:48px;line-height:1;filter:drop-shadow(0 0 10px var(--purple));}
+.drop-title{font-family:'Orbitron',sans-serif;font-size:15px;letter-spacing:3px;color:var(--text);}
+.drop-sub{font-size:12px;color:var(--muted);letter-spacing:1px;}
+#fileInput{display:none;}
+
+/* File list */
+#fileList{
+  display:none;flex-direction:column;gap:8px;
+  margin-top:16px;
+}
+.file-item{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 14px;border-radius:8px;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.08);
+}
+.file-icon{font-size:18px;}
+.file-info{flex:1;min-width:0;}
+.file-name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text);}
+.file-size{font-size:11px;color:var(--muted);margin-top:2px;}
+.file-status{font-size:11px;font-family:'Orbitron',sans-serif;letter-spacing:2px;}
+.file-status.ready{color:var(--purple);}
+.file-status.processing{color:var(--cyan);}
+.file-status.done{color:#39ff82;}
+.file-status.error{color:var(--pink);}
+.remove-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px;
+  border-radius:4px;transition:color 0.15s;}
+.remove-btn:hover{color:var(--pink);}
+
+/* Settings */
+.settings-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:16px;
+  margin-top:20px;
+}
+@media(max-width:520px){.settings-grid{grid-template-columns:1fr;}}
+
+.setting-group{display:flex;flex-direction:column;gap:6px;}
+.setting-label{
+  font-size:11px;letter-spacing:3px;text-transform:uppercase;
+  color:var(--muted);font-family:'Orbitron',sans-serif;
+}
+.setting-select,
+.setting-input{
+  background:rgba(0,0,0,0.4);
+  border:1px solid rgba(200,64,255,0.3);
+  border-radius:7px;padding:9px 12px;
+  color:var(--text);font-family:'Share Tech Mono',monospace;font-size:13px;
+  outline:none;width:100%;
+  transition:border-color 0.2s,box-shadow 0.2s;
+  appearance:none;-webkit-appearance:none;
+}
+.setting-select:focus,.setting-input:focus{
+  border-color:var(--purple);
+  box-shadow:0 0 10px rgba(200,64,255,0.2);
+}
+
+/* Quality indicator */
+.quality-row{
+  margin-top:20px;padding:14px 16px;
+  background:rgba(57,255,130,0.05);
+  border:1px solid rgba(57,255,130,0.2);
+  border-radius:8px;
+  display:flex;align-items:center;gap:12px;
+}
+.quality-dot{width:10px;height:10px;border-radius:50%;background:#39ff82;
+  box-shadow:0 0 10px #39ff82;animation:qPulse 2s ease-in-out infinite;}
+@keyframes qPulse{0%,100%{box-shadow:0 0 10px #39ff82;}50%{box-shadow:0 0 20px #39ff82,0 0 40px rgba(57,255,130,0.4);}}
+.quality-text{font-size:12px;color:#39ff82;letter-spacing:2px;font-family:'Orbitron',sans-serif;}
+
+/* Progress bar */
+#progressWrap{display:none;margin-top:20px;flex-direction:column;gap:8px;}
+.progress-label{font-size:11px;color:var(--muted);letter-spacing:2px;display:flex;justify-content:space-between;}
+.progress-track{
+  height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;
+}
+.progress-bar{
+  height:100%;width:0;border-radius:3px;
+  background:linear-gradient(90deg,var(--pink),var(--purple),var(--cyan));
+  transition:width 0.1s linear;
+  box-shadow:0 0 10px var(--purple);
+}
+
+/* Buttons */
+.btn-row{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;}
+.btn{
+  flex:1;min-width:120px;
+  padding:14px 20px;border-radius:9px;
+  font-family:'Orbitron',sans-serif;font-size:12px;letter-spacing:3px;font-weight:700;
+  text-transform:uppercase;cursor:pointer;border:2px solid;
+  transition:all 0.2s;text-align:center;
+}
+.btn:disabled{opacity:0.35;cursor:not-allowed;pointer-events:none;}
+.btn-primary{
+  background:linear-gradient(135deg,rgba(200,64,255,0.2),rgba(71,196,241,0.1));
+  border-color:var(--purple);color:var(--purple);
+}
+.btn-primary:hover:not(:disabled){
+  background:linear-gradient(135deg,var(--purple),var(--cyan));
+  color:#fff;border-color:transparent;
+  box-shadow:0 0 24px rgba(200,64,255,0.4);
+  transform:translateY(-1px);
+}
+.btn-secondary{
+  background:transparent;border-color:rgba(255,255,255,0.15);color:var(--muted);
+}
+.btn-secondary:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan);}
+.btn-download{
+  background:linear-gradient(135deg,rgba(57,255,130,0.15),rgba(71,196,241,0.1));
+  border-color:#39ff82;color:#39ff82;display:none;
+}
+.btn-download:hover:not(:disabled){
+  background:linear-gradient(135deg,#39ff82,var(--cyan));
+  color:#000;border-color:transparent;
+  box-shadow:0 0 24px rgba(57,255,130,0.4);
+}
+
+/* Output info */
+#outputInfo{
+  display:none;margin-top:16px;
+  padding:14px 16px;background:rgba(57,255,130,0.04);
+  border:1px solid rgba(57,255,130,0.2);border-radius:8px;
+}
+.output-row{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.output-key{font-size:11px;color:var(--muted);letter-spacing:2px;}
+.output-val{font-size:12px;color:#39ff82;font-family:'Orbitron',sans-serif;letter-spacing:1px;}
+
+/* Spec panel */
+.spec-panel{
+  width:100%;
+  background:rgba(71,196,241,0.04);
+  border:1px solid rgba(71,196,241,0.15);
+  border-radius:12px;padding:20px;
+}
+.spec-title{
+  font-family:'Orbitron',sans-serif;font-size:11px;letter-spacing:4px;
+  color:var(--cyan);text-transform:uppercase;margin-bottom:14px;
+}
+.spec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;}
+.spec-item{display:flex;flex-direction:column;gap:4px;}
+.spec-key{font-size:10px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;}
+.spec-val{font-size:13px;color:var(--text);font-family:'Orbitron',sans-serif;font-weight:700;}
+
+/* Notice */
+.notice{
+  font-size:11px;color:var(--muted);letter-spacing:1px;line-height:1.7;
+  text-align:center;padding:0 20px;
+}
+.notice a{color:var(--cyan);text-decoration:none;}
+.notice a:hover{text-decoration:underline;}
+
+/* Toast */
+#toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);
+  background:rgba(20,14,38,0.95);border:1px solid var(--purple);
+  color:var(--text);padding:12px 24px;border-radius:8px;
+  font-size:13px;letter-spacing:1px;z-index:999;
+  transition:transform 0.3s ease;pointer-events:none;
+  backdrop-filter:blur(16px);
+  box-shadow:0 4px 24px rgba(200,64,255,0.25);
+}
+#toast.show{transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <a href="/" class="back-btn">← ARIEL HOME</a>
+
+  <div class="header">
+    <!-- Inline SVG logo so no external dependency -->
+    <svg class="logo-wrap" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <defs>
+        <radialGradient id="bg2" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#1a0a2e"/>
+          <stop offset="100%" stop-color="#0a0a18"/>
+        </radialGradient>
+        <linearGradient id="wG" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#ff6eb4"/>
+          <stop offset="50%" stop-color="#c840ff"/>
+          <stop offset="100%" stop-color="#47c4f1"/>
+        </linearGradient>
+        <linearGradient id="aG" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#ff6eb4"/>
+          <stop offset="100%" stop-color="#47c4f1"/>
+        </linearGradient>
+        <filter id="gl"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <circle cx="256" cy="256" r="248" fill="url(#bg2)" stroke="url(#wG)" stroke-width="3"/>
+      <circle cx="256" cy="256" r="230" fill="none" stroke="url(#wG)" stroke-width="1" stroke-opacity="0.3"/>
+      <g filter="url(#gl)" opacity="0.9">
+        <rect x="68" y="230" width="14" height="52" rx="7" fill="#ff6eb4"/>
+        <rect x="88" y="210" width="14" height="92" rx="7" fill="#ff6eb4"/>
+        <rect x="108" y="196" width="14" height="120" rx="7" fill="#ff6eb4"/>
+        <rect x="128" y="220" width="14" height="72" rx="7" fill="#ff6eb4"/>
+        <rect x="148" y="238" width="14" height="36" rx="7" fill="#ff6eb4"/>
+        <rect x="168" y="214" width="14" height="84" rx="7" fill="#ff6eb4"/>
+      </g>
+      <g transform="translate(256,256)" filter="url(#gl)">
+        <rect x="-36" y="-6" width="72" height="12" rx="6" fill="url(#aG)"/>
+        <polygon points="38,-18 72,0 38,18" fill="url(#aG)"/>
+      </g>
+      <g filter="url(#gl)" opacity="0.9">
+        <rect x="322" y="244" width="10" height="24" rx="5" fill="#47c4f1"/>
+        <rect x="338" y="228" width="10" height="56" rx="5" fill="#47c4f1"/>
+        <rect x="354" y="204" width="10" height="104" rx="5" fill="#47c4f1"/>
+        <rect x="370" y="218" width="10" height="76" rx="5" fill="#47c4f1"/>
+        <rect x="386" y="238" width="10" height="36" rx="5" fill="#47c4f1"/>
+        <rect x="402" y="196" width="10" height="120" rx="5" fill="#47c4f1"/>
+        <rect x="418" y="224" width="10" height="64" rx="5" fill="#47c4f1"/>
+        <rect x="434" y="242" width="10" height="28" rx="5" fill="#47c4f1"/>
+      </g>
+      <text x="130" y="378" font-family="monospace" font-size="28" font-weight="900" fill="#ff6eb4" text-anchor="middle" letter-spacing="2" filter="url(#gl)">MP3</text>
+      <text x="390" y="378" font-family="monospace" font-size="28" font-weight="900" fill="#47c4f1" text-anchor="middle" letter-spacing="2" filter="url(#gl)">WAV</text>
+      <text x="256" y="430" font-family="monospace" font-size="16" font-weight="700" fill="rgba(224,244,255,0.6)" text-anchor="middle" letter-spacing="4">CONVERT · HQ</text>
+      <text x="256" y="128" font-family="monospace" font-size="14" font-weight="700" fill="rgba(224,244,255,0.45)" text-anchor="middle" letter-spacing="6">ARIEL STUDIO</text>
+      <circle cx="256" cy="88" r="4" fill="#c840ff" opacity="0.7" filter="url(#gl)"/>
+      <circle cx="190" cy="106" r="2.5" fill="#ff6eb4" opacity="0.5"/>
+      <circle cx="322" cy="106" r="2.5" fill="#47c4f1" opacity="0.5"/>
+    </svg>
+
+    <h1>MP3 → WAV</h1>
+    <div class="subtitle">Lossless Export · Distribution Ready</div>
+  </div>
+
+  <!-- Platform badges -->
+  <div class="platforms">
+    <span class="plat-badge plat-soundcloud">SoundCloud</span>
+    <span class="plat-badge plat-spotify">Spotify</span>
+    <span class="plat-badge plat-apple">Apple Music</span>
+    <span class="plat-badge plat-youtube">YouTube Music</span>
+    <span class="plat-badge plat-tidal">Tidal</span>
+    <span class="plat-badge plat-amazon">Amazon Music</span>
+  </div>
+
+  <!-- Main converter panel -->
+  <div class="panel">
+
+    <!-- Drop zone -->
+    <div id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <div class="drop-icon">🎵</div>
+      <div class="drop-title">Drop MP3 files here</div>
+      <div class="drop-sub">or tap to browse — multiple files supported</div>
+      <input type="file" id="fileInput" accept=".mp3,audio/mpeg" multiple>
+    </div>
+
+    <!-- File list -->
+    <div id="fileList"></div>
+
+    <!-- Settings -->
+    <div class="settings-grid">
+      <div class="setting-group">
+        <label class="setting-label">Sample Rate</label>
+        <select class="setting-select" id="sampleRate">
+          <option value="44100">44,100 Hz — CD Quality</option>
+          <option value="48000" selected>48,000 Hz — Studio / Streaming</option>
+          <option value="88200">88,200 Hz — High Resolution</option>
+          <option value="96000">96,000 Hz — Professional</option>
+        </select>
+      </div>
+      <div class="setting-group">
+        <label class="setting-label">Bit Depth</label>
+        <select class="setting-select" id="bitDepth">
+          <option value="16">16-bit — Standard</option>
+          <option value="24" selected>24-bit — Mastering Grade</option>
+          <option value="32">32-bit Float — Maximum</option>
+        </select>
+      </div>
+      <div class="setting-group">
+        <label class="setting-label">Channels</label>
+        <select class="setting-select" id="channels">
+          <option value="2" selected>Stereo (2ch)</option>
+          <option value="1">Mono (1ch)</option>
+        </select>
+      </div>
+      <div class="setting-group">
+        <label class="setting-label">Output Filename</label>
+        <input type="text" class="setting-input" id="filenamePrefix" placeholder="auto (original name)" maxlength="80">
+      </div>
+    </div>
+
+    <!-- Quality indicator -->
+    <div class="quality-row">
+      <div class="quality-dot"></div>
+      <div class="quality-text" id="qualityLabel">48kHz · 24-bit · Stereo — Streaming Platform Ready</div>
+    </div>
+
+    <!-- Progress -->
+    <div id="progressWrap">
+      <div class="progress-label">
+        <span id="progressText">Converting...</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+    </div>
+
+    <!-- Output info -->
+    <div id="outputInfo">
+      <div class="output-row">
+        <span class="output-key">Status</span>
+        <span class="output-val" id="outStatus">COMPLETE</span>
+      </div>
+      <div class="output-row" style="margin-top:8px">
+        <span class="output-key">Files converted</span>
+        <span class="output-val" id="outCount">—</span>
+      </div>
+      <div class="output-row" style="margin-top:8px">
+        <span class="output-key">Spec</span>
+        <span class="output-val" id="outSpec">—</span>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="clearBtn" onclick="clearFiles()" disabled>CLEAR</button>
+      <button class="btn btn-primary" id="convertBtn" onclick="convertAll()" disabled>CONVERT ALL</button>
+      <button class="btn btn-download" id="downloadBtn" onclick="downloadAll()">DOWNLOAD ZIP</button>
+    </div>
+
+  </div><!-- /panel -->
+
+  <!-- Spec panel -->
+  <div class="spec-panel">
+    <div class="spec-title">◈ Distribution Specifications</div>
+    <div class="spec-grid">
+      <div class="spec-item"><span class="spec-key">SoundCloud Upload</span><span class="spec-val">WAV 44.1k+</span></div>
+      <div class="spec-item"><span class="spec-key">Spotify / Apple Music</span><span class="spec-val">WAV 44.1k 16-bit</span></div>
+      <div class="spec-item"><span class="spec-key">YouTube Music</span><span class="spec-val">WAV 48kHz 24-bit</span></div>
+      <div class="spec-item"><span class="spec-key">Tidal HiFi</span><span class="spec-val">WAV 96kHz 24-bit</span></div>
+      <div class="spec-item"><span class="spec-key">Amazon HD</span><span class="spec-val">WAV 48kHz 24-bit</span></div>
+      <div class="spec-item"><span class="spec-key">DistroKid / TuneCore</span><span class="spec-val">WAV 44.1k 16-bit</span></div>
+    </div>
+  </div>
+
+  <div class="notice">
+    All processing happens entirely in your browser — no audio is uploaded to any server.<br>
+    <a href="/">← Return to Ariel</a>
+  </div>
+
+</div><!-- /page -->
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let files = [];       // {file, status, blob, name}
+let audioCtx = null;
+
+// ── UI helpers ─────────────────────────────────────────────────────────────
+function toast(msg, dur=3000){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), dur);
+}
+
+function getAudioCtx(){
+  if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)({sampleRate: getSampleRate()});
+  return audioCtx;
+}
+
+function getSampleRate(){ return parseInt(document.getElementById('sampleRate').value); }
+function getBitDepth(){ return parseInt(document.getElementById('bitDepth').value); }
+function getChannels(){ return parseInt(document.getElementById('channels').value); }
+
+// Update quality label on setting change
+['sampleRate','bitDepth','channels'].forEach(id=>{
+  document.getElementById(id).addEventListener('change', updateQualityLabel);
+});
+
+function updateQualityLabel(){
+  const sr = getSampleRate(), bd = getBitDepth(), ch = getChannels();
+  const chLabel = ch===1?'Mono':'Stereo';
+  let note = '';
+  if(sr>=96000 && bd>=24) note = '— Hi-Res Audiophile';
+  else if(sr>=48000 && bd>=24) note = '— Streaming Platform Ready';
+  else if(sr>=44100 && bd>=16) note = '— CD Quality Distribution';
+  document.getElementById('qualityLabel').textContent = `${(sr/1000).toFixed(1)}kHz · ${bd}-bit · ${chLabel} ${note}`;
+}
+
+// ── Drag/Drop ──────────────────────────────────────────────────────────────
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e=>{ e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', ()=>dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e=>{
+  e.preventDefault(); dz.classList.remove('drag-over');
+  handleFiles([...e.dataTransfer.files]);
+});
+document.getElementById('fileInput').addEventListener('change', e=>{
+  handleFiles([...e.target.files]);
+  e.target.value='';
+});
+
+function handleFiles(newFiles){
+  const mp3s = newFiles.filter(f=>f.type==='audio/mpeg'||f.name.toLowerCase().endsWith('.mp3'));
+  if(!mp3s.length){ toast('Please select MP3 files only.'); return; }
+  mp3s.forEach(f=>{ if(!files.find(x=>x.file.name===f.name && x.file.size===f.size)) files.push({file:f,status:'ready',blob:null,name:f.name.replace(/\.mp3$/i,'')}); });
+  renderFileList();
+  updateButtons();
+}
+
+function renderFileList(){
+  const fl = document.getElementById('fileList');
+  fl.style.display = files.length?'flex':'none';
+  fl.innerHTML = '';
+  files.forEach((item,i)=>{
+    const sz = (item.file.size/1048576).toFixed(2);
+    const statusLabels = {ready:'READY',processing:'CONVERTING…',done:'DONE',error:'ERROR'};
+    fl.innerHTML += `<div class="file-item" id="fi-${i}">
+      <span class="file-icon">🎵</span>
+      <div class="file-info">
+        <div class="file-name">${item.file.name}</div>
+        <div class="file-size">${sz} MB</div>
+      </div>
+      <span class="file-status ${item.status}" id="fs-${i}">${statusLabels[item.status]||item.status}</span>
+      <button class="remove-btn" onclick="removeFile(${i})" title="Remove">✕</button>
+    </div>`;
+  });
+}
+
+function removeFile(i){
+  files.splice(i,1);
+  renderFileList();
+  updateButtons();
+  if(!files.length) resetOutput();
+}
+
+function clearFiles(){
+  files=[];
+  renderFileList();
+  updateButtons();
+  resetOutput();
+  audioCtx=null;
+}
+
+function updateButtons(){
+  const hasPending = files.some(f=>f.status==='ready');
+  const hasDone = files.some(f=>f.status==='done');
+  document.getElementById('convertBtn').disabled = !hasPending;
+  document.getElementById('clearBtn').disabled = !files.length;
+  if(hasDone){
+    document.getElementById('downloadBtn').style.display='block';
+  }
+}
+
+function resetOutput(){
+  document.getElementById('outputInfo').style.display='none';
+  document.getElementById('progressWrap').style.display='none';
+  document.getElementById('downloadBtn').style.display='none';
+}
+
+// ── Conversion ─────────────────────────────────────────────────────────────
+async function convertAll(){
+  const pending = files.filter(f=>f.status==='ready');
+  if(!pending.length) return;
+
+  // Reset audioCtx to pick up new sampleRate
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)({sampleRate:getSampleRate()});
+
+  document.getElementById('convertBtn').disabled=true;
+  document.getElementById('clearBtn').disabled=true;
+  const pw = document.getElementById('progressWrap');
+  pw.style.display='flex';
+
+  let done=0;
+  for(let i=0;i<files.length;i++){
+    const item = files[i];
+    if(item.status!=='ready') continue;
+    item.status='processing';
+    updateFileStatus(i,'processing','CONVERTING…');
+    updateProgress(done, pending.length, `Converting: ${item.file.name}`);
+
+    try{
+      item.blob = await convertFile(item.file);
+      item.status='done';
+      updateFileStatus(i,'done','DONE ✓');
+    }catch(err){
+      item.status='error';
+      updateFileStatus(i,'error','ERROR');
+      console.error(err);
+    }
+    done++;
+    updateProgress(done, pending.length, done<pending.length?`Converting: ${files[i+1]?.file.name||''}` : 'Complete!');
+  }
+
+  pw.style.display='none';
+  const doneCount = files.filter(f=>f.status==='done').length;
+  const sr=getSampleRate(), bd=getBitDepth(), ch=getChannels();
+  const outInfo = document.getElementById('outputInfo');
+  outInfo.style.display='block';
+  document.getElementById('outCount').textContent = `${doneCount} file${doneCount!==1?'s':''}`;
+  document.getElementById('outSpec').textContent = `${(sr/1000).toFixed(1)}kHz · ${bd}-bit · ${ch===1?'Mono':'Stereo'}`;
+
+  updateButtons();
+  toast(`✓ ${doneCount} file${doneCount!==1?'s':''} converted successfully`);
+}
+
+function updateFileStatus(i, cls, label){
+  const el = document.getElementById(`fs-${i}`);
+  if(el){ el.className=`file-status ${cls}`; el.textContent=label; }
+}
+
+function updateProgress(done, total, label){
+  const pct = total?Math.round((done/total)*100):0;
+  document.getElementById('progressBar').style.width=pct+'%';
+  document.getElementById('progressPct').textContent=pct+'%';
+  document.getElementById('progressText').textContent=label;
+}
+
+async function convertFile(file){
+  const sr = getSampleRate();
+  const bd = getBitDepth();
+  const ch = getChannels();
+
+  // Decode mp3 → AudioBuffer
+  const arrayBuf = await file.arrayBuffer();
+  const decodeCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const audioBuf = await decodeCtx.decodeAudioData(arrayBuf);
+  decodeCtx.close();
+
+  // Resample if needed via OfflineAudioContext
+  let sourceBuf = audioBuf;
+  if(audioBuf.sampleRate !== sr || audioBuf.numberOfChannels !== ch){
+    const numFrames = Math.ceil(audioBuf.duration * sr);
+    const offCtx = new OfflineAudioContext(ch, numFrames, sr);
+    const src = offCtx.createBufferSource();
+    src.buffer = audioBuf;
+    // If mono downmix needed
+    if(ch===1 && audioBuf.numberOfChannels===2){
+      const merger = offCtx.createChannelMerger(1);
+      src.connect(merger);
+      merger.connect(offCtx.destination);
+    } else {
+      src.connect(offCtx.destination);
+    }
+    src.start(0);
+    sourceBuf = await offCtx.startRendering();
+  }
+
+  // Build WAV blob
+  const numChannels = Math.min(sourceBuf.numberOfChannels, ch);
+  const numFrames = sourceBuf.length;
+  const bytesPerSample = bd <= 16 ? 2 : 4; // 16-bit int or 32-bit float
+  const dataSize = numFrames * numChannels * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view,0,'RIFF');
+  view.setUint32(4, 36+dataSize, true);
+  writeString(view,8,'WAVE');
+  writeString(view,12,'fmt ');
+  view.setUint32(16,16,true);                          // PCM chunk size
+  view.setUint16(20, bd===32?3:1, true);               // format: 3=float,1=PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr*numChannels*bytesPerSample, true); // byte rate
+  view.setUint16(32, numChannels*bytesPerSample, true);    // block align
+  view.setUint16(34, bd, true);
+  writeString(view,36,'data');
+  view.setUint32(40, dataSize, true);
+
+  // Interleave samples
+  let offset = 44;
+  const channels = [];
+  for(let c=0;c<numChannels;c++) channels.push(sourceBuf.getChannelData(c));
+
+  for(let i=0;i<numFrames;i++){
+    for(let c=0;c<numChannels;c++){
+      const sample = Math.max(-1,Math.min(1,channels[c][i]));
+      if(bd===32){
+        view.setFloat32(offset, sample, true); offset+=4;
+      } else if(bd===24){
+        const s24 = Math.round(sample*8388607);
+        view.setUint8(offset,   s24&0xff);
+        view.setUint8(offset+1,(s24>>8)&0xff);
+        view.setUint8(offset+2,(s24>>16)&0xff);
+        offset+=3;
+      } else {
+        const s16 = Math.round(sample*32767);
+        view.setInt16(offset, s16, true); offset+=2;
+      }
+    }
+  }
+
+  return new Blob([buffer],{type:'audio/wav'});
+}
+
+function writeString(view, offset, str){
+  for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i));
+}
+
+// ── Download ───────────────────────────────────────────────────────────────
+async function downloadAll(){
+  const done = files.filter(f=>f.status==='done'&&f.blob);
+  if(!done.length){toast('No converted files yet.');return;}
+
+  if(done.length===1){
+    // Single file: direct download
+    downloadBlob(done[0].blob, getOutputName(done[0]));
+    return;
+  }
+
+  // Multiple: try JSZip if available, else download one by one
+  if(typeof JSZip !== 'undefined'){
+    const zip = new JSZip();
+    done.forEach(item=>zip.file(getOutputName(item), item.blob));
+    const zipBlob = await zip.generateAsync({type:'blob'});
+    downloadBlob(zipBlob,'ariel-wav-export.zip');
+  } else {
+    // Fallback: sequential downloads
+    for(const item of done){
+      await new Promise(resolve=>{
+        const a=document.createElement('a');
+        a.href=URL.createObjectURL(item.blob);
+        a.download=getOutputName(item);
+        a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(a.href); resolve(); },500);
+      });
+    }
+  }
+  toast(`↓ Downloaded ${done.length} WAV files`);
+}
+
+function getOutputName(item){
+  const prefix = document.getElementById('filenamePrefix').value.trim();
+  const base = prefix || item.name;
+  return base+'.wav';
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+
+// Init
+updateQualityLabel();
+</script>
+</body>
+</html>
