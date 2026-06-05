@@ -407,8 +407,8 @@ h1{
       <div class="setting-group">
         <label class="setting-label">Bit Depth</label>
         <select class="setting-select" id="bitDepth">
-          <option value="16">16-bit — Standard</option>
-          <option value="24" selected>24-bit — Mastering Grade</option>
+          <option value="16" selected>16-bit — Universal / SoundCloud / Spotify</option>
+          <option value="24">24-bit — Mastering Grade</option>
           <option value="32">32-bit Float — Maximum</option>
         </select>
       </div>
@@ -428,7 +428,7 @@ h1{
     <!-- Quality indicator -->
     <div class="quality-row">
       <div class="quality-dot"></div>
-      <div class="quality-text" id="qualityLabel">48kHz · 24-bit · Stereo — Streaming Platform Ready</div>
+      <div class="quality-text" id="qualityLabel">48kHz · 16-bit · Stereo — Universal / SoundCloud Ready</div>
     </div>
 
     <!-- Progress -->
@@ -469,7 +469,7 @@ h1{
   <div class="spec-panel">
     <div class="spec-title">◈ Distribution Specifications</div>
     <div class="spec-grid">
-      <div class="spec-item"><span class="spec-key">SoundCloud Upload</span><span class="spec-val">WAV 44.1k+</span></div>
+      <div class="spec-item"><span class="spec-key">SoundCloud Upload</span><span class="spec-val">WAV 44.1k 16-bit ✓</span></div>
       <div class="spec-item"><span class="spec-key">Spotify / Apple Music</span><span class="spec-val">WAV 44.1k 16-bit</span></div>
       <div class="spec-item"><span class="spec-key">YouTube Music</span><span class="spec-val">WAV 48kHz 24-bit</span></div>
       <div class="spec-item"><span class="spec-key">Tidal HiFi</span><span class="spec-val">WAV 96kHz 24-bit</span></div>
@@ -683,11 +683,13 @@ async function convertFile(file){
     sourceBuf = await offCtx.startRendering();
   }
 
-  // Build WAV blob
+  // Build WAV blob — correct per-depth byte accounting
   const numChannels = Math.min(sourceBuf.numberOfChannels, ch);
   const numFrames = sourceBuf.length;
-  const bytesPerSample = bd <= 16 ? 2 : 4; // 16-bit int or 32-bit float
+  // Bytes per sample: 16→2, 24→3, 32→4
+  const bytesPerSample = bd === 16 ? 2 : bd === 24 ? 3 : 4;
   const dataSize = numFrames * numChannels * bytesPerSample;
+  // 24-bit: wav fmt chunk is still 16 bytes (no extensible needed for stereo/mono PCM)
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
 
@@ -696,35 +698,42 @@ async function convertFile(file){
   view.setUint32(4, 36+dataSize, true);
   writeString(view,8,'WAVE');
   writeString(view,12,'fmt ');
-  view.setUint32(16,16,true);                          // PCM chunk size
-  view.setUint16(20, bd===32?3:1, true);               // format: 3=float,1=PCM
+  view.setUint32(16,16,true);
+  // audio format: 1=PCM (16/24-bit), 3=IEEE float (32-bit)
+  view.setUint16(20, bd===32 ? 3 : 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sr, true);
-  view.setUint32(28, sr*numChannels*bytesPerSample, true); // byte rate
-  view.setUint16(32, numChannels*bytesPerSample, true);    // block align
+  view.setUint32(28, sr * numChannels * bytesPerSample, true);
+  view.setUint16(32, numChannels * bytesPerSample, true);
   view.setUint16(34, bd, true);
   writeString(view,36,'data');
   view.setUint32(40, dataSize, true);
 
-  // Interleave samples
+  // Interleave samples into correct byte width
   let offset = 44;
-  const channels = [];
-  for(let c=0;c<numChannels;c++) channels.push(sourceBuf.getChannelData(c));
+  const chData = [];
+  for(let c=0;c<numChannels;c++) chData.push(sourceBuf.getChannelData(c));
 
   for(let i=0;i<numFrames;i++){
     for(let c=0;c<numChannels;c++){
-      const sample = Math.max(-1,Math.min(1,channels[c][i]));
-      if(bd===32){
-        view.setFloat32(offset, sample, true); offset+=4;
-      } else if(bd===24){
-        const s24 = Math.round(sample*8388607);
-        view.setUint8(offset,   s24&0xff);
-        view.setUint8(offset+1,(s24>>8)&0xff);
-        view.setUint8(offset+2,(s24>>16)&0xff);
-        offset+=3;
+      const s = Math.max(-1, Math.min(1, chData[c][i]));
+      if(bd === 32){
+        // 32-bit IEEE float
+        view.setFloat32(offset, s, true);
+        offset += 4;
+      } else if(bd === 24){
+        // 24-bit signed PCM — must sign-extend correctly
+        let s24 = Math.round(s * 8388607);
+        if(s24 < 0) s24 = s24 & 0xFFFFFF; // two's complement 24-bit
+        view.setUint8(offset,     s24 & 0xFF);
+        view.setUint8(offset + 1, (s24 >> 8) & 0xFF);
+        view.setUint8(offset + 2, (s24 >> 16) & 0xFF);
+        offset += 3;
       } else {
-        const s16 = Math.round(sample*32767);
-        view.setInt16(offset, s16, true); offset+=2;
+        // 16-bit signed PCM — the universal safe format
+        const s16 = Math.round(s < 0 ? s * 32768 : s * 32767);
+        view.setInt16(offset, s16, true);
+        offset += 2;
       }
     }
   }
