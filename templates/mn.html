@@ -7,14 +7,13 @@
 <link rel="alternate" type="application/rss+xml" title="Ariel &amp; Autumn Updates" href="/feed.xml">
     <title>Mantis Navigation</title>
     <style>
-    <style>
 /* ═══════════════════════════════════════════════════════════════
    MANTIS NAVIGATION — UNIFIED PANEL SYSTEM
    Theme: deep space / cyan neon on near-black
    All panels: draggable, collapsible, consistent chrome
    ═══════════════════════════════════════════════════════════════ */
 :root {
-  --mn-bg:      rgba(3, 8, 16, 0.96);
+  --mn-bg:      rgba(2, 6, 14, 0.97);
   --mn-border:  rgba(0, 229, 255, 0.22);
   --mn-border-h:rgba(0, 229, 255, 0.55);
   --mn-cyan:    #00e5ff;
@@ -400,6 +399,7 @@ body.iframe-mode #info-panel { top: 6px; left: 6px; width: 170px; }
 body.iframe-mode #info-panel img { width: 100px; height: 100px; }
 body.iframe-mode #env-panel { top: 6px; right: 6px; width: 210px; }
 body.iframe-mode #chemistry-panel { max-height: calc(100vh - 100px); width: 260px; }
+#chemistry-panel { background: rgba(2,5,12,0.98) !important; }
 
 body.iframe-mode #ui-container {
   position: fixed !important; bottom: 22px !important; left: 0 !important;
@@ -427,9 +427,76 @@ body.iframe-mode #fpv-toggle    { width: 32px; height: 32px; font-size: 8px; }
 body.iframe-mode .gizmo-btn     { width: 22px; height: 22px; font-size: 8px; }
 body.iframe-mode #view-gizmo    { grid-template-columns: 22px 22px 22px; gap: 2px; }
 body.iframe-mode canvas#threejs-canvas { width: 100% !important; height: 100% !important; }
+
+/* ─── HUD Toggle Orb ───────────────────────────────────────── */
+#hud-orb {
+  position: fixed;
+  top: 14px; left: 14px;
+  width: 42px; height: 42px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%,
+    rgba(0,229,255,0.28) 0%,
+    rgba(0,40,60,0.92)  60%,
+    rgba(0,10,20,0.98)  100%);
+  border: 1.5px solid var(--mn-cyan);
+  box-shadow:
+    0 0 8px  rgba(0,229,255,0.5),
+    0 0 18px rgba(0,229,255,0.2),
+    inset 0 0 6px rgba(0,229,255,0.12);
+  cursor: pointer;
+  z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  transition: box-shadow .2s, background .2s;
+  user-select: none;
+  pointer-events: all;
+  -webkit-tap-highlight-color: transparent;
+}
+#hud-orb:active {
+  box-shadow:
+    0 0 14px rgba(0,229,255,0.8),
+    0 0 30px rgba(0,229,255,0.4),
+    inset 0 0 10px rgba(0,229,255,0.2);
+}
+/* Inner icon: three stacked lines = "panels" */
+#hud-orb .orb-icon {
+  display: flex; flex-direction: column; gap: 4px;
+  align-items: center;
+}
+#hud-orb .orb-icon span {
+  display: block;
+  width: 18px; height: 2px;
+  background: var(--mn-cyan);
+  border-radius: 1px;
+  transition: opacity .2s, transform .2s;
+  box-shadow: 0 0 4px var(--mn-cyan);
+}
+/* Hidden state — lines fade and compress to dot */
+#hud-orb.hud-hidden {
+  background: radial-gradient(circle at 35% 35%,
+    rgba(0,229,255,0.08) 0%,
+    rgba(0,10,20,0.97) 100%);
+  box-shadow:
+    0 0 4px  rgba(0,229,255,0.2),
+    inset 0 0 3px rgba(0,229,255,0.06);
+  border-color: rgba(0,229,255,0.35);
+}
+#hud-orb.hud-hidden .orb-icon span {
+  opacity: 0.25;
+  transform: scaleX(0.3);
+}
+/* Keep orb in upper-left even in iframe-mode; push it right of info-panel header */
+body.iframe-mode #hud-orb { top: 8px; left: 8px; width: 36px; height: 36px; }
+
 </style>
 </head>
 <body>
+    <!-- ── HUD Orb: tap to show/hide all panels ── -->
+    <div id="hud-orb" onclick="mnHudToggle()" title="Hide all panels">
+      <div class="orb-icon">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+
     <canvas id="threejs-canvas"></canvas>
 <div id="trajectories-panel" class="mn-panel">
   <div class="mn-panel-header" data-panel="trajectories-panel">
@@ -1786,149 +1853,225 @@ body.iframe-mode canvas#threejs-canvas { width: 100% !important; height: 100% !i
 
 <script>
 /* ═══════════════════════════════════════════════════════════════
-   MANTIS PANEL SYSTEM — drag, collapse, snap-to-edge on collapse
+   MANTIS PANEL SYSTEM v2
+   - Drag works on ALL panels whether expanded or collapsed
+   - Collapse snaps to default edge; expand restores last position
+   - HUD orb toggle: show/hide all open panels at once
    ═══════════════════════════════════════════════════════════════ */
 (function(){
 
-  /* Default anchors: where each panel snaps when collapsed */
+  /* Default edge anchors for collapse snap */
   var ANCHORS = {
-    'info-panel':         {edge:'left',  top:10},
-    'env-panel':          {edge:'right', top:10},
-    'chemistry-panel':    {edge:'left',  top:60},
-    'trajectories-panel': {edge:'top',   left:null} /* centered */
+    'info-panel':         { edge:'left',   top:10  },
+    'env-panel':          { edge:'right',  top:10  },
+    'chemistry-panel':    { edge:'left',   top:60  },
+    'trajectories-panel': { edge:'center', top:10  }
   };
 
-  /* Track drag state per panel */
+  /* Per-panel memory of last expanded position */
+  var lastPos = {};
+
+  /* Drag state */
   var dragging = null;
-  var dragOffX=0, dragOffY=0;
+  var dragOffX = 0, dragOffY = 0;
 
-  function initPanel(panel){
+  /* Which panels are currently "visible" (not hidden by HUD toggle) */
+  /* We store display state before HUD-hide so we can restore it */
+  var hudHidden = false;
+  var hudSnapshot = {}; /* id → display value before hide */
+
+  /* ── Drag ──────────────────────────────────────────────────── */
+  function initPanel(panel) {
     var header = panel.querySelector('.mn-panel-header');
-    if(!header) return;
-
-    /* Touch + mouse drag on header */
-    header.addEventListener('mousedown',  startDrag);
-    header.addEventListener('touchstart', startDrag, {passive:false});
+    if (!header) return;
+    header.addEventListener('mousedown',  onDragStart);
+    header.addEventListener('touchstart', onDragStart, { passive: false });
   }
 
-  function startDrag(e){
-    if(e.target.classList.contains('mn-panel-collapse')) return; // let collapse btn work
+  function onDragStart(e) {
+    /* Let collapse button clicks through without starting drag */
+    if (e.target.closest('.mn-panel-collapse')) return;
     e.preventDefault();
 
     var panel = e.currentTarget.closest('.mn-panel');
-    if(!panel) return;
+    if (!panel) return;
 
+    /* Resolve current screen position regardless of CSS right/transform */
     var rect = panel.getBoundingClientRect();
-    var cx = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
-    var cy = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    var cx = e.touches ? e.touches[0].clientX : e.clientX;
+    var cy = e.touches ? e.touches[0].clientY : e.clientY;
     dragOffX = cx - rect.left;
     dragOffY = cy - rect.top;
 
-    /* Elevate panel */
+    /* Pin to absolute left/top so dragging is consistent */
     panel.style.transition = 'none';
-    panel.classList.add('dragging');
+    panel.style.right     = 'auto';
+    panel.style.transform = 'none';
     panel.style.left = rect.left + 'px';
     panel.style.top  = rect.top  + 'px';
-    panel.style.right  = 'auto';
-    panel.style.transform = 'none';
-
+    panel.classList.add('dragging');
     dragging = panel;
 
-    window.addEventListener('mousemove',  onDrag);
-    window.addEventListener('touchmove',  onDrag, {passive:false});
-    window.addEventListener('mouseup',    stopDrag);
-    window.addEventListener('touchend',   stopDrag);
+    window.addEventListener('mousemove',  onDragMove);
+    window.addEventListener('touchmove',  onDragMove, { passive: false });
+    window.addEventListener('mouseup',    onDragEnd);
+    window.addEventListener('touchend',   onDragEnd);
   }
 
-  function onDrag(e){
-    if(!dragging) return;
+  function onDragMove(e) {
+    if (!dragging) return;
     e.preventDefault();
-    var cx = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
-    var cy = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    var cx = e.touches ? e.touches[0].clientX : e.clientX;
+    var cy = e.touches ? e.touches[0].clientY : e.clientY;
     var x = cx - dragOffX;
     var y = cy - dragOffY;
-    /* Clamp inside viewport */
-    var w = dragging.offsetWidth, h = dragging.offsetHeight;
-    x = Math.max(0, Math.min(window.innerWidth  - w, x));
-    y = Math.max(0, Math.min(window.innerHeight - h, y));
+    /* Clamp: keep header at minimum 20px visible */
+    var w = dragging.offsetWidth;
+    var h = dragging.querySelector('.mn-panel-header').offsetHeight;
+    x = Math.max(0, Math.min(window.innerWidth  - w,  x));
+    y = Math.max(0, Math.min(window.innerHeight - h,  y));
     dragging.style.left = x + 'px';
     dragging.style.top  = y + 'px';
   }
 
-  function stopDrag(e){
-    if(dragging){
+  function onDragEnd() {
+    if (dragging) {
+      /* Save expanded-state position so collapse→expand restores it */
+      if (!dragging.classList.contains('collapsed')) {
+        lastPos[dragging.id] = {
+          left: dragging.style.left,
+          top:  dragging.style.top
+        };
+      }
       dragging.classList.remove('dragging');
       dragging.style.transition = '';
     }
     dragging = null;
-    window.removeEventListener('mousemove',  onDrag);
-    window.removeEventListener('touchmove',  onDrag);
-    window.removeEventListener('mouseup',    stopDrag);
-    window.removeEventListener('touchend',   stopDrag);
+    window.removeEventListener('mousemove',  onDragMove);
+    window.removeEventListener('touchmove',  onDragMove);
+    window.removeEventListener('mouseup',    onDragEnd);
+    window.removeEventListener('touchend',   onDragEnd);
   }
 
   /* ── Collapse / Expand ─────────────────────────────────────── */
-  window.mnCollapsePanel = function(id){
+  window.mnCollapsePanel = function(id) {
     var panel = document.getElementById(id);
-    if(!panel) return;
-    var wasCollapsed = panel.classList.contains('collapsed');
+    if (!panel) return;
 
-    if(wasCollapsed){
-      /* EXPAND — restore to last drag position (already stored in inline style) */
+    if (panel.classList.contains('collapsed')) {
+      /* EXPAND — restore last known position or stay where it is */
       panel.classList.remove('collapsed');
-    } else {
-      /* COLLAPSE — snap panel back to its default edge position */
-      panel.classList.add('collapsed');
-      var anchor = ANCHORS[id];
-      if(anchor){
-        panel.style.transition = 'left .25s ease, right .25s ease, top .25s ease';
-        panel.style.transform = anchor.edge==='top' ? 'translateX(-50%)' : 'none';
-        if(anchor.edge === 'left'){
-          panel.style.left  = '10px';
-          panel.style.right = 'auto';
-          panel.style.top   = anchor.top + 'px';
-        } else if(anchor.edge === 'right'){
-          panel.style.right = '10px';
-          panel.style.left  = 'auto';
-          panel.style.top   = anchor.top + 'px';
-        } else {
-          /* top center */
-          panel.style.left   = '50%';
-          panel.style.right  = 'auto';
-          panel.style.top    = '10px';
-          panel.style.transform = 'translateX(-50%)';
-        }
-        /* Clear transition after it plays */
-        setTimeout(function(){ panel.style.transition=''; }, 280);
+      var lp = lastPos[id];
+      if (lp) {
+        panel.style.transition = 'none';
+        panel.style.right     = 'auto';
+        panel.style.transform = 'none';
+        panel.style.left = lp.left;
+        panel.style.top  = lp.top;
       }
-    }
-  };
-
-  /* ── Show / hide env panel (replaces old env-open toggle) ─── */
-  window.mnToggleEnvPanel = function(){
-    var p = document.getElementById('env-panel');
-    if(!p) return;
-    if(p.style.display === 'none' || p.style.display === ''){
-      p.style.display = 'flex';
     } else {
-      p.style.display = 'none';
+      /* Save current position before collapsing */
+      var r = panel.getBoundingClientRect();
+      lastPos[id] = {
+        left: r.left + 'px',
+        top:  r.top  + 'px'
+      };
+
+      /* Collapse and snap to edge */
+      panel.classList.add('collapsed');
+      var anchor = ANCHORS[id] || { edge:'left', top:10 };
+      panel.style.transition = 'left .22s ease, right .22s ease, top .22s ease, transform .22s ease';
+
+      if (anchor.edge === 'left') {
+        panel.style.left      = '10px';
+        panel.style.right     = 'auto';
+        panel.style.top       = anchor.top + 'px';
+        panel.style.transform = 'none';
+      } else if (anchor.edge === 'right') {
+        /* Use right-anchor: convert to left so no jump */
+        panel.style.right     = 'auto';
+        panel.style.transform = 'none';
+        panel.style.left      = (window.innerWidth - panel.offsetWidth - 10) + 'px';
+        panel.style.top       = anchor.top + 'px';
+      } else {
+        /* center top */
+        panel.style.left      = '50%';
+        panel.style.right     = 'auto';
+        panel.style.top       = anchor.top + 'px';
+        panel.style.transform = 'translateX(-50%)';
+      }
+      setTimeout(function() { panel.style.transition = ''; }, 240);
     }
   };
 
-  /* Also keep envPhysics.togglePanel working */
-  var _envPatchInterval = setInterval(function(){
-    if(window.envPhysics){
+  /* ── HUD orb: toggle all panels visible/hidden ─────────────── */
+  var PANEL_IDS = ['info-panel', 'env-panel', 'chemistry-panel', 'trajectories-panel'];
+
+  window.mnHudToggle = function() {
+    if (!hudHidden) {
+      /* HIDE — snapshot current display, hide everything */
+      PANEL_IDS.forEach(function(id) {
+        var p = document.getElementById(id);
+        if (!p) return;
+        hudSnapshot[id] = p.style.display || getComputedStyle(p).display;
+        p.style.display = 'none';
+      });
+      hudHidden = true;
+      updateOrbState(true);
+    } else {
+      /* SHOW — restore snapshots */
+      PANEL_IDS.forEach(function(id) {
+        var p = document.getElementById(id);
+        if (!p) return;
+        var was = hudSnapshot[id];
+        /* Only restore panels that were actually visible */
+        p.style.display = (was && was !== 'none') ? was : 'none';
+      });
+      hudHidden = false;
+      updateOrbState(false);
+    }
+  };
+
+  function updateOrbState(hidden) {
+    var orb = document.getElementById('hud-orb');
+    if (!orb) return;
+    if (hidden) {
+      orb.classList.add('hud-hidden');
+      orb.title = 'Show all panels';
+    } else {
+      orb.classList.remove('hud-hidden');
+      orb.title = 'Hide all panels';
+    }
+  }
+
+  /* ── Show / hide env panel ─────────────────────────────────── */
+  window.mnToggleEnvPanel = function() {
+    var p = document.getElementById('env-panel');
+    if (!p) return;
+    var cur = p.style.display || getComputedStyle(p).display;
+    p.style.display = (cur === 'none') ? 'flex' : 'none';
+  };
+
+  /* Patch envPhysics once it loads */
+  var _envPatch = setInterval(function() {
+    if (window.envPhysics) {
       window.envPhysics.togglePanel = window.mnToggleEnvPanel;
-      clearInterval(_envPatchInterval);
+      clearInterval(_envPatch);
     }
   }, 200);
 
-  /* ── Init all panels on load ───────────────────────────────── */
-  document.addEventListener('DOMContentLoaded', function(){
+  /* ── Init ──────────────────────────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.mn-panel').forEach(initPanel);
-    /* Env panel hidden by default until opened */
+
+    /* Env + chem panels hidden by default */
     var ep = document.getElementById('env-panel');
-    if(ep) ep.style.display = 'none';
+    if (ep) ep.style.display = 'none';
+    var cp = document.getElementById('chemistry-panel');
+    if (cp) cp.style.display = 'none';
+    /* Trajectories hidden by default */
+    var tp = document.getElementById('trajectories-panel');
+    if (tp) tp.style.display = 'none';
   });
 
 })();
