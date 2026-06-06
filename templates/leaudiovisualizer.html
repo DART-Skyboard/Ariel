@@ -52,8 +52,10 @@
           box-sizing: border-box;
         }
 
-        body {
+        html, body {
           background-color: var(--bg-color);
+          width: 100%;
+          height: 100%;
           color: var(--text-primary);
           font-family: "TheGoodMonolith", monospace;
           overflow: hidden;
@@ -93,11 +95,11 @@
         }
 
         #three-container {
-          position: absolute;
+          position: fixed;
           top: 0;
           left: 0;
-          width: 100%;
-          height: 100%;
+          width: 100vw;
+          height: 100vh;
           z-index: 1;
           cursor: grab;
         }
@@ -299,14 +301,14 @@
 
         /* Maze Controls Panel (Original adapted) */
         #maze-controls-panel {
-            width: 280px; /* Adjust as needed */
+            width: 280px;
             top: 20px;
             left: 20px;
         }
 
         /* Anomaly Metrics Panels (from visualizer) */
         .data-panel { width: 280px; } /* Consistent width */
-        #anomaly-metrics-left { top: 20px; left: calc(20px + 280px + 20px); /* Position next to maze controls */ }
+        #anomaly-metrics-left { top: 20px; left: calc(50% - 140px); transform: translateX(0); }
         #anomaly-metrics-right { top: 20px; right: 20px; }
 
         .data-readouts { margin-top: 0.5rem; }
@@ -322,8 +324,7 @@
         /* Anomaly Controls / Maze Dynamics Panel (New / From Visualizer) */
         #dynamic-controls-panel {
             width: 280px;
-            /* FIX: Positioned below the Maze Config panel to avoid overlap */
-            top: calc(20px + 390px + 20px); 
+            top: calc(20px + 430px + 20px);
             left: 20px;
         }
 
@@ -331,9 +332,8 @@
         .terminal-panel {
           left: 20px;
           bottom: 20px;
-          width: 450px; /* Adjusted width */
-          height: 140px; /* Adjusted height */
-
+          width: 420px;
+          height: 140px;
         }
         .terminal-header { /* Combined with panel-header-title and panel-handle */
             display: flex;
@@ -361,7 +361,7 @@
         .spectrum-analyzer {
           bottom: 20px;
           right: 20px;
-          width: 320px; /* Adjusted width */
+          width: 320px;
         }
         .spectrum-header { /* Combined with panel-header-title and panel-handle */
             display: flex;
@@ -434,7 +434,7 @@
   
 >
         
-  <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/rd.mp4" type="video/mp4">
+  <source src="../static/rd.mp4" type="video/mp4">
   <!-- fallback for non-HTML5 browsers -->
   Your browser doesn’t support HTML5 video.
 </video>
@@ -925,10 +925,10 @@
         controls.maxDistance = 60000;
         controls.target.set(0,0,0);
 
-        const ambientLight = new THREE.AmbientLight(0x707080, 30.8);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 4.5);
         scene.add(ambientLight);
         
-        const dirLight = new THREE.DirectionalLight(0xffeedd, 15.2);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 8.0);
         dirLight.position.set(70, 100, 60);
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
@@ -937,10 +937,10 @@
         dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 500;
         scene.add(dirLight);
 
-        const pointLight1 = new THREE.PointLight(varToHex(getCSSVariableValue('--accent-primary')), 35.7, 3000, 1.5);
+        const pointLight1 = new THREE.PointLight(varToHex(getCSSVariableValue('--accent-primary')), 60.0, 4000, 1.2);
         pointLight1.position.set(50, 30, 50);
         scene.add(pointLight1);
-        const pointLight2 = new THREE.PointLight(varToHex(getCSSVariableValue('--accent-secondary')), 20.5, 2050, 1.8);
+        const pointLight2 = new THREE.PointLight(varToHex(getCSSVariableValue('--accent-secondary')), 40.0, 3000, 1.4);
         pointLight2.position.set(-50, 2000, -50);
         scene.add(pointLight2);
         
@@ -1630,20 +1630,47 @@
         audioSensitivityValue.textContent = audioSensitivitySlider.value; audioSensitivityFactor = parseFloat(audioSensitivitySlider.value);
 
         // *** MODIFICATION: Correctly initialize Draggable for each panel individually ***
-        const draggableOptions = {
-            type: "x,y",
-            edgeResistance: 0.65,
-            bounds: document.body,
-            inertia: true,
-            throwResistance: 2500,
-        };
+        const isMobile = window.innerWidth < 768;
+        let topZ = 100;
+        const bringToFront = (el) => { el.style.zIndex = ++topZ; };
 
-        Draggable.create("#maze-controls-panel",     { ...draggableOptions, trigger: "#maze-controls-panel-handle" });
-        Draggable.create("#anomaly-metrics-left",    { ...draggableOptions, trigger: "#metrics-left-handle" });
-        Draggable.create("#anomaly-metrics-right",   { ...draggableOptions, trigger: "#metrics-right-handle" });
-        Draggable.create("#dynamic-controls-panel",  { ...draggableOptions, trigger: "#dynamic-controls-handle" });
-        Draggable.create("#terminal-panel",          { ...draggableOptions, trigger: "#terminal-handle" });
-        Draggable.create("#spectrum-analyzer-panel", { ...draggableOptions, trigger: "#spectrum-handle" });
+        const panelIds = [
+            "#maze-controls-panel",
+            "#anomaly-metrics-left",
+            "#anomaly-metrics-right",
+            "#dynamic-controls-panel",
+            "#terminal-panel",
+            "#spectrum-analyzer-panel"
+        ];
+
+        const handleIds = [
+            "#maze-controls-panel-handle",
+            "#metrics-left-handle",
+            "#metrics-right-handle",
+            "#dynamic-controls-handle",
+            "#terminal-handle",
+            "#spectrum-handle"
+        ];
+
+        panelIds.forEach((panelId, i) => {
+            const el = document.querySelector(panelId);
+            if (!el) return;
+            // Bring to front on any touch/click
+            el.addEventListener('mousedown', () => bringToFront(el), { passive: true });
+            el.addEventListener('touchstart', () => bringToFront(el), { passive: true });
+
+            Draggable.create(panelId, {
+                type: "x,y",
+                edgeResistance: 0.65,
+                bounds: document.body,
+                inertia: true,
+                throwResistance: 2500,
+                // On mobile: drag by whole panel; on desktop: drag by handle only
+                trigger: isMobile ? panelId : handleIds[i],
+                onPress: function() { bringToFront(this.target); },
+                allowEventDefault: true,
+            });
+        });
     }
     
     function updateTimestampDisplay() {
