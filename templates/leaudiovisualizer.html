@@ -239,7 +239,10 @@
           align-items: center;
           justify-content: center;
           touch-action: none;
+          pointer-events: auto;
           z-index: 20;
+          user-select: none;
+          -webkit-user-select: none;
         }
         .panel-handle:hover {
             color: var(--accent-primary);
@@ -933,41 +936,45 @@
         controls.maxDistance = 60000;
         controls.target.set(0,0,0);
 
-        // Global ambient — very dim, just prevents absolute black
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8899bb, 5.0);
+        // Global ambient — soft base so nothing is pure black
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8899bb, 4.0);
         scene.add(hemiLight);
-        const ambientLight = new THREE.AmbientLight(0xffffff, 8.0);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 6.0);
         scene.add(ambientLight);
 
-        // ── THREE-POINT STUDIO RIG parented to mazeGroup ──
-        // All lights added to mazeGroup so they travel with the maze
-        // when it is centered/repositioned after generation.
-        // Positions are relative to mazeGroup origin (maze center).
+        // ── STUDIO LIGHT RIG — permanent Group parented to mazeGroup ──
+        // lightRig is NEVER cleared by clearSceneContent (only Meshes are cleared).
+        // All positions are relative to maze center, so lights travel with it
+        // when camera dollies, orbits, or maze recenters after generation.
+        const lightRig = new THREE.Group();
 
-        // KEY LIGHT — front-right-above, warm white, strong
-        const keyLight = new THREE.PointLight(0xffffff, 14000, 0, 0);
-        keyLight.position.set(120, 180, 120);
+        // KEY — upper-right-front, strong warm white, casts shadows
+        const keyLight = new THREE.PointLight(0xfffaf0, 18000, 0, 0);
+        keyLight.position.set(150, 200, 150);  // above + to the side
         keyLight.castShadow = true;
         keyLight.shadow.mapSize.width = 2048;
         keyLight.shadow.mapSize.height = 2048;
         keyLight.shadow.camera.near = 1;
-        keyLight.shadow.camera.far = 800;
-        mazeGroup.add(keyLight);
+        keyLight.shadow.camera.far = 1000;
+        lightRig.add(keyLight);
 
-        // FILL LIGHT — front-left, cool blue, softer
-        const fillLight = new THREE.PointLight(0xaaddff, 8000, 0, 0);
-        fillLight.position.set(-120, 100, 120);
-        mazeGroup.add(fillLight);
+        // FILL — left side, horizon-level, cool blue, softer
+        const fillLight = new THREE.PointLight(0xaaddff, 10000, 0, 0);
+        fillLight.position.set(-180, 20, 80);  // waist-level, side
+        lightRig.add(fillLight);
 
-        // RIM/BACK LIGHT — behind-above, blue-white edge definition
-        const rimLight = new THREE.PointLight(0x88bbff, 10000, 0, 0);
-        rimLight.position.set(0, 140, -160);
-        mazeGroup.add(rimLight);
+        // RIM/BACK — behind and above, blue-white edge pop
+        const rimLight = new THREE.PointLight(0x99ccff, 12000, 0, 0);
+        rimLight.position.set(0, 160, -200);   // behind, elevated
+        lightRig.add(rimLight);
 
-        // UNDER-ACCENT — cyan glow from center/below for signature color
-        const accentPoint = new THREE.PointLight(0x00e5ff, 3000, 0, 0);
-        accentPoint.position.set(0, 20, 0);
-        mazeGroup.add(accentPoint);
+        // BOTTOM ACCENT — cyan fill from below center, color signature
+        const accentPoint = new THREE.PointLight(0x00e5ff, 4000, 0, 0);
+        accentPoint.position.set(0, -30, 0);   // just below maze floor
+        lightRig.add(accentPoint);
+
+        // Attach the whole rig to mazeGroup — moves with it forever
+        mazeGroup.add(lightRig);
 
         scene.add(mazeGroup);
         clock = new THREE.Clock();
@@ -1338,7 +1345,11 @@
         mazeData.wallMeshes = [];
         
         const toRemove = [];
-        mazeGroup.children.forEach(child => toRemove.push(child));
+        mazeGroup.children.forEach(child => {
+            // Keep the lightRig (Group containing lights) — never dispose it
+            if (child.isGroup || child.isLight) return;
+            toRemove.push(child);
+        });
         toRemove.forEach(child => {
              if (child.isMesh) {
                  if (child.geometry) child.geometry.dispose();
