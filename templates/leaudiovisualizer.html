@@ -934,7 +934,9 @@
         controls.target.set(0,0,0);
 
         // Global ambient — very dim, just prevents absolute black
-        const ambientLight = new THREE.AmbientLight(0xffffff, 6.0);
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x8899bb, 5.0);
+        scene.add(hemiLight);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 8.0);
         scene.add(ambientLight);
 
         // ── THREE-POINT STUDIO RIG parented to mazeGroup ──
@@ -943,7 +945,7 @@
         // Positions are relative to mazeGroup origin (maze center).
 
         // KEY LIGHT — front-right-above, warm white, strong
-        const keyLight = new THREE.PointLight(0xffffff, 8000, 0, 0);
+        const keyLight = new THREE.PointLight(0xffffff, 14000, 0, 0);
         keyLight.position.set(120, 180, 120);
         keyLight.castShadow = true;
         keyLight.shadow.mapSize.width = 2048;
@@ -953,17 +955,17 @@
         mazeGroup.add(keyLight);
 
         // FILL LIGHT — front-left, cool blue, softer
-        const fillLight = new THREE.PointLight(0xaaddff, 4000, 0, 0);
+        const fillLight = new THREE.PointLight(0xaaddff, 8000, 0, 0);
         fillLight.position.set(-120, 100, 120);
         mazeGroup.add(fillLight);
 
         // RIM/BACK LIGHT — behind-above, blue-white edge definition
-        const rimLight = new THREE.PointLight(0x88bbff, 5000, 0, 0);
+        const rimLight = new THREE.PointLight(0x88bbff, 10000, 0, 0);
         rimLight.position.set(0, 140, -160);
         mazeGroup.add(rimLight);
 
         // UNDER-ACCENT — cyan glow from center/below for signature color
-        const accentPoint = new THREE.PointLight(0x00e5ff, 1500, 0, 0);
+        const accentPoint = new THREE.PointLight(0x00e5ff, 3000, 0, 0);
         accentPoint.position.set(0, 20, 0);
         mazeGroup.add(accentPoint);
 
@@ -1471,14 +1473,16 @@
                 if (currentDeform > 0.01 && wall.userData.originalVertices) {
                     const positions = wall.geometry.attributes.position.array;
                     const originalPos = wall.userData.originalVertices;
+                    // beatPulse: sharp snap on bass kick, smooth decay on mids
+                    const beatPulse = 1.0 + bassLevel * 2.5 + midLevel * 0.8;
                     for (let i = 0; i < positions.length; i += 3) {
                         const p_x = originalPos[i], p_y = originalPos[i+1], p_z = originalPos[i+2];
-                        const noiseX = 0.5 * (Math.sin(p_z * 0.4 + elapsedTime * speed) + Math.cos(p_y * 0.4 + elapsedTime * speed));
-                        const noiseY = 0.5 * (Math.sin(p_x * 0.4 + elapsedTime * speed) + Math.cos(p_z * 0.4 + elapsedTime * speed));
-                        const noiseZ = 0.5 * (Math.sin(p_y * 0.4 + elapsedTime * speed) + Math.cos(p_x * 0.4 + elapsedTime * speed));
-                        positions[i]   = p_x + noiseX * currentDeform;
-                        positions[i+1] = p_y + noiseY * currentDeform;
-                        positions[i+2] = p_z + noiseZ * currentDeform;
+                        const noiseX = 0.5 * (Math.sin(p_z * 0.5 + elapsedTime * speed) + Math.cos(p_y * 0.3 + elapsedTime * speed * 0.7));
+                        const noiseY = 0.5 * (Math.sin(p_x * 0.5 + elapsedTime * speed) + Math.cos(p_z * 0.3 + elapsedTime * speed * 0.7));
+                        const noiseZ = 0.5 * (Math.sin(p_y * 0.5 + elapsedTime * speed) + Math.cos(p_x * 0.3 + elapsedTime * speed * 0.7));
+                        positions[i]   = p_x + noiseX * currentDeform * beatPulse;
+                        positions[i+1] = p_y + noiseY * currentDeform * beatPulse;
+                        positions[i+2] = p_z + noiseZ * currentDeform * beatPulse;
                     }
                     wall.geometry.attributes.position.needsUpdate = true;
                     wall.geometry.computeVertexNormals();
@@ -1521,10 +1525,12 @@
                     }
                     
                     const rippleDistance = minDistance;
-                    const rippleFrequency = 0.08;
-                    const rippleSpeed = 5.0;      
-                    const rippleAmplitude = 15.0;
-                    const rippleOffset = (audioLevel * rippleAmplitude) * Math.sin(rippleDistance * rippleFrequency - elapsedTime * rippleSpeed);
+                    // Higher frequency = tighter/finer ripples; scales with rippleOriginCount
+                    const rippleFrequency = 0.12 + rippleOriginCount * 0.04;
+                    const rippleSpeed = 4.0 + bassLevel * 6.0; // speed pulses with beat
+                    const rippleAmplitude = 8.0 + bassLevel * 20.0; // amplitude punches on beat
+                    const rippleOffset = (audioLevel * rippleAmplitude) *
+                        Math.sin(rippleDistance * rippleFrequency - elapsedTime * rippleSpeed);
                     wall.position.y = wall.userData.originalY + rippleOffset;
                 } else if (wall.userData.originalY !== undefined) {
                     wall.position.y = wall.userData.originalY;
@@ -1656,49 +1662,7 @@
         rippleOriginsValue.textContent = rippleOriginsSlider.value; rippleOriginCount = parseInt(rippleOriginsSlider.value);
         audioSensitivityValue.textContent = audioSensitivitySlider.value; audioSensitivityFactor = parseFloat(audioSensitivitySlider.value);
 
-        // *** MODIFICATION: Correctly initialize Draggable for each panel individually ***
-        const isMobile = window.innerWidth < 768;
-        let topZ = 100;
-        const bringToFront = (el) => { el.style.zIndex = ++topZ; };
-
-        const panelIds = [
-            "#maze-controls-panel",
-            "#anomaly-metrics-left",
-            "#anomaly-metrics-right",
-            "#dynamic-controls-panel",
-            "#terminal-panel",
-            "#spectrum-analyzer-panel"
-        ];
-
-        const handleIds = [
-            "#maze-controls-panel-handle",
-            "#metrics-left-handle",
-            "#metrics-right-handle",
-            "#dynamic-controls-handle",
-            "#terminal-handle",
-            "#spectrum-handle"
-        ];
-
-        panelIds.forEach((panelId, i) => {
-            const el = document.querySelector(panelId);
-            const handle = document.querySelector(handleIds[i]);
-            if (!el || !handle) return;
-
-            // Bring panel to front on any interaction
-            el.addEventListener('mousedown', () => bringToFront(el), { passive: true });
-            el.addEventListener('touchstart', () => bringToFront(el), { passive: true });
-
-            // Drag ONLY via the handle — never intercepts sliders/buttons
-            Draggable.create(panelId, {
-                type: "x,y",
-                edgeResistance: 0.65,
-                bounds: document.body,
-                inertia: true,
-                throwResistance: 1500,
-                trigger: handle,
-                onPress: function() { bringToFront(this.target); },
-            });
-        });
+        // Draggable panels init deferred — see initDraggablePanels()
     }
     
     function updateTimestampDisplay() {
@@ -1707,7 +1671,41 @@
     }
 
     // --- INITIALIZATION ---
-    function main() {
+    // --- DRAGGABLE PANELS (deferred after layout settles) ---
+    function initDraggablePanels() {
+        let topZ = 100;
+        const bringToFront = (el) => { el.style.zIndex = ++topZ; };
+
+        const pairs = [
+            ['#maze-controls-panel',    '#maze-controls-panel-handle'],
+            ['#anomaly-metrics-left',   '#metrics-left-handle'],
+            ['#anomaly-metrics-right',  '#metrics-right-handle'],
+            ['#dynamic-controls-panel', '#dynamic-controls-handle'],
+            ['#terminal-panel',         '#terminal-handle'],
+            ['#spectrum-analyzer-panel','#spectrum-handle'],
+        ];
+
+        pairs.forEach(([panelSel, handleSel]) => {
+            const el     = document.querySelector(panelSel);
+            const handle = document.querySelector(handleSel);
+            if (!el || !handle) return;
+
+            el.addEventListener('mousedown',  () => bringToFront(el), { passive: true });
+            el.addEventListener('touchstart', () => bringToFront(el), { passive: true });
+
+            Draggable.create(el, {
+                type: 'x,y',
+                trigger: handle,
+                bounds: document.body,
+                edgeResistance: 0.65,
+                inertia: true,
+                throwResistance: 1500,
+                onPress() { bringToFront(this.target); },
+            });
+        });
+    }
+
+        function main() {
         setupExpandingCirclesPreloader();
         setTimeout(() => {
             loadingOverlay.style.opacity = 0;
@@ -1716,6 +1714,7 @@
                 initAudioSystem();
                 terminalStatus.textContent = "ONLINE";
                 showNotification("System Online. Load Audio to Generate.", 4000);
+                setTimeout(initDraggablePanels, 100);
             }, 500);
             
             initThree();
