@@ -585,6 +585,34 @@
         <div class="control-row"><label class="control-label">RIPPLE ORIGINS</label><span class="control-value" id="ripple-origins-value">1</span></div>  
         <input type="range" min="1" max="4" value="1" step="1" class="slider" id="ripple-origins-slider">  
     </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">RIPPLE SPEED</label><span class="control-value" id="ripple-speed-value">4.0</span></div>
+        <input type="range" min="0.5" max="12" value="4" step="0.5" class="slider" id="ripple-speed-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">RIPPLE AMPLITUDE</label><span class="control-value" id="ripple-amplitude-value">12</span></div>
+        <input type="range" min="1" max="40" value="12" step="1" class="slider" id="ripple-amplitude-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">WALL TWIST</label><span class="control-value" id="wall-twist-value">0.0</span></div>
+        <input type="range" min="0" max="2" value="0" step="0.05" class="slider" id="wall-twist-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">PULSE BRIGHTNESS</label><span class="control-value" id="pulse-brightness-value">1.0</span></div>
+        <input type="range" min="0" max="3" value="1" step="0.1" class="slider" id="pulse-brightness-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">HUE SHIFT SPEED</label><span class="control-value" id="hue-shift-speed-value">0.04</span></div>
+        <input type="range" min="0" max="0.3" value="0.04" step="0.01" class="slider" id="hue-shift-speed-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">COLOR SATURATION</label><span class="control-value" id="color-saturation-value">0.8</span></div>
+        <input type="range" min="0" max="1" value="0.8" step="0.05" class="slider" id="color-saturation-slider">
+    </div>
+    <div class="control-group">
+        <div class="control-row"><label class="control-label">BASS THRESHOLD</label><span class="control-value" id="bass-threshold-value">0.10</span></div>
+        <input type="range" min="0" max="0.5" value="0.1" step="0.01" class="slider" id="bass-threshold-slider">
+    </div>
 </div>  
   
 <!-- System Terminal -->  
@@ -663,6 +691,9 @@
 
     let wallDeformationAmount = 0.4, deformationSpeed = 0.1, colorIntensity = 0.5;
     let audioReactivityFactor = 1.0, audioSensitivityFactor = 5.0, rippleOriginCount = 1;
+    let rippleSpeed = 4.0, rippleAmplitude = 12.0;
+    let wallTwist = 0.0, pulseBrightness = 1.0, hueShiftSpeed = 0.04, colorSaturation = 0.8;
+    let bassThreshold = 0.1;
 
     // --- UI ELEMENTS ---
     const loadingOverlay = document.getElementById('loading-overlay');
@@ -949,8 +980,8 @@
         const lightRig = new THREE.Group();
 
         // KEY — upper-right-front, strong warm white, casts shadows
-        const keyLight = new THREE.PointLight(0xfffaf0, 18000, 0, 0);
-        keyLight.position.set(150, 200, 150);  // above + to the side
+        const keyLight = new THREE.PointLight(0xfffaf0, 60000, 0, 0);
+        keyLight.position.set(350, 500, 350);  // far upper-right-front
         keyLight.castShadow = true;
         keyLight.shadow.mapSize.width = 2048;
         keyLight.shadow.mapSize.height = 2048;
@@ -959,18 +990,18 @@
         lightRig.add(keyLight);
 
         // FILL — left side, horizon-level, cool blue, softer
-        const fillLight = new THREE.PointLight(0xaaddff, 10000, 0, 0);
-        fillLight.position.set(-180, 20, 80);  // waist-level, side
+        const fillLight = new THREE.PointLight(0xaaddff, 35000, 0, 0);
+        fillLight.position.set(-400, 80, 200); // far left, horizon
         lightRig.add(fillLight);
 
         // RIM/BACK — behind and above, blue-white edge pop
-        const rimLight = new THREE.PointLight(0x99ccff, 12000, 0, 0);
-        rimLight.position.set(0, 160, -200);   // behind, elevated
+        const rimLight = new THREE.PointLight(0x99ccff, 45000, 0, 0);
+        rimLight.position.set(0, 400, -500);   // far behind and high
         lightRig.add(rimLight);
 
         // BOTTOM ACCENT — cyan fill from below center, color signature
-        const accentPoint = new THREE.PointLight(0x00e5ff, 4000, 0, 0);
-        accentPoint.position.set(0, -30, 0);   // just below maze floor
+        const accentPoint = new THREE.PointLight(0x00e5ff, 12000, 0, 0);
+        accentPoint.position.set(0, -60, 0);   // below maze floor
         lightRig.add(accentPoint);
 
         // Attach the whole rig to mazeGroup — moves with it forever
@@ -1031,6 +1062,7 @@
             wall.scale.y = 0.001;
             gsap.to(wall.scale, { y: scaleY, duration: 1.5, ease: 'elastic.out(1, 0.5)', delay: Math.random() * 1.0 });
 
+            wall.userData.originalRotY = wall.rotation.y;
             mazeGroup.add(wall);
             mazeData.wallMeshes.push(wall);
         };
@@ -1502,47 +1534,63 @@
                     wall.geometry.attributes.position.needsUpdate = true;
                 }
 
+                // WALL TWIST — rotate walls on Y axis with beat
+                if (wallTwist > 0.001 && wall.userData.originalRotY !== undefined) {
+                    const twistAmount = wallTwist * (bassLevel * 0.8 + midLevel * 0.2) * audioReactivityFactor;
+                    wall.rotation.y = wall.userData.originalRotY + twistAmount * Math.sin(elapsedTime * deformationSpeed * 3.0);
+                }
+
                 // Smooth hue sweeps full spectrum driven by bass beats
                 const targetHue = (smoothHue + bassLevel * 0.35 * audioReactivityFactor) % 1.0;
-                smoothHue = smoothHue + (targetHue - smoothHue) * 0.04; // slow lerp = fade effect
+                smoothHue = smoothHue + (targetHue - smoothHue) * hueShiftSpeed; // slider-driven lerp
                 const targetL = 0.55 + trebleLevel * 0.35 + bassLevel * 0.15;
                 smoothLightness = smoothLightness + (Math.min(0.92, targetL) - smoothLightness) * 0.06;
-                const targetS = 0.75 + midLevel * 0.25;
+                const targetS = colorSaturation + midLevel * 0.2;
                 smoothSat = smoothSat + (targetS - smoothSat) * 0.05;
                 wall.material.color.setHSL(smoothHue, smoothSat, smoothLightness);
                 wall.material.emissive.setHSL(smoothHue, smoothSat, Math.min(0.6, smoothLightness * 0.7 * colorIntensity));
-                wall.material.emissiveIntensity = (0.4 + bassLevel * colorIntensity * 3.0 * audioReactivityFactor);
+                wall.material.emissiveIntensity = pulseBrightness * (0.4 + bassLevel * colorIntensity * 3.0 * audioReactivityFactor);
 
                 // --- REPLACEMENT RIPPLE DEFORMATION LOGIC (MULTI-CORNER) ---
-                if (wall.userData.originalY !== undefined && mazeData.corners && audioLevel > 0.01) {
+                if (wall.userData.originalY !== undefined && mazeData.corners && audioLevel > bassThreshold) {
                     const allCorners = [
-                        mazeData.corners.bottomLeft,
-                        mazeData.corners.topLeft,
-                        mazeData.corners.topRight,
-                        mazeData.corners.bottomRight
+                        mazeData.corners.bottomLeft,   // 0 = sub-bass  (0–60Hz feel)
+                        mazeData.corners.topLeft,       // 1 = bass      (60–250Hz)
+                        mazeData.corners.topRight,      // 2 = mids      (250Hz–2kHz)
+                        mazeData.corners.bottomRight    // 3 = treble    (2kHz+)
                     ];
-                    let activeCorners = [];
+
+                    // Per-corner frequency driver — each corner responds to its own band
+                    // giving natural stagger: sub-bass is slow/heavy, treble is fast/light
+                    const cornerDrivers = [
+                        { level: bassLevel * 1.4,   speedMul: 0.6,  ampMul: 1.6,  phase: 0.0    }, // sub-bass: slow, tall
+                        { level: bassLevel,          speedMul: 1.0,  ampMul: 1.2,  phase: 0.5    }, // bass: normal
+                        { level: midLevel * 1.2,     speedMul: 1.6,  ampMul: 0.8,  phase: 1.1    }, // mids: faster, shorter
+                        { level: trebleLevel * 1.5,  speedMul: 2.4,  ampMul: 0.5,  phase: 1.8    }, // treble: quick ripples
+                    ];
+
+                    let activeCount = [];
                     switch (rippleOriginCount) {
-                        case 1: activeCorners = [allCorners[0]]; break;
-                        case 2: activeCorners = [allCorners[0], allCorners[2]]; break;
-                        case 3: activeCorners = [allCorners[0], allCorners[1], allCorners[3]]; break; // Counter-clockwise
-                        case 4: activeCorners = allCorners; break;
+                        case 1: activeCount = [0]; break;
+                        case 2: activeCount = [0, 2]; break;
+                        case 3: activeCount = [0, 1, 3]; break;
+                        case 4: activeCount = [0, 1, 2, 3]; break;
                     }
 
-                    let minDistance = Infinity;
                     const wallWorldPos = wall.getWorldPosition(new THREE.Vector3());
-                    for (const corner of activeCorners) {
-                        minDistance = Math.min(minDistance, wallWorldPos.distanceTo(corner));
+                    let totalOffset = 0;
+
+                    for (const idx of activeCount) {
+                        const corner = allCorners[idx];
+                        const driver = cornerDrivers[idx];
+                        const dist = wallWorldPos.distanceTo(corner);
+                        const freq = (0.10 + rippleOriginCount * 0.03) * (1 + idx * 0.08);
+                        const spd  = (rippleSpeed * driver.speedMul) + driver.level * 5.0;
+                        const amp  = (rippleAmplitude * driver.ampMul) * driver.level * audioReactivityFactor;
+                        totalOffset += amp * Math.sin(dist * freq - elapsedTime * spd + driver.phase);
                     }
-                    
-                    const rippleDistance = minDistance;
-                    // Higher frequency = tighter/finer ripples; scales with rippleOriginCount
-                    const rippleFrequency = 0.12 + rippleOriginCount * 0.04;
-                    const rippleSpeed = 4.0 + bassLevel * 6.0; // speed pulses with beat
-                    const rippleAmplitude = 8.0 + bassLevel * 20.0; // amplitude punches on beat
-                    const rippleOffset = (audioLevel * rippleAmplitude) *
-                        Math.sin(rippleDistance * rippleFrequency - elapsedTime * rippleSpeed);
-                    wall.position.y = wall.userData.originalY + rippleOffset;
+
+                    wall.position.y = wall.userData.originalY + totalOffset;
                 } else if (wall.userData.originalY !== undefined) {
                     wall.position.y = wall.userData.originalY;
                 }
@@ -1665,6 +1713,24 @@
             });
         });
         audioSensitivitySlider.addEventListener('input', (e) => { audioSensitivityFactor = parseFloat(e.target.value); audioSensitivityValue.textContent = audioSensitivityFactor.toFixed(1); });
+
+        // New sliders
+        const rippleSpeedSlider      = document.getElementById('ripple-speed-slider');
+        const rippleAmplitudeSlider  = document.getElementById('ripple-amplitude-slider');
+        const wallTwistSlider        = document.getElementById('wall-twist-slider');
+        const pulseBrightnessSlider  = document.getElementById('pulse-brightness-slider');
+        const hueShiftSpeedSlider    = document.getElementById('hue-shift-speed-slider');
+        const colorSaturationSlider  = document.getElementById('color-saturation-slider');
+        const bassThresholdSlider    = document.getElementById('bass-threshold-slider');
+
+        const bind = (el, varSetter, fmt) => el && el.addEventListener('input', e => { varSetter(parseFloat(e.target.value)); const lbl = document.getElementById(el.id.replace('-slider','-value')); if(lbl) lbl.textContent = fmt(parseFloat(e.target.value)); });
+        bind(rippleSpeedSlider,     v => rippleSpeed = v,        v => v.toFixed(1));
+        bind(rippleAmplitudeSlider, v => rippleAmplitude = v,    v => v.toFixed(0));
+        bind(wallTwistSlider,       v => wallTwist = v,          v => v.toFixed(2));
+        bind(pulseBrightnessSlider, v => pulseBrightness = v,    v => v.toFixed(1));
+        bind(hueShiftSpeedSlider,   v => hueShiftSpeed = v,      v => v.toFixed(2));
+        bind(colorSaturationSlider, v => colorSaturation = v,    v => v.toFixed(2));
+        bind(bassThresholdSlider,   v => bassThreshold = v,      v => v.toFixed(2));
         
         wallDeformationValue.textContent = wallDeformationSlider.value; wallDeformationAmount = parseFloat(wallDeformationSlider.value);
         deformationSpeedValue.textContent = deformationSpeedSlider.value; deformationSpeed = parseFloat(deformationSpeedSlider.value);
