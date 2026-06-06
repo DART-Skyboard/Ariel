@@ -302,7 +302,8 @@ body {
 /* Collapsed state — body hidden, panel shrinks to header bar */
 .mn-panel.collapsed .mn-panel-body { display: none; }
 .mn-panel.collapsed { border-radius: var(--mn-radius); }
-.mn-panel.collapsed .mn-panel-header { border-bottom: none; border-radius: var(--mn-radius); }
+.mn-panel.collapsed .mn-panel-header { border-bottom: none; border-radius: var(--mn-radius); cursor: grab; }
+.mn-panel.collapsed .mn-panel-header:active { cursor: grabbing; }
 .mn-panel-collapse .ico-expand  { display: none; }
 .mn-panel-collapse .ico-collapse{ display: block; }
 .mn-panel.collapsed .mn-panel-collapse .ico-expand  { display: block; }
@@ -2017,6 +2018,11 @@ body.iframe-mode #hud-orb { top: 8px; left: 8px; width: 36px; height: 36px; }
     header.addEventListener('touchstart', onDragStart, { passive: false });
   }
 
+  /* Track whether pointer moved enough to count as a drag (vs a tap/click) */
+  var dragMoved = false;
+  var dragStartX = 0, dragStartY = 0;
+  var DRAG_THRESHOLD = 5; /* px — below this = click, above = drag */
+
   function onDragStart(e) {
     /* Let collapse button clicks through without starting drag */
     if (e.target.closest('.mn-panel-collapse')) return;
@@ -2031,6 +2037,9 @@ body.iframe-mode #hud-orb { top: 8px; left: 8px; width: 36px; height: 36px; }
     var cy = e.touches ? e.touches[0].clientY : e.clientY;
     dragOffX = cx - rect.left;
     dragOffY = cy - rect.top;
+    dragStartX = cx;
+    dragStartY = cy;
+    dragMoved = false;
 
     /* Pin to absolute left/top so dragging is consistent */
     panel.style.transition = 'none';
@@ -2052,6 +2061,11 @@ body.iframe-mode #hud-orb { top: 8px; left: 8px; width: 36px; height: 36px; }
     e.preventDefault();
     var cx = e.touches ? e.touches[0].clientX : e.clientX;
     var cy = e.touches ? e.touches[0].clientY : e.clientY;
+    /* Mark as a real drag once pointer moves beyond threshold */
+    if (!dragMoved) {
+      var dx = cx - dragStartX, dy = cy - dragStartY;
+      if (Math.sqrt(dx*dx + dy*dy) > DRAG_THRESHOLD) dragMoved = true;
+    }
     var x = cx - dragOffX;
     var y = cy - dragOffY;
     /* Clamp: keep header at minimum 20px visible */
@@ -2065,6 +2079,19 @@ body.iframe-mode #hud-orb { top: 8px; left: 8px; width: 36px; height: 36px; }
 
   function onDragEnd() {
     if (dragging) {
+      /* If pointer barely moved — treat as a header click → toggle collapse */
+      if (!dragMoved) {
+        var pid = dragging.id;
+        dragging.classList.remove('dragging');
+        dragging.style.transition = '';
+        dragging = null;
+        window.removeEventListener('mousemove',  onDragMove);
+        window.removeEventListener('touchmove',  onDragMove);
+        window.removeEventListener('mouseup',    onDragEnd);
+        window.removeEventListener('touchend',   onDragEnd);
+        mnCollapsePanel(pid);
+        return;
+      }
       /* Save expanded-state position so collapse→expand restores it */
       if (!dragging.classList.contains('collapsed')) {
         lastPos[dragging.id] = {
