@@ -1214,7 +1214,7 @@ const VS = `
   void main(){
     v_col = a_col;
     gl_Position = u_mvp * vec4(a_pos, 1.0);
-    gl_PointSize = 12.0;
+    gl_PointSize = 18.0;
   }
 `;
 const FS = `
@@ -1413,7 +1413,7 @@ let HDrag = { on:false, px:0, py:0, axis:null, idx:0 };
 function hitTestHandle(sx, sy){
   if(!tangentOn) return null;
   const W=canvas.clientWidth, H=canvas.clientHeight, oy=HDRH();
-  let best=null, bd=30;
+  let best=null, bd=52;
 
   // When join is on, test the ONE sigma Meridian point first
   if(meridianJoin){
@@ -1609,6 +1609,11 @@ function resize(){
   gl.viewport(0,0,canvas.width,canvas.height);
 }
 window.addEventListener('resize', ()=>{ resize(); initStaticBufs(); });
+// Also listen to visualViewport so WebGL canvas redraws after browser-level pinch-zoom/scroll
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', ()=>{ resize(); initStaticBufs(); });
+  window.visualViewport.addEventListener('scroll', ()=>{ resize(); initStaticBufs(); });
+}
 resize(); initStaticBufs();
 
 /* ================================================================
@@ -1890,9 +1895,55 @@ function buildGridBufs(){
   const S = ARC_S;
   const STEP_WORLD = S; // arc extent == step size so endpoints meet at grid contacts
 
-  // Compute per-plane sigma points (handles cross-plane unification at world origin)
-  const gridSigmas = computeGridSigmas();
-  const planeSigmas = { XZ: gridSigmas.XZ, XY: gridSigmas.XY, ZY: gridSigmas.ZY };
+  // ── MASTER PLANE MERIDIAN ────────────────────────────────────────
+  // In master mode: compute physics-driven sigma ONCE per plane from the
+  // plane's two canonical axes at their natural midpoints (includes physOffset).
+  // Every arc-vector on that plane shares this single sigma so physics
+  // propagates uniformly outward from the plane center as one object.
+  // In local mode: pass null — each arc vector handles its own physics.
+  let planeSigmas = { XZ:null, XY:null, ZY:null };
+  if(GRID.masterMode && tangentOn){
+    // Compute physics-inclusive natural midpoint for each axis
+    function physMidpoint(ax){
+      const sp = SP[ax];
+      const po0=physOffset(ax,0), po1=physOffset(ax,1), po2=physOffset(ax,2);
+      const eH=[
+        [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]],
+        [sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]],
+        [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]]
+      ];
+      const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
+      const bA = 0.25*eH[0][0]+0.5*eH[1][0]+0.25*eH[2][0];
+      const bB = 0.25*eH[0][1]+0.5*eH[1][1]+0.25*eH[2][1];
+      const a = bA + arcMid, b = bB;
+      if(ax==='X') return {x:0, y:a, z:b};
+      if(ax==='Y') return {x:a, y:0, z:b};
+      return {x:a, y:b, z:0};
+    }
+    function planeSigma(ax1, ax2){
+      const m1=physMidpoint(ax1), m2=physMidpoint(ax2);
+      // Average the perpendicular components each axis contributes
+      let x=0,y=0,z=0;
+      if(ax1==='X'){ y+=m1.y; z+=m1.z; } else if(ax1==='Y'){ x+=m1.x; z+=m1.z; } else { x+=m1.x; y+=m1.y; }
+      if(ax2==='X'){ y+=m2.y; z+=m2.z; } else if(ax2==='Y'){ x+=m2.x; z+=m2.z; } else { x+=m2.x; y+=m2.y; }
+      return {x:x*.5, y:y*.5, z:z*.5};
+    }
+    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ) planeSigmas.XZ = planeSigma('X','Z');
+    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY) planeSigmas.XY = planeSigma('X','Y');
+    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY) planeSigmas.ZY = planeSigma('Z','Y');
+
+    // Cross-plane unification: if 2+ planes are joined, average their sigmas
+    // so all three planes share ONE master sigma (world Meridian)
+    const activeSigs = Object.entries(planeSigmas).filter(([,v])=>v!==null);
+    if(activeSigs.length >= 2){
+      const master = {
+        x: activeSigs.reduce((s,[,v])=>s+v.x,0)/activeSigs.length,
+        y: activeSigs.reduce((s,[,v])=>s+v.y,0)/activeSigs.length,
+        z: activeSigs.reduce((s,[,v])=>s+v.z,0)/activeSigs.length
+      };
+      activeSigs.forEach(([k])=>{ planeSigmas[k]=master; });
+    }
+  }
 
   // XZ floor plane — n×m grid in XZ at Y=0
   if(GRID.planes.XZ.en){
