@@ -1498,26 +1498,61 @@ canvas.addEventListener('wheel', e=>{
   CAM.r = Math.max(CAM.minR, Math.min(CAM.maxR, CAM.r + e.deltaY*0.012));
 },{passive:false});
 
-// Touch
-let tc = { count:0, pDist:0, pMX:0, pMY:0, pAngle:0 };
+// ── TOUCH INPUT — Nomad-style trackball orbit + inertia ──────────
+// 1 finger  → orbit  (trackball, always, unless hitting a handle)
+// 2 finger  → pan + pinch-zoom + twist-roll
+// lift      → inertia decays smoothly to rest
+// ─────────────────────────────────────────────────────────────────
 function tDist(t){ return Math.hypot(t[1].clientX-t[0].clientX, t[1].clientY-t[0].clientY); }
 function tAngle(t){ return Math.atan2(t[1].clientY-t[0].clientY, t[1].clientX-t[0].clientX); }
 
+// Inertia state — stores angular velocity (world-axis) and pan velocity
+const INR = {
+  ax:[0,0,0],   // orbit angular velocity axis (world)
+  av:0,         // orbit angular speed (rad/frame)
+  px:0, py:0,   // pan velocity (screen pixels/frame)
+  decay: 0.88   // deceleration factor per frame (0=instant stop, 1=never)
+};
+// Per-frame inertia tick called from render loop
+function inertiaStep(){
+  if(INR.av > 0.00005){
+    CAM.q = M.qNrm(M.qMul(M.qAA(INR.ax, INR.av), CAM.q));
+    INR.av *= INR.decay;
+  } else { INR.av=0; }
+  if(Math.abs(INR.px)>0.02 || Math.abs(INR.py)>0.02){
+    const spd=CAM.r*0.0028;
+    const rm=M.qToM4(M.qNrm(CAM.q));
+    CAM.pan[0]-=(rm[0]*INR.px-rm[4]*INR.py)*spd;
+    CAM.pan[1]-=(rm[1]*INR.px-rm[5]*INR.py)*spd;
+    CAM.pan[2]-=(rm[2]*INR.px-rm[6]*INR.py)*spd;
+    INR.px*=INR.decay; INR.py*=INR.decay;
+  } else { INR.px=0; INR.py=0; }
+}
+
+let tc = { count:0, pDist:0, pMX:0, pMY:0, pAngle:0,
+           lastDx:0, lastDy:0, lastPdx:0, lastPdy:0 };
+
 canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
+  // Kill inertia when touching again
+  INR.av=0; INR.px=0; INR.py=0;
   tc.count = e.touches.length;
+  tc.lastDx=0; tc.lastDy=0; tc.lastPdx=0; tc.lastPdy=0;
+
   if(e.touches.length===1){
+    // Try handle hit first
     const tx=e.touches[0].clientX, ty=e.touches[0].clientY;
     const h = hitTestHandle(tx, ty-HDRH());
     if(h){ HDrag={on:true,px:tx,py:ty,axis:h.axis,idx:h.idx}; return; }
+    // Otherwise: orbit
     ptr.down=true; ptr.x=tx; ptr.y=ty;
   } else if(e.touches.length===2){
     ptr.down=false; HDrag.on=false;
     const arr=[...e.touches];
-    tc.pDist=tDist(arr);
-    tc.pAngle=tAngle(arr);
-    tc.pMX=(arr[0].clientX+arr[1].clientX)*.5;
-    tc.pMY=(arr[0].clientY+arr[1].clientY)*.5;
+    tc.pDist  = tDist(arr);
+    tc.pAngle = tAngle(arr);
+    tc.pMX = (arr[0].clientX+arr[1].clientX)*.5;
+    tc.pMY = (arr[0].clientY+arr[1].clientY)*.5;
   }
 },{passive:false});
 
@@ -1529,10 +1564,30 @@ canvas.addEventListener('touchmove', e=>{
       HDrag.px=e.touches[0].clientX; HDrag.py=e.touches[0].clientY; return;
     }
     if(!ptr.down) return;
-    const dx=e.touches[0].clientX-ptr.x, dy=e.touches[0].clientY-ptr.y;
+    const dx=e.touches[0].clientX-ptr.x;
+    const dy=e.touches[0].clientY-ptr.y;
     ptr.x=e.touches[0].clientX; ptr.y=e.touches[0].clientY;
-    const spd=0.006;
-    CAM.q=M.qNrm(M.qMul(M.qAA([0,1,0],-dx*spd), M.qMul(M.qAA([1,0,0],-dy*spd), CAM.q)));
+    tc.lastDx=dx; tc.lastDy=dy;
+
+    // Trackball orbit: map screen delta to world-space rotation axis
+    // Axis = screen-right cross screen-up rotated by cam orientation
+    const spd = 0.006;
+    const rm  = M.qToM4(M.qNrm(CAM.q));
+    const rgt = [rm[0],rm[1],rm[2]];   // camera right
+    const up  = [rm[4],rm[5],rm[6]];   // camera up
+    // Rotation axis perpendicular to drag direction in world space
+    const ax = M.nrm([
+      -dy*rgt[0] - dx*up[0],
+      -dy*rgt[1] - dx*up[1],
+      -dy*rgt[2] - dx*up[2]
+    ]);
+    const angle = Math.hypot(dx,dy)*spd;
+    if(angle>0.0001){
+      CAM.q = M.qNrm(M.qMul(M.qAA(ax, angle), CAM.q));
+      // Store for inertia on lift
+      INR.ax=[...ax]; INR.av=angle;
+    }
+
   } else if(e.touches.length===2){
     const arr=[...e.touches];
     const dist  = tDist(arr);
@@ -1540,39 +1595,64 @@ canvas.addEventListener('touchmove', e=>{
     const mx=(arr[0].clientX+arr[1].clientX)*.5;
     const my=(arr[0].clientY+arr[1].clientY)*.5;
 
-    // Pinch zoom
+    // Pinch zoom — multiplicative
     if(tc.pDist>0) CAM.r=Math.max(CAM.minR,Math.min(CAM.maxR, CAM.r*(tc.pDist/dist)));
     tc.pDist=dist;
 
-    // Two-finger TWIST — rotate around camera look axis
+    // Twist → roll around camera look axis
     const da = angle - tc.pAngle;
-    if(Math.abs(da) > 0.001 && Math.abs(da) < 0.5){
-      // Camera look direction in world space = -(col 2 of rotation matrix)
-      const rm = M.qToM4(M.qNrm(CAM.q));
-      const fwd = M.nrm([-rm[8],-rm[9],-rm[10]]);
+    if(Math.abs(da)>0.001 && Math.abs(da)<0.5){
+      const rm2 = M.qToM4(M.qNrm(CAM.q));
+      const fwd = M.nrm([-rm2[8],-rm2[9],-rm2[10]]);
       CAM.q = M.qNrm(M.qMul(M.qAA(fwd, da), CAM.q));
     }
     tc.pAngle = angle;
 
-    // Two-finger PAN
+    // Two-finger pan — speed scales with zoom distance
     const pdx=mx-tc.pMX, pdy=my-tc.pMY;
+    tc.lastPdx=pdx; tc.lastPdy=pdy;
     const spd=CAM.r*0.0028;
     const rm=M.qToM4(M.qNrm(CAM.q));
-    const rgt=[rm[0],rm[1],rm[2]];
-    const up =[rm[4],rm[5],rm[6]];
-    CAM.pan[0]-=(rgt[0]*pdx-up[0]*pdy)*spd;
-    CAM.pan[1]-=(rgt[1]*pdx-up[1]*pdy)*spd;
-    CAM.pan[2]-=(rgt[2]*pdx-up[2]*pdy)*spd;
+    CAM.pan[0]-=(rm[0]*pdx-rm[4]*pdy)*spd;
+    CAM.pan[1]-=(rm[1]*pdx-rm[5]*pdy)*spd;
+    CAM.pan[2]-=(rm[2]*pdx-rm[6]*pdy)*spd;
     tc.pMX=mx; tc.pMY=my;
   }
 },{passive:false});
 
 canvas.addEventListener('touchend', e=>{
-  if(e.touches.length===0){ ptr.down=false; HDrag.on=false; }
-  tc.count=e.touches.length;
+  e.preventDefault();
+  const prev = tc.count;
+  tc.count = e.touches.length;
+
+  if(e.touches.length===0){
+    HDrag.on=false;
+    if(ptr.down){
+      // Seed inertia from last frame's delta — orbit momentum
+      const spd=0.006;
+      const mag=Math.hypot(tc.lastDx,tc.lastDy)*spd;
+      if(mag>0.0003){
+        const rm=M.qToM4(M.qNrm(CAM.q));
+        const rgt=[rm[0],rm[1],rm[2]], up=[rm[4],rm[5],rm[6]];
+        INR.ax=M.nrm([
+          -tc.lastDy*rgt[0]-tc.lastDx*up[0],
+          -tc.lastDy*rgt[1]-tc.lastDx*up[1],
+          -tc.lastDy*rgt[2]-tc.lastDx*up[2]
+        ]);
+        INR.av=mag;
+      }
+      // Pan inertia
+      INR.px=tc.lastPdx; INR.py=tc.lastPdy;
+    }
+    ptr.down=false;
+  }
+
   if(e.touches.length===2){
     const arr=[...e.touches];
-    tc.pAngle=tAngle(arr);
+    tc.pDist  = tDist(arr);
+    tc.pAngle = tAngle(arr);
+    tc.pMX=(arr[0].clientX+arr[1].clientX)*.5;
+    tc.pMY=(arr[0].clientY+arr[1].clientY)*.5;
   }
 },{passive:false});
 
@@ -2446,6 +2526,9 @@ function renderWithGrid(ts){
   fps=dt>0?1/dt:0;
   fpsSm=fpsSm*.93+fps*.07;
   simTime+=dt;
+
+  // Apply inertia/momentum (Nomad-style deceleration)
+  inertiaStep();
 
   // Update main arc-vector spline bufs
   updateSplineBufs();
