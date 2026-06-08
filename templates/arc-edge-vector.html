@@ -709,13 +709,6 @@ input[type=number]{-moz-appearance:textfield;}
           </div>
           <div id="grid-mode-options" style="display:none">
             <div style="height:1px;background:var(--bdr);margin:6px 0"></div>
-            <div class="trow">
-              <div style="display:flex;flex-direction:column;gap:2px">
-                <span class="tlab">Master Meridian</span>
-                <span style="font-size:9px;color:var(--txt-d);line-height:1.3">All planes act as one surface — physics propagate from Meridian origin outward</span>
-              </div>
-              <label class="tsw"><input type="checkbox" id="t-master" checked><div class="ttrk"></div></label>
-            </div>
             <div class="trow" style="margin-top:6px" id="single-vec-row">
               <div style="display:flex;flex-direction:column;gap:2px">
                 <span class="tlab">Vector Select Mode</span>
@@ -1958,7 +1951,7 @@ const GRID = {
 
   // Master grid propagation mode: true = physics from world origin as one unit
   // false = each arc vector uses its own local meridian join
-  masterMode: true,
+  masterMode: true,  // derived: true when any planeMeridianJoin is enabled — kept for compat
 
   // WebGL buffers for grid instances — built on demand
   bufs: {}
@@ -1988,45 +1981,54 @@ function buildGridBufs(){
   const S = ARC_S;
   const STEP_WORLD = S;
 
-  // ── MASTER MERIDIAN ─────────────────────────────────────────────
-  // When masterMode is on, compute ONE physics-inclusive sigma per
-  // enabled+joined plane, then unify across planes if 2+ are active.
-  // Each arc-vector instance gets a Gaussian falloff weight based on
-  // its world-position distance from GRID.meridianOrigin (defaults to
-  // world origin = center of all three planes).
-  // The per-instance sigma is: sigma * falloff + [0,0,0] * (1-falloff)
-  // i.e. distant instances barely move, near ones get full deformation.
-  // When masterMode is off: sigma=null, each arc evaluates physics locally.
+  // masterMode is driven by the per-plane "Join Meridian — Grid Planes" checkboxes.
+  GRID.masterMode = GRID.planeMeridianJoin.XZ || GRID.planeMeridianJoin.XY || GRID.planeMeridianJoin.ZY;
 
-  let masterSigma = null; // unified sigma (before per-instance falloff)
+  // ── MASTER MERIDIAN ─────────────────────────────────────────────
+  // masterSigma = the raw perpendicular world-displacement at the center arc
+  // vector (the one at world origin). This is the "how much does the sheet
+  // deflect at its center" value. Each instance gets this scaled by a Gaussian
+  // falloff so the deformation smoothly attenuates from the meridian origin
+  // outward — bending as one continuous sheet, not independent arc vectors.
+  //
+  // Sigma derivation: for each active axis, evaluate the full Bezier + arc
+  // displacement at t=0.5 at world origin. That IS the perpendicular offset
+  // the sheet center would have. Average across joined planes for unified sigma.
+
+  let masterSigma = null;
   if(GRID.masterMode && tangentOn){
-    function physMidpoint(ax){
+    // Evaluate world-space midpoint displacement for one axis at origin
+    function axisMidDisplacement(ax){
       const sp = SP[ax];
       const po0=physOffset(ax,0), po1=physOffset(ax,1), po2=physOffset(ax,2);
-      const eH=[
-        [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]],
-        [sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]],
-        [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]]
-      ];
+      const eHW=[sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]];
+      const eHM=[sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]];
+      const eHE=[sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]];
+      // Bezier at t=0.5: weights 0.25, 0.5, 0.25
+      const bA = 0.25*eHW[0] + 0.5*eHM[0] + 0.25*eHE[0];
+      const bB = 0.25*eHW[1] + 0.5*eHM[1] + 0.25*eHE[1];
+      // Arc at t=0.5 (bell=1): sin(DOC*0.5+phase)*inf*0.48
       const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
-      const bA = 0.25*eH[0][0]+0.5*eH[1][0]+0.25*eH[2][0];
-      const bB = 0.25*eH[0][1]+0.5*eH[1][1]+0.25*eH[2][1];
       const a = bA + arcMid, b = bB;
+      // Return as world-space {x,y,z} displacement (axis component is zero)
       if(ax==='X') return {x:0, y:a, z:b};
       if(ax==='Y') return {x:a, y:0, z:b};
       return {x:a, y:b, z:0};
     }
-    function planeSig(ax1, ax2){
-      const m1=physMidpoint(ax1), m2=physMidpoint(ax2);
-      let x=0,y=0,z=0;
-      if(ax1==='X'){ y+=m1.y; z+=m1.z; } else if(ax1==='Y'){ x+=m1.x; z+=m1.z; } else { x+=m1.x; y+=m1.y; }
-      if(ax2==='X'){ y+=m2.y; z+=m2.z; } else if(ax2==='Y'){ x+=m2.x; z+=m2.z; } else { x+=m2.x; y+=m2.y; }
-      return {x:x*.5, y:y*.5, z:z*.5};
-    }
+
     const sigs = [];
-    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ) sigs.push(planeSig('X','Z'));
-    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY) sigs.push(planeSig('X','Y'));
-    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY) sigs.push(planeSig('Z','Y'));
+    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ){
+      const mx=axisMidDisplacement('X'), mz=axisMidDisplacement('Z');
+      sigs.push({ x:0, y:(mx.y+mz.y)*0.5, z:(mx.z+mz.z)*0.5 });
+    }
+    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY){
+      const mx=axisMidDisplacement('X'), my=axisMidDisplacement('Y');
+      sigs.push({ x:(mx.x+my.x)*0.5, y:0, z:(mx.z+my.z)*0.5 });
+    }
+    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY){
+      const mz=axisMidDisplacement('Z'), my=axisMidDisplacement('Y');
+      sigs.push({ x:(mz.x+my.x)*0.5, y:(mz.y+my.y)*0.5, z:0 });
+    }
     if(sigs.length > 0){
       masterSigma = {
         x: sigs.reduce((s,v)=>s+v.x,0)/sigs.length,
@@ -2036,25 +2038,20 @@ function buildGridBufs(){
     }
   }
 
-  // Gaussian falloff: exp(-dist² / r²)
-  // r = half the grid extent in world units so falloff reaches ~0 at the edges
+  // Gaussian falloff from meridian origin.
+  // falloffR spans the full grid so attenuation reaches near-zero at edges.
   const enabledPlanes = [GRID.planes.XZ,GRID.planes.XY,GRID.planes.ZY].filter(p=>p.en);
   const maxN = enabledPlanes.reduce((m,p)=>Math.max(m,p.nx||p.nz||p.ny||5),5);
-  const falloffR = STEP_WORLD * maxN * 0.9; // radius covering most of the grid
+  const falloffR = STEP_WORLD * maxN; // full grid radius
   const mo = GRID.meridianOrigin;
 
   function instSigma(ox, oy, oz){
     if(!masterSigma) return null;
-    if(falloffR <= 0) return masterSigma;
     const dx=ox-mo.x, dy=oy-mo.y, dz=oz-mo.z;
     const dist2 = dx*dx + dy*dy + dz*dz;
-    const w = Math.exp(-dist2 / (falloffR*falloffR));
-    // Scale sigma components by falloff weight
-    return {
-      x: masterSigma.x * w,
-      y: masterSigma.y * w,
-      z: masterSigma.z * w
-    };
+    // Gaussian: full weight at origin, smoothly falls off
+    const w = falloffR > 0 ? Math.exp(-dist2 / (falloffR*falloffR)) : 1.0;
+    return { x:masterSigma.x*w, y:masterSigma.y*w, z:masterSigma.z*w };
   }
 
   // XZ floor plane
@@ -2111,59 +2108,40 @@ function buildGridBufs(){
 // meridianJoin is also off).
 function genSplineOffset(axis, ox, oy, oz, planeSigma){
   // ── GRID ARC VECTOR GENERATION ──────────────────────────────────
+  // planeSigma is pre-scaled by the Gaussian falloff from meridianOrigin
+  // (computed in buildGridBufs / instSigma). This function just uses it
+  // directly — NO additional envelope here. That was causing double-attenuation.
   //
   // MASTER MODE (planeSigma provided):
-  //   Physics evaluated ONCE at the plane center. Each arc at grid
-  //   position (ox,oy,oz) receives that center displacement SCALED
-  //   by a radial falloff envelope:
-  //     envelope = exp(-dist² / (2*R²))   where R = half the plane extent
-  //   This makes the sheet flex like a single surface — full displacement
-  //   at the origin, smoothly attenuating to near-zero at the edges.
-  //   Endpoints pinned (W=E=[0,0]) so adjacent segments stay welded (C0).
-  //   Arc term windowed by 4t(1-t) → zero at t=0 and t=1 (C1 continuity).
+  //   Endpoints W=E=[0,0] → positions welded at grid contacts (C0).
+  //   Arc term windowed by 4t(1-t) → zero at endpoints (C1 continuity).
+  //   Meridian back-solved so arc peak == planeSigma perpendicular component.
+  //   All arc vectors share the same baked-in displacement → single surface.
   //
-  // LOCAL MODE (no planeSigma):
+  // LOCAL MODE (planeSigma null):
   //   Each arc evaluates its own physOffset independently.
-  //   Full physics on all handles, local meridianJoin if enabled.
 
   const sp = SP[axis];
   const pts = new Float32Array((STEPS+1)*3);
-  const affMult = GRID.affectZone ? getAffectMultiplier(ox,oy,oz) : 1.0;
 
   let eHW, eHM, eHE;
-  let envelope = 0;
 
   if(tangentOn && planeSigma){
-    // ── Radial falloff from plane center ──────────────────────────
-    // Distance of this arc's origin from world origin in the plane axes
-    const planeDist = Math.sqrt(ox*ox + oy*oy + oz*oz);
-    // Falloff radius: ~ half the largest dimension extent of this plane
-    const maxDim = (() => {
-      if(axis==='X'||axis==='Z'){
-        // XZ plane: extents nx*STEP and nz*STEP
-        const p=GRID.planes.XZ; return Math.max((p.nx||5),(p.nz||5))*ARC_S;
-      } else if(axis==='Y'&&oz===0){
-        const p=GRID.planes.XY; return Math.max((p.nx||5),(p.ny||5))*ARC_S;
-      } else {
-        const p=GRID.planes.ZY; return Math.max((p.nz||5),(p.ny||5))*ARC_S;
-      }
-    })();
-    const R = Math.max(ARC_S, maxDim * 0.55);
-    envelope = Math.exp(-(planeDist*planeDist)/(2*R*R)) * affMult;
-
-    // Endpoints pinned
     eHW = [0, 0];
     eHE = [0, 0];
 
-    // Scale the master sigma by the radial envelope for this arc's position
+    // planeSigma already contains the falloff-weighted world displacement.
+    // Extract the two perpendicular components for this axis.
     let ta, tb;
     if(axis==='X'){ ta=planeSigma.y; tb=planeSigma.z; }
     else if(axis==='Y'){ ta=planeSigma.x; tb=planeSigma.z; }
     else              { ta=planeSigma.x; tb=planeSigma.y; }
 
+    // Back-solve: Bezier at t=0.5 with W=E=[0,0] → bA=0.5*eHM[0]
+    // arc term at t=0.5 with window=1: arcMid = sin(DOC*0.5+phase)*inf*0.48
+    // target: ta = 0.5*eHM[0] + arcMid  →  eHM[0] = 2*(ta - arcMid)
     const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
-    // Back-solve meridian handle so arc peak = master sigma * envelope
-    eHM = [2*(ta*envelope - arcMid), 2*tb*envelope];
+    eHM = [2*(ta - arcMid), 2*tb];
 
   } else {
     const po0 = tangentOn ? physOffset(axis,0) : [0,0];
@@ -2194,13 +2172,10 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
       const bA = eHW[0]*wW + eHM[0]*wM + eHE[0]*wE;
       const bB = eHW[1]*wW + eHM[1]*wM + eHE[1]*wE;
 
-      // Arc term: in master mode the arc amplitude is scaled by the same
-      // radial envelope as the meridian so the whole grid surface oscillates
-      // as one unified object from center outward (not per-arc wiggles).
-      // Windowed by 4t(1-t) → zero at endpoints, keeps grid welded (C1).
-      // In local mode: full independent arc per segment as normal.
+      // Arc term: windowed by 4t(1-t) in master mode → zero at endpoints
+      // so the grid stays welded at all contacts regardless of influence/phase.
       const arcRaw = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
-      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) * envelope : arcRaw;
+      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) : arcRaw;
 
       const fa = bA + arc;
       const fb = bB;
@@ -2359,12 +2334,6 @@ document.getElementById('t-arc-to-grid').addEventListener('change', e=>{
   GRID.arcToGrid = e.target.checked;
   // If switching ON, immediately rebuild grid with current physics state
   if(GRID.enabled && GRID.arcToGrid) buildGridBufs();
-});
-
-// Master propagation mode toggle
-document.getElementById('t-master').addEventListener('change', e=>{
-  GRID.masterMode = e.target.checked;
-  if(GRID.enabled) buildGridBufs();
 });
 
 // Vector-sel mode toggle
