@@ -2005,22 +2005,19 @@ function buildGridBufs(){
 // meridianJoin is also off).
 function genSplineOffset(axis, ox, oy, oz, planeSigma){
   // ── GRID ARC VECTOR GENERATION ──────────────────────────────────
-  // Segments span [ox-ARC_S .. ox+ARC_S]. STEP_WORLD=ARC_S so t=1
-  // of segment N lands at t=0 of segment N+1.
   //
-  // WELDED ENDPOINTS (planeSigma active):
-  //   W=E=[0,0] → positions meet at grid contacts (C0).
-  //   arc term is windowed by 4t(1-t) → zero at t=0 and t=1,
-  //   so endpoints stay exactly on the axis line regardless of
-  //   influence/phase. This is what actually welds the grid.
-  //   C1 continuity (smooth) falls out automatically because
-  //   with W=E=0 the quadratic slope at t=0 is +2M and at t=1
-  //   is -2M — equal-and-opposite — so adjacent segments share
-  //   the same tangent direction at every joint.
-  //   Meridian back-solved to pass through planeSigma at t=0.5:
-  //   physics propagates from world-origin plane center outward.
+  // MASTER MODE (planeSigma provided):
+  //   Physics evaluated ONCE at the plane center. Each arc at grid
+  //   position (ox,oy,oz) receives that center displacement SCALED
+  //   by a radial falloff envelope:
+  //     envelope = exp(-dist² / (2*R²))   where R = half the plane extent
+  //   This makes the sheet flex like a single surface — full displacement
+  //   at the origin, smoothly attenuating to near-zero at the edges.
+  //   Endpoints pinned (W=E=[0,0]) so adjacent segments stay welded (C0).
+  //   Arc term windowed by 4t(1-t) → zero at t=0 and t=1 (C1 continuity).
   //
-  // INDEPENDENT (no planeSigma):
+  // LOCAL MODE (no planeSigma):
+  //   Each arc evaluates its own physOffset independently.
   //   Full physics on all handles, local meridianJoin if enabled.
 
   const sp = SP[axis];
@@ -2030,19 +2027,36 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
   let eHW, eHM, eHE;
 
   if(tangentOn && planeSigma){
-    // Endpoints pinned — no perpendicular offset at joints
+    // ── Radial falloff from plane center ──────────────────────────
+    // Distance of this arc's origin from world origin in the plane axes
+    const planeDist = Math.sqrt(ox*ox + oy*oy + oz*oz);
+    // Falloff radius: ~ half the largest dimension extent of this plane
+    const maxDim = (() => {
+      if(axis==='X'||axis==='Z'){
+        // XZ plane: extents nx*STEP and nz*STEP
+        const p=GRID.planes.XZ; return Math.max((p.nx||5),(p.nz||5))*ARC_S;
+      } else if(axis==='Y'&&oz===0){
+        const p=GRID.planes.XY; return Math.max((p.nx||5),(p.ny||5))*ARC_S;
+      } else {
+        const p=GRID.planes.ZY; return Math.max((p.nz||5),(p.ny||5))*ARC_S;
+      }
+    })();
+    const R = Math.max(ARC_S, maxDim * 0.55);
+    const envelope = Math.exp(-(planeDist*planeDist)/(2*R*R)) * affMult;
+
+    // Endpoints pinned
     eHW = [0, 0];
     eHE = [0, 0];
-    // Back-solve meridian: Bezier at t=0.5 with W=E=[0,0]:
-    //   bA = 0.5*eHM[0], bB = 0.5*eHM[1]
-    //   arcMid windowed: sin(DOC*0.5+phase)*inf*0.48 * bell(0.5) = sin*inf*0.48*1.0
-    //   target: ta*affMult = 0.5*eHM[0] + arcMid  → eHM[0] = 2*(ta*affMult - arcMid)
-    const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48; // bell=1 at t=0.5
+
+    // Scale the master sigma by the radial envelope for this arc's position
     let ta, tb;
     if(axis==='X'){ ta=planeSigma.y; tb=planeSigma.z; }
     else if(axis==='Y'){ ta=planeSigma.x; tb=planeSigma.z; }
     else              { ta=planeSigma.x; tb=planeSigma.y; }
-    eHM = [2*(ta*affMult - arcMid), 2*tb*affMult];
+
+    const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
+    // Back-solve meridian handle so arc peak = master sigma * envelope
+    eHM = [2*(ta*envelope - arcMid), 2*tb*envelope];
 
   } else {
     const po0 = tangentOn ? physOffset(axis,0) : [0,0];
@@ -2073,8 +2087,8 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
       const bA = eHW[0]*wW + eHM[0]*wM + eHE[0]*wE;
       const bB = eHW[1]*wW + eHM[1]*wM + eHE[1]*wE;
 
-      // Arc term: windowed by 4t(1-t) when plane join active so it
-      // is exactly zero at t=0 and t=1 — endpoints stay welded.
+      // Arc term: windowed by 4t(1-t) in master mode so it is
+      // exactly zero at endpoints — keeps grid welded (C1 continuity).
       // Without plane join (independent) use full arc as normal.
       const arcRaw = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
       const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) : arcRaw;
