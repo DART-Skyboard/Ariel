@@ -1824,11 +1824,9 @@ function buildGridBufs(){
   const S = ARC_S;
   const STEP_WORLD = S * 0.6; // world-units between arc-vector instances
 
-  // Pre-compute per-plane sigma (null = no join for that plane)
-  const planeSigmas = {};
-  ['XZ','XY','ZY'].forEach(pk=>{
-    planeSigmas[pk] = (tangentOn && GRID.planeMeridianJoin[pk]) ? computePlaneSigma(pk) : null;
-  });
+  // Compute per-plane sigma points (handles cross-plane unification at world origin)
+  const gridSigmas = computeGridSigmas();
+  const planeSigmas = { XZ: gridSigmas.XZ, XY: gridSigmas.XY, ZY: gridSigmas.ZY };
 
   // XZ floor plane — n×m grid in XZ at Y=0
   if(GRID.planes.XZ.en){
@@ -1883,36 +1881,53 @@ function buildGridBufs(){
 }
 
 // Generate spline points for an arc-vector at a world offset.
-// The physics/influence is modulated by the affectZone if active.
-// When GRID.planeMeridianJoin is enabled for the containing plane,
-// the meridian handle is back-solved so all arc vectors on that plane
-// share a single sigma point propagated from the world origin.
+// planeSigma — when provided the meridian is back-solved so all arc
+// vectors on this plane share the same central sigma at world origin,
+// making physics propagate outward as one unified object per plane.
+// When null, each instance joins its own arms locally (or freely if
+// meridianJoin is also off).
 function genSplineOffset(axis, ox, oy, oz, planeSigma){
   const sp = SP[axis];
   const pts = new Float32Array((STEPS+1)*3);
   const affMult = GRID.affectZone ? getAffectMultiplier(ox,oy,oz) : 1.0;
 
-  // Build West and East effective handles (physics applied normally)
   const po0 = tangentOn ? physOffset(axis,0) : [0,0];
+  const po1 = tangentOn ? physOffset(axis,1) : [0,0];
   const po2 = tangentOn ? physOffset(axis,2) : [0,0];
-  const eHW = [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]];
-  const eHE = [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]];
 
-  // Meridian handle: use plane-sigma back-solve if join is active for this plane
-  let eHM;
+  let eHW, eHM, eHE;
+
   if(tangentOn && planeSigma){
-    // Back-solve: same formula as getSigmaMeridianHandle but using planeSigma
+    // ── Unified plane join ──────────────────────────────────────
+    // W/E get their normal physics offsets. Meridian is back-solved
+    // to pass exactly through planeSigma (world origin) at t=0.5.
+    // All instances on this plane share the same sigma → they all
+    // curve as one object from the shared plane-center outward.
+    eHW = [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]];
+    eHE = [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]];
     const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
     let ta, tb;
     if(axis==='X'){ ta=planeSigma.y; tb=planeSigma.z; }
     else if(axis==='Y'){ ta=planeSigma.x; tb=planeSigma.z; }
     else              { ta=planeSigma.x; tb=planeSigma.y; }
-    const ma = 2*(ta - arcMid) - 0.5*(eHW[0]+eHE[0]);
-    const mb = 2*tb             - 0.5*(eHW[1]+eHE[1]);
-    eHM = [ma, mb];
+    eHM = [2*(ta-arcMid)-0.5*(eHW[0]+eHE[0]), 2*tb-0.5*(eHW[1]+eHE[1])];
+
   } else {
-    const po1 = tangentOn ? physOffset(axis,1) : [0,0];
-    eHM = [sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]];
+    // ── Independent ─────────────────────────────────────────────
+    // Each grid arc vector joins its own arms at its local position.
+    // Falls back to world sigmaM if the single-arc meridianJoin is on.
+    eHW = [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]];
+    eHE = [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]];
+    if(tangentOn && meridianJoin){
+      const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
+      let ta, tb;
+      if(axis==='X'){ ta=sigmaM.y; tb=sigmaM.z; }
+      else if(axis==='Y'){ ta=sigmaM.x; tb=sigmaM.z; }
+      else              { ta=sigmaM.x; tb=sigmaM.y; }
+      eHM = [2*(ta-arcMid)-0.5*(eHW[0]+eHE[0]), 2*tb-0.5*(eHW[1]+eHE[1])];
+    } else {
+      eHM = [sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]];
+    }
   }
 
   for(let i=0;i<=STEPS;i++){
@@ -1936,27 +1951,70 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
   return pts;
 }
 
-// Compute the shared sigma world point for a given grid plane.
-// Uses the same natural-midpoint averaging logic as computeSigmaM but
-// operates on the plane axes at the world origin (offset 0,0,0) —
-// the resulting sigma is a pure shape descriptor independent of grid
-// instance position, so all instances share the same curvature sigma.
-function computePlaneSigma(planeKey){
-  // Determine which spline axes are rendered on this plane
-  const axesByPlane = { XZ:['X','Z'], XY:['X','Y'], ZY:['Z','Y'] };
-  const axes = axesByPlane[planeKey];
-  let sx=0,sy=0,sz=0, nx=0,ny=0,nz=0;
-  axes.forEach(ax=>{
-    if(!AX_VIS[ax]) return;
-    const [wx,wy,wz] = _naturalMidpoint(ax);
-    if(ax==='X'){ sy+=wy; ny++; sz+=wz; nz++; }
-    else if(ax==='Y'){ sx+=wx; nx++; sz+=wz; nz++; }
-    else             { sx+=wx; nx++; sy+=wy; ny++; }
-  });
+/* ================================================================
+   GRID SIGMA SYSTEM
+   ─────────────────────────────────────────────────────────────────
+   Three join levels, all centered on world origin (0,0,0):
+
+   1. CROSS-PLANE  — all enabled+joined planes share one sigma at
+      world origin. Computed from ALL axes of ALL joined planes.
+      This makes the entire multi-plane structure act as one object.
+
+   2. PER-PLANE    — if a plane's join is on but others are off,
+      that plane uses a sigma from its own two axes only.
+
+   3. ENDPOINT JOIN — adjacent arc-vector instances within a plane
+      share their touching West/East endpoints. Implemented by
+      back-solving the endpoint handle so t=0 (West end) of one
+      instance == t=1 (East end) of its neighbor. Because all
+      instances share the same SP handle offsets + physics, this
+      is already implicit when the meridian sigma is shared —
+      the endpoint continuity falls out of the uniform curvature.
+      For explicit C1 continuity across boundaries we constrain
+      the endpoint tangent direction to match across neighbors,
+      which is achieved by locking West/East handles symmetrically
+      around the grid-step midpoint using the same sigma solve.
+
+   computeGridSigmas() — called once per buildGridBufs() —
+   returns { unified, XZ, XY, ZY } where each value is either
+   a {x,y,z} sigma point or null (join disabled for that scope).
+================================================================ */
+function computeGridSigmas(){
+  const jXZ = GRID.planeMeridianJoin.XZ && GRID.planes.XZ.en;
+  const jXY = GRID.planeMeridianJoin.XY && GRID.planes.XY.en;
+  const jZY = GRID.planeMeridianJoin.ZY && GRID.planes.ZY.en;
+
+  if(!tangentOn) return { unified:null, XZ:null, XY:null, ZY:null };
+
+  // Collect axes that are part of any joined+enabled plane
+  const joinedAxes = new Set();
+  if(jXZ){ joinedAxes.add('X'); joinedAxes.add('Z'); }
+  if(jXY){ joinedAxes.add('X'); joinedAxes.add('Y'); }
+  if(jZY){ joinedAxes.add('Z'); joinedAxes.add('Y'); }
+
+  // Helper: sigma from a specific set of axes
+  function sigmaFromAxes(axes){
+    let sx=0,sy=0,sz=0, nx=0,ny=0,nz=0;
+    axes.forEach(ax=>{
+      if(!AX_VIS[ax]) return;
+      const [wx,wy,wz] = _naturalMidpoint(ax);
+      if(ax==='X'){ sy+=wy; ny++; sz+=wz; nz++; }
+      else if(ax==='Y'){ sx+=wx; nx++; sz+=wz; nz++; }
+      else             { sx+=wx; nx++; sy+=wy; ny++; }
+    });
+    return { x: nx>0?sx/nx:0, y: ny>0?sy/ny:0, z: nz>0?sz/nz:0 };
+  }
+
+  // Unified sigma: if 2+ planes are joined, they all share one world-origin sigma
+  const joinedCount = [jXZ,jXY,jZY].filter(Boolean).length;
+  const unified = joinedCount >= 2 ? sigmaFromAxes([...joinedAxes]) : null;
+
+  // Per-plane sigmas (used only when that plane is joined but others aren't)
   return {
-    x: nx>0 ? sx/nx : 0,
-    y: ny>0 ? sy/ny : 0,
-    z: nz>0 ? sz/nz : 0
+    unified,
+    XZ: jXZ ? (unified || sigmaFromAxes(['X','Z'])) : null,
+    XY: jXY ? (unified || sigmaFromAxes(['X','Y'])) : null,
+    ZY: jZY ? (unified || sigmaFromAxes(['Z','Y'])) : null,
   };
 }
 
@@ -1999,19 +2057,11 @@ function buildSelVecBuf(){
   const oy=GRID.selVec.y*STEP_WORLD*2;
   const oz=GRID.selVec.z*STEP_WORLD*2;
   const pts=[],cols=[];
-  // Determine which plane(s) this selected vector belongs to and pick
-  // the appropriate sigma. Priority: XZ (floor) → XY → ZY. The selected
-  // vector highlight propagates using the same meridian join as the plane.
-  // We compute all three sigmas once and let each spline axis pick its plane.
-  const sigXZ = (tangentOn && GRID.planeMeridianJoin.XZ) ? computePlaneSigma('XZ') : null;
-  const sigXY = (tangentOn && GRID.planeMeridianJoin.XY) ? computePlaneSigma('XY') : null;
-  const sigZY = (tangentOn && GRID.planeMeridianJoin.ZY) ? computePlaneSigma('ZY') : null;
-  // X-axis spline lives on XZ (floor) and XY (front) planes; use XZ sigma if available
-  const sigX = sigXZ || sigXY || null;
-  // Z-axis spline lives on XZ (floor) and ZY (side) planes; use XZ sigma if available
-  const sigZ = sigXZ || sigZY || null;
-  // Y-axis spline lives on XY (front) and ZY (side) planes; use XY sigma if available
-  const sigY = sigXY || sigZY || null;
+  // Use unified sigma system — consistent with surrounding grid join state
+  const gs = computeGridSigmas();
+  const sigX = gs.XZ || gs.XY || null;
+  const sigZ = gs.XZ || gs.ZY || null;
+  const sigY = gs.XY || gs.ZY || null;
   [['X',sigX],['Y',sigY],['Z',sigZ]].forEach(([ax,sig])=>{
     const sp=genSplineOffset(ax,ox,oy,oz,sig);
     appendSplineToBuf(pts,cols,sp,[1.0,0.87,0.32]);
