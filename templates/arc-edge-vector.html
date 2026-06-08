@@ -1888,22 +1888,23 @@ function buildGridBufs(){
 // meridianJoin is also off).
 function genSplineOffset(axis, ox, oy, oz, planeSigma){
   // ── GRID ARC VECTOR GENERATION ──────────────────────────────────
-  // Each instance spans [ox-ARC_S .. ox+ARC_S] along its axis.
-  // STEP_WORLD == ARC_S, so t=1 of instance N lands at t=0 of N+1.
+  // Segments span [ox-ARC_S .. ox+ARC_S]. STEP_WORLD=ARC_S so t=1
+  // of segment N lands at t=0 of segment N+1.
   //
-  // When planeSigma is active (plane join ON):
-  //   • West (t=0) and East (t=1) handles are ZERO in perpendicular —
-  //     endpoints land exactly on the grid axis line, joining cleanly
-  //     with neighbors. No physics offset at the joints.
-  //   • Meridian (t=0.5) is back-solved to pass through the shared
-  //     plane sigma at world origin — physics propagates from that
-  //     center point outward across the entire joined plane as one sheet.
-  //   • The affectZone multiplier modulates how much the sigma
-  //     curvature is applied at each instance's world position.
+  // WELDED ENDPOINTS (planeSigma active):
+  //   W=E=[0,0] → positions meet at grid contacts (C0).
+  //   arc term is windowed by 4t(1-t) → zero at t=0 and t=1,
+  //   so endpoints stay exactly on the axis line regardless of
+  //   influence/phase. This is what actually welds the grid.
+  //   C1 continuity (smooth) falls out automatically because
+  //   with W=E=0 the quadratic slope at t=0 is +2M and at t=1
+  //   is -2M — equal-and-opposite — so adjacent segments share
+  //   the same tangent direction at every joint.
+  //   Meridian back-solved to pass through planeSigma at t=0.5:
+  //   physics propagates from world-origin plane center outward.
   //
-  // When planeSigma is null (independent):
-  //   • Each instance applies physics to all three handles normally.
-  //   • Falls back to world sigmaM for local arm join if meridianJoin on.
+  // INDEPENDENT (no planeSigma):
+  //   Full physics on all handles, local meridianJoin if enabled.
 
   const sp = SP[axis];
   const pts = new Float32Array((STEPS+1)*3);
@@ -1912,15 +1913,14 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
   let eHW, eHM, eHE;
 
   if(tangentOn && planeSigma){
-    // Endpoints pinned to axis line — zero perpendicular offset
+    // Endpoints pinned — no perpendicular offset at joints
     eHW = [0, 0];
     eHE = [0, 0];
-
-    // Back-solve meridian to pass through planeSigma at t=0.5,
-    // scaled by affMult so affect zone works correctly.
-    // Bezier t=0.5 with W=E=[0,0]: p = 0.5*M + arcMid = sigma_perp
-    // → M = 2*(sigma_perp*affMult - arcMid)
-    const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
+    // Back-solve meridian: Bezier at t=0.5 with W=E=[0,0]:
+    //   bA = 0.5*eHM[0], bB = 0.5*eHM[1]
+    //   arcMid windowed: sin(DOC*0.5+phase)*inf*0.48 * bell(0.5) = sin*inf*0.48*1.0
+    //   target: ta*affMult = 0.5*eHM[0] + arcMid  → eHM[0] = 2*(ta*affMult - arcMid)
+    const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48; // bell=1 at t=0.5
     let ta, tb;
     if(axis==='X'){ ta=planeSigma.y; tb=planeSigma.z; }
     else if(axis==='Y'){ ta=planeSigma.x; tb=planeSigma.z; }
@@ -1928,7 +1928,6 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
     eHM = [2*(ta*affMult - arcMid), 2*tb*affMult];
 
   } else {
-    // Independent — full physics on all handles
     const po0 = tangentOn ? physOffset(axis,0) : [0,0];
     const po1 = tangentOn ? physOffset(axis,1) : [0,0];
     const po2 = tangentOn ? physOffset(axis,2) : [0,0];
@@ -1947,15 +1946,22 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
   }
 
   for(let i=0;i<=STEPS;i++){
-    const t=i/STEPS, s=(t*2-1)*ARC_S;
-    let x=ox,y=oy,z=oz;
+    const t = i/STEPS;
+    const s = (t*2-1)*ARC_S;
+    let x=ox, y=oy, z=oz;
     if(axis==='X') x+=s; else if(axis==='Y') y+=s; else z+=s;
 
     if(tangentOn){
       const wW=(1-t)*(1-t), wM=2*t*(1-t), wE=t*t;
       const bA = eHW[0]*wW + eHM[0]*wM + eHE[0]*wE;
       const bB = eHW[1]*wW + eHM[1]*wM + eHE[1]*wE;
-      const arc = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
+
+      // Arc term: windowed by 4t(1-t) when plane join active so it
+      // is exactly zero at t=0 and t=1 — endpoints stay welded.
+      // Without plane join (independent) use full arc as normal.
+      const arcRaw = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
+      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) : arcRaw;
+
       const fa = bA + arc;
       const fb = bB;
       if(axis==='X'){ y+=fa; z+=fb; }
