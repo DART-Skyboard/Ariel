@@ -1288,7 +1288,7 @@ function initStaticBufs(){
   const S=ARC_S*1.22;
   // Axis reference lines
   updBuf(BUF.ax.p, [-S,0,0, S,0,0, 0,-S,0, 0,S,0, 0,0,-S, 0,0,S]);
-  updBuf(BUF.ax.c, fillColor(6,[0.18,0.28,0.38]));
+  updBuf(BUF.ax.c, fillColor(6,[0.28,0.44,0.62]));
 
   // XZ grid
   const gPts=[], gCnt=13, gH=ARC_S*1.1, step=ARC_S*2.2/12;
@@ -1640,12 +1640,12 @@ function render(ts){
   draw(BUF.gd, 13*8, gl.LINES, 0.9);
 
   // Axis reference lines (dim)
-  draw(BUF.ax, 6, gl.LINES, 0.3);
+  draw(BUF.ax, 6, gl.LINES, 0.68);
 
   // Splines — glow pass then full pass, per-axis visibility
   ['X','Y','Z'].forEach(ax=>{
     if(!AX_VIS[ax]) return;
-    draw(BUF['sp'+ax], STEPS+1, gl.LINE_STRIP, 0.35);
+    draw(BUF['sp'+ax], STEPS+1, gl.LINE_STRIP, 0.55);
   });
   ['X','Y','Z'].forEach(ax=>{
     if(!AX_VIS[ax]) return;
@@ -2025,6 +2025,7 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
   const affMult = GRID.affectZone ? getAffectMultiplier(ox,oy,oz) : 1.0;
 
   let eHW, eHM, eHE;
+  let envelope = 0;
 
   if(tangentOn && planeSigma){
     // ── Radial falloff from plane center ──────────────────────────
@@ -2042,7 +2043,7 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
       }
     })();
     const R = Math.max(ARC_S, maxDim * 0.55);
-    const envelope = Math.exp(-(planeDist*planeDist)/(2*R*R)) * affMult;
+    envelope = Math.exp(-(planeDist*planeDist)/(2*R*R)) * affMult;
 
     // Endpoints pinned
     eHW = [0, 0];
@@ -2087,11 +2088,13 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
       const bA = eHW[0]*wW + eHM[0]*wM + eHE[0]*wE;
       const bB = eHW[1]*wW + eHM[1]*wM + eHE[1]*wE;
 
-      // Arc term: windowed by 4t(1-t) in master mode so it is
-      // exactly zero at endpoints — keeps grid welded (C1 continuity).
-      // Without plane join (independent) use full arc as normal.
+      // Arc term: in master mode the arc amplitude is scaled by the same
+      // radial envelope as the meridian so the whole grid surface oscillates
+      // as one unified object from center outward (not per-arc wiggles).
+      // Windowed by 4t(1-t) → zero at endpoints, keeps grid welded (C1).
+      // In local mode: full independent arc per segment as normal.
       const arcRaw = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
-      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) : arcRaw;
+      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) * envelope : arcRaw;
 
       const fa = bA + arc;
       const fb = bB;
@@ -2459,13 +2462,13 @@ function renderWithGrid(ts){
   if(!GRID.enabled) draw(BUF.gd, 13*8, gl.LINES, 0.9);
 
   // Axis reference lines
-  draw(BUF.ax, 6, gl.LINES, 0.3);
+  draw(BUF.ax, 6, gl.LINES, 0.68);
 
   // Draw grid plane instances if enabled
   if(GRID.enabled){
     Object.values(GRID.bufs).forEach(b=>{
       if(b && b.count>0){
-        gl.uniform1f(LOC.alp, 0.55);
+        gl.uniform1f(LOC.alp, 0.88);
         gl.bindBuffer(gl.ARRAY_BUFFER, b.p);
         gl.vertexAttribPointer(LOC.pos,3,gl.FLOAT,false,0,0);
         gl.bindBuffer(gl.ARRAY_BUFFER, b.c);
@@ -2489,7 +2492,7 @@ function renderWithGrid(ts){
   if(!GRID.enabled){
     ['X','Y','Z'].forEach(ax=>{
       if(!AX_VIS[ax]) return;
-      draw(BUF['sp'+ax], STEPS+1, gl.LINE_STRIP, 0.35);
+      draw(BUF['sp'+ax], STEPS+1, gl.LINE_STRIP, 0.55);
     });
     ['X','Y','Z'].forEach(ax=>{
       if(!AX_VIS[ax]) return;
