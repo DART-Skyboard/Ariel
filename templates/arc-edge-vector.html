@@ -703,8 +703,8 @@ input[type=number]{-moz-appearance:textfield;}
             <div style="height:1px;background:var(--bdr);margin:6px 0"></div>
             <div class="trow">
               <div style="display:flex;flex-direction:column;gap:2px">
-                <span class="tlab">Master Grid Propagation</span>
-                <span style="font-size:9px;color:var(--txt-d);line-height:1.3">All planes act as one object — physics from world origin outward</span>
+                <span class="tlab">Master Meridian</span>
+                <span style="font-size:9px;color:var(--txt-d);line-height:1.3">All planes act as one surface — physics propagate from Meridian origin outward</span>
               </div>
               <label class="tsw"><input type="checkbox" id="t-master" checked><div class="ttrk"></div></label>
             </div>
@@ -1924,6 +1924,11 @@ const GRID = {
   vecSelMode: false, // single-vector selection mode
   affectZone: false, // affect zone toggle
 
+  // Master Meridian propagation origin (world coords).
+  // Defaults to world origin. Set to selected vector position when vecSelMode active.
+  meridianOrigin: {x:0, y:0, z:0},
+  meridianRadius: 0,  // 0 = full uniform (no falloff); computed from grid size when >0
+
   // Per-plane meridian join: when enabled each plane acts as one unified arc
   // vector — all arc vectors on that plane share one propagated sigma point
   planeMeridianJoin: { XZ: true, XY: true, ZY: true },
@@ -1965,7 +1970,6 @@ function hexToRgb(hex){
 function buildGridBufs(){
   if(!GRID.enabled) return;
 
-  // Clear old buffers
   Object.values(GRID.bufs).forEach(b=>{
     if(b.p) gl.deleteBuffer(b.p);
     if(b.c) gl.deleteBuffer(b.c);
@@ -1973,17 +1977,20 @@ function buildGridBufs(){
   GRID.bufs = {};
 
   const S = ARC_S;
-  const STEP_WORLD = S; // arc extent == step size so endpoints meet at grid contacts
+  const STEP_WORLD = S;
 
-  // ── MASTER PLANE MERIDIAN ────────────────────────────────────────
-  // In master mode: compute physics-driven sigma ONCE per plane from the
-  // plane's two canonical axes at their natural midpoints (includes physOffset).
-  // Every arc-vector on that plane shares this single sigma so physics
-  // propagates uniformly outward from the plane center as one object.
-  // In local mode: pass null — each arc vector handles its own physics.
-  let planeSigmas = { XZ:null, XY:null, ZY:null };
+  // ── MASTER MERIDIAN ─────────────────────────────────────────────
+  // When masterMode is on, compute ONE physics-inclusive sigma per
+  // enabled+joined plane, then unify across planes if 2+ are active.
+  // Each arc-vector instance gets a Gaussian falloff weight based on
+  // its world-position distance from GRID.meridianOrigin (defaults to
+  // world origin = center of all three planes).
+  // The per-instance sigma is: sigma * falloff + [0,0,0] * (1-falloff)
+  // i.e. distant instances barely move, near ones get full deformation.
+  // When masterMode is off: sigma=null, each arc evaluates physics locally.
+
+  let masterSigma = null; // unified sigma (before per-instance falloff)
   if(GRID.masterMode && tangentOn){
-    // Compute physics-inclusive natural midpoint for each axis
     function physMidpoint(ax){
       const sp = SP[ax];
       const po0=physOffset(ax,0), po1=physOffset(ax,1), po2=physOffset(ax,2);
@@ -2000,80 +2007,90 @@ function buildGridBufs(){
       if(ax==='Y') return {x:a, y:0, z:b};
       return {x:a, y:b, z:0};
     }
-    function planeSigma(ax1, ax2){
+    function planeSig(ax1, ax2){
       const m1=physMidpoint(ax1), m2=physMidpoint(ax2);
-      // Average the perpendicular components each axis contributes
       let x=0,y=0,z=0;
       if(ax1==='X'){ y+=m1.y; z+=m1.z; } else if(ax1==='Y'){ x+=m1.x; z+=m1.z; } else { x+=m1.x; y+=m1.y; }
       if(ax2==='X'){ y+=m2.y; z+=m2.z; } else if(ax2==='Y'){ x+=m2.x; z+=m2.z; } else { x+=m2.x; y+=m2.y; }
       return {x:x*.5, y:y*.5, z:z*.5};
     }
-    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ) planeSigmas.XZ = planeSigma('X','Z');
-    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY) planeSigmas.XY = planeSigma('X','Y');
-    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY) planeSigmas.ZY = planeSigma('Z','Y');
-
-    // Cross-plane unification: if 2+ planes are joined, average their sigmas
-    // so all three planes share ONE master sigma (world Meridian)
-    const activeSigs = Object.entries(planeSigmas).filter(([,v])=>v!==null);
-    if(activeSigs.length >= 2){
-      const master = {
-        x: activeSigs.reduce((s,[,v])=>s+v.x,0)/activeSigs.length,
-        y: activeSigs.reduce((s,[,v])=>s+v.y,0)/activeSigs.length,
-        z: activeSigs.reduce((s,[,v])=>s+v.z,0)/activeSigs.length
+    const sigs = [];
+    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ) sigs.push(planeSig('X','Z'));
+    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY) sigs.push(planeSig('X','Y'));
+    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY) sigs.push(planeSig('Z','Y'));
+    if(sigs.length > 0){
+      masterSigma = {
+        x: sigs.reduce((s,v)=>s+v.x,0)/sigs.length,
+        y: sigs.reduce((s,v)=>s+v.y,0)/sigs.length,
+        z: sigs.reduce((s,v)=>s+v.z,0)/sigs.length
       };
-      activeSigs.forEach(([k])=>{ planeSigmas[k]=master; });
     }
   }
 
-  // XZ floor plane — n×m grid in XZ at Y=0
+  // Gaussian falloff: exp(-dist² / r²)
+  // r = half the grid extent in world units so falloff reaches ~0 at the edges
+  const enabledPlanes = [GRID.planes.XZ,GRID.planes.XY,GRID.planes.ZY].filter(p=>p.en);
+  const maxN = enabledPlanes.reduce((m,p)=>Math.max(m,p.nx||p.nz||p.ny||5),5);
+  const falloffR = STEP_WORLD * maxN * 0.9; // radius covering most of the grid
+  const mo = GRID.meridianOrigin;
+
+  function instSigma(ox, oy, oz){
+    if(!masterSigma) return null;
+    if(falloffR <= 0) return masterSigma;
+    const dx=ox-mo.x, dy=oy-mo.y, dz=oz-mo.z;
+    const dist2 = dx*dx + dy*dy + dz*dz;
+    const w = Math.exp(-dist2 / (falloffR*falloffR));
+    // Scale sigma components by falloff weight
+    return {
+      x: masterSigma.x * w,
+      y: masterSigma.y * w,
+      z: masterSigma.z * w
+    };
+  }
+
+  // XZ floor plane
   if(GRID.planes.XZ.en){
     const {nx,nz,color} = GRID.planes.XZ;
     const pts=[],cols=[];
-    const sig = planeSigmas.XZ;
     for(let ix=-Math.floor(nx/2); ix<=Math.floor(nx/2); ix++){
       for(let iz=-Math.floor(nz/2); iz<=Math.floor(nz/2); iz++){
         const ox=ix*STEP_WORLD*2, oy=0, oz=iz*STEP_WORLD*2;
-        const sp   = genSplineOffset('X', ox, oy, oz, sig);
-        const z_sp = genSplineOffset('Z', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, z_sp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('X',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Z',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.XZ = uploadGridBuf(pts, cols);
+    GRID.bufs.XZ = uploadGridBuf(pts,cols);
   }
 
-  // XY vertical plane — grid in XY at Z=0
+  // XY vertical plane
   if(GRID.planes.XY.en){
     const {nx,ny,color} = GRID.planes.XY;
     const pts=[],cols=[];
-    const sig = planeSigmas.XY;
     for(let ix=-Math.floor(nx/2); ix<=Math.floor(nx/2); ix++){
       for(let iy=-Math.floor(ny/2); iy<=Math.floor(ny/2); iy++){
         const ox=ix*STEP_WORLD*2, oy=iy*STEP_WORLD*2, oz=0;
-        const sp = genSplineOffset('X', ox, oy, oz, sig);
-        const ysp= genSplineOffset('Y', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, ysp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('X',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Y',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.XY = uploadGridBuf(pts, cols);
+    GRID.bufs.XY = uploadGridBuf(pts,cols);
   }
 
-  // ZY vertical plane — grid in ZY at X=0
+  // ZY vertical plane
   if(GRID.planes.ZY.en){
     const {nz,ny,color} = GRID.planes.ZY;
     const pts=[],cols=[];
-    const sig = planeSigmas.ZY;
     for(let iz=-Math.floor(nz/2); iz<=Math.floor(nz/2); iz++){
       for(let iy=-Math.floor(ny/2); iy<=Math.floor(ny/2); iy++){
         const ox=0, oy=iy*STEP_WORLD*2, oz=iz*STEP_WORLD*2;
-        const sp = genSplineOffset('Z', ox, oy, oz, sig);
-        const ysp= genSplineOffset('Y', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, ysp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('Z',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Y',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.ZY = uploadGridBuf(pts, cols);
+    GRID.bufs.ZY = uploadGridBuf(pts,cols);
   }
 }
 
@@ -2393,15 +2410,23 @@ document.getElementById('vs-apply-btn').addEventListener('click', ()=>{
   const vy=parseInt(document.getElementById('vs-y').value)||0;
   const vz=parseInt(document.getElementById('vs-z').value)||0;
   GRID.selVec = {x:vx,y:vy,z:vz,active:true};
+  // Set Master Meridian origin to this vector's world position
+  // so physics propagation ripples outward from this point
+  const sw = ARC_S;
+  GRID.meridianOrigin = {x:vx*sw*2, y:vy*sw*2, z:vz*sw*2};
   const st=document.getElementById('vs-status');
   st.textContent='Selected: ('+vx+', '+vy+', '+vz+')';
   st.style.display='block';
   buildSelVecBuf();
+  if(GRID.enabled) buildGridBufs();
 });
 document.getElementById('vs-clear-btn').addEventListener('click', ()=>{
   GRID.selVec.active=false;
+  // Reset Meridian origin back to world origin (plane center)
+  GRID.meridianOrigin = {x:0, y:0, z:0};
   document.getElementById('vs-status').style.display='none';
   buildSelVecBuf();
+  if(GRID.enabled) buildGridBufs();
 });
 
 // Rebuild grid when physics changes
