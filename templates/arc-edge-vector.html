@@ -699,15 +699,16 @@ input[type=number]{-moz-appearance:textfield;}
             </div>
             <label class="tsw"><input type="checkbox" id="t-grid"><div class="ttrk"></div></label>
           </div>
+          <!-- Arc → Grid Controls toggle: visible only when grid is on -->
+          <div class="trow" id="arc-to-grid-row" style="display:none;margin-top:6px">
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <span class="tlab" style="color:rgba(0,230,180,0.9)">Arc → Grid Controls</span>
+              <span style="font-size:9px;color:var(--txt-d);line-height:1.3">Physics sliders drive the full grid surface</span>
+            </div>
+            <label class="tsw"><input type="checkbox" id="t-arc-to-grid" checked><div class="ttrk"></div></label>
+          </div>
           <div id="grid-mode-options" style="display:none">
             <div style="height:1px;background:var(--bdr);margin:6px 0"></div>
-            <div class="trow">
-              <div style="display:flex;flex-direction:column;gap:2px">
-                <span class="tlab">Master Grid Propagation</span>
-                <span style="font-size:9px;color:var(--txt-d);line-height:1.3">All planes act as one object — physics from world origin outward</span>
-              </div>
-              <label class="tsw"><input type="checkbox" id="t-master" checked><div class="ttrk"></div></label>
-            </div>
             <div class="trow" style="margin-top:6px" id="single-vec-row">
               <div style="display:flex;flex-direction:column;gap:2px">
                 <span class="tlab">Vector Select Mode</span>
@@ -1472,72 +1473,10 @@ function applyHandleDrag(dx, dy, axis, idx){
   }
 }
 
-/* ================================================================
-   NOMAD-STYLE ORBIT CONTROLS
-   ─────────────────────────────────────────────────────────────────
-   1-finger drag  → trackball orbit (rotate around look-at target)
-   2-finger drag  → pan in camera-right/up plane
-   2-finger pinch → multiplicative zoom (dolly)
-   2-finger twist → roll around look axis
-   Mouse drag     → orbit   |   wheel → zoom
-   Inertia: orbit and pan coast to a stop after finger lift
-================================================================ */
-
-// ── Trackball orbit helper ────────────────────────────────────────
-// Maps a 2D screen delta (dx,dy) in pixels onto a quaternion rotation
-// using a virtual trackball sphere. Drag across the full screen width
-// = ~180° rotation, matching Nomad's feel.
-function trackballOrbit(dx, dy){
-  const W = canvas.clientWidth, H = canvas.clientHeight;
-  // Scale: π radians per screen-width drag
-  const ax = -dy / H * Math.PI;   // pitch  (screen-up = +Y world)
-  const ay = -dx / W * Math.PI;   // yaw    (screen-right = +X world)
-  // Apply in camera space: yaw around world-Y keeps horizon level
-  const rm = M.qToM4(M.qNrm(CAM.q));
-  const rgt = [rm[0], rm[1], rm[2]];        // camera right
-  // Pitch around camera-right axis, yaw around world Y
-  const qYaw   = M.qAA([0,1,0], ay);
-  const qPitch = M.qAA(rgt, ax);
-  CAM.q = M.qNrm(M.qMul(qYaw, M.qMul(qPitch, CAM.q)));
-}
-
-// ── Inertia state ─────────────────────────────────────────────────
-const INERTIA = {
-  vdx:0, vdy:0,       // orbit velocity (px/frame)
-  vpx:0, vpy:0,       // pan velocity (px/frame)
-  decay: 0.88         // per-frame decay (Nomad feels ~0.85-0.90)
-};
-
-function applyInertia(){
-  const minV = 0.08;
-  if(Math.abs(INERTIA.vdx)>minV || Math.abs(INERTIA.vdy)>minV){
-    trackballOrbit(INERTIA.vdx, INERTIA.vdy);
-    INERTIA.vdx *= INERTIA.decay;
-    INERTIA.vdy *= INERTIA.decay;
-    if(Math.abs(INERTIA.vdx)<minV && Math.abs(INERTIA.vdy)<minV){
-      INERTIA.vdx=0; INERTIA.vdy=0;
-    }
-  }
-  if(Math.abs(INERTIA.vpx)>0.04 || Math.abs(INERTIA.vpy)>0.04){
-    const spd = CAM.r * 0.0028;
-    const rm = M.qToM4(M.qNrm(CAM.q));
-    const rgt=[rm[0],rm[1],rm[2]], up=[rm[4],rm[5],rm[6]];
-    CAM.pan[0] -= (rgt[0]*INERTIA.vpx - up[0]*INERTIA.vpy)*spd;
-    CAM.pan[1] -= (rgt[1]*INERTIA.vpx - up[1]*INERTIA.vpy)*spd;
-    CAM.pan[2] -= (rgt[2]*INERTIA.vpx - up[2]*INERTIA.vpy)*spd;
-    INERTIA.vpx *= INERTIA.decay;
-    INERTIA.vpy *= INERTIA.decay;
-    if(Math.abs(INERTIA.vpx)<0.04 && Math.abs(INERTIA.vpy)<0.04){
-      INERTIA.vpx=0; INERTIA.vpy=0;
-    }
-  }
-}
-
-// ── Mouse ─────────────────────────────────────────────────────────
+// Mouse
 canvas.addEventListener('mousedown', e=>{
   const h = hitTestHandle(e.clientX, e.clientY - HDRH());
   if(h){ HDrag={on:true,px:e.clientX,py:e.clientY,axis:h.axis,idx:h.idx}; return; }
-  INERTIA.vdx=0; INERTIA.vdy=0;
   ptr.down=true; ptr.x=e.clientX; ptr.y=e.clientY;
 },{capture:true,passive:false});
 
@@ -1549,139 +1488,165 @@ canvas.addEventListener('mousemove', e=>{
   if(!ptr.down) return;
   const dx=e.clientX-ptr.x, dy=e.clientY-ptr.y;
   ptr.x=e.clientX; ptr.y=e.clientY;
-  trackballOrbit(dx, dy);
-  INERTIA.vdx=dx; INERTIA.vdy=dy;
+  const spd=0.0048;
+  CAM.q = M.qNrm(M.qMul(M.qAA([0,1,0],-dx*spd), M.qMul(M.qAA([1,0,0],-dy*spd), CAM.q)));
 },{passive:false});
 
-canvas.addEventListener('mouseup', ()=>{
-  ptr.down=false; HDrag.on=false;
-});
-canvas.addEventListener('mouseleave',()=>{
-  ptr.down=false; HDrag.on=false;
-  INERTIA.vdx*=0.5; INERTIA.vdy*=0.5; // soft stop on leave
-});
+canvas.addEventListener('mouseup', ()=>{ ptr.down=false; HDrag.on=false; });
+canvas.addEventListener('mouseleave',()=>{ ptr.down=false; HDrag.on=false; });
 canvas.addEventListener('wheel', e=>{
   e.preventDefault();
-  // Multiplicative zoom like pinch — consistent feel at any distance
-  const factor = e.deltaY > 0 ? 1.08 : 0.926;
-  CAM.r = Math.max(CAM.minR, Math.min(CAM.maxR, CAM.r * factor));
+  CAM.r = Math.max(CAM.minR, Math.min(CAM.maxR, CAM.r + e.deltaY*0.012));
 },{passive:false});
 
-// ── Touch helpers ─────────────────────────────────────────────────
-let tc = { count:0, pDist:0, pMX:0, pMY:0, pAngle:0 };
+// ── TOUCH INPUT — Nomad-style trackball orbit + inertia ──────────
+// 1 finger  → orbit  (trackball, always, unless hitting a handle)
+// 2 finger  → pan + pinch-zoom + twist-roll
+// lift      → inertia decays smoothly to rest
+// ─────────────────────────────────────────────────────────────────
 function tDist(t){ return Math.hypot(t[1].clientX-t[0].clientX, t[1].clientY-t[0].clientY); }
 function tAngle(t){ return Math.atan2(t[1].clientY-t[0].clientY, t[1].clientX-t[0].clientX); }
 
-// Gesture classifier: decide if 2-finger is primarily pinch, pan, or twist
-// (prevents all three fighting each other on a deliberate gesture)
-let tc2 = { mode: null }; // 'zoom' | 'pan' | 'twist' | null=undecided
+// Inertia state — stores angular velocity (world-axis) and pan velocity
+const INR = {
+  ax:[0,0,0],   // orbit angular velocity axis (world)
+  av:0,         // orbit angular speed (rad/frame)
+  px:0, py:0,   // pan velocity (screen pixels/frame)
+  decay: 0.88   // deceleration factor per frame (0=instant stop, 1=never)
+};
+// Per-frame inertia tick called from render loop
+function inertiaStep(){
+  if(INR.av > 0.00005){
+    CAM.q = M.qNrm(M.qMul(M.qAA(INR.ax, INR.av), CAM.q));
+    INR.av *= INR.decay;
+  } else { INR.av=0; }
+  if(Math.abs(INR.px)>0.02 || Math.abs(INR.py)>0.02){
+    const spd=CAM.r*0.0028;
+    const rm=M.qToM4(M.qNrm(CAM.q));
+    CAM.pan[0]-=(rm[0]*INR.px-rm[4]*INR.py)*spd;
+    CAM.pan[1]-=(rm[1]*INR.px-rm[5]*INR.py)*spd;
+    CAM.pan[2]-=(rm[2]*INR.px-rm[6]*INR.py)*spd;
+    INR.px*=INR.decay; INR.py*=INR.decay;
+  } else { INR.px=0; INR.py=0; }
+}
+
+let tc = { count:0, pDist:0, pMX:0, pMY:0, pAngle:0,
+           lastDx:0, lastDy:0, lastPdx:0, lastPdy:0 };
 
 canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
+  // Kill inertia when touching again
+  INR.av=0; INR.px=0; INR.py=0;
   tc.count = e.touches.length;
+  tc.lastDx=0; tc.lastDy=0; tc.lastPdx=0; tc.lastPdy=0;
+
   if(e.touches.length===1){
-    INERTIA.vdx=0; INERTIA.vdy=0; INERTIA.vpx=0; INERTIA.vpy=0;
+    // Try handle hit first
     const tx=e.touches[0].clientX, ty=e.touches[0].clientY;
     const h = hitTestHandle(tx, ty-HDRH());
     if(h){ HDrag={on:true,px:tx,py:ty,axis:h.axis,idx:h.idx}; return; }
+    // Otherwise: orbit
     ptr.down=true; ptr.x=tx; ptr.y=ty;
   } else if(e.touches.length===2){
     ptr.down=false; HDrag.on=false;
-    INERTIA.vdx=0; INERTIA.vdy=0;
     const arr=[...e.touches];
     tc.pDist  = tDist(arr);
     tc.pAngle = tAngle(arr);
     tc.pMX = (arr[0].clientX+arr[1].clientX)*.5;
     tc.pMY = (arr[0].clientY+arr[1].clientY)*.5;
-    tc2.mode = null; // re-classify on first move
   }
 },{passive:false});
 
 canvas.addEventListener('touchmove', e=>{
   e.preventDefault();
-
   if(e.touches.length===1){
     if(HDrag.on){
-      const dx=e.touches[0].clientX-HDrag.px, dy=e.touches[0].clientY-HDrag.py;
-      applyHandleDrag(dx, dy, HDrag.axis, HDrag.idx);
+      applyHandleDrag(e.touches[0].clientX-HDrag.px, e.touches[0].clientY-HDrag.py, HDrag.axis, HDrag.idx);
       HDrag.px=e.touches[0].clientX; HDrag.py=e.touches[0].clientY; return;
     }
     if(!ptr.down) return;
-    const dx=e.touches[0].clientX-ptr.x, dy=e.touches[0].clientY-ptr.y;
+    const dx=e.touches[0].clientX-ptr.x;
+    const dy=e.touches[0].clientY-ptr.y;
     ptr.x=e.touches[0].clientX; ptr.y=e.touches[0].clientY;
-    trackballOrbit(dx, dy);
-    // Rolling average for inertia
-    INERTIA.vdx = INERTIA.vdx*0.4 + dx*0.6;
-    INERTIA.vdy = INERTIA.vdy*0.4 + dy*0.6;
+    tc.lastDx=dx; tc.lastDy=dy;
+
+    // Trackball orbit: map screen delta to world-space rotation axis
+    // Axis = screen-right cross screen-up rotated by cam orientation
+    const spd = 0.006;
+    const rm  = M.qToM4(M.qNrm(CAM.q));
+    const rgt = [rm[0],rm[1],rm[2]];   // camera right
+    const up  = [rm[4],rm[5],rm[6]];   // camera up
+    // Rotation axis perpendicular to drag direction in world space
+    const ax = M.nrm([
+      -dy*rgt[0] - dx*up[0],
+      -dy*rgt[1] - dx*up[1],
+      -dy*rgt[2] - dx*up[2]
+    ]);
+    const angle = Math.hypot(dx,dy)*spd;
+    if(angle>0.0001){
+      CAM.q = M.qNrm(M.qMul(M.qAA(ax, angle), CAM.q));
+      // Store for inertia on lift
+      INR.ax=[...ax]; INR.av=angle;
+    }
 
   } else if(e.touches.length===2){
     const arr=[...e.touches];
     const dist  = tDist(arr);
     const angle = tAngle(arr);
-    const mx = (arr[0].clientX+arr[1].clientX)*.5;
-    const my = (arr[0].clientY+arr[1].clientY)*.5;
-    const pdx = mx-tc.pMX, pdy = my-tc.pMY;
-    const da  = angle - tc.pAngle;
-    const dz  = tc.pDist > 0 ? dist/tc.pDist : 1;
+    const mx=(arr[0].clientX+arr[1].clientX)*.5;
+    const my=(arr[0].clientY+arr[1].clientY)*.5;
 
-    // ── Gesture classification (Nomad-style: commit to one gesture) ─
-    if(!tc2.mode){
-      const panMag   = Math.hypot(pdx,pdy);
-      const twistMag = Math.abs(da) * 60; // scale to px-equivalent
-      const zoomMag  = Math.abs(dz-1) * 120;
-      const biggest  = Math.max(panMag, twistMag, zoomMag);
-      if(biggest > 3){ // enough motion to classify
-        if(zoomMag >= twistMag && zoomMag >= panMag)  tc2.mode='zoom';
-        else if(twistMag >= panMag)                    tc2.mode='twist';
-        else                                           tc2.mode='pan';
-      }
-    }
+    // Pinch zoom — multiplicative
+    if(tc.pDist>0) CAM.r=Math.max(CAM.minR,Math.min(CAM.maxR, CAM.r*(tc.pDist/dist)));
+    tc.pDist=dist;
 
-    if(tc2.mode==='zoom' || tc2.mode===null){
-      // Multiplicative pinch zoom
-      if(tc.pDist>0) CAM.r=Math.max(CAM.minR,Math.min(CAM.maxR, CAM.r*(tc.pDist/dist)));
-    }
-    if(tc2.mode==='twist'){
-      // Roll around look axis
-      if(Math.abs(da)>0.001 && Math.abs(da)<0.5){
-        const rm=M.qToM4(M.qNrm(CAM.q));
-        const fwd=M.nrm([-rm[8],-rm[9],-rm[10]]);
-        CAM.q=M.qNrm(M.qMul(M.qAA(fwd,-da),CAM.q));
-      }
-    }
-    if(tc2.mode==='pan'){
-      // Pan in camera right/up plane, speed proportional to zoom distance
-      const spd = CAM.r * 0.0022;
-      const rm=M.qToM4(M.qNrm(CAM.q));
-      const rgt=[rm[0],rm[1],rm[2]], up=[rm[4],rm[5],rm[6]];
-      CAM.pan[0]-=(rgt[0]*pdx-up[0]*pdy)*spd;
-      CAM.pan[1]-=(rgt[1]*pdx-up[1]*pdy)*spd;
-      CAM.pan[2]-=(rgt[2]*pdx-up[2]*pdy)*spd;
-      // Pan inertia
-      INERTIA.vpx = INERTIA.vpx*0.4 + pdx*0.6;
-      INERTIA.vpy = INERTIA.vpy*0.4 + pdy*0.6;
-    }
+    tc.pAngle = angle;
 
-    tc.pDist=dist; tc.pAngle=angle; tc.pMX=mx; tc.pMY=my;
+    // Two-finger pan — speed scales with zoom distance
+    const pdx=mx-tc.pMX, pdy=my-tc.pMY;
+    tc.lastPdx=pdx; tc.lastPdy=pdy;
+    const spd=CAM.r*0.0028;
+    const rm=M.qToM4(M.qNrm(CAM.q));
+    CAM.pan[0]-=(rm[0]*pdx-rm[4]*pdy)*spd;
+    CAM.pan[1]-=(rm[1]*pdx-rm[5]*pdy)*spd;
+    CAM.pan[2]-=(rm[2]*pdx-rm[6]*pdy)*spd;
+    tc.pMX=mx; tc.pMY=my;
   }
 },{passive:false});
 
 canvas.addEventListener('touchend', e=>{
+  e.preventDefault();
+  const prev = tc.count;
   tc.count = e.touches.length;
+
   if(e.touches.length===0){
-    ptr.down=false; HDrag.on=false;
-    // Inertia continues in render loop
-  } else if(e.touches.length===1){
-    // Dropped to 1 finger — re-init orbit from current touch
     HDrag.on=false;
-    ptr.down=true;
-    ptr.x=e.touches[0].clientX; ptr.y=e.touches[0].clientY;
-    INERTIA.vpx=0; INERTIA.vpy=0;
-    tc2.mode=null;
-  } else if(e.touches.length===2){
+    if(ptr.down){
+      // Seed inertia from last frame's delta — orbit momentum
+      const spd=0.006;
+      const mag=Math.hypot(tc.lastDx,tc.lastDy)*spd;
+      if(mag>0.0003){
+        const rm=M.qToM4(M.qNrm(CAM.q));
+        const rgt=[rm[0],rm[1],rm[2]], up=[rm[4],rm[5],rm[6]];
+        INR.ax=M.nrm([
+          -tc.lastDy*rgt[0]-tc.lastDx*up[0],
+          -tc.lastDy*rgt[1]-tc.lastDx*up[1],
+          -tc.lastDy*rgt[2]-tc.lastDx*up[2]
+        ]);
+        INR.av=mag;
+      }
+      // Pan inertia
+      INR.px=tc.lastPdx; INR.py=tc.lastPdy;
+    }
+    ptr.down=false;
+  }
+
+  if(e.touches.length===2){
     const arr=[...e.touches];
-    tc.pAngle=tAngle(arr);
-    tc2.mode=null;
+    tc.pDist  = tDist(arr);
+    tc.pAngle = tAngle(arr);
+    tc.pMX=(arr[0].clientX+arr[1].clientX)*.5;
+    tc.pMY=(arr[0].clientY+arr[1].clientY)*.5;
   }
 },{passive:false});
 
@@ -1950,8 +1915,14 @@ PI.addEventListener('touchmove',  e=>{ if(!pDragging) e.stopPropagation(); },{pa
 ================================================================ */
 const GRID = {
   enabled: false,    // master toggle (matches t-grid checkbox)
+  arcToGrid: true,   // when true: main panel physics sliders drive the grid surface
   vecSelMode: false, // single-vector selection mode
   affectZone: false, // affect zone toggle
+
+  // Master Meridian propagation origin (world coords).
+  // Defaults to world origin. Set to selected vector position when vecSelMode active.
+  meridianOrigin: {x:0, y:0, z:0},
+  meridianRadius: 0,  // 0 = full uniform (no falloff); computed from grid size when >0
 
   // Per-plane meridian join: when enabled each plane acts as one unified arc
   // vector — all arc vectors on that plane share one propagated sigma point
@@ -1973,7 +1944,7 @@ const GRID = {
 
   // Master grid propagation mode: true = physics from world origin as one unit
   // false = each arc vector uses its own local meridian join
-  masterMode: true,
+  masterMode: true,  // derived: true when any planeMeridianJoin is enabled — kept for compat
 
   // WebGL buffers for grid instances — built on demand
   bufs: {}
@@ -1994,7 +1965,6 @@ function hexToRgb(hex){
 function buildGridBufs(){
   if(!GRID.enabled) return;
 
-  // Clear old buffers
   Object.values(GRID.bufs).forEach(b=>{
     if(b.p) gl.deleteBuffer(b.p);
     if(b.c) gl.deleteBuffer(b.c);
@@ -2002,107 +1972,124 @@ function buildGridBufs(){
   GRID.bufs = {};
 
   const S = ARC_S;
-  const STEP_WORLD = S; // arc extent == step size so endpoints meet at grid contacts
+  const STEP_WORLD = S;
 
-  // ── MASTER PLANE MERIDIAN ────────────────────────────────────────
-  // In master mode: compute physics-driven sigma ONCE per plane from the
-  // plane's two canonical axes at their natural midpoints (includes physOffset).
-  // Every arc-vector on that plane shares this single sigma so physics
-  // propagates uniformly outward from the plane center as one object.
-  // In local mode: pass null — each arc vector handles its own physics.
-  let planeSigmas = { XZ:null, XY:null, ZY:null };
+  // masterMode is driven by the per-plane "Join Meridian — Grid Planes" checkboxes.
+  GRID.masterMode = GRID.planeMeridianJoin.XZ || GRID.planeMeridianJoin.XY || GRID.planeMeridianJoin.ZY;
+
+  // ── MASTER MERIDIAN ─────────────────────────────────────────────
+  // masterSigma = the raw perpendicular world-displacement at the center arc
+  // vector (the one at world origin). This is the "how much does the sheet
+  // deflect at its center" value. Each instance gets this scaled by a Gaussian
+  // falloff so the deformation smoothly attenuates from the meridian origin
+  // outward — bending as one continuous sheet, not independent arc vectors.
+  //
+  // Sigma derivation: for each active axis, evaluate the full Bezier + arc
+  // displacement at t=0.5 at world origin. That IS the perpendicular offset
+  // the sheet center would have. Average across joined planes for unified sigma.
+
+  let masterSigma = null;
   if(GRID.masterMode && tangentOn){
-    // Compute physics-inclusive natural midpoint for each axis
-    function physMidpoint(ax){
+    // Evaluate world-space midpoint displacement for one axis at origin
+    function axisMidDisplacement(ax){
       const sp = SP[ax];
       const po0=physOffset(ax,0), po1=physOffset(ax,1), po2=physOffset(ax,2);
-      const eH=[
-        [sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]],
-        [sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]],
-        [sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]]
-      ];
+      const eHW=[sp.handles[0][0]+po0[0], sp.handles[0][1]+po0[1]];
+      const eHM=[sp.handles[1][0]+po1[0], sp.handles[1][1]+po1[1]];
+      const eHE=[sp.handles[2][0]+po2[0], sp.handles[2][1]+po2[1]];
+      // Bezier at t=0.5: weights 0.25, 0.5, 0.25
+      const bA = 0.25*eHW[0] + 0.5*eHM[0] + 0.25*eHE[0];
+      const bB = 0.25*eHW[1] + 0.5*eHM[1] + 0.25*eHE[1];
+      // Arc at t=0.5 (bell=1): sin(DOC*0.5+phase)*inf*0.48
       const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
-      const bA = 0.25*eH[0][0]+0.5*eH[1][0]+0.25*eH[2][0];
-      const bB = 0.25*eH[0][1]+0.5*eH[1][1]+0.25*eH[2][1];
       const a = bA + arcMid, b = bB;
+      // Return as world-space {x,y,z} displacement (axis component is zero)
       if(ax==='X') return {x:0, y:a, z:b};
       if(ax==='Y') return {x:a, y:0, z:b};
       return {x:a, y:b, z:0};
     }
-    function planeSigma(ax1, ax2){
-      const m1=physMidpoint(ax1), m2=physMidpoint(ax2);
-      // Average the perpendicular components each axis contributes
-      let x=0,y=0,z=0;
-      if(ax1==='X'){ y+=m1.y; z+=m1.z; } else if(ax1==='Y'){ x+=m1.x; z+=m1.z; } else { x+=m1.x; y+=m1.y; }
-      if(ax2==='X'){ y+=m2.y; z+=m2.z; } else if(ax2==='Y'){ x+=m2.x; z+=m2.z; } else { x+=m2.x; y+=m2.y; }
-      return {x:x*.5, y:y*.5, z:z*.5};
-    }
-    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ) planeSigmas.XZ = planeSigma('X','Z');
-    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY) planeSigmas.XY = planeSigma('X','Y');
-    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY) planeSigmas.ZY = planeSigma('Z','Y');
 
-    // Cross-plane unification: if 2+ planes are joined, average their sigmas
-    // so all three planes share ONE master sigma (world Meridian)
-    const activeSigs = Object.entries(planeSigmas).filter(([,v])=>v!==null);
-    if(activeSigs.length >= 2){
-      const master = {
-        x: activeSigs.reduce((s,[,v])=>s+v.x,0)/activeSigs.length,
-        y: activeSigs.reduce((s,[,v])=>s+v.y,0)/activeSigs.length,
-        z: activeSigs.reduce((s,[,v])=>s+v.z,0)/activeSigs.length
+    const sigs = [];
+    if(GRID.planes.XZ.en && GRID.planeMeridianJoin.XZ){
+      const mx=axisMidDisplacement('X'), mz=axisMidDisplacement('Z');
+      sigs.push({ x:0, y:(mx.y+mz.y)*0.5, z:(mx.z+mz.z)*0.5 });
+    }
+    if(GRID.planes.XY.en && GRID.planeMeridianJoin.XY){
+      const mx=axisMidDisplacement('X'), my=axisMidDisplacement('Y');
+      sigs.push({ x:(mx.x+my.x)*0.5, y:0, z:(mx.z+my.z)*0.5 });
+    }
+    if(GRID.planes.ZY.en && GRID.planeMeridianJoin.ZY){
+      const mz=axisMidDisplacement('Z'), my=axisMidDisplacement('Y');
+      sigs.push({ x:(mz.x+my.x)*0.5, y:(mz.y+my.y)*0.5, z:0 });
+    }
+    if(sigs.length > 0){
+      masterSigma = {
+        x: sigs.reduce((s,v)=>s+v.x,0)/sigs.length,
+        y: sigs.reduce((s,v)=>s+v.y,0)/sigs.length,
+        z: sigs.reduce((s,v)=>s+v.z,0)/sigs.length
       };
-      activeSigs.forEach(([k])=>{ planeSigmas[k]=master; });
     }
   }
 
-  // XZ floor plane — n×m grid in XZ at Y=0
+  // Gaussian falloff from meridian origin.
+  // falloffR spans the full grid so attenuation reaches near-zero at edges.
+  const enabledPlanes = [GRID.planes.XZ,GRID.planes.XY,GRID.planes.ZY].filter(p=>p.en);
+  const maxN = enabledPlanes.reduce((m,p)=>Math.max(m,p.nx||p.nz||p.ny||5),5);
+  const falloffR = STEP_WORLD * maxN; // full grid radius
+  const mo = GRID.meridianOrigin;
+
+  function instSigma(ox, oy, oz){
+    if(!masterSigma) return null;
+    const dx=ox-mo.x, dy=oy-mo.y, dz=oz-mo.z;
+    const dist2 = dx*dx + dy*dy + dz*dz;
+    // Gaussian: full weight at origin, smoothly falls off
+    const w = falloffR > 0 ? Math.exp(-dist2 / (falloffR*falloffR)) : 1.0;
+    return { x:masterSigma.x*w, y:masterSigma.y*w, z:masterSigma.z*w };
+  }
+
+  // XZ floor plane
   if(GRID.planes.XZ.en){
     const {nx,nz,color} = GRID.planes.XZ;
     const pts=[],cols=[];
-    const sig = planeSigmas.XZ;
     for(let ix=-Math.floor(nx/2); ix<=Math.floor(nx/2); ix++){
       for(let iz=-Math.floor(nz/2); iz<=Math.floor(nz/2); iz++){
         const ox=ix*STEP_WORLD*2, oy=0, oz=iz*STEP_WORLD*2;
-        const sp   = genSplineOffset('X', ox, oy, oz, sig);
-        const z_sp = genSplineOffset('Z', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, z_sp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('X',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Z',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.XZ = uploadGridBuf(pts, cols);
+    GRID.bufs.XZ = uploadGridBuf(pts,cols);
   }
 
-  // XY vertical plane — grid in XY at Z=0
+  // XY vertical plane
   if(GRID.planes.XY.en){
     const {nx,ny,color} = GRID.planes.XY;
     const pts=[],cols=[];
-    const sig = planeSigmas.XY;
     for(let ix=-Math.floor(nx/2); ix<=Math.floor(nx/2); ix++){
       for(let iy=-Math.floor(ny/2); iy<=Math.floor(ny/2); iy++){
         const ox=ix*STEP_WORLD*2, oy=iy*STEP_WORLD*2, oz=0;
-        const sp = genSplineOffset('X', ox, oy, oz, sig);
-        const ysp= genSplineOffset('Y', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, ysp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('X',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Y',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.XY = uploadGridBuf(pts, cols);
+    GRID.bufs.XY = uploadGridBuf(pts,cols);
   }
 
-  // ZY vertical plane — grid in ZY at X=0
+  // ZY vertical plane
   if(GRID.planes.ZY.en){
     const {nz,ny,color} = GRID.planes.ZY;
     const pts=[],cols=[];
-    const sig = planeSigmas.ZY;
     for(let iz=-Math.floor(nz/2); iz<=Math.floor(nz/2); iz++){
       for(let iy=-Math.floor(ny/2); iy<=Math.floor(ny/2); iy++){
         const ox=0, oy=iy*STEP_WORLD*2, oz=iz*STEP_WORLD*2;
-        const sp = genSplineOffset('Z', ox, oy, oz, sig);
-        const ysp= genSplineOffset('Y', ox, oy, oz, sig);
-        appendSplineToBuf(pts, cols, sp, color);
-        appendSplineToBuf(pts, cols, ysp, color);
+        const sig = instSigma(ox,oy,oz);
+        appendSplineToBuf(pts,cols,genSplineOffset('Z',ox,oy,oz,sig),color);
+        appendSplineToBuf(pts,cols,genSplineOffset('Y',ox,oy,oz,sig),color);
       }
     }
-    GRID.bufs.ZY = uploadGridBuf(pts, cols);
+    GRID.bufs.ZY = uploadGridBuf(pts,cols);
   }
 }
 
@@ -2114,59 +2101,40 @@ function buildGridBufs(){
 // meridianJoin is also off).
 function genSplineOffset(axis, ox, oy, oz, planeSigma){
   // ── GRID ARC VECTOR GENERATION ──────────────────────────────────
+  // planeSigma is pre-scaled by the Gaussian falloff from meridianOrigin
+  // (computed in buildGridBufs / instSigma). This function just uses it
+  // directly — NO additional envelope here. That was causing double-attenuation.
   //
   // MASTER MODE (planeSigma provided):
-  //   Physics evaluated ONCE at the plane center. Each arc at grid
-  //   position (ox,oy,oz) receives that center displacement SCALED
-  //   by a radial falloff envelope:
-  //     envelope = exp(-dist² / (2*R²))   where R = half the plane extent
-  //   This makes the sheet flex like a single surface — full displacement
-  //   at the origin, smoothly attenuating to near-zero at the edges.
-  //   Endpoints pinned (W=E=[0,0]) so adjacent segments stay welded (C0).
-  //   Arc term windowed by 4t(1-t) → zero at t=0 and t=1 (C1 continuity).
+  //   Endpoints W=E=[0,0] → positions welded at grid contacts (C0).
+  //   Arc term windowed by 4t(1-t) → zero at endpoints (C1 continuity).
+  //   Meridian back-solved so arc peak == planeSigma perpendicular component.
+  //   All arc vectors share the same baked-in displacement → single surface.
   //
-  // LOCAL MODE (no planeSigma):
+  // LOCAL MODE (planeSigma null):
   //   Each arc evaluates its own physOffset independently.
-  //   Full physics on all handles, local meridianJoin if enabled.
 
   const sp = SP[axis];
   const pts = new Float32Array((STEPS+1)*3);
-  const affMult = GRID.affectZone ? getAffectMultiplier(ox,oy,oz) : 1.0;
 
   let eHW, eHM, eHE;
-  let envelope = 0;
 
   if(tangentOn && planeSigma){
-    // ── Radial falloff from plane center ──────────────────────────
-    // Distance of this arc's origin from world origin in the plane axes
-    const planeDist = Math.sqrt(ox*ox + oy*oy + oz*oz);
-    // Falloff radius: ~ half the largest dimension extent of this plane
-    const maxDim = (() => {
-      if(axis==='X'||axis==='Z'){
-        // XZ plane: extents nx*STEP and nz*STEP
-        const p=GRID.planes.XZ; return Math.max((p.nx||5),(p.nz||5))*ARC_S;
-      } else if(axis==='Y'&&oz===0){
-        const p=GRID.planes.XY; return Math.max((p.nx||5),(p.ny||5))*ARC_S;
-      } else {
-        const p=GRID.planes.ZY; return Math.max((p.nz||5),(p.ny||5))*ARC_S;
-      }
-    })();
-    const R = Math.max(ARC_S, maxDim * 0.55);
-    envelope = Math.exp(-(planeDist*planeDist)/(2*R*R)) * affMult;
-
-    // Endpoints pinned
     eHW = [0, 0];
     eHE = [0, 0];
 
-    // Scale the master sigma by the radial envelope for this arc's position
+    // planeSigma already contains the falloff-weighted world displacement.
+    // Extract the two perpendicular components for this axis.
     let ta, tb;
     if(axis==='X'){ ta=planeSigma.y; tb=planeSigma.z; }
     else if(axis==='Y'){ ta=planeSigma.x; tb=planeSigma.z; }
     else              { ta=planeSigma.x; tb=planeSigma.y; }
 
+    // Back-solve: Bezier at t=0.5 with W=E=[0,0] → bA=0.5*eHM[0]
+    // arc term at t=0.5 with window=1: arcMid = sin(DOC*0.5+phase)*inf*0.48
+    // target: ta = 0.5*eHM[0] + arcMid  →  eHM[0] = 2*(ta - arcMid)
     const arcMid = Math.sin(M.DOC*0.5 + sp.phase)*sp.inf*0.48;
-    // Back-solve meridian handle so arc peak = master sigma * envelope
-    eHM = [2*(ta*envelope - arcMid), 2*tb*envelope];
+    eHM = [2*(ta - arcMid), 2*tb];
 
   } else {
     const po0 = tangentOn ? physOffset(axis,0) : [0,0];
@@ -2197,13 +2165,10 @@ function genSplineOffset(axis, ox, oy, oz, planeSigma){
       const bA = eHW[0]*wW + eHM[0]*wM + eHE[0]*wE;
       const bB = eHW[1]*wW + eHM[1]*wM + eHE[1]*wE;
 
-      // Arc term: in master mode the arc amplitude is scaled by the same
-      // radial envelope as the meridian so the whole grid surface oscillates
-      // as one unified object from center outward (not per-arc wiggles).
-      // Windowed by 4t(1-t) → zero at endpoints, keeps grid welded (C1).
-      // In local mode: full independent arc per segment as normal.
+      // Arc term: windowed by 4t(1-t) in master mode → zero at endpoints
+      // so the grid stays welded at all contacts regardless of influence/phase.
       const arcRaw = Math.sin(M.DOC*t + sp.phase) * sp.inf * 0.48;
-      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) * envelope : arcRaw;
+      const arc = (planeSigma && tangentOn) ? arcRaw * 4*t*(1-t) : arcRaw;
 
       const fa = bA + arc;
       const fb = bB;
@@ -2346,6 +2311,7 @@ document.getElementById('t-grid').addEventListener('change', e=>{
   document.getElementById('grid-mode-badge').style.display = GRID.enabled?'inline':'none';
   document.getElementById('grid-mode-options').style.display = GRID.enabled?'block':'none';
   document.getElementById('sec-affzone').style.display = GRID.enabled?'block':'none';
+  document.getElementById('arc-to-grid-row').style.display = GRID.enabled?'flex':'none';
   if(GRID.enabled){
     buildGridBufs();
   } else {
@@ -2356,10 +2322,11 @@ document.getElementById('t-grid').addEventListener('change', e=>{
   }
 });
 
-// Master propagation mode toggle
-document.getElementById('t-master').addEventListener('change', e=>{
-  GRID.masterMode = e.target.checked;
-  if(GRID.enabled) buildGridBufs();
+// Arc → Grid Controls toggle
+document.getElementById('t-arc-to-grid').addEventListener('change', e=>{
+  GRID.arcToGrid = e.target.checked;
+  // If switching ON, immediately rebuild grid with current physics state
+  if(GRID.enabled && GRID.arcToGrid) buildGridBufs();
 });
 
 // Vector-sel mode toggle
@@ -2422,22 +2389,31 @@ document.getElementById('vs-apply-btn').addEventListener('click', ()=>{
   const vy=parseInt(document.getElementById('vs-y').value)||0;
   const vz=parseInt(document.getElementById('vs-z').value)||0;
   GRID.selVec = {x:vx,y:vy,z:vz,active:true};
+  // Set Master Meridian origin to this vector's world position
+  // so physics propagation ripples outward from this point
+  const sw = ARC_S;
+  GRID.meridianOrigin = {x:vx*sw*2, y:vy*sw*2, z:vz*sw*2};
   const st=document.getElementById('vs-status');
   st.textContent='Selected: ('+vx+', '+vy+', '+vz+')';
   st.style.display='block';
   buildSelVecBuf();
+  if(GRID.enabled) buildGridBufs();
 });
 document.getElementById('vs-clear-btn').addEventListener('click', ()=>{
   GRID.selVec.active=false;
+  // Reset Meridian origin back to world origin (plane center)
+  GRID.meridianOrigin = {x:0, y:0, z:0};
   document.getElementById('vs-status').style.display='none';
   buildSelVecBuf();
+  if(GRID.enabled) buildGridBufs();
 });
 
 // Rebuild grid when physics changes
 const _origUpdateSplineBufs = updateSplineBufs;
 function updateSplineBufsWithGrid(){
   _origUpdateSplineBufs();
-  if(GRID.enabled) buildGridBufs();
+  // Only propagate physics changes to the grid when Arc→Grid Controls is on
+  if(GRID.enabled && GRID.arcToGrid) buildGridBufs();
   if(GRID.selVec.active) buildSelVecBuf();
 }
 // Override render loop to also draw grid planes
@@ -2555,6 +2531,9 @@ function renderWithGrid(ts){
   fps=dt>0?1/dt:0;
   fpsSm=fpsSm*.93+fps*.07;
   simTime+=dt;
+
+  // Apply inertia/momentum (Nomad-style deceleration)
+  inertiaStep();
 
   // Update main arc-vector spline bufs
   updateSplineBufs();
