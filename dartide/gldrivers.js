@@ -394,8 +394,151 @@ _ctx.log = function (msg) {
   console.log('%c' + msg, 'color:#00ffcc');
 };
 
+// ── ArcEdgeNode ─────────────────────────────────────────────
+// Implements Arc Edge math from LEATR documentation (Justin Craig Venable)
+//
+// ArcEdge Section 1 (Builder):  y = ((x*2)+1)/x   z = x + y + ((x*2)+1)/x
+// ArcEdge Section 2 (Measure):  circumference = sqrt((d*3)^2)   area = circ^2
+//                                sphere_vol = area^3             sphere_sa = vol*0.25
+// ArcEdge Section 3:            arc length via 1/8-circle (0.125) triangulation
+//
+// Each arc segment is 1/8 of a circle (xc = 0.125 of circumference)
+// Branches are generated using the ArcEdge Builder formula to space them
+ASH_GL.ArcEdgeNode = function(irinStr, name) {
+  const p = parseIrin(irinStr);
+  if (!_ctx.scene) return;
+
+  const group = new THREE.Group();
+  const d     = p.d    || 2;       // base diameter for circumference calc
+  const segs  = p.segs || 16;      // arc tube segments
+  const levels= p.levels|| 5;      // branch levels (depth of ash tree)
+  const color = typeof p.color === 'number' ? p.color : 0x00ffcc;
+  const emissive = typeof p.emissive === 'number' ? p.emissive : 0x003322;
+  const wire  = !!p.wire;
+
+  // ── Arc Edge math functions ──────────────────────────────────
+  // Circumference: sqrt((d*3)^2)
+  const arcCirc    = (diam) => Math.sqrt(Math.pow(diam * 3, 2));
+  // Area: circ^2
+  const arcArea    = (diam) => Math.pow(arcCirc(diam), 2);
+  // Sphere volume: area^3
+  const arcVol     = (diam) => Math.pow(arcArea(diam), 3);
+  // Sphere surface area: vol * 0.25
+  const arcSphSA   = (diam) => arcVol(diam) * 0.25;
+
+  // ArcEdge Builder — produces branch spacing:  y = ((x*2)+1)/x
+  const arcBuilder = (x)   => ((x * 2) + 1) / x;
+  // ArcLength via 1/8-circle triangulation
+  // xc = 0.125 * circumference (1/8 of circle)
+  const arcLength  = (diam) => 0.125 * arcCirc(diam);
+
+  // ── Shared arc material ──────────────────────────────────────
+  const mat = wire
+    ? new THREE.MeshBasicMaterial({ color, wireframe: true })
+    : new THREE.MeshStandardMaterial({
+        color, emissive, emissiveIntensity: 0.5,
+        metalness: 0.4, roughness: 0.35
+      });
+
+  // ── Recursive arc-branch generator ──────────────────────────
+  // Each branch is an arc (tube along a curved path) sized by ArcEdge math
+  function buildBranch(level, parentPos, parentDir, parentDiam) {
+    if (level > levels) return;
+
+    const diam    = parentDiam * 0.62;          // taper each level
+    const circ    = arcCirc(diam);
+    const arcLen  = arcLength(diam);            // 1/8 of circle = one arc segment
+    const spacing = arcBuilder(Math.max(diam, 0.01)); // ArcEdge Builder spacing
+    const tubeR   = Math.max(diam * 0.08, 0.02);
+
+    // Build arc curve — 1/8 circle sweep upward, fanned by level angle
+    const sweepAngle = Math.PI * 0.25;         // 45° = 1/8 of full circle
+    const numBranches = level === 1 ? 1 : (level < 3 ? 3 : (level < 5 ? 5 : 7));
+
+    for (let b = 0; b < numBranches; b++) {
+      // Fan angle: distribute branches around parent direction
+      const fanAngle  = numBranches > 1
+        ? (b / (numBranches - 1) - 0.5) * (Math.PI * 0.75)
+        : 0;
+      // Build arc path points using ArcEdge 1/8-circle segments
+      const points = [];
+      const arcSegs = segs;
+      for (let s = 0; s <= arcSegs; s++) {
+        const t = s / arcSegs;
+        const angle = t * sweepAngle;
+        // x: lateral fan spread using ArcEdge builder ratio
+        const lateralR = arcLen * spacing * 0.5 * Math.sin(fanAngle);
+        const x = parentPos.x + Math.sin(angle) * lateralR;
+        // y: upward arc, length determined by arcLength (1/8 circ)
+        const y = parentPos.y + Math.sin(angle) * arcLen;
+        // z: depth spread
+        const z = parentPos.z + Math.cos(fanAngle) * Math.sin(angle) * arcLen * 0.4;
+        points.push(new THREE.Vector3(x, y, z));
+      }
+
+      const curve = new THREE.CatmullRomCurve3(points);
+      const geo   = new THREE.TubeGeometry(curve, arcSegs, tubeR, 6, false);
+      const mesh  = new THREE.Mesh(geo, mat);
+      mesh.castShadow    = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+
+      // Recurse from tip of this arc
+      const tipPt = points[points.length - 1];
+      const tipDir = new THREE.Vector3(0, 1, 0);
+      buildBranch(level + 1, tipPt, tipDir, diam);
+    }
+  }
+
+  // ── Build trunk (Level 1) as single vertical arc ─────────────
+  const trunkDiam  = d;
+  const trunkCirc  = arcCirc(trunkDiam);
+  const trunkLen   = arcLength(trunkDiam) * 3;  // trunk = 3× arc segment
+  const trunkTubeR = trunkDiam * 0.12;
+  const trunkPts   = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    // Gentle S-curve: slight lean using ArcEdge builder
+    const lean = arcBuilder(trunkDiam) * 0.05;
+    trunkPts.push(new THREE.Vector3(
+      Math.sin(t * Math.PI * 0.2) * lean,
+      t * trunkLen,
+      0
+    ));
+  }
+  const trunkCurve = new THREE.CatmullRomCurve3(trunkPts);
+  const trunkGeo   = new THREE.TubeGeometry(trunkCurve, segs, trunkTubeR, 8, false);
+  const trunkMesh  = new THREE.Mesh(trunkGeo, mat);
+  trunkMesh.castShadow = true;
+  group.add(trunkMesh);
+
+  // ── Branch from trunk top ────────────────────────────────────
+  const trunkTip = trunkPts[trunkPts.length - 1];
+  buildBranch(2, trunkTip, new THREE.Vector3(0, 1, 0), trunkDiam * 0.72);
+
+  // Position and name the group
+  group.position.set(p.px || 0, p.py || -2, p.pz || 0);
+  const meshName = name || p.name || 'ashTree';
+  _ctx.meshes[meshName] = group;
+  _ctx.scene.add(group);
+
+  // Slow ambient rotation in animate loop
+  const rx = p.rx || 0, ry = p.ry || 0.003, rz = p.rz || 0;
+  if (rx || ry || rz) {
+    _ctx.animFns.push(() => {
+      group.rotation.x += rx;
+      group.rotation.y += ry;
+      group.rotation.z += rz;
+    });
+  }
+
+  _ctx.log(`[ArcEdgeNode] Ash Tree built — ${levels} branch levels, d=${d}, arcLen=${arcLength(d).toFixed(3)}, circ=${arcCirc(d).toFixed(3)}`);
+  return group;
+};
+
 // ── Expose globally ───────────────────────────────────────────
 window.ASH_GL         = ASH_GL;
+// ArcEdgeNode registered — accessible as ASH_GL.ArcEdgeNode
 window.ASH_GL_CTX     = _ctx;
 window.ASH_GL_DRIVERS = true;
 
