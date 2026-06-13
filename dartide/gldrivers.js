@@ -147,8 +147,8 @@ ASH_GL.ThreeScene = function (irinStr) {
   _ctx.camera.position.set(p.px || 0, p.py || 2, p.pz || 8);
 
   try {
-    _ctx.controls = new THREE.OrbitControls
-      ? new THREE.OrbitControls(_ctx.camera, canvas)
+    _ctx.controls = (typeof window.OrbitControls === 'function')
+      ? new window.OrbitControls(_ctx.camera, canvas)
       : null;
     if (_ctx.controls) {
       _ctx.controls.enableDamping = true;
