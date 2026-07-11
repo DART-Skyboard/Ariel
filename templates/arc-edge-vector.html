@@ -148,6 +148,39 @@ body.sidebar-open .albl, body.sidebar-open #htip, body.sidebar-open #sigma-pt{
    sidebar above is what's actually visible and interactive now. */
 #op, #op2, #op3 { display:none !important; }
 
+/* ══════════ VIEW CUBE ══════════ */
+#viewcube-wrap{
+  position:fixed; top:calc(var(--hdr,0px) + 14px); right:14px; z-index:260;
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+}
+#viewcube-scene{ width:76px; height:76px; perspective:400px; }
+#viewcube{
+  position:relative; width:100%; height:100%;
+  transform-style:preserve-3d;
+  transition:transform .28s cubic-bezier(.4,0,.2,1);
+}
+.vcf{
+  position:absolute; width:76px; height:76px;
+  background:rgba(8,14,26,0.82); border:1px solid var(--bdr, rgba(0,229,255,0.3));
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Orbitron',sans-serif; font-size:8px; letter-spacing:1px;
+  color:var(--acc,#00e5ff); cursor:pointer; user-select:none;
+  backdrop-filter:blur(4px);
+}
+.vcf:hover{ background:rgba(0,229,255,0.18); }
+.vcf-front{ transform:translateZ(38px); }
+.vcf-back{ transform:rotateY(180deg) translateZ(38px); }
+.vcf-right{ transform:rotateY(90deg) translateZ(38px); }
+.vcf-left{ transform:rotateY(-90deg) translateZ(38px); }
+.vcf-top{ transform:rotateX(90deg) translateZ(38px); }
+.vcf-bottom{ transform:rotateX(-90deg) translateZ(38px); }
+#viewcube-iso-btn, #proj-toggle-btn{
+  width:100%; padding:5px 0; background:var(--glass,rgba(8,14,26,0.88));
+  border:1px solid var(--bdr,rgba(0,229,255,0.3)); border-radius:4px;
+  color:var(--acc,#00e5ff); font-family:'Orbitron',sans-serif; font-size:9px;
+  letter-spacing:1px; cursor:pointer;
+}
+
 #op{
   position:fixed;z-index:200;
   width:var(--pw);
@@ -721,6 +754,22 @@ input[type=number]{-moz-appearance:textfield;}
 <!-- WEBGL CANVAS -->
 <canvas id="cv"></canvas>
 
+<!-- ══════════ VIEW CUBE (Nomad Sculpt style view snapping) ══════════ -->
+<div id="viewcube-wrap">
+  <div id="viewcube-scene">
+    <div id="viewcube">
+      <div class="vcf vcf-front"  data-view="front">FRONT</div>
+      <div class="vcf vcf-back"   data-view="back">BACK</div>
+      <div class="vcf vcf-right"  data-view="right">RIGHT</div>
+      <div class="vcf vcf-left"   data-view="left">LEFT</div>
+      <div class="vcf vcf-top"    data-view="top">TOP</div>
+      <div class="vcf vcf-bottom" data-view="bottom">BOTTOM</div>
+    </div>
+  </div>
+  <button id="viewcube-iso-btn" title="Isometric (45°) view">◇</button>
+  <button id="proj-toggle-btn" title="Toggle perspective/orthographic">PERSP</button>
+</div>
+
 <!-- AXIS LABELS -->
 <div id="lb-px" class="albl" style="color:var(--cx)">+X</div>
 <div id="lb-nx" class="albl" style="color:var(--cx)">−X</div>
@@ -994,6 +1043,18 @@ input[type=number]{-moz-appearance:textfield;}
 
     </div>
     <div class="tab-panel" id="tab-emt">
+  <div id="em-toolbar-restored" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:rgba(255,138,61,0.06);border:1px solid rgba(255,138,61,0.2);border-radius:6px;">
+    <span id="em-active-badge">LIVE</span>
+        <button id="em-mute-btn">🔊 Mute</button>
+  </div>
+  <div id="em-transport">
+      <button class="em-transport-btn" id="em-play-btn" title="Play">▶</button>
+      <button class="em-transport-btn" id="em-stop-btn" title="Stop">■</button>
+      <button class="em-transport-btn rec" id="em-rec-btn" title="Record">●</button>
+      <input type="range" id="em-scrubber" min="0" max="100" value="0" step="0.1">
+      <span id="em-time-disp">0.0s</span>
+    </div>
+
 
       <!-- OSCILLOSCOPE -->
       <div class="sec" style="border-color:rgba(255,138,61,0.2)">
@@ -1372,20 +1433,13 @@ input[type=number]{-moz-appearance:textfield;}
     <div id="ph3">
       <span class="ptit" style="color:#ff8a3d">⬡ Emission Studio</span>
       <div style="display:flex;align-items:center;gap:6px">
-        <span id="em-active-badge">LIVE</span>
-        <button id="em-mute-btn">🔊 Mute</button>
+        
         <div class="pcb" id="pcb3" style="color:#ff8a3d;border-color:rgba(255,138,61,0.4);background:rgba(255,138,61,0.08)">◁</div>
       </div>
     </div>
 
     <!-- Transport bar -->
-    <div id="em-transport">
-      <button class="em-transport-btn" id="em-play-btn" title="Play">▶</button>
-      <button class="em-transport-btn" id="em-stop-btn" title="Stop">■</button>
-      <button class="em-transport-btn rec" id="em-rec-btn" title="Record">●</button>
-      <input type="range" id="em-scrubber" min="0" max="100" value="0" step="0.1">
-      <span id="em-time-disp">0.0s</span>
-    </div>
+    
 
     <!-- Scrollable content -->
     <div id="pc3"></div><!-- /pc3 -->
@@ -1478,6 +1532,19 @@ const M = {
     ]);
   },
 
+  // Symmetric orthographic frustum — `size` is the half-height of the
+  // view volume (so zooming the ortho view means shrinking/growing this),
+  // matching the same column-major layout as perspective() above.
+  orthographic(size, asp, near, far){
+    const ri = 1/(near-far);
+    return new Float32Array([
+      1/(size*asp), 0, 0, 0,
+      0, 1/size, 0, 0,
+      0, 0, 2*ri, 0,
+      0, 0, (far+near)*ri, 1
+    ]);
+  },
+
   lookAt(eye, ctr, up){
     const f=this.nrm([ctr[0]-eye[0],ctr[1]-eye[1],ctr[2]-eye[2]]);
     const r=this.nrm(this.cross(f,up));
@@ -1497,6 +1564,17 @@ const M = {
   // Quaternion
   qId(){ return [0,0,0,1]; },
   qAA(axis, ang){ const s=Math.sin(ang*.5); return [axis[0]*s,axis[1]*s,axis[2]*s,Math.cos(ang*.5)]; },
+  qSlerp(a,b,t){
+    let d = a[0]*b[0]+a[1]*b[1]+a[2]*b[2]+a[3]*b[3];
+    let bb = b;
+    if(d<0){ bb=[-b[0],-b[1],-b[2],-b[3]]; d=-d; } // shortest-path fix
+    if(d>0.9995){ // nearly parallel — linear interp is fine and avoids a div-by-~0
+      return this.qNrm([a[0]+(bb[0]-a[0])*t, a[1]+(bb[1]-a[1])*t, a[2]+(bb[2]-a[2])*t, a[3]+(bb[3]-a[3])*t]);
+    }
+    const th0=Math.acos(d), th=th0*t, sinTh0=Math.sin(th0);
+    const s0=Math.cos(th)-d*Math.sin(th)/sinTh0, s1=Math.sin(th)/sinTh0;
+    return [a[0]*s0+bb[0]*s1, a[1]*s0+bb[1]*s1, a[2]*s0+bb[2]*s1, a[3]*s0+bb[3]*s1];
+  },
   qMul(a,b){ return [
     a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
     a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
@@ -1910,7 +1988,7 @@ function draw(buf, count, mode, alpha){
 ================================================================ */
 const CAM = {
   q: M.qId(), r:6.5, pan:[0,0,0], fov:0.8,
-  minR:0.1, maxR:9999.0
+  minR:0.1, maxR:9999.0, ortho:false
 };
 // Default view — slightly angled so all 3 axes are visible
 CAM.q = M.qNrm(M.qMul(M.qAA([0,1,0], 0.52), M.qAA([1,0,0], -0.38)));
@@ -1928,6 +2006,70 @@ function resetView(){
 
 let _lastMVP = M.id4();
 
+/* ══════════ VIEW CUBE — standard view snapping ══════════
+   Quaternion convention matches the existing default view
+   (CAM.q = qMul(qAA(Y,0.52), qAA(X,-0.38))): identity looks from +Z
+   toward the origin (FRONT). Verified by hand which rotation direction
+   puts the eye at +X vs -X, +Y vs -Y before picking these signs, rather
+   than guessing and fixing it after the fact. */
+const STANDARD_VIEWS = {
+  front:  ()=> [0,0,0,1],
+  back:   ()=> M.qAA([0,1,0], Math.PI),
+  right:  ()=> M.qAA([0,1,0], Math.PI/2),
+  left:   ()=> M.qAA([0,1,0], -Math.PI/2),
+  top:    ()=> M.qAA([1,0,0], -Math.PI/2),
+  bottom: ()=> M.qAA([1,0,0], Math.PI/2),
+  iso:    ()=> M.qNrm(M.qMul(M.qAA([0,1,0], Math.PI/4), M.qAA([1,0,0], -0.6154))), // ~35.26° tilt, true isometric
+};
+let _viewAnim = null;
+function setStandardView(name){
+  const targetFn = STANDARD_VIEWS[name];
+  if(!targetFn) return;
+  const from = M.qNrm(CAM.q.slice());
+  const to = M.qNrm(targetFn());
+  const dur = 320, t0 = performance.now();
+  if(_viewAnim) cancelAnimationFrame(_viewAnim);
+  function step(now){
+    const t = Math.min(1, (now-t0)/dur);
+    const e = t*t*(3-2*t); // smoothstep easing
+    CAM.q = M.qSlerp(from, to, e);
+    if(t < 1) _viewAnim = requestAnimationFrame(step);
+    else _viewAnim = null;
+  }
+  _viewAnim = requestAnimationFrame(step);
+}
+function toggleOrtho(){
+  CAM.ortho = !CAM.ortho;
+  const btn = document.getElementById('proj-toggle-btn');
+  if(btn) btn.textContent = CAM.ortho ? 'ORTHO' : 'PERSP';
+}
+// Sync the cube widget's rotation to the EXACT camera rotation matrix
+// (transposed, since a pure rotation matrix's inverse is its transpose —
+// the cube should visually counter-rotate relative to the camera orbit)
+// rather than decomposing to yaw/pitch Euler angles, which would be
+// ambiguous/gimbal-locked at the TOP and BOTTOM views specifically.
+function syncViewCube(){
+  const el = document.getElementById('viewcube');
+  if(!el) return;
+  const rm = M.qToM4(M.qNrm(CAM.q)); // column-major 4x4, matches CSS matrix3d's own convention
+  // Transpose the 3x3 rotation part (indices 0,1,2 / 4,5,6 / 8,9,10)
+  const m = rm;
+  const t = [
+    m[0], m[4], m[8],  0,
+    m[1], m[5], m[9],  0,
+    m[2], m[6], m[10], 0,
+    0,    0,    0,     1
+  ];
+  el.style.transform = `matrix3d(${t.join(',')})`;
+}
+document.querySelectorAll('.vcf').forEach(face=>{
+  face.addEventListener('click', ()=> setStandardView(face.dataset.view));
+});
+const _isoBtn = document.getElementById('viewcube-iso-btn');
+if(_isoBtn) _isoBtn.addEventListener('click', ()=> setStandardView('iso'));
+const _projBtn = document.getElementById('proj-toggle-btn');
+if(_projBtn) _projBtn.addEventListener('click', toggleOrtho);
+
 function getCamera(){
   const rm = M.qToM4(M.qNrm(CAM.q));
   // Eye = rotation * [0,0,r] + pan
@@ -1936,7 +2078,12 @@ function getCamera(){
   const ctr = [...CAM.pan];
   const upv = M.tv4(rm,[0,1,0,0]).slice(0,3);
   const W=canvas.width, H=canvas.height;
-  const proj = M.perspective(CAM.fov, W/H, 0.01, 600000);
+  // Orthographic size scales with the current orbit distance so toggling
+  // to ortho doesn't produce a jarringly different apparent zoom level —
+  // it keeps whatever's currently framed looking roughly the same size.
+  const proj = CAM.ortho
+    ? M.orthographic(CAM.r*0.42, W/H, 0.01, 600000)
+    : M.perspective(CAM.fov, W/H, 0.01, 600000);
   const view = M.lookAt(eye, ctr, upv);
   const mvp  = M.mul4(proj, view);
   _lastMVP = mvp;
@@ -3047,6 +3194,7 @@ function renderWithGrid(ts){
   fps=dt>0?1/dt:0;
   fpsSm=fpsSm*.93+fps*.07;
   simTime+=dt;
+  syncViewCube();
 
   // Apply inertia/momentum (Nomad-style deceleration)
 
