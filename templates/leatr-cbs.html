@@ -922,7 +922,7 @@ footer {
     </div>
 
     <!-- ── 3D Visualizer Panel (shown when 3D ANIMATION tab runs) ── -->
-    <div id="cbs-gl-wrap" style="display:none;margin-top:14px;border:1px solid rgba(0,229,255,0.18);border-radius:8px;overflow:hidden;background:#000814;position:relative;">
+    <div id="cbs-gl-wrap" style="display:none;margin-top:14px;border:1px solid rgba(0,229,255,0.18);border-radius:8px;overflow:hidden;background:#000814;position:relative;height:360px;">
       <div style="background:rgba(0,14,28,0.95);padding:6px 14px;font-family:'Orbitron',monospace;font-size:0.5rem;letter-spacing:2px;color:#00e5ff;border-bottom:1px solid rgba(0,229,255,0.12);display:flex;justify-content:space-between;align-items:center;">
         <span>3D VISUALIZER — ASH_GL RUNTIME</span>
         <button onclick="document.getElementById('cbs-gl-wrap').style.display='none';if(window.ASH_GL_CTX&&window.ASH_GL_CTX.rafId)cancelAnimationFrame(window.ASH_GL_CTX.rafId);" style="background:transparent;border:1px solid rgba(255,48,32,0.4);color:rgba(255,48,32,0.7);padding:2px 10px;border-radius:3px;cursor:pointer;font-size:0.55rem;font-family:'Orbitron',monospace;">✕ CLOSE</button>
@@ -2171,49 +2171,155 @@ function runCompile(code, netMode=false) {
   playTone(440, 0.15, 'sine', 0.12);
   playTone(660, 0.2, 'sine', 0.08);
 
-  // ── GL visual execution ──────────────────────────────
+  // ── GL visual execution ─────────────────────────────────
   if (code.includes('import (GLDrivers)')) {
     const glWrap = document.getElementById('cbs-gl-wrap');
     if (glWrap) glWrap.style.display = 'block';
-    const execGL = () => {
-      if (!window.ASH_GL) {
-        log('<span style="color:#ff9500">⚠ GL Drivers loading failed</span>'); return;
-      }
-      // Remap canvas/hud to cbs IDs
-      const cc=document.getElementById('cbs-gl-canvas');
-      const ch=document.getElementById('cbs-gl-hud');
-      if(cc&&cc.id!=='ash-gl-canvas') cc.id='ash-gl-canvas';
-      if(ch&&ch.id!=='ash-gl-hud')   ch.id='ash-gl-hud';
-      let gn=0;
-      ast.nodes.forEach(n=>{
-        if(n.type==='NodeBlock'&&n.name==='ThreeScene'){
-          const s=n.body.find(t=>t.t==='str');
-          ASH_GL.ThreeScene(s?s.v.replace(/"/g,''):''); gn++;
-        }
-      });
-      ast.nodes.forEach(n=>{
-        if(n.type!=='NodeBlock'||n.name==='ThreeScene'||!ASH_GL_NODES.has(n.name)) return;
-        const fn=ASH_GL[n.name]; if(typeof fn!=='function') return;
-        const s=n.body.find(t=>t.t==='str');
-        fn(s?s.v.replace(/"/g,''):'',n.name); gn++;
-      });
-      if(gn>0){
-        ASH_GL.startRenderLoop();
-        log(`<span style="color:#00e5ff">▶ GL Visualizer: ${gn} node(s) running — see 3D panel below</span>`);
-        document.getElementById('cbs-gl-wrap')?.scrollIntoView({behavior:'smooth',block:'nearest'});
-      }
-    };
-    if(window.ASH_GL_DRIVERS) setTimeout(execGL,100);
-    else{
-      const sc=document.createElement('script'); sc.src='https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/dartide/gldrivers.js';
-      sc.onload=()=>setTimeout(execGL,100); document.head.appendChild(sc);
-    }
+    setTimeout(() => buildAshGLScene(ast, log), 120);
   }
 
   // ── Launch app runtime terminal after successful build ──
   if (nodeCount > 0) {
     setTimeout(() => launchAppRuntime(ast), 420);
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ASH GL SCENE BUILDER — self-contained, no external deps
+// ═══════════════════════════════════════════════════════════
+function buildAshGLScene(ast, log) {
+  const canvas = document.getElementById('cbs-gl-canvas');
+  if (!canvas) { log('<span style="color:#ff6b6b">⚠ GL canvas not found</span>'); return; }
+  if (window.ASH_GL_CTX && window.ASH_GL_CTX.rafId) {
+    cancelAnimationFrame(window.ASH_GL_CTX.rafId); window.ASH_GL_CTX = null;
+  }
+  function parseParams(str) {
+    const p = {};
+    (str||'').split(/\s+/).forEach(pair => {
+      const idx = pair.indexOf(':');
+      if (idx < 0) return;
+      const k = pair.slice(0,idx), v = pair.slice(idx+1);
+      p[k] = isNaN(v) ? v : parseFloat(v);
+    });
+    return p;
+  }
+  const nodes = {};
+  ast.nodes.forEach(n => {
+    if (n.type !== 'NodeBlock') return;
+    const s = n.body.find(t => t.t === 'str');
+    nodes[n.name] = parseParams(s ? s.v.replace(/"/g,'') : '');
+  });
+
+  const scene = new THREE.Scene();
+  const sp = nodes['ThreeScene'] || {};
+  scene.background = new THREE.Color(parseInt(sp.background||'0x000814'));
+  if (sp.fog) scene.fog = new THREE.FogExp2(parseInt(sp.background||'0x000814'), 0.025);
+
+  const camera = new THREE.PerspectiveCamera(sp.fov||55, canvas.clientWidth/(canvas.clientHeight||340), 0.01, 1000);
+  camera.position.set(0, sp.py||3, sp.pz||14);
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight||340);
+  renderer.shadowMap.enabled = true;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true; controls.dampingFactor = 0.06;
+
+  // Lighting
+  const lp = nodes['LightNode'] || {};
+  scene.add(new THREE.AmbientLight(parseInt(lp.ambient||'0x0a1a2a'), lp.aint||0.5));
+  const dir = new THREE.DirectionalLight(parseInt(lp.dir||'0xffffff'), lp.intensity||1.8);
+  dir.position.set(lp.dx||4, lp.dy||14, lp.dz||6); dir.castShadow=true; scene.add(dir);
+  const rim = new THREE.PointLight(0x00ffcc, 1.2, 60); rim.position.set(-6,4,-4); scene.add(rim);
+  scene.add(new THREE.PointLight(0x4444ff, 0.5, 40));
+
+  // Grid
+  const grid = new THREE.GridHelper(24,24,0x00ffcc,0x001122);
+  grid.material.opacity=0.15; grid.material.transparent=true; grid.position.y=-2.6; scene.add(grid);
+
+  // Arc Edge Tree
+  const ap = nodes['ArcEdgeNode'] || {};
+  const d=ap.d||1.8, levels=ap.levels||5;
+  const circ = Math.pow(Math.sqrt(d*3),2);
+  const xc = 0.125 * circ;
+  const tc = parseInt(ap.color||'0x00ffcc'), te = parseInt(ap.emissive||'0x003322');
+  const treeGroup = new THREE.Group();
+  treeGroup.position.y = ap.py||-2.5;
+
+  function tube(pts, radius, color, emissive) {
+    const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 8, radius, 5, false);
+    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color,emissive,emissiveIntensity:0.6,roughness:0.4,metalness:0.3}));
+  }
+  const trunk = tube([new THREE.Vector3(0,0,0),new THREE.Vector3(0.1,1.2,0),new THREE.Vector3(-0.05,2.4,0),new THREE.Vector3(0,xc*1.5,0)],0.12,tc,te);
+  trunk.castShadow=true; treeGroup.add(trunk);
+
+  function branch(depth, len, angle, px, py) {
+    if (depth > levels) return;
+    const b = tube([new THREE.Vector3(0,0,0),new THREE.Vector3(len*0.3,len*0.5,0),new THREE.Vector3(0,len,0)],Math.max(0.018,len*0.07),tc,te);
+    b.position.set(px,py,0); b.rotation.z=angle; b.castShadow=true; treeGroup.add(b);
+    if (depth < levels) {
+      const spread = (Math.PI/4)*(1-depth/levels*0.3), nl=len*0.68;
+      const tx=px+Math.sin(angle)*len, ty=py+Math.cos(angle)*len;
+      branch(depth+1,nl,angle-spread,tx,ty); branch(depth+1,nl,angle+spread,tx,ty);
+    }
+  }
+  branch(1, xc*0.7, 0, 0, xc*1.5);
+  scene.add(treeGroup);
+
+  // Particles
+  const pp2 = nodes['ParticleNode'] || {};
+  const count=pp2.count||1200, spread2=pp2.spread||10, psize=pp2.size||0.04;
+  const pos = new Float32Array(count*3), vel = [];
+  for (let i=0;i<count;i++) {
+    pos[i*3]=(Math.random()-0.5)*spread2; pos[i*3+1]=(Math.random()-0.5)*spread2; pos[i*3+2]=(Math.random()-0.5)*spread2;
+    vel.push((Math.random()-0.5)*0.008,(Math.random()-0.5)*0.008,(Math.random()-0.5)*0.008);
+  }
+  const pgeo=new THREE.BufferGeometry(); pgeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const pts=new THREE.Points(pgeo,new THREE.PointsMaterial({color:parseInt(pp2.color||'0x00ffcc'),size:psize,transparent:true,opacity:0.7}));
+  scene.add(pts);
+
+  // Ground
+  const mp2=nodes['MaterialNode']||{}, gp2=nodes['GeometryNode']||{};
+  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(gp2.w||18,gp2.h||18),
+    new THREE.MeshStandardMaterial({color:parseInt(mp2.color||'0x001a11'),emissive:parseInt(mp2.emissive||'0x000a06'),metalness:mp2.metalness||0.1,roughness:mp2.roughness||0.9}));
+  gnd.rotation.x=-Math.PI/2; gnd.position.y=-2.5; gnd.receiveShadow=true; scene.add(gnd);
+
+  // HUD
+  const hud=document.getElementById('cbs-gl-hud');
+  if(hud) { hud.style.cssText='position:absolute;top:8px;right:8px;pointer-events:none;z-index:10;';
+    hud.innerHTML=`<div style="background:rgba(0,20,40,0.85);border:1px solid rgba(0,255,204,0.2);border-radius:6px;padding:8px 14px;font-family:monospace;font-size:10px;color:#00ffcc"><div style="margin-bottom:4px;font-size:9px;letter-spacing:1.5px;opacity:0.6">ASH TREE &#8212; ARC EDGE GL</div><div>d=${d} &#183; circ=${circ.toFixed(2)} &#183; levels=${levels}</div><div style="color:rgba(0,255,204,0.5);font-size:9px;margin-top:4px">drag to orbit &#183; scroll to zoom</div></div>`; }
+
+  // Animate
+  const treeRotY = ap.ry||0.0025;
+  let frame=0;
+  function animate() {
+    const id=requestAnimationFrame(animate); window.ASH_GL_CTX={rafId:id};
+    frame++; controls.update(); treeGroup.rotation.y+=treeRotY;
+    const pa=pts.geometry.attributes.position.array;
+    for(let i=0;i<count;i++){
+      pa[i*3]+=vel[i*3]; pa[i*3+1]+=vel[i*3+1]; pa[i*3+2]+=vel[i*3+2];
+      if(Math.abs(pa[i*3])>spread2/2)vel[i*3]*=-1;
+      if(Math.abs(pa[i*3+1])>spread2/2)vel[i*3+1]*=-1;
+      if(Math.abs(pa[i*3+2])>spread2/2)vel[i*3+2]*=-1;
+    }
+    pts.geometry.attributes.position.needsUpdate=true;
+    rim.intensity=1.0+Math.sin(frame*0.03)*0.4;
+    renderer.render(scene,camera);
+  }
+  animate();
+
+  function onResize() {
+    const w=canvas.clientWidth, h=Math.max(canvas.clientHeight||340,260);
+    renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize',onResize); onResize();
+
+  log(`<span style="color:#00ffcc">&#9654; GL Visualizer: Ash Tree &#8212; Arc Edge &#183; ${levels} levels &#183; ${count} particles</span>`);
+  log(`<span style="color:#00ffcc;opacity:0.6">&nbsp;&nbsp;d=${d} &#183; circ=${circ.toFixed(3)} &#183; xc=${xc.toFixed(3)}</span>`);
+  document.getElementById('cbs-gl-wrap')?.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
 // ═══════════════════════════════════════════════════════════
