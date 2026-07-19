@@ -145,6 +145,50 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
   #panel{width:clamp(260px,80vw,340px)}
   #ptog{margin-top:52px}
 }
+
+/* ── 3D point-cloud Smith chart (WebGPU) ── */
+#btn-3d-toggle{position:absolute;top:10px;left:10px;z-index:15;
+  font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:1.5px;
+  padding:6px 12px;border:1px solid var(--border);background:rgba(17,18,20,0.72);
+  color:var(--border);cursor:pointer;border-radius:4px;backdrop-filter:blur(3px)}
+#btn-3d-toggle:hover{background:rgba(245,166,35,0.15)}
+
+#scene3d-wrap{position:absolute;inset:0;display:none;z-index:10;
+  background:radial-gradient(circle at 50% 42%, #0c0e13 0%, #05060a 75%);
+  flex-direction:column}
+#scene3d-canvas{flex:1;width:100%;height:100%;touch-action:none;display:block;cursor:grab}
+#scene3d-canvas:active{cursor:grabbing}
+
+#s3d-labels{position:absolute;inset:0;pointer-events:none;z-index:12}
+.s3d-label{position:absolute;transform:translate(-50%,-100%);pointer-events:none;
+  font-family:'Share Tech Mono',monospace;font-size:9px;white-space:nowrap}
+.s3d-stem{display:block;width:1px;height:14px;margin:0 auto;background:var(--lc)}
+.s3d-tag{display:inline-block;padding:2px 6px;border-radius:3px;
+  background:rgba(10,12,16,0.78);border:1px solid var(--lc);color:var(--lc)}
+
+#s3d-hud{position:absolute;bottom:0;left:0;right:0;z-index:13;
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:10px 12px;background:linear-gradient(to top, rgba(10,12,16,0.85), rgba(10,12,16,0));
+  pointer-events:auto}
+.s3d-btn{font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:1px;
+  padding:6px 10px;border:1px solid rgba(0,229,204,0.4);background:rgba(0,229,204,0.06);
+  color:var(--accent1);cursor:pointer;border-radius:4px;white-space:nowrap}
+.s3d-btn:hover{background:rgba(0,229,204,0.16)}
+.s3d-btn.warn{border-color:rgba(255,68,102,0.4);color:var(--red);background:rgba(255,68,102,0.06)}
+.s3d-tograp{display:flex;align-items:center;gap:5px;font-size:9px;color:var(--muted);
+  font-family:'Share Tech Mono',monospace;letter-spacing:0.5px}
+#s3d-panel-right{position:absolute;top:52px;right:10px;z-index:13;width:min(78vw,260px);
+  background:rgba(17,18,20,0.78);border:1px solid rgba(245,166,35,0.25);border-radius:6px;
+  padding:10px;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);
+  max-height:60vh;overflow-y:auto;backdrop-filter:blur(3px)}
+#s3d-panel-right .s3d-h{font-size:9px;letter-spacing:1.5px;color:var(--border);margin-bottom:6px}
+.s3d-mrow{padding:3px 0;border-bottom:1px solid rgba(245,166,35,0.08);color:var(--text)}
+.s3d-mrow.muted{color:var(--muted)}
+#s3d-triresult{margin-top:6px;line-height:1.6;color:var(--accent1)}
+#s3d-fallback-msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  text-align:center;padding:30px;font-family:'Share Tech Mono',monospace;font-size:11px;
+  color:var(--muted);z-index:14;background:rgba(5,6,10,0.92)}
+#s3d-fallback-msg b{color:var(--border);display:block;margin-bottom:8px;font-size:13px}
 </style>
 </head>
 <body>
@@ -159,8 +203,41 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
 
   <div id="main">
     <div id="chart-area">
+      <button id="btn-3d-toggle" title="Toggle 3D point-cloud Smith chart">3D</button>
       <canvas id="wave-field" width="1000" height="1000"></canvas>
       <svg id="chart-svg" viewBox="0 0 1000 1000"></svg>
+
+      <div id="scene3d-wrap">
+        <canvas id="scene3d-canvas"></canvas>
+        <div id="s3d-labels"></div>
+
+        <div id="s3d-panel-right">
+          <div class="s3d-h">TRIANGULATION</div>
+          <div id="s3d-measurelist"></div>
+          <div id="s3d-triresult">—</div>
+        </div>
+
+        <div id="s3d-hud">
+          <button class="s3d-btn" id="s3d-add">+ ADD MEASUREMENT</button>
+          <button class="s3d-btn" id="s3d-triangulate">TRIANGULATE</button>
+          <button class="s3d-btn warn" id="s3d-clear">CLEAR</button>
+          <label class="s3d-tograp"><input type="checkbox" id="s3d-physics"> PHYSICS REACTION</label>
+          <label class="s3d-tograp"><input type="checkbox" id="s3d-indicators" checked> INDICATORS</label>
+          <button class="s3d-btn" data-s3d-png="2000">PNG 2K</button>
+          <button class="s3d-btn" data-s3d-png="3000">PNG 3K</button>
+          <button class="s3d-btn" data-s3d-png="4000">PNG 4K</button>
+          <button class="s3d-btn" id="s3d-export-glb">EXPORT GLB</button>
+        </div>
+
+        <div id="s3d-fallback-msg">
+          <div>
+            <b>WebGPU not available</b>
+            This browser or device doesn't support WebGPU, so the 3D point-cloud
+            Smith chart can't run here. Try a recent version of Chrome, Edge, or
+            Safari (18+) with hardware acceleration enabled.
+          </div>
+        </div>
+      </div>
       <div class="leg">
         <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
         <div><span class="lx">━</span> REACTANCE (constant-X arcs)</div>
@@ -842,5 +919,6 @@ requestAnimationFrame(waveAnimLoop);
 
 computeAndRender();
 </script>
+<script src="arc-edge-3d.js" defer></script>
 </body>
 </html>
