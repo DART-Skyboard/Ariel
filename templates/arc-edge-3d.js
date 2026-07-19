@@ -186,6 +186,36 @@ function sphericalToCartesian(r, theta, phi){
     r*Math.sin(theta)*Math.sin(phi)
   ];
 }
+function cartesianToSpherical(p){
+  const r = v3len(p) || 1e-6;
+  const theta = Math.acos(Math.max(-1, Math.min(1, p[1]/r)));
+  const phi = Math.atan2(p[2], p[0]);
+  return { r, theta, phi };
+}
+
+// Converts a screen-space pointer delta (CSS pixels) into a world-space
+// offset, using the cached camera basis from the last updateUniforms()
+// call and a standard perspective screen-to-world scale factor. `distApprox`
+// should be roughly the distance from the camera to whatever's being
+// dragged — everything in this scene lives near the origin inside a
+// unit-radius sphere, so S.cam.dist is a good enough stand-in without
+// needing real screen-space picking/raycasting.
+function screenDeltaToWorld(dx, dy, distApprox){
+  const rect = S.canvas.getBoundingClientRect();
+  const fov = 50*Math.PI/180;
+  const worldPerPx = (2*distApprox*Math.tan(fov/2)) / Math.max(1, rect.height);
+  const right = S._camRight || [1,0,0], up = S._camUp || [0,1,0];
+  return [
+    right[0]*dx*worldPerPx - up[0]*dy*worldPerPx,
+    right[1]*dx*worldPerPx - up[1]*dy*worldPerPx,
+    right[2]*dx*worldPerPx - up[2]*dy*worldPerPx,
+  ];
+}
+function clampToOuterSphereJS(p, limit){
+  const len = v3len(p);
+  if(len > limit) return [p[0]/len*limit, p[1]/len*limit, p[2]/len*limit];
+  return p;
+}
 
 /* ───────────────────────── WGSL shaders ───────────────────────── */
 
@@ -197,7 +227,9 @@ struct Uniforms {
   camRight : vec4<f32>,
   camUp    : vec4<f32>,
   pointSize: f32,
-  _pad0: f32, _pad1: f32, _pad2: f32,
+  glowOn   : f32,   // 1.0 = soft glow falloff, 0.0 = crisp hard-edge dot
+  sizeScale: f32,   // 0..1 slider fraction — glow/intensity scales proportionally with point size
+  _pad2: f32,
 };
 @group(0) @binding(0) var<uniform> U : Uniforms;
 @group(0) @binding(1) var<storage, read> positions : array<vec4<f32>>; // xyz + sizeMul
@@ -232,8 +264,13 @@ fn vs_main(@builtin(vertex_index) vId : u32, @builtin(instance_index) iId : u32)
 fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   let d = length(in.uv);
   if (d > 1.0) { discard; }
-  let glow = pow(1.0 - d, 1.6);
-  return vec4<f32>(in.color.rgb, in.color.a * glow);
+  var a = in.color.a * clamp(U.sizeScale, 0.15, 1.0); // intensity scales with size, floor so tiny points stay visible
+  if (U.glowOn > 0.5) {
+    a *= pow(1.0 - d, 1.6);
+  } else {
+    a *= smoothstep(1.0, 0.82, d); // crisp dot, thin AA edge only, no soft haze
+  }
+  return vec4<f32>(in.color.rgb, a);
 }
 `;
 
@@ -251,6 +288,16 @@ struct SimParams {
   measureCount: f32, _p0: f32, _p1: f32, _p2: f32,
 };
 struct Measure { pos: vec4<f32> }; // xyz + strength
+
+const OUTER_LIMIT : f32 = 0.985; // matches JS OUTER_R * 0.985 — the chart's hard visual boundary
+
+fn clampToOuterSphere(p: vec3<f32>) -> vec3<f32> {
+  let len = length(p);
+  if (len > OUTER_LIMIT) {
+    return p * (OUTER_LIMIT / len);
+  }
+  return p;
+}
 
 @group(0) @binding(0) var<storage, read_write> particles : array<WaveParticle>;
 @group(0) @binding(1) var<storage, read_write> outPos : array<vec4<f32>>;
@@ -271,7 +318,7 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let dirLen = max(length(pt.basePos.xyz), 0.0001);
   let n = pt.basePos.xyz / dirLen;
   let osc = sin(phase * k - params.time * wSpeed) * (0.05 + params.gammaMag*0.05);
-  var kinematicPos = pt.basePos.xyz + n * osc;
+  var kinematicPos = clampToOuterSphere(pt.basePos.xyz + n * osc);
 
   if (params.physicsOn > 0.5) {
     // gravity + light atmospheric damping, then settle back toward the kinematic target
@@ -301,7 +348,7 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
     vel += toKin * 2.2 * params.dt;
 
     pt.vel = vec4<f32>(vel, 0.0);
-    outPos[i] = vec4<f32>(mix(kinematicPos, pt.basePos.xyz + vel, 0.5), 1.0);
+    outPos[i] = vec4<f32>(clampToOuterSphere(mix(kinematicPos, pt.basePos.xyz + vel, 0.5)), 1.0);
   } else {
     pt.vel = vec4<f32>(0.0,0.0,0.0,0.0);
     outPos[i] = vec4<f32>(kinematicPos, 1.0);
@@ -530,14 +577,16 @@ function currentGammaState(){
 }
 
 function updateGimbalFromState(){
-  // sync green gimbal to R/jX so both views agree — reuse the same gr/gi
-  // used by the 2D chart, mapped onto the outer sphere's equatorial-ish band
+  // sync green gimbal to R/jX so both views agree — placed directly on the
+  // XZ equatorial plane (theta = pi/2, y = 0), which is exactly the 2D
+  // chart's own gr/gi plane. Manual 3D dragging (see attachInteraction)
+  // can move it off this plane freely; syncGimbalToInputs() projects back
+  // onto XZ to feed R/jX, so the equatorial case round-trips exactly.
   const g = currentGammaState();
   const rr = Math.min(0.985, g.gMag) * OUTER_R;
-  const az = g.gAngRad;
   S.gimbal.r = rr;
-  S.gimbal.phi = az;
-  S.gimbal.theta = Math.PI/2 - (Math.PI/2)*0.15*Math.sin(az*2); // gentle tilt so it's not pinned flat
+  S.gimbal.phi = g.gAngRad;
+  S.gimbal.theta = Math.PI/2;
 }
 
 function gimbalWorldPos(){
@@ -577,6 +626,8 @@ function writeMeasureBuffer(){
   S.device.queue.writeBuffer(S.measureStrengthBuf, 0, strengths);
 }
 
+const POINT_SIZE_MAX_BASE = 0.028; // world-unit half-size at slider=1.0 (this was the old fixed default)
+
 function updateUniforms(){
   const canvas = S.canvas;
   const aspect = canvas.width/Math.max(1,canvas.height);
@@ -589,23 +640,34 @@ function updateUniforms(){
   const proj = M4.perspective(50*Math.PI/180, aspect, 0.05, 40);
   const vp = M4.multiply(proj, view);
 
-  // camera right/up in world space for billboarding
+  // camera right/up in world space for billboarding — also cached on S so
+  // the drag handlers (screenDeltaToWorld) can reuse the exact same basis
+  // instead of recomputing it from a stale eye position.
   const fwd = v3norm(v3sub(S.cam.target, eye));
   const worldUp = [0,1,0];
   let right = [fwd[1]*worldUp[2]-fwd[2]*worldUp[1], fwd[2]*worldUp[0]-fwd[0]*worldUp[2], fwd[0]*worldUp[1]-fwd[1]*worldUp[0]];
   right = v3norm(right);
   const camUp = [right[1]*fwd[2]-right[2]*fwd[1], right[2]*fwd[0]-right[0]*fwd[2], right[0]*fwd[1]-right[1]*fwd[0]];
 
+  const sizeEl = document.getElementById('s3d-pointsize');
+  const glowEl = document.getElementById('s3d-glow');
+  const sizeScale = sizeEl ? Math.max(0.03, Math.min(1, parseFloat(sizeEl.value))) : 0.14;
+  const glowOn = (!glowEl || glowEl.checked) ? 1 : 0;
+
   const u = new Float32Array(24);
   u.set(vp, 0);
   u.set([right[0],right[1],right[2],0], 16);
   u.set([camUp[0],camUp[1],camUp[2],0], 20);
   const u2 = new Float32Array(4);
-  u2[0] = 0.028 * (canvas.height/720); // base point size in world units, scaled to canvas
+  u2[0] = POINT_SIZE_MAX_BASE * (canvas.height/720) * sizeScale;
+  u2[1] = glowOn;
+  u2[2] = sizeScale;
   const full = new Float32Array(24+4);
   full.set(u,0); full.set(u2,24);
   S.device.queue.writeBuffer(S.uniformBuf, 0, full);
   S._lastEye = eye;
+  S._camRight = right;
+  S._camUp = camUp;
 }
 
 function runComputePass(dt){
@@ -708,10 +770,20 @@ function addMeasurement(){
   const g = currentGammaState();
   S.measures.push({
     pos, gMag:g.gMag, gAngRad:g.gAngRad, freq:g.freq,
-    label:`M${S.measures.length+1} · Γ${g.gMag.toFixed(2)}`
+    label:`M${S.measures.length+1}`
   });
   writeMeasureBuffer();
   renderMeasureList();
+}
+function removeMeasurement(idx){
+  S.measures.splice(idx,1);
+  // relabel M1..Mn to stay sequential after a removal
+  S.measures.forEach((m,i)=>{ m.label = `M${i+1}`; });
+  S.arcCurveCount = 0;
+  writeMeasureBuffer();
+  renderMeasureList();
+  const out = document.getElementById('s3d-triresult');
+  if(out) out.textContent = '—';
 }
 function clearMeasurements(){
   S.measures = [];
@@ -783,42 +855,127 @@ function buildArcCurve(){
   S.arcCurveCount = n;
 }
 
+// Full rebuild of the measurement list — one card per marker, each with
+// its own label, remove button, and editable X/Y/Z fields (per Justin:
+// "input x y and z for each gimbal added ... labeled and added to a
+// scrollable list"). Only called on add/remove/clear — position updates
+// from dragging go through updateMeasureCardInputs() instead so we're not
+// tearing down/rebuilding (and losing focus on) the whole list every frame.
 function renderMeasureList(){
   const list = document.getElementById('s3d-measurelist');
   if(!list) return;
-  list.innerHTML = S.measures.map((m,i)=>`<div class="s3d-mrow">${m.label}</div>`).join('') || '<div class="s3d-mrow muted">No measurements yet — position the gimbal, tap "+ Add".</div>';
+  if(S.measures.length===0){
+    list.innerHTML = '<div class="s3d-mrow muted">No measurements yet — position the gimbal, tap "+ Add Measurement", or add one and drag it directly in the scene.</div>';
+    return;
+  }
+  list.innerHTML = S.measures.map((m,i)=>`
+    <div class="s3d-mcard" data-idx="${i}">
+      <div class="s3d-mcard-top">
+        <span class="s3d-mcard-label">${m.label}</span>
+        <button class="s3d-mcard-del" data-del="${i}" title="Remove">✕</button>
+      </div>
+      <div class="s3d-mcard-xyz">
+        <label>X<input type="number" step="0.01" data-axis="x" data-idx="${i}" id="s3d-mx-${i}" value="${m.pos[0].toFixed(3)}"></label>
+        <label>Y<input type="number" step="0.01" data-axis="y" data-idx="${i}" id="s3d-my-${i}" value="${m.pos[1].toFixed(3)}"></label>
+        <label>Z<input type="number" step="0.01" data-axis="z" data-idx="${i}" id="s3d-mz-${i}" value="${m.pos[2].toFixed(3)}"></label>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('input[data-axis]').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const idx = parseInt(inp.dataset.idx,10);
+      const axis = inp.dataset.axis;
+      const m = S.measures[idx];
+      if(!m) return;
+      const axisIdx = axis==='x'?0:(axis==='y'?1:2);
+      const next = m.pos.slice();
+      next[axisIdx] = parseFloat(inp.value)||0;
+      m.pos = clampToOuterSphereJS(next, DRAG_LIMIT);
+      writeMeasureBuffer();
+      updateMeasureCardInputs(idx); // re-clamp displayed values if the edit pushed it past the boundary
+    });
+  });
+  list.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=> removeMeasurement(parseInt(btn.dataset.del,10)));
+  });
 }
 
-/* ───────────────────────── camera interaction ───────────────────────── */
-function attachInteraction(canvas){
-  let mode=null, lx=0, ly=0, startDist=0, gimbalMode=false;
-  const GIMBAL_HIT_PX = 34;
+// Patches one card's X/Y/Z values in place (used during drag / after a
+// clamp) without rebuilding the list, so it doesn't steal focus from
+// whichever field the person might be typing in.
+function updateMeasureCardInputs(idx){
+  const m = S.measures[idx];
+  if(!m) return;
+  const xEl = document.getElementById(`s3d-mx-${idx}`);
+  const yEl = document.getElementById(`s3d-my-${idx}`);
+  const zEl = document.getElementById(`s3d-mz-${idx}`);
+  if(xEl && document.activeElement!==xEl) xEl.value = m.pos[0].toFixed(3);
+  if(yEl && document.activeElement!==yEl) yEl.value = m.pos[1].toFixed(3);
+  if(zEl && document.activeElement!==zEl) zEl.value = m.pos[2].toFixed(3);
+}
 
-  function nearGimbalScreen(x,y){
-    const p = projectToScreen(gimbalWorldPos());
-    if(!p) return false;
-    return Math.hypot(p.x-x,p.y-y) < GIMBAL_HIT_PX;
+/* ───────────────────────── camera + gimbal + marker interaction ───────────────────────── */
+const HIT_PX = 32;
+const DRAG_LIMIT = OUTER_R*0.985;
+
+function nearestHit(x,y){
+  let best=null, bestD=HIT_PX;
+  const gp = projectToScreen(gimbalWorldPos());
+  if(gp){
+    const d = Math.hypot(gp.x-x, gp.y-y);
+    if(d<bestD){ bestD=d; best={type:'gimbal'}; }
   }
+  S.measures.forEach((m,i)=>{
+    const p = projectToScreen(m.pos);
+    if(!p) return;
+    const d = Math.hypot(p.x-x, p.y-y);
+    if(d<bestD){ bestD=d; best={type:'measure', index:i}; }
+  });
+  return best;
+}
+
+function attachInteraction(canvas){
+  let mode=null, lx=0, ly=0, startDist=0;
 
   canvas.addEventListener('pointerdown', (e)=>{
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX-rect.left, y = e.clientY-rect.top;
-    gimbalMode = nearGimbalScreen(x,y);
-    mode = gimbalMode ? 'gimbal' : 'orbit';
+    const hit = S.ready ? nearestHit(x,y) : null;
+    mode = hit ? (hit.type==='gimbal' ? 'gimbal' : 'measure:'+hit.index) : 'orbit';
     lx=e.clientX; ly=e.clientY;
   });
+
   canvas.addEventListener('pointermove', (e)=>{
     if(!mode) return;
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
+
     if(mode==='orbit'){
       S.cam.az -= dx*0.008;
       S.cam.el = Math.max(-1.4, Math.min(1.4, S.cam.el - dy*0.008));
-    } else if(mode==='gimbal'){
-      S.gimbal.phi += dx*0.01;
-      S.gimbal.theta = Math.max(0.06, Math.min(Math.PI-0.06, S.gimbal.theta + dy*0.01));
+      return;
+    }
+
+    const worldDelta = screenDeltaToWorld(dx, dy, S.cam.dist);
+
+    if(mode==='gimbal'){
+      const cur = gimbalWorldPos();
+      const next = clampToOuterSphereJS(
+        [cur[0]+worldDelta[0], cur[1]+worldDelta[1], cur[2]+worldDelta[2]], DRAG_LIMIT);
+      const sph = cartesianToSpherical(next);
+      S.gimbal.r = sph.r; S.gimbal.theta = sph.theta; S.gimbal.phi = sph.phi;
       S.gimbalManual = true;
       syncGimbalToInputs();
+    } else if(mode.startsWith('measure:')){
+      const idx = parseInt(mode.slice(8),10);
+      const m = S.measures[idx];
+      if(!m) return;
+      const next = clampToOuterSphereJS(
+        [m.pos[0]+worldDelta[0], m.pos[1]+worldDelta[1], m.pos[2]+worldDelta[2]], DRAG_LIMIT);
+      m.pos = next;
+      writeMeasureBuffer();
+      updateMeasureCardInputs(idx);
     }
   });
   window.addEventListener('pointerup', ()=>{ mode=null; });
@@ -828,7 +985,9 @@ function attachInteraction(canvas){
     S.cam.dist = Math.max(1.4, Math.min(9, S.cam.dist + e.deltaY*0.0025));
   }, {passive:false});
 
-  // pinch zoom (touch)
+  // pinch zoom (touch) — only engages when the gesture isn't already
+  // dragging the gimbal/a marker (single-touch drags are handled above
+  // via pointer events; this only fires for genuine 2-finger gestures)
   canvas.addEventListener('touchstart', (e)=>{
     if(e.touches.length===2){
       startDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
@@ -844,16 +1003,18 @@ function attachInteraction(canvas){
   }, {passive:true});
 }
 
-// when the user manually drags the 3D gimbal, push R/jX back into the 2D inputs
-// so both views stay in lockstep (matches "connect over to the 3D scene" spec)
+// when the user manually drags the 3D gimbal, push R/jX back into the 2D
+// inputs so both views stay in lockstep. The gimbal can now move fully
+// off the XZ plane (unlike the 2D chart, which is inherently 2D), so we
+// project onto XZ for the R/jX round-trip — this is exactly the plane
+// updateGimbalFromState() places it on when following the 2D inputs, so
+// equatorial motion still round-trips exactly; moving in Y explores the
+// sphere's other "layers" without a 2D equivalent, which is expected.
 function syncGimbalToInputs(){
-  const mag = Math.min(0.999, S.gimbal.r/OUTER_R);
-  const ang = S.gimbal.phi;
-  const gr = mag*Math.cos(ang), gi = mag*Math.sin(ang);
-  // gammaToZ/computeAndRender are `function` declarations in the inline
-  // script, so unlike state/lastGamma they DO attach to window — but we
-  // read them as bare identifiers too for consistency, guarded in case
-  // this file is ever loaded standalone.
+  const pos = gimbalWorldPos();
+  let gr = pos[0]/OUTER_R, gi = pos[2]/OUTER_R;
+  const mag = Math.hypot(gr,gi);
+  if(mag>0.999){ gr = gr/mag*0.999; gi = gi/mag*0.999; }
   if(typeof gammaToZ === 'function' && typeof state !== 'undefined'){
     const z0 = state.z0;
     const [zr,zx] = gammaToZ(gr,gi,z0);
@@ -1020,32 +1181,45 @@ function wireHUD(){
 
 /* ───────────────────────── toggle entry point ───────────────────────── */
 async function toggle3D(){
-  const wrap = document.getElementById('scene3d-wrap');
+  const wrap3d = document.getElementById('scene3d-wrap');
+  const wrap2d = document.getElementById('scene2d-wrap');
   const btn = document.getElementById('btn-3d-toggle');
-  if(!wrap) return;
+  if(!wrap3d) return;
 
-  if(!S.active){
-    wrap.style.display='flex';
+  const showing3D = wrap3d.style.display === 'flex';
+
+  if(!showing3D){
+    wrap2d && (wrap2d.style.display='none');
+    wrap3d.style.display='flex';
     btn && (btn.textContent='2D');
-    if(!S.ready){
+
+    if(!S.ready && !S.unsupported){
       const canvas = document.getElementById('scene3d-canvas');
       const msgEl = document.getElementById('s3d-fallback-msg');
       const ok = await initGPU(canvas);
       if(!ok){
+        S.unsupported = true;
         if(msgEl) msgEl.style.display='flex';
-        return;
+        return; // stay on the fallback screen — the button below still flips wrap3d back off
       }
       if(msgEl) msgEl.style.display='none';
+      setupResizeObserver();
       resizeCanvas();
       wireHUD();
       S.ready = true;
+    } else if(S.ready){
+      resizeCanvas(); // canvas was display:none while hidden, so its box may be stale — refresh once on show
     }
-    S.active = true;
-    lastT = performance.now();
-    requestAnimationFrame(frameLoop);
+
+    if(S.ready){
+      S.active = true;
+      lastT = performance.now();
+      requestAnimationFrame(frameLoop);
+    }
   } else {
     S.active = false;
-    wrap.style.display='none';
+    wrap3d.style.display='none';
+    wrap2d && (wrap2d.style.display='flex');
     btn && (btn.textContent='3D');
   }
 }
@@ -1054,11 +1228,46 @@ function resizeCanvas(){
   const canvas = document.getElementById('scene3d-canvas');
   if(!canvas) return;
   const rect = canvas.getBoundingClientRect();
+  if(rect.width<1 || rect.height<1) return; // hidden (display:none) — nothing to size against yet
   const dpr = Math.min(2, window.devicePixelRatio||1);
-  canvas.width = Math.max(2, Math.round(rect.width*dpr));
-  canvas.height = Math.max(2, Math.round(rect.height*dpr));
+  const w = Math.max(2, Math.round(rect.width*dpr));
+  const h = Math.max(2, Math.round(rect.height*dpr));
+  if(canvas.width===w && canvas.height===h) return; // avoid pointless GPU texture churn
+  canvas.width = w;
+  canvas.height = h;
+  S.depthTex && S.depthTex.destroy();
+  S.depthTex = null;
 }
+
+// ResizeObserver on the canvas itself is the robust fix for the
+// "minimizing the window distorts the 3D canvas" bug: a plain window
+// 'resize' listener only fires for actual browser-window size changes,
+// but the canvas's on-screen box can change for other reasons too
+// (orientation change, the side panel opening/closing, iOS toolbar
+// show/hide) — none of which reliably fire 'resize'. Observing the
+// canvas's own content box catches all of them, and now that #scene2d-wrap
+// and #scene3d-wrap are fully separate, mutually-exclusive (display:none
+// vs flex) containers, resizing one can no longer perturb the other's
+// layout math in the first place.
+let resizeObserverAttached = false;
+let resizeRAF = null;
+function setupResizeObserver(){
+  if(resizeObserverAttached) return;
+  const canvas = document.getElementById('scene3d-canvas');
+  if(!canvas || !('ResizeObserver' in window)) return;
+  const ro = new ResizeObserver(()=>{
+    if(resizeRAF) cancelAnimationFrame(resizeRAF);
+    resizeRAF = requestAnimationFrame(()=>{ if(S.ready) resizeCanvas(); });
+  });
+  ro.observe(canvas);
+  resizeObserverAttached = true;
+}
+// fallback for engines without ResizeObserver, and cheap enough to leave
+// running alongside it regardless
 window.addEventListener('resize', ()=>{ if(S.ready) resizeCanvas(); });
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', ()=>{ if(S.ready) resizeCanvas(); });
+}
 
 /* ───────────────────────── boot ───────────────────────── */
 document.addEventListener('DOMContentLoaded', ()=>{

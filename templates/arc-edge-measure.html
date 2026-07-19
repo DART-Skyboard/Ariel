@@ -45,10 +45,19 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 #hdr .back:hover{background:rgba(245,166,35,0.1)}
 
 /* ── Main split ── */
-#main{flex:1;display:flex;overflow:hidden;position:relative}
-#chart-area{flex:1;display:flex;align-items:center;justify-content:center;
-  position:relative;overflow:hidden;background:
+#main{flex:1;display:flex;overflow:hidden;position:relative;min-width:0;min-height:0}
+#chart-area{flex:1;position:relative;overflow:hidden;min-width:0;min-height:0;background:
     radial-gradient(circle at 50% 40%, #14171c 0%, var(--bg) 70%)}
+
+/* Fully isolated 2D layer — its own positioned box so nothing about its
+   content-driven sizing (chart-svg's vh/vw-based width, etc.) can leak
+   into #chart-area's box and, from there, into the 3D canvas that sits
+   alongside it. Only one of #scene2d-wrap / #scene3d-wrap is ever
+   display:flex at a time; the other is display:none (not just hidden
+   behind z-index), so a resize while in 3D mode never re-triggers the
+   2D layer's own layout math either. */
+#scene2d-wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  min-width:0;min-height:0}
 #chart-svg{width:min(92%,88vh,88vw);height:auto;max-height:88%;aspect-ratio:1;touch-action:none;
   position:relative;z-index:2}
 #wave-field{position:absolute;width:min(92%,88vh,88vw);height:min(92%,88vh,88vw);
@@ -177,13 +186,26 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
 .s3d-btn.warn{border-color:rgba(255,68,102,0.4);color:var(--red);background:rgba(255,68,102,0.06)}
 .s3d-tograp{display:flex;align-items:center;gap:5px;font-size:9px;color:var(--muted);
   font-family:'Share Tech Mono',monospace;letter-spacing:0.5px}
+.s3d-sizerap{gap:7px}
+.s3d-sizerap input[type=range]{width:70px;accent-color:var(--accent1);height:2px}
 #s3d-panel-right{position:absolute;top:52px;right:10px;z-index:13;width:min(78vw,260px);
   background:rgba(17,18,20,0.78);border:1px solid rgba(245,166,35,0.25);border-radius:6px;
   padding:10px;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);
   max-height:60vh;overflow-y:auto;backdrop-filter:blur(3px)}
 #s3d-panel-right .s3d-h{font-size:9px;letter-spacing:1.5px;color:var(--border);margin-bottom:6px}
-.s3d-mrow{padding:3px 0;border-bottom:1px solid rgba(245,166,35,0.08);color:var(--text)}
-.s3d-mrow.muted{color:var(--muted)}
+#s3d-measurelist{max-height:34vh;overflow-y:auto}
+.s3d-mrow.muted{padding:6px 0;color:var(--muted)}
+.s3d-mcard{padding:7px 8px;margin-bottom:6px;border:1px solid rgba(77,139,255,0.3);
+  background:rgba(77,139,255,0.05);border-radius:4px}
+.s3d-mcard-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+.s3d-mcard-label{color:#4d8bff;font-weight:600}
+.s3d-mcard-del{background:none;border:none;color:var(--red);cursor:pointer;font-size:11px;
+  padding:0 2px;line-height:1}
+.s3d-mcard-xyz{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.s3d-mcard-xyz label{display:flex;flex-direction:column;gap:2px;font-size:8px;color:var(--muted)}
+.s3d-mcard-xyz input{width:100%;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.2);
+  color:var(--text);font-family:'Share Tech Mono',monospace;font-size:9px;padding:3px 4px;
+  border-radius:3px}
 #s3d-triresult{margin-top:6px;line-height:1.6;color:var(--accent1)}
 #s3d-fallback-msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
   text-align:center;padding:30px;font-family:'Share Tech Mono',monospace;font-size:11px;
@@ -204,8 +226,26 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
   <div id="main">
     <div id="chart-area">
       <button id="btn-3d-toggle" title="Toggle 3D point-cloud Smith chart">3D</button>
-      <canvas id="wave-field" width="1000" height="1000"></canvas>
-      <svg id="chart-svg" viewBox="0 0 1000 1000"></svg>
+
+      <div id="scene2d-wrap">
+        <canvas id="wave-field" width="1000" height="1000"></canvas>
+        <svg id="chart-svg" viewBox="0 0 1000 1000"></svg>
+        <div class="leg">
+          <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
+          <div><span class="lx">━</span> REACTANCE (constant-X arcs)</div>
+          <div><span class="lm">●</span> MATCH POINT · drag to set Z</div>
+          <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(245,166,35,0.15)">
+            <div><span class="wi">━</span> INCIDENT WAVE</div>
+            <div><span class="wr">━</span> REFLECTED WAVE</div>
+            <div><span class="ws">━</span> STANDING WAVE</div>
+          </div>
+        </div>
+        <div class="hint">DRAG POINT · PINCH ZOOM<br>DOC-CIRC: d × 3</div>
+        <div class="readout-float" id="readout-float">
+          z = <b id="rf-z">1.00 + j0.00</b><br>
+          Γ = <b id="rf-gamma">0.00 ∠ 0.0°</b>
+        </div>
+      </div>
 
       <div id="scene3d-wrap">
         <canvas id="scene3d-canvas"></canvas>
@@ -223,6 +263,10 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
           <button class="s3d-btn warn" id="s3d-clear">CLEAR</button>
           <label class="s3d-tograp"><input type="checkbox" id="s3d-physics"> PHYSICS REACTION</label>
           <label class="s3d-tograp"><input type="checkbox" id="s3d-indicators" checked> INDICATORS</label>
+          <label class="s3d-tograp"><input type="checkbox" id="s3d-glow" checked> GLOW</label>
+          <label class="s3d-tograp s3d-sizerap">POINT SIZE
+            <input type="range" id="s3d-pointsize" min="0.03" max="1" step="0.01" value="0.14">
+          </label>
           <button class="s3d-btn" data-s3d-png="2000">PNG 2K</button>
           <button class="s3d-btn" data-s3d-png="3000">PNG 3K</button>
           <button class="s3d-btn" data-s3d-png="4000">PNG 4K</button>
@@ -237,21 +281,6 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
             Safari (18+) with hardware acceleration enabled.
           </div>
         </div>
-      </div>
-      <div class="leg">
-        <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
-        <div><span class="lx">━</span> REACTANCE (constant-X arcs)</div>
-        <div><span class="lm">●</span> MATCH POINT · drag to set Z</div>
-        <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(245,166,35,0.15)">
-          <div><span class="wi">━</span> INCIDENT WAVE</div>
-          <div><span class="wr">━</span> REFLECTED WAVE</div>
-          <div><span class="ws">━</span> STANDING WAVE</div>
-        </div>
-      </div>
-      <div class="hint">DRAG POINT · PINCH ZOOM<br>DOC-CIRC: d × 3</div>
-      <div class="readout-float" id="readout-float">
-        z = <b id="rf-z">1.00 + j0.00</b><br>
-        Γ = <b id="rf-gamma">0.00 ∠ 0.0°</b>
       </div>
     </div>
 
