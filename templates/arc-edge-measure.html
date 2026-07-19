@@ -19,6 +19,9 @@
   --grid-r:rgba(0,229,204,0.55);   /* resistance circles */
   --grid-x:rgba(200,244,0,0.5);    /* reactance arcs */
   --match:#39ff7a;                 /* match point glow */
+  --wave-i:#00c8ff;                /* incident wave */
+  --wave-r:#ff3ec8;                /* reflected wave */
+  --wave-s:#ffb300;                /* standing wave envelope */
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
@@ -123,6 +126,7 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
 .leg{position:absolute;bottom:12px;left:12px;font-family:'Share Tech Mono',monospace;
   font-size:9px;color:var(--muted);letter-spacing:1px;line-height:1.9;pointer-events:none}
 .leg .lr{color:var(--grid-r)} .leg .lx{color:var(--grid-x)} .leg .lm{color:var(--match)}
+.leg .wi{color:var(--wave-i)} .leg .wr{color:var(--wave-r)} .leg .ws{color:var(--wave-s)}
 .hint{position:absolute;bottom:12px;right:12px;font-family:'Share Tech Mono',monospace;
   font-size:8px;color:rgba(245,166,35,0.3);letter-spacing:1px;text-align:right;pointer-events:none}
 .readout-float{position:absolute;top:12px;left:12px;font-family:'Share Tech Mono',monospace;
@@ -157,6 +161,11 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
         <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
         <div><span class="lx">━</span> REACTANCE (constant-X arcs)</div>
         <div><span class="lm">●</span> MATCH POINT · drag to set Z</div>
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(245,166,35,0.15)">
+          <div><span class="wi">━</span> INCIDENT WAVE</div>
+          <div><span class="wr">━</span> REFLECTED WAVE</div>
+          <div><span class="ws">━</span> STANDING WAVE</div>
+        </div>
       </div>
       <div class="hint">DRAG POINT · PINCH ZOOM<br>DOC-CIRC: d × 3</div>
       <div class="readout-float" id="readout-float">
@@ -194,6 +203,15 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
           <div class="irow-slider">
             <div class="sl-top"><span class="sl-lab">Frequency</span><span class="sl-val" id="v-freq">100.0 MHz</span></div>
             <input type="range" id="s-freq" min="1" max="6000" step="1" value="100">
+          </div>
+        </div>
+
+        <div class="psec">
+          <div class="psec-h">TRANSMISSION LINE — LIVE WAVES</div>
+          <svg id="wave-strip" viewBox="0 0 300 110" style="width:100%;height:auto;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);border-radius:4px"></svg>
+          <div class="togrow" style="margin-top:8px">
+            <span class="tog-lbl">Animate Waves</span>
+            <label class="tsw"><input type="checkbox" id="t-waves" checked><span class="ttrk"></span></label>
           </div>
         </div>
 
@@ -400,6 +418,125 @@ function buildChart(){
 buildChart();
 
 /* ═══════════════════════════════════════════════════════════════
+   ANIMATED WAVES — incident, reflected, standing wave visualization
+   Driven live by state.freq (animation speed) and computed Γ
+   (reflection amplitude/phase feeding the reflected + standing wave).
+═══════════════════════════════════════════════════════════════ */
+
+// ── Traveling wave rings on the Smith chart itself ──
+// Incident: rings converge inward from chart edge toward the match point.
+// Reflected: rings expand outward from the match point, scaled by |Γ|.
+function buildWaveRingLayer(){
+  const g = svgEl('g',{id:'wave-rings'});
+  svg.appendChild(g);
+}
+buildWaveRingLayer();
+
+let waveT = 0; // animation clock (radians)
+function drawWaveRings(gr, gi, gMag, gAngRad){
+  const g = document.getElementById('wave-rings');
+  g.innerHTML = '';
+  if(!document.getElementById('t-waves').checked) return;
+
+  const [mpx, mpy] = gammaToPx(gr, gi);
+  const centerDist = Math.hypot(mpx-CX, mpy-CY);
+
+  // Incident wave — 3 converging rings from outer edge toward match point
+  for(let k=0;k<3;k++){
+    const phase = (waveT*1.4 + k*2.4) % (Math.PI*2);
+    const travel = 1 - (phase/(Math.PI*2)); // 1 → 0 as it converges
+    const px = CX + (mpx-CX)*(1-travel) + (CX-mpx)*0*0; // placeholder not used
+    const rad = R*travel + 6;
+    const op = 0.55*(1-travel*0.3);
+    g.appendChild(svgEl('circle',{
+      cx:CX, cy:CY, r:rad, fill:'none', stroke:'var(--wave-i)',
+      'stroke-width':1.6, opacity:op.toFixed(2), 'stroke-dasharray':'3,7'
+    }));
+  }
+
+  // Reflected wave — rings expanding outward from the match point, amplitude ∝ |Γ|
+  if(gMag>0.01){
+    for(let k=0;k<3;k++){
+      const phase = (waveT*1.4 + k*2.4 + gAngRad) % (Math.PI*2);
+      const travel = (phase/(Math.PI*2));
+      const maxRad = (R - centerDist)*1.4 + centerDist;
+      const rad = 4 + travel*maxRad*gMag*0.9 + travel*40;
+      const op = gMag*0.6*(1-travel*0.6);
+      g.appendChild(svgEl('circle',{
+        cx:mpx, cy:mpy, r:rad.toFixed(1), fill:'none', stroke:'var(--wave-r)',
+        'stroke-width':1.6, opacity:Math.max(0,op).toFixed(2), 'stroke-dasharray':'2,5'
+      }));
+    }
+  }
+}
+
+/* ── Transmission-line wave strip (bottom panel) ──
+   Classic incident + reflected + standing-wave envelope along a line,
+   exactly the "parts people use to make up the system" view — this is
+   the textbook picture of Vmax/Vmin nodes on a mismatched line. */
+const waveStripSvg = document.getElementById('wave-strip');
+function buildWaveStripStatic(){
+  waveStripSvg.innerHTML='';
+  // baseline axis
+  waveStripSvg.appendChild(svgEl('line',{x1:8,y1:55,x2:292,y2:55,stroke:'rgba(245,166,35,0.2)','stroke-width':1}));
+  // envelope path placeholders (filled each frame)
+  waveStripSvg.appendChild(svgEl('path',{id:'ws-incident', fill:'none', stroke:'var(--wave-i)','stroke-width':1.6,opacity:0.85}));
+  waveStripSvg.appendChild(svgEl('path',{id:'ws-reflected', fill:'none', stroke:'var(--wave-r)','stroke-width':1.6,opacity:0.85}));
+  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing-env-top', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
+  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing-env-bot', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
+  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing', fill:'none', stroke:'var(--wave-s)','stroke-width':2.2,opacity:0.95}));
+  // Vmax / Vmin labels
+  const lblMax = svgEl('text',{id:'ws-lbl-max',x:6,y:12,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
+  lblMax.textContent='Vmax'; waveStripSvg.appendChild(lblMax);
+  const lblMin = svgEl('text',{id:'ws-lbl-min',x:6,y:104,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
+  lblMin.textContent='Vmin'; waveStripSvg.appendChild(lblMin);
+}
+buildWaveStripStatic();
+
+function drawWaveStrip(gMag, gAngRad, freqMHz){
+  if(!document.getElementById('t-waves').checked){
+    ['ws-incident','ws-reflected','ws-standing','ws-standing-env-top','ws-standing-env-bot'].forEach(id=>{
+      document.getElementById(id).setAttribute('d','');
+    });
+    return;
+  }
+  const W=300, MID=55, AMP=32;
+  const N=120; // sample points
+  // Spatial wavenumber scaled so higher frequency visibly animates faster/tighter
+  const k = 0.06 + (freqMHz/6000)*0.10; // rad per px, tame range
+  const wSpeed = 1.1 + (freqMHz/6000)*2.2; // temporal speed scales with freq
+
+  let dInc='', dRef='', dSta='', dTop='', dBot='';
+  for(let i=0;i<=N;i++){
+    const x = i/N*W;
+    const phaseSpatial = k*x;
+    // Incident traveling wave: moves in +x direction (toward load, rightward)
+    const yInc = MID - AMP*Math.sin(phaseSpatial - waveT*wSpeed);
+    // Reflected traveling wave: moves in -x direction, amplitude/phase from Γ
+    const yRef = MID - AMP*gMag*Math.sin(phaseSpatial + waveT*wSpeed + gAngRad);
+    // Standing wave = superposition
+    const ySta = MID - (AMP*Math.sin(phaseSpatial - waveT*wSpeed) + AMP*gMag*Math.sin(phaseSpatial + waveT*wSpeed + gAngRad));
+    // Envelope: |1+Γe^{-2jkx}| shape (classic standing wave envelope)
+    const envPhase = 2*phaseSpatial - gAngRad;
+    const envMag = Math.sqrt(1 + gMag*gMag + 2*gMag*Math.cos(envPhase));
+    const yTop = MID - AMP*envMag;
+    const yBot = MID + AMP*envMag;
+
+    const cmd = i===0?'M':'L';
+    dInc += `${cmd}${x.toFixed(1)},${yInc.toFixed(1)} `;
+    dRef += `${cmd}${x.toFixed(1)},${yRef.toFixed(1)} `;
+    dSta += `${cmd}${x.toFixed(1)},${ySta.toFixed(1)} `;
+    dTop += `${cmd}${x.toFixed(1)},${yTop.toFixed(1)} `;
+    dBot += `${cmd}${x.toFixed(1)},${yBot.toFixed(1)} `;
+  }
+  document.getElementById('ws-incident').setAttribute('d',dInc);
+  document.getElementById('ws-reflected').setAttribute('d',dRef);
+  document.getElementById('ws-standing').setAttribute('d',dSta);
+  document.getElementById('ws-standing-env-top').setAttribute('d',dTop);
+  document.getElementById('ws-standing-env-bot').setAttribute('d',dBot);
+}
+
+/* ═══════════════════════════════════════════════════════════════
    RING-CENTER OVERLAY — direct port of measure_arc_params_object
    Draws a chain of "ring center" doc-partial-arcs around the match
    point, echoing the Blender viewport overlay (doc_circle_verts /
@@ -431,6 +568,7 @@ function drawRingOverlay(gr, gi, matchQuality){
    STATE + MEASUREMENT PIPELINE
 ═══════════════════════════════════════════════════════════════ */
 const state = { r:50, x:0, z0:50, freq:100 };
+let lastGamma = {gr:0, gi:0, gMag:0, gAngRad:0, freq:100};
 
 function computeAndRender(){
   const {r,x,z0} = state;
@@ -461,6 +599,11 @@ function computeAndRender(){
   document.getElementById('match-halo').setAttribute('r',haloR);
 
   drawRingOverlay(gamma[0], gamma[1], matchQuality);
+
+  // Cache for the animation loop (waves redraw every frame independent of input events)
+  lastGamma = {gr:gamma[0], gi:gamma[1], gMag, gAngRad: cAng(gamma), freq: state.freq};
+  drawWaveRings(gamma[0], gamma[1], gMag, cAng(gamma));
+  drawWaveStrip(gMag, cAng(gamma), state.freq);
 
   // Output panel
   document.getElementById('out-gamma').textContent = gMag.toFixed(3);
@@ -586,6 +729,20 @@ function animateToPoint(){
 const pw = document.getElementById('panel-wrap');
 document.getElementById('ptog').addEventListener('click',()=>pw.classList.toggle('open'));
 if(window.innerWidth>720) pw.classList.add('open');
+
+/* ── Continuous wave animation loop — independent of input events ── */
+let lastFrameTime = performance.now();
+function waveAnimLoop(ts){
+  requestAnimationFrame(waveAnimLoop);
+  const dt = Math.min((ts-lastFrameTime)/1000, 0.05);
+  lastFrameTime = ts;
+  if(document.getElementById('t-waves').checked){
+    waveT += dt * 2.2;
+    drawWaveRings(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad);
+    drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
+  }
+}
+requestAnimationFrame(waveAnimLoop);
 
 computeAndRender();
 </script>
