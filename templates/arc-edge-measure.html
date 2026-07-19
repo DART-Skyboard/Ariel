@@ -213,16 +213,15 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
         <div class="psec">
           <div class="psec-h">TRANSMISSION LINE — LIVE WAVES</div>
           <svg id="wave-strip" viewBox="0 0 300 110" style="width:100%;height:auto;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);border-radius:4px"></svg>
-          <div class="togrow" style="margin-top:8px">
-            <span class="tog-lbl">Show Wave Strip</span>
-            <label class="tsw"><input type="checkbox" id="t-strip" checked><span class="ttrk"></span></label>
-          </div>
 
-          <div class="psec-h" style="margin-top:14px">CHART UNDERLAY — WAVE FIELD</div>
-          <svg id="wave-strip-2" viewBox="0 0 300 110" style="width:100%;height:auto;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);border-radius:4px"></svg>
-          <div class="togrow" style="margin-top:8px">
-            <span class="tog-lbl">Show Chart Underlay</span>
+          <div class="psec-h" style="margin-top:14px">CHART UNDERLAY — LARGE CANVAS</div>
+          <div class="togrow">
+            <span class="tog-lbl">Radial Wave Field</span>
             <label class="tsw"><input type="checkbox" id="t-field" checked><span class="ttrk"></span></label>
+          </div>
+          <div class="togrow">
+            <span class="tog-lbl">Left-Right Wave Strip</span>
+            <label class="tsw"><input type="checkbox" id="t-field-strip"><span class="ttrk"></span></label>
           </div>
         </div>
 
@@ -457,17 +456,10 @@ function heatColor(t, hueMix){
   return [r|0,g|0,b|0];
 }
 
-function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
-  const showField = document.getElementById('t-field').checked;
-  if(!showField){
-    wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
-    return;
-  }
+function drawRadialField(gr, gi, gMag, gAngRad, freqMHz){
   const cxN = FIELD_RES/2, cyN = FIELD_RES/2, rN = FIELD_RES/2;
-  // Match point in field-pixel space
   const mpx = cxN + gr*rN, mpy = cyN - gi*rN;
-
-  const k = 0.35 + (freqMHz/6000)*0.55; // spatial frequency of the ripples across the disc
+  const k = 0.35 + (freqMHz/6000)*0.55;
   const t = waveT;
 
   const data = fieldImg.data;
@@ -477,33 +469,94 @@ function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
       const distFromCenter = Math.hypot(dx,dy);
       const idx = (py*FIELD_RES+px)*4;
       if(distFromCenter > rN+1){
-        data[idx+3]=0; continue; // outside disc = transparent
+        data[idx+3]=0; continue;
       }
-      // Incident wave: radial ripples converging toward chart center from edge
       const incident = Math.sin(k*(rN-distFromCenter)*0.25 - t*1.6);
-
-      // Reflected wave: radial ripples expanding from the match point, amplitude |Γ|
       const ddx=px-mpx, ddy=py-mpy;
       const distFromMatch = Math.hypot(ddx,ddy);
       const reflected = gMag * Math.sin(k*distFromMatch*0.25 + t*1.6 + gAngRad);
-
-      // Superposition -> standing wave interference field
-      const sum = incident + reflected; // range approx [-(1+gMag), (1+gMag)]
-      const norm = (sum + (1+gMag)) / (2*(1+gMag)+1e-6); // normalize 0..1
-
+      const sum = incident + reflected;
+      const norm = (sum + (1+gMag)) / (2*(1+gMag)+1e-6);
       const [r,g,b] = heatColor(norm, 0.5 + 0.5*Math.sin(distFromMatch*0.02));
       data[idx]=r; data[idx+1]=g; data[idx+2]=b;
-      // fade near the very edge for a soft disc boundary
       const edgeFade = distFromCenter > rN-6 ? Math.max(0,(rN-distFromCenter)/6) : 1;
       data[idx+3] = Math.round(190*edgeFade);
     }
   }
   fctx.putImageData(fieldImg,0,0);
-
-  // Upscale onto the visible high-res canvas
   wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
   wctx.imageSmoothingEnabled = true;
   wctx.drawImage(fieldCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
+}
+
+/* Left-right traveling-wave strip painted onto the large canvas —
+   same incident/reflected/standing math as the small menu strip,
+   scaled to fill the disc and clipped circular. */
+function drawStripField(gMag, gAngRad, freqMHz){
+  const W = FIELD_RES, cyN = FIELD_RES/2, rN = FIELD_RES/2, AMP = rN*0.55;
+  const k = (0.06 + (freqMHz/6000)*0.10) * 4; // scaled for field-res canvas width
+  const wSpeed = 1.1 + (freqMHz/6000)*2.2;
+  const t = waveT;
+
+  const data = fieldImg.data;
+  for(let py=0; py<FIELD_RES; py++){
+    for(let px=0; px<FIELD_RES; px++){
+      const dx = px-rN, dy = py-cyN;
+      const distFromCenter = Math.hypot(dx,dy);
+      const idx = (py*FIELD_RES+px)*4;
+      if(distFromCenter > rN+1){ data[idx+3]=0; continue; }
+
+      const phaseSpatial = k*px;
+      const yInc = cyN - AMP*Math.sin(phaseSpatial - t*wSpeed);
+      const yRef = cyN - AMP*gMag*Math.sin(phaseSpatial + t*wSpeed + gAngRad);
+      const ySta = cyN - (AMP*Math.sin(phaseSpatial - t*wSpeed) + AMP*gMag*Math.sin(phaseSpatial + t*wSpeed + gAngRad));
+
+      // Distance from this pixel row to each of the three curves -> glow intensity
+      const dInc = Math.abs(py-yInc), dRef = Math.abs(py-yRef), dSta = Math.abs(py-ySta);
+      const glowI = Math.max(0, 1 - dInc/6);
+      const glowR = Math.max(0, 1 - dRef/6);
+      const glowS = Math.max(0, 1 - dSta/7);
+
+      // Composite: incident=cyan, reflected=magenta, standing=amber (brightest, drawn last)
+      let r=8,g=14,b=22;
+      r += glowI*(0-8); g += glowI*(200-14); b += glowI*(255-22);
+      r += glowR*(255-r); g += glowR*(60-g)*0.6; b += glowR*(200-b)*0.6;
+      r = r*(1-glowS) + 255*glowS*0.95 + r*glowS*0.05;
+      g = g*(1-glowS) + 179*glowS*0.95 + g*glowS*0.05;
+      b = b*(1-glowS) + 0*glowS*0.95 + b*glowS*0.05;
+
+      data[idx]=Math.min(255,r|0); data[idx+1]=Math.min(255,g|0); data[idx+2]=Math.min(255,b|0);
+      const edgeFade = distFromCenter > rN-6 ? Math.max(0,(rN-distFromCenter)/6) : 1;
+      data[idx+3] = Math.round(200*edgeFade);
+    }
+  }
+  fctx.putImageData(fieldImg,0,0);
+  wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+  wctx.imageSmoothingEnabled = true;
+  wctx.drawImage(fieldCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
+}
+
+function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
+  const fieldOn = document.getElementById('t-field').checked;
+  const stripOn = document.getElementById('t-field-strip').checked;
+  if(!fieldOn && !stripOn){
+    wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+    return;
+  }
+  // If both are on, radial field takes visual priority (drawn), strip layered conceptually
+  // — practically we let the user pick one primary view at a time per toggle state,
+  // drawing radial first then strip overlay-blended if both checked.
+  if(fieldOn) drawRadialField(gr, gi, gMag, gAngRad, freqMHz);
+  if(stripOn){
+    if(!fieldOn){
+      drawStripField(gMag, gAngRad, freqMHz);
+    } else {
+      // Both on: blend strip on top with reduced alpha via a second pass
+      wctx.globalAlpha = 0.55;
+      drawStripField(gMag, gAngRad, freqMHz);
+      wctx.globalAlpha = 1.0;
+    }
+  }
 }
 
 /* ── Transmission-line wave strip (bottom panel) ──
@@ -525,7 +578,6 @@ function buildWaveStrip(svgId, prefix){
   lblMin.textContent='Vmin'; stripSvg.appendChild(lblMin);
 }
 buildWaveStrip('wave-strip','ws');
-buildWaveStrip('wave-strip-2','ws2');
 
 function drawOneWaveStrip(prefix, gMag, gAngRad, freqMHz){
   const W=300, MID=55, AMP=32;
@@ -560,17 +612,7 @@ function drawOneWaveStrip(prefix, gMag, gAngRad, freqMHz){
 }
 
 function drawWaveStrip(gMag, gAngRad, freqMHz){
-  const show = document.getElementById('t-strip').checked;
-  if(!show){
-    ['ws-incident','ws-reflected','ws-standing','ws-standing-env-top','ws-standing-env-bot',
-     'ws2-incident','ws2-reflected','ws2-standing','ws2-standing-env-top','ws2-standing-env-bot'].forEach(id=>{
-      const el = document.getElementById(id);
-      if(el) el.setAttribute('d','');
-    });
-    return;
-  }
   drawOneWaveStrip('ws', gMag, gAngRad, freqMHz);
-  drawOneWaveStrip('ws2', gMag, gAngRad, freqMHz);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -681,6 +723,8 @@ sFreq.addEventListener('input',()=>{
 
 document.getElementById('t-doc').addEventListener('change', computeAndRender);
 document.getElementById('t-ring').addEventListener('change', computeAndRender);
+document.getElementById('t-field').addEventListener('change', computeAndRender);
+document.getElementById('t-field-strip').addEventListener('change', computeAndRender);
 
 /* ── Drag the match point directly on the chart ── */
 let dragging=false;
@@ -774,12 +818,11 @@ function waveAnimLoop(ts){
   requestAnimationFrame(waveAnimLoop);
   const dt = Math.min((ts-lastFrameTime)/1000, 0.05);
   lastFrameTime = ts;
-  const fieldOn = document.getElementById('t-field').checked;
-  const stripOn = document.getElementById('t-strip').checked;
-  if(fieldOn || stripOn){
-    waveT += dt * 2.2;
-    if(fieldOn) drawWaveField(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
-    if(stripOn) drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
+  const canvasOn = document.getElementById('t-field').checked || document.getElementById('t-field-strip').checked;
+  waveT += dt * 2.2; // menu strip animates independent of canvas toggles
+  drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
+  if(canvasOn){
+    drawWaveField(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
   }
 }
 requestAnimationFrame(waveAnimLoop);
