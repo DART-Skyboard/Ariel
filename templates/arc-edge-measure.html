@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Arc Edge Measure · Impedance Chart</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
+
+:root{
+  --bg:#111214; --panel:#181a1e; --border:#f5a623;
+  --accent1:#00e5cc; --accent2:#c8f400; --accent3:#7b5cfa;
+  --text:#e8eaf0; --muted:#6b7280; --red:#ff4466;
+  --deviation:#f5a623; --weld:#ff6ef7; --save:#00e5cc; --load:#a78bfa;
+  --layer-bg:#0f1117;
+  --grid-r:rgba(0,229,204,0.55);   /* resistance circles */
+  --grid-x:rgba(200,244,0,0.5);    /* reactance arcs */
+  --match:#39ff7a;                 /* match point glow */
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:'Exo 2',sans-serif;font-weight:300;touch-action:none;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+
+#app{display:flex;flex-direction:column;height:100%}
+
+/* ── Header ── */
+#hdr{display:flex;align-items:center;gap:10px;padding:8px 14px;
+  background:var(--panel);border-bottom:1px solid rgba(245,166,35,0.25);flex-shrink:0}
+#hdr .logo{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;
+  color:var(--border);letter-spacing:3px;white-space:nowrap}
+#hdr .sep{width:1px;height:16px;background:rgba(245,166,35,0.3)}
+#hdr .title{font-size:10px;letter-spacing:2px;color:var(--muted);
+  font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hdr .back{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:9px;
+  letter-spacing:1.5px;padding:5px 11px;border:1px solid rgba(245,166,35,0.4);
+  background:transparent;color:var(--border);cursor:pointer;border-radius:3px;
+  transition:background .15s;flex-shrink:0}
+#hdr .back:hover{background:rgba(245,166,35,0.1)}
+
+/* ── Main split ── */
+#main{flex:1;display:flex;overflow:hidden;position:relative}
+#chart-area{flex:1;display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;background:
+    radial-gradient(circle at 50% 40%, #14171c 0%, var(--bg) 70%)}
+#chart-svg{width:min(92%,88vh);height:auto;aspect-ratio:1;touch-action:none}
+
+/* ── Side panel ── */
+#panel-wrap{display:flex;flex-direction:row;align-items:stretch;flex-shrink:0;
+  margin-right:calc(-1 * clamp(260px,32vw,340px));transition:margin-right .28s ease}
+#panel-wrap.open{margin-right:0}
+#ptog{width:22px;background:var(--panel);border:1px solid rgba(245,166,35,0.25);
+  border-right:none;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--border);font-size:14px;align-self:center;height:52px;border-radius:4px 0 0 4px}
+#ptog:hover{background:rgba(245,166,35,0.08)}
+#panel-wrap.open #ptog svg{transform:scaleX(-1)}
+#panel{width:clamp(260px,32vw,340px);background:var(--panel);
+  border-left:1px solid rgba(245,166,35,0.25);overflow-y:auto;padding:0 0 30px}
+#panel::-webkit-scrollbar{display:none}
+
+.psec{padding:12px 14px;border-bottom:1px solid rgba(245,166,35,0.12)}
+.psec-h{font-size:9px;letter-spacing:2.2px;color:var(--border);
+  font-family:'Share Tech Mono',monospace;margin-bottom:10px;font-weight:600}
+
+/* Preset chips */
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.preset-chip{font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.5px;
+  padding:5px 9px;border:1px solid rgba(0,229,204,0.35);background:rgba(0,229,204,0.05);
+  color:var(--accent1);cursor:pointer;border-radius:12px;transition:all .15s;white-space:nowrap}
+.preset-chip:hover{background:rgba(0,229,204,0.15);border-color:var(--accent1)}
+.preset-chip.active{background:var(--accent1);color:#0a0f0e;border-color:var(--accent1)}
+
+/* Input rows */
+.irow{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.irow label{font-size:11px;color:var(--text);width:64px;flex-shrink:0;font-family:'Share Tech Mono',monospace}
+.irow input[type=number]{flex:1;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.25);
+  color:var(--text);font-family:'Share Tech Mono',monospace;font-size:12px;
+  padding:6px 8px;border-radius:3px;width:100%;min-width:0}
+.irow input[type=number]:focus{outline:none;border-color:var(--border)}
+.irow .unit{font-size:10px;color:var(--muted);width:26px;flex-shrink:0}
+
+.irow-slider{margin-bottom:10px}
+.irow-slider .sl-top{display:flex;justify-content:space-between;margin-bottom:3px}
+.irow-slider .sl-lab{font-size:10px;color:var(--text)}
+.irow-slider .sl-val{font-size:10px;color:var(--accent1);font-family:'Share Tech Mono',monospace}
+input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:pointer}
+
+/* Output readout grid */
+.outgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+.outcell{background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);
+  border-radius:4px;padding:7px 9px}
+.outcell .ol{font-size:8px;letter-spacing:1px;color:var(--muted);
+  font-family:'Share Tech Mono',monospace;margin-bottom:3px}
+.outcell .ov{font-size:14px;color:var(--accent2);font-family:'Share Tech Mono',monospace;font-weight:600}
+.outcell.match .ov{color:var(--match)}
+.outcell.wide{grid-column:1/-1}
+
+/* Match quality bar */
+#matchbar-wrap{margin-top:10px}
+#matchbar-track{width:100%;height:8px;background:var(--layer-bg);border-radius:4px;
+  overflow:hidden;border:1px solid rgba(245,166,35,0.15)}
+#matchbar-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--red),var(--deviation),var(--match));
+  transition:width .25s}
+#matchbar-lbl{display:flex;justify-content:space-between;margin-top:4px;
+  font-size:8px;color:var(--muted);font-family:'Share Tech Mono',monospace;letter-spacing:1px}
+
+/* Doc units toggle */
+.togrow{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.tog-lbl{font-size:11px;color:var(--text)}
+.tsw{position:relative;display:inline-block;width:34px;height:18px;cursor:pointer;flex-shrink:0}
+.tsw input{opacity:0;width:0;height:0;position:absolute}
+.ttrk{position:absolute;inset:0;background:var(--muted);border-radius:9px;transition:.2s}
+.tsw input:checked + .ttrk{background:var(--accent1)}
+.ttrk::after{content:'';position:absolute;left:2px;top:2px;width:14px;height:14px;
+  background:#fff;border-radius:50%;transition:.2s}
+.tsw input:checked + .ttrk::after{transform:translateX(16px)}
+.doc-note{font-size:9px;color:var(--muted);line-height:1.5;margin-top:6px}
+
+/* Chart annotations */
+.leg{position:absolute;bottom:12px;left:12px;font-family:'Share Tech Mono',monospace;
+  font-size:9px;color:var(--muted);letter-spacing:1px;line-height:1.9;pointer-events:none}
+.leg .lr{color:var(--grid-r)} .leg .lx{color:var(--grid-x)} .leg .lm{color:var(--match)}
+.hint{position:absolute;bottom:12px;right:12px;font-family:'Share Tech Mono',monospace;
+  font-size:8px;color:rgba(245,166,35,0.3);letter-spacing:1px;text-align:right;pointer-events:none}
+.readout-float{position:absolute;top:12px;left:12px;font-family:'Share Tech Mono',monospace;
+  font-size:9px;color:var(--muted);letter-spacing:1px;line-height:1.8;pointer-events:none;
+  background:rgba(17,18,20,0.55);padding:6px 10px;border-radius:4px;border:1px solid rgba(245,166,35,0.15)}
+.readout-float b{color:var(--accent2);font-weight:600}
+
+@media (max-width:720px){
+  #main{flex-direction:column}
+  #panel-wrap{position:fixed;top:0;right:0;bottom:0;z-index:20;
+    margin-right:calc(-1 * clamp(260px,80vw,340px))}
+  #panel-wrap.open{margin-right:0}
+  #panel{width:clamp(260px,80vw,340px)}
+  #ptog{margin-top:52px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="hdr">
+    <span class="logo">ARC EDGE</span>
+    <div class="sep"></div>
+    <span class="title">IMPEDANCE MEASURE · SMITH CHART</span>
+    <button class="back" onclick="location.href='/arcedge.html'">← ARC EDGE</button>
+  </div>
+
+  <div id="main">
+    <div id="chart-area">
+      <svg id="chart-svg" viewBox="0 0 1000 1000"></svg>
+      <div class="leg">
+        <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
+        <div><span class="lx">━</span> REACTANCE (constant-X arcs)</div>
+        <div><span class="lm">●</span> MATCH POINT · drag to set Z</div>
+      </div>
+      <div class="hint">DRAG POINT · PINCH ZOOM<br>DOC-CIRC: d × 3</div>
+      <div class="readout-float" id="readout-float">
+        z = <b id="rf-z">1.00 + j0.00</b><br>
+        Γ = <b id="rf-gamma">0.00 ∠ 0.0°</b>
+      </div>
+    </div>
+
+    <div id="panel-wrap">
+      <button id="ptog"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 1L8 5L2 9" stroke="#f5a623" stroke-width="1.5" fill="none"/></svg></button>
+      <div id="panel">
+
+        <div class="psec">
+          <div class="psec-h">RF / ANTENNA PRESETS</div>
+          <div class="presets" id="presets"></div>
+        </div>
+
+        <div class="psec">
+          <div class="psec-h">INPUT — LOAD IMPEDANCE</div>
+          <div class="irow">
+            <label>R</label>
+            <input type="number" id="in-r" value="50" step="0.1">
+            <span class="unit">Ω</span>
+          </div>
+          <div class="irow">
+            <label>jX</label>
+            <input type="number" id="in-x" value="0" step="0.1">
+            <span class="unit">Ω</span>
+          </div>
+          <div class="irow">
+            <label>Z₀</label>
+            <input type="number" id="in-z0" value="50" step="1">
+            <span class="unit">Ω</span>
+          </div>
+          <div class="irow-slider">
+            <div class="sl-top"><span class="sl-lab">Frequency</span><span class="sl-val" id="v-freq">100.0 MHz</span></div>
+            <input type="range" id="s-freq" min="1" max="6000" step="1" value="100">
+          </div>
+        </div>
+
+        <div class="psec">
+          <div class="psec-h">MEASURED OUTPUT</div>
+          <div class="outgrid">
+            <div class="outcell"><div class="ol">REFLECTION Γ</div><div class="ov" id="out-gamma">0.000</div></div>
+            <div class="outcell"><div class="ol">ANGLE ∠Γ</div><div class="ov" id="out-angle">0.0°</div></div>
+            <div class="outcell"><div class="ol">VSWR</div><div class="ov" id="out-vswr">1.00:1</div></div>
+            <div class="outcell"><div class="ol">RETURN LOSS</div><div class="ov" id="out-rl">∞ dB</div></div>
+            <div class="outcell"><div class="ol">MISMATCH LOSS</div><div class="ov" id="out-ml">0.00 dB</div></div>
+            <div class="outcell"><div class="ol">Q FACTOR</div><div class="ov" id="out-q">0.00</div></div>
+            <div class="outcell wide match"><div class="ol">ARC-EDGE DOC CIRCUMFERENCE (|Γ| × d × 3)</div><div class="ov" id="out-doc">0.000</div></div>
+          </div>
+          <div id="matchbar-wrap">
+            <div id="matchbar-track"><div id="matchbar-fill"></div></div>
+            <div id="matchbar-lbl"><span>SHORT</span><span id="matchbar-mid">MATCH QUALITY</span><span>OPEN</span></div>
+          </div>
+        </div>
+
+        <div class="psec">
+          <div class="psec-h">ARC-EDGE MEASURE LOGIC</div>
+          <div class="togrow">
+            <span class="tog-lbl">Show Doc-Circ Units</span>
+            <label class="tsw"><input type="checkbox" id="t-doc" checked><span class="ttrk"></span></label>
+          </div>
+          <div class="togrow">
+            <span class="tog-lbl">Ring-Center Overlay</span>
+            <label class="tsw"><input type="checkbox" id="t-ring" checked><span class="ttrk"></span></label>
+          </div>
+          <div class="togrow">
+            <span class="tog-lbl">Animate Measurement</span>
+            <label class="tsw"><input type="checkbox" id="t-anim" checked><span class="ttrk"></span></label>
+          </div>
+          <div class="doc-note">
+            Doc circumference uses the Arc Edge convention <b style="color:var(--accent1)">c = d × 3</b> (not π) —
+            the same formula driving ring-center arc length in the Blender Arc Edge measure tool.
+            The reflection-coefficient magnitude |Γ| is treated as the working "diameter" fraction
+            for a direct bridge between chart position and doc-based arc output.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   ARC EDGE MEASURE — Smith Chart / Impedance Tool
+   Doc-based circumference & ring-center logic ported from the
+   Arc Edge Blender add-on (measure_arc_params_object,
+   doc_circumference, doc_partial_arc_verts).
+═══════════════════════════════════════════════════════════════ */
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById('chart-svg');
+const CX = 500, CY = 500, R = 460; // chart center + outer radius in viewBox units
+
+function svgEl(tag, attrs){
+  const el = document.createElementNS(SVG_NS, tag);
+  for(const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+/* ── Doc-based math, ported from arcedge.py ── */
+function docCircumference(d){ return d * 3; } // Arc Edge convention: no π
+function docCircleVerts(diameter, steps, cx, cy){
+  const circ = docCircumference(diameter);
+  const radius = diameter / 2;
+  const lps = circ / steps;
+  const pts = [];
+  let cl = 0;
+  for(let i=0;i<steps;i++){
+    const angle = cl / radius;
+    pts.push([cx + radius*Math.cos(angle), cy + radius*Math.sin(angle)]);
+    cl += lps;
+  }
+  return pts;
+}
+function docPartialArcVerts(diameter, startFrac, endFrac, steps, cx, cy){
+  const circ = docCircumference(diameter);
+  const radius = diameter / 2;
+  const s = circ*startFrac, e = circ*endFrac;
+  const lps = (e-s)/steps;
+  const pts = [];
+  let cl = s;
+  for(let i=0;i<=steps;i++){
+    const angle = cl / radius;
+    pts.push([cx + radius*Math.cos(angle), cy + radius*Math.sin(angle)]);
+    cl += lps;
+  }
+  return pts;
+}
+
+/* ── Complex number helpers (impedance / reflection coefficient) ── */
+function cAdd(a,b){return [a[0]+b[0], a[1]+b[1]]}
+function cSub(a,b){return [a[0]-b[0], a[1]-b[1]]}
+function cMul(a,b){return [a[0]*b[0]-a[1]*b[1], a[0]*b[1]+a[1]*b[0]]}
+function cDiv(a,b){
+  const d = b[0]*b[0]+b[1]*b[1];
+  return [(a[0]*b[0]+a[1]*b[1])/d, (a[1]*b[0]-a[0]*b[1])/d];
+}
+function cAbs(a){return Math.hypot(a[0],a[1])}
+function cAng(a){return Math.atan2(a[1],a[0])}
+
+/* z = R + jX normalized by Z0; Γ = (z-1)/(z+1) */
+function zToGamma(r, x, z0){
+  const z = [r/z0, x/z0];
+  return cDiv(cSub(z,[1,0]), cAdd(z,[1,0]));
+}
+function gammaToZ(gr, gi, z0){
+  const g=[gr,gi];
+  const num = cAdd([1,0], g);
+  const den = cSub([1,0], g);
+  const z = cDiv(num, den);
+  return [z[0]*z0, z[1]*z0];
+}
+
+/* ── Chart <-> SVG pixel mapping ── */
+// Γ-plane is unit circle. Map Γ=(gr,gi) → svg pixel (cx ± R, cy ± R)
+function gammaToPx(gr, gi){ return [CX + gr*R, CY - gi*R]; }
+function pxToGamma(px, py){ return [(px-CX)/R, -(py-CY)/R]; }
+
+/* ═══════════════════════════════════════════════════════════════
+   BUILD STATIC SMITH CHART GRID
+   Standard constant-R circles & constant-X arcs, drawn with a
+   glow filter to match the Arc Edge overlay aesthetic.
+═══════════════════════════════════════════════════════════════ */
+function buildChart(){
+  svg.innerHTML = '';
+
+  // Defs: glow filters
+  const defs = svgEl('defs',{});
+  const glowR = svgEl('filter',{id:'glowR', x:'-50%',y:'-50%',width:'200%',height:'200%'});
+  glowR.innerHTML = '<feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>';
+  const glowX = svgEl('filter',{id:'glowX', x:'-50%',y:'-50%',width:'200%',height:'200%'});
+  glowX.innerHTML = '<feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>';
+  const glowM = svgEl('filter',{id:'glowM', x:'-80%',y:'-80%',width:'260%',height:'260%'});
+  glowM.innerHTML = '<feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>';
+  defs.appendChild(glowR); defs.appendChild(glowX); defs.appendChild(glowM);
+  svg.appendChild(defs);
+
+  // Background disc
+  svg.appendChild(svgEl('circle',{cx:CX,cy:CY,r:R,fill:'#14171c',stroke:'rgba(245,166,35,0.35)','stroke-width':2}));
+
+  const gGrid = svgEl('g',{id:'grid-group'});
+  svg.appendChild(gGrid);
+
+  // Constant-resistance circles: center (r/(r+1), 0), radius 1/(r+1) in Γ-plane
+  const rVals = [0, 0.2, 0.5, 1, 2, 5, 10];
+  rVals.forEach(rv=>{
+    const cx = rv/(rv+1), rad = 1/(rv+1);
+    const [px,py] = gammaToPx(cx,0);
+    const pr = rad*R;
+    const isUnity = Math.abs(rv-1)<1e-6;
+    gGrid.appendChild(svgEl('circle',{
+      cx:px, cy:py, r:pr, fill:'none',
+      stroke: isUnity? 'rgba(0,229,204,0.85)':'var(--grid-r)',
+      'stroke-width': isUnity?2.4:1.1,
+      filter:'url(#glowR)'
+    }));
+    // label
+    if(rv>0){
+      const [lx,ly]=gammaToPx((rv-1)/(rv+1),0.02);
+      const t=svgEl('text',{x:lx,y:ly,fill:'rgba(0,229,204,0.75)','font-size':13,
+        'font-family':"'Share Tech Mono',monospace",'text-anchor':'middle'});
+      t.textContent=rv; gGrid.appendChild(t);
+    }
+  });
+
+  // Constant-reactance arcs: center (1, 1/x), radius 1/x — clipped to unit circle
+  const xVals = [0.2,0.5,1,2,5,10];
+  xVals.forEach(xv=>{
+    [1,-1].forEach(sign=>{
+      const x = sign*xv;
+      const ccx=1, ccy=1/x, rad=Math.abs(1/x);
+      // Numerically sample the arc, keep points inside unit circle
+      const pts=[];
+      for(let a=0;a<=360;a+=2){
+        const rad2=a*Math.PI/180;
+        const gx=ccx+rad*Math.cos(rad2), gy=ccy+rad*Math.sin(rad2);
+        if(gx*gx+gy*gy<=1.0006) pts.push(gammaToPx(gx,gy));
+      }
+      if(pts.length<2) return;
+      const d = 'M'+pts.map(p=>p[0].toFixed(2)+','+p[1].toFixed(2)).join(' L');
+      gGrid.appendChild(svgEl('path',{d,fill:'none',stroke:'var(--grid-x)','stroke-width':1.1,filter:'url(#glowX)'}));
+    });
+  });
+
+  // Center resistance axis line
+  const [ax1,ay1]=gammaToPx(-1,0), [ax2,ay2]=gammaToPx(1,0);
+  gGrid.appendChild(svgEl('line',{x1:ax1,y1:ay1,x2:ax2,y2:ay2,stroke:'rgba(245,166,35,0.25)','stroke-width':1}));
+
+  // Ring-center overlay group (Arc Edge signature — doc-based partial arcs)
+  svg.appendChild(svgEl('g',{id:'ring-overlay'}));
+
+  // Match point (draggable)
+  const matchG = svgEl('g',{id:'match-point',style:'cursor:grab'});
+  matchG.appendChild(svgEl('circle',{id:'match-halo',cx:CX,cy:CY,r:14,fill:'none',stroke:'var(--match)','stroke-width':1.4,opacity:0.5}));
+  matchG.appendChild(svgEl('circle',{id:'match-dot',cx:CX,cy:CY,r:8,fill:'var(--match)',filter:'url(#glowM)'}));
+  svg.appendChild(matchG);
+}
+buildChart();
+
+/* ═══════════════════════════════════════════════════════════════
+   RING-CENTER OVERLAY — direct port of measure_arc_params_object
+   Draws a chain of "ring center" doc-partial-arcs around the match
+   point, echoing the Blender viewport overlay (doc_circle_verts /
+   doc_partial_arc_verts) so the chart visibly runs on the same math.
+═══════════════════════════════════════════════════════════════ */
+function drawRingOverlay(gr, gi, matchQuality){
+  const g = document.getElementById('ring-overlay');
+  g.innerHTML = '';
+  if(!document.getElementById('t-ring').checked) return;
+  const [px,py] = gammaToPx(gr,gi);
+
+  // Big ring (teal) — mirrors doc_circle_verts(diameter=40,...)
+  const bigPts = docCircleVerts(46, 64, px, py);
+  const dBig = 'M'+bigPts.map(p=>p[0].toFixed(2)+','+p[1].toFixed(2)).join(' L')+' Z';
+  g.appendChild(svgEl('path',{d:dBig, fill:'none', stroke:'rgba(0,229,204,0.55)','stroke-width':1.2}));
+
+  // Small ring (amber) — mirrors doc_circle_verts(diameter=20,...) offset
+  const smallPts = docCircleVerts(22, 40, px, py);
+  const dSmall = 'M'+smallPts.map(p=>p[0].toFixed(2)+','+p[1].toFixed(2)).join(' L')+' Z';
+  g.appendChild(svgEl('path',{d:dSmall, fill:'none', stroke:'rgba(245,166,35,0.65)','stroke-width':1}));
+
+  // Partial arc sweeping with match quality — mirrors doc_partial_arc_verts
+  const arcPts = docPartialArcVerts(58, 0, Math.max(0.02,matchQuality), 40, px, py);
+  const dArc = 'M'+arcPts.map(p=>p[0].toFixed(2)+','+p[1].toFixed(2)).join(' L');
+  g.appendChild(svgEl('path',{d:dArc, fill:'none', stroke:'var(--match)','stroke-width':2.2, 'stroke-linecap':'round'}));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STATE + MEASUREMENT PIPELINE
+═══════════════════════════════════════════════════════════════ */
+const state = { r:50, x:0, z0:50, freq:100 };
+
+function computeAndRender(){
+  const {r,x,z0} = state;
+  const gamma = zToGamma(r,x,z0);
+  const gMag = cAbs(gamma);
+  const gAngDeg = cAng(gamma)*180/Math.PI;
+
+  // Standard RF figures
+  const vswr = gMag>=0.9999 ? Infinity : (1+gMag)/(1-gMag);
+  const rl = gMag<=0 ? Infinity : -20*Math.log10(gMag);
+  const ml = -10*Math.log10(Math.max(1e-9,1-gMag*gMag));
+  const q = r>0 ? Math.abs(x)/r : 0;
+
+  // Doc-based Arc Edge circumference: treat |Γ| as diameter fraction of chart R (=1)
+  // circ = d * 3  (Arc Edge convention, not π) — direct port of doc_circumference()
+  const docCirc = docCircumference(gMag);
+
+  // Match quality 0..1 (1 = perfect match at center)
+  const matchQuality = Math.max(0, 1 - gMag);
+
+  // Position marker
+  const [px,py] = gammaToPx(gamma[0], gamma[1]);
+  document.getElementById('match-dot').setAttribute('cx',px);
+  document.getElementById('match-dot').setAttribute('cy',py);
+  document.getElementById('match-halo').setAttribute('cx',px);
+  document.getElementById('match-halo').setAttribute('cy',py);
+  const haloR = 10 + matchQuality*10;
+  document.getElementById('match-halo').setAttribute('r',haloR);
+
+  drawRingOverlay(gamma[0], gamma[1], matchQuality);
+
+  // Output panel
+  document.getElementById('out-gamma').textContent = gMag.toFixed(3);
+  document.getElementById('out-angle').textContent = gAngDeg.toFixed(1)+'°';
+  document.getElementById('out-vswr').textContent = isFinite(vswr) ? vswr.toFixed(2)+':1' : '∞';
+  document.getElementById('out-rl').textContent = isFinite(rl) ? rl.toFixed(1)+' dB' : '∞ dB';
+  document.getElementById('out-ml').textContent = ml.toFixed(2)+' dB';
+  document.getElementById('out-q').textContent = q.toFixed(2);
+  document.getElementById('out-doc').textContent = docCirc.toFixed(3)+' du';
+
+  document.getElementById('matchbar-fill').style.width = (matchQuality*100).toFixed(0)+'%';
+
+  document.getElementById('rf-z').textContent = `${r.toFixed(2)} ${x>=0?'+':'−'} j${Math.abs(x).toFixed(2)}`;
+  document.getElementById('rf-gamma').textContent = `${gMag.toFixed(3)} ∠ ${gAngDeg.toFixed(1)}°`;
+
+  // Doc units visibility
+  document.getElementById('out-doc').closest('.outcell').style.display =
+    document.getElementById('t-doc').checked ? '' : 'none';
+}
+
+/* ── Inputs ── */
+const inR=document.getElementById('in-r'), inX=document.getElementById('in-x'), inZ0=document.getElementById('in-z0');
+function syncFromInputs(){
+  state.r = parseFloat(inR.value)||0;
+  state.x = parseFloat(inX.value)||0;
+  state.z0 = Math.max(1,parseFloat(inZ0.value)||50);
+  clearPresetActive();
+  computeAndRender();
+}
+[inR,inX,inZ0].forEach(el=>el.addEventListener('input',syncFromInputs));
+
+const sFreq=document.getElementById('s-freq'), vFreq=document.getElementById('v-freq');
+sFreq.addEventListener('input',()=>{
+  state.freq=parseFloat(sFreq.value);
+  vFreq.textContent = state.freq>=1000 ? (state.freq/1000).toFixed(2)+' GHz' : state.freq.toFixed(1)+' MHz';
+});
+
+document.getElementById('t-doc').addEventListener('change', computeAndRender);
+document.getElementById('t-ring').addEventListener('change', computeAndRender);
+
+/* ── Drag the match point directly on the chart ── */
+let dragging=false;
+function svgPointFromEvent(e){
+  const rect = svg.getBoundingClientRect();
+  const cx = (e.touches? e.touches[0].clientX : e.clientX) - rect.left;
+  const cy = (e.touches? e.touches[0].clientY : e.clientY) - rect.top;
+  const scale = 1000/rect.width;
+  return [cx*scale, cy*scale];
+}
+function startDrag(e){ dragging=true; moveDrag(e); e.preventDefault(); }
+function moveDrag(e){
+  if(!dragging) return;
+  const [px,py] = svgPointFromEvent(e);
+  let [gr,gi] = pxToGamma(px,py);
+  const mag = Math.hypot(gr,gi);
+  if(mag>0.999){ gr/=mag/0.999; gi/=mag/0.999; }
+  const [zr,zx] = gammaToZ(gr,gi,state.z0);
+  state.r = Math.max(0.01, zr);
+  state.x = zx;
+  inR.value = state.r.toFixed(2);
+  inX.value = state.x.toFixed(2);
+  clearPresetActive();
+  computeAndRender();
+  e.preventDefault();
+}
+function endDrag(){ dragging=false; }
+const matchPoint = document.getElementById('match-point');
+matchPoint.addEventListener('mousedown', startDrag);
+window.addEventListener('mousemove', moveDrag);
+window.addEventListener('mouseup', endDrag);
+matchPoint.addEventListener('touchstart', startDrag, {passive:false});
+window.addEventListener('touchmove', moveDrag, {passive:false});
+window.addEventListener('touchend', endDrag);
+svg.addEventListener('mousedown', e=>{ if(e.target.closest('#match-point')) return; startDrag(e); });
+svg.addEventListener('touchstart', e=>{ if(e.target.closest('#match-point')) return; startDrag(e); }, {passive:false});
+
+/* ═══════════════════════════════════════════════════════════════
+   RF / ANTENNA PRESETS
+   Common standard impedances for antenna/transmission-line work.
+═══════════════════════════════════════════════════════════════ */
+const PRESETS = [
+  {name:'50Ω Match',   r:50,  x:0,   z0:50},
+  {name:'75Ω Match',   r:75,  x:0,   z0:75},
+  {name:'Open Circuit',r:100000, x:0, z0:50},
+  {name:'Short Circuit',r:0.001, x:0, z0:50},
+  {name:'Dipole (73Ω)', r:73, x:42.5, z0:50},
+  {name:'λ/4 Monopole', r:36.5, x:21.25, z0:50},
+  {name:'VSWR 2:1 cap', r:25, x:-30, z0:50},
+  {name:'VSWR 3:1 ind', r:100, x:60, z0:50},
+  {name:'Capacitive',  r:30, x:-40, z0:50},
+  {name:'Inductive',   r:30, x:40, z0:50},
+];
+const presetsEl = document.getElementById('presets');
+function clearPresetActive(){
+  presetsEl.querySelectorAll('.preset-chip').forEach(c=>c.classList.remove('active'));
+}
+PRESETS.forEach(p=>{
+  const chip = document.createElement('button');
+  chip.className='preset-chip';
+  chip.textContent=p.name;
+  chip.addEventListener('click',()=>{
+    clearPresetActive(); chip.classList.add('active');
+    state.r = p.r>1000?1000:p.r; // clamp open-circuit for chart display
+    state.x = p.x;
+    state.z0 = p.z0;
+    inR.value=state.r; inX.value=state.x; inZ0.value=state.z0;
+    animateToPoint();
+  });
+  presetsEl.appendChild(chip);
+});
+
+/* ── Animated measurement transition (mirrors ARCEDGE_OT_AnimateMeasurement) ── */
+function animateToPoint(){
+  if(!document.getElementById('t-anim').checked){ computeAndRender(); return; }
+  const dot = document.getElementById('match-dot');
+  dot.style.transition='r 0.15s ease';
+  dot.setAttribute('r',14);
+  computeAndRender();
+  setTimeout(()=>{ dot.setAttribute('r',8); }, 220);
+}
+
+/* ── Panel toggle ── */
+const pw = document.getElementById('panel-wrap');
+document.getElementById('ptog').addEventListener('click',()=>pw.classList.toggle('open'));
+if(window.innerWidth>720) pw.classList.add('open');
+
+computeAndRender();
+</script>
+</body>
+</html>
