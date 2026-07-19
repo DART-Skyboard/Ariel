@@ -49,7 +49,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 #chart-area{flex:1;display:flex;align-items:center;justify-content:center;
   position:relative;overflow:hidden;background:
     radial-gradient(circle at 50% 40%, #14171c 0%, var(--bg) 70%)}
-#chart-svg{width:min(92%,88vh);height:auto;aspect-ratio:1;touch-action:none}
+#chart-svg{width:min(92%,88vh);height:auto;aspect-ratio:1;touch-action:none;
+  position:relative;z-index:2}
+#wave-field{position:absolute;width:min(92%,88vh);height:min(92%,88vh);
+  aspect-ratio:1;z-index:1;border-radius:50%;pointer-events:none}
 
 /* ── Side panel ── */
 #panel-wrap{display:flex;flex-direction:row;align-items:stretch;flex-shrink:0;
@@ -156,6 +159,7 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
 
   <div id="main">
     <div id="chart-area">
+      <canvas id="wave-field" width="1000" height="1000"></canvas>
       <svg id="chart-svg" viewBox="0 0 1000 1000"></svg>
       <div class="leg">
         <div><span class="lr">━</span> RESISTANCE (constant-R circles)</div>
@@ -355,8 +359,8 @@ function buildChart(){
   defs.appendChild(glowR); defs.appendChild(glowX); defs.appendChild(glowM);
   svg.appendChild(defs);
 
-  // Background disc
-  svg.appendChild(svgEl('circle',{cx:CX,cy:CY,r:R,fill:'#14171c',stroke:'rgba(245,166,35,0.35)','stroke-width':2}));
+  // Background disc — translucent so the animated wave field underneath shows through
+  svg.appendChild(svgEl('circle',{cx:CX,cy:CY,r:R,fill:'rgba(20,23,28,0.28)',stroke:'rgba(245,166,35,0.35)','stroke-width':2}));
 
   const gGrid = svgEl('g',{id:'grid-group'});
   svg.appendChild(gGrid);
@@ -418,56 +422,81 @@ function buildChart(){
 buildChart();
 
 /* ═══════════════════════════════════════════════════════════════
-   ANIMATED WAVES — incident, reflected, standing wave visualization
-   Driven live by state.freq (animation speed) and computed Γ
-   (reflection amplitude/phase feeding the reflected + standing wave).
+   BACKGROUND WAVE FIELD — canvas layer under the Smith chart
+   Paints the live interference pattern (incident + reflected,
+   scaled/phased by Γ) as a radial field across the whole disc, so
+   the chart's R/X circles visibly overlay the peaks & nulls.
 ═══════════════════════════════════════════════════════════════ */
+const waveCanvas = document.getElementById('wave-field');
+const wctx = waveCanvas.getContext('2d');
+const FIELD_RES = 220; // low-res field grid, upscaled by canvas draw — keeps this fast
+const fieldCanvas = document.createElement('canvas');
+fieldCanvas.width = FIELD_RES; fieldCanvas.height = FIELD_RES;
+const fctx = fieldCanvas.getContext('2d');
+const fieldImg = fctx.createImageData(FIELD_RES, FIELD_RES);
 
-// ── Traveling wave rings on the Smith chart itself ──
-// Incident: rings converge inward from chart edge toward the match point.
-// Reflected: rings expand outward from the match point, scaled by |Γ|.
-function buildWaveRingLayer(){
-  const g = svgEl('g',{id:'wave-rings'});
-  svg.appendChild(g);
+// Heat gradient lookup: 0=null(dark navy) .. 1=peak(white-hot cyan/magenta blend)
+function heatColor(t, hueMix){
+  t = Math.max(0, Math.min(1, t));
+  // base: dark navy -> deep teal -> bright cyan/magenta blend -> white
+  const r1=8,  g1=14, b1=22;
+  const r2=0,  g2=90, b2=110;
+  const r3=Math.round(0*(1-hueMix)+255*hueMix), g3=Math.round(200*(1-hueMix)+40*hueMix), b3=Math.round(255*(1-hueMix)+200*hueMix);
+  const r4=255,g4=255,b4=255;
+  let r,g,b;
+  if(t<0.33){ const u=t/0.33; r=r1+(r2-r1)*u; g=g1+(g2-g1)*u; b=b1+(b2-b1)*u; }
+  else if(t<0.72){ const u=(t-0.33)/0.39; r=r2+(r3-r2)*u; g=g2+(g3-g2)*u; b=b2+(b3-b2)*u; }
+  else { const u=(t-0.72)/0.28; r=r3+(r4-r3)*u; g=g3+(g4-g3)*u; b=b3+(b4-b3)*u; }
+  return [r|0,g|0,b|0];
 }
-buildWaveRingLayer();
 
-let waveT = 0; // animation clock (radians)
-function drawWaveRings(gr, gi, gMag, gAngRad){
-  const g = document.getElementById('wave-rings');
-  g.innerHTML = '';
-  if(!document.getElementById('t-waves').checked) return;
-
-  const [mpx, mpy] = gammaToPx(gr, gi);
-  const centerDist = Math.hypot(mpx-CX, mpy-CY);
-
-  // Incident wave — 3 converging rings from outer edge toward match point
-  for(let k=0;k<3;k++){
-    const phase = (waveT*1.4 + k*2.4) % (Math.PI*2);
-    const travel = 1 - (phase/(Math.PI*2)); // 1 → 0 as it converges
-    const px = CX + (mpx-CX)*(1-travel) + (CX-mpx)*0*0; // placeholder not used
-    const rad = R*travel + 6;
-    const op = 0.55*(1-travel*0.3);
-    g.appendChild(svgEl('circle',{
-      cx:CX, cy:CY, r:rad, fill:'none', stroke:'var(--wave-i)',
-      'stroke-width':1.6, opacity:op.toFixed(2), 'stroke-dasharray':'3,7'
-    }));
+function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
+  const showWaves = document.getElementById('t-waves').checked;
+  if(!showWaves){
+    wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+    return;
   }
+  const cxN = FIELD_RES/2, cyN = FIELD_RES/2, rN = FIELD_RES/2;
+  // Match point in field-pixel space
+  const mpx = cxN + gr*rN, mpy = cyN - gi*rN;
 
-  // Reflected wave — rings expanding outward from the match point, amplitude ∝ |Γ|
-  if(gMag>0.01){
-    for(let k=0;k<3;k++){
-      const phase = (waveT*1.4 + k*2.4 + gAngRad) % (Math.PI*2);
-      const travel = (phase/(Math.PI*2));
-      const maxRad = (R - centerDist)*1.4 + centerDist;
-      const rad = 4 + travel*maxRad*gMag*0.9 + travel*40;
-      const op = gMag*0.6*(1-travel*0.6);
-      g.appendChild(svgEl('circle',{
-        cx:mpx, cy:mpy, r:rad.toFixed(1), fill:'none', stroke:'var(--wave-r)',
-        'stroke-width':1.6, opacity:Math.max(0,op).toFixed(2), 'stroke-dasharray':'2,5'
-      }));
+  const k = 0.35 + (freqMHz/6000)*0.55; // spatial frequency of the ripples across the disc
+  const t = waveT;
+
+  const data = fieldImg.data;
+  for(let py=0; py<FIELD_RES; py++){
+    for(let px=0; px<FIELD_RES; px++){
+      const dx = px-cxN, dy = py-cyN;
+      const distFromCenter = Math.hypot(dx,dy);
+      const idx = (py*FIELD_RES+px)*4;
+      if(distFromCenter > rN+1){
+        data[idx+3]=0; continue; // outside disc = transparent
+      }
+      // Incident wave: radial ripples converging toward chart center from edge
+      const incident = Math.sin(k*(rN-distFromCenter)*0.25 - t*1.6);
+
+      // Reflected wave: radial ripples expanding from the match point, amplitude |Γ|
+      const ddx=px-mpx, ddy=py-mpy;
+      const distFromMatch = Math.hypot(ddx,ddy);
+      const reflected = gMag * Math.sin(k*distFromMatch*0.25 + t*1.6 + gAngRad);
+
+      // Superposition -> standing wave interference field
+      const sum = incident + reflected; // range approx [-(1+gMag), (1+gMag)]
+      const norm = (sum + (1+gMag)) / (2*(1+gMag)+1e-6); // normalize 0..1
+
+      const [r,g,b] = heatColor(norm, 0.5 + 0.5*Math.sin(distFromMatch*0.02));
+      data[idx]=r; data[idx+1]=g; data[idx+2]=b;
+      // fade near the very edge for a soft disc boundary
+      const edgeFade = distFromCenter > rN-6 ? Math.max(0,(rN-distFromCenter)/6) : 1;
+      data[idx+3] = Math.round(190*edgeFade);
     }
   }
+  fctx.putImageData(fieldImg,0,0);
+
+  // Upscale onto the visible high-res canvas
+  wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+  wctx.imageSmoothingEnabled = true;
+  wctx.drawImage(fieldCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
 }
 
 /* ── Transmission-line wave strip (bottom panel) ──
@@ -569,6 +598,7 @@ function drawRingOverlay(gr, gi, matchQuality){
 ═══════════════════════════════════════════════════════════════ */
 const state = { r:50, x:0, z0:50, freq:100 };
 let lastGamma = {gr:0, gi:0, gMag:0, gAngRad:0, freq:100};
+let waveT = 0; // animation clock (radians), advanced by the render loop
 
 function computeAndRender(){
   const {r,x,z0} = state;
@@ -602,7 +632,7 @@ function computeAndRender(){
 
   // Cache for the animation loop (waves redraw every frame independent of input events)
   lastGamma = {gr:gamma[0], gi:gamma[1], gMag, gAngRad: cAng(gamma), freq: state.freq};
-  drawWaveRings(gamma[0], gamma[1], gMag, cAng(gamma));
+  drawWaveField(gamma[0], gamma[1], gMag, cAng(gamma), state.freq);
   drawWaveStrip(gMag, cAng(gamma), state.freq);
 
   // Output panel
@@ -738,7 +768,7 @@ function waveAnimLoop(ts){
   lastFrameTime = ts;
   if(document.getElementById('t-waves').checked){
     waveT += dt * 2.2;
-    drawWaveRings(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad);
+    drawWaveField(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
     drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
   }
 }
