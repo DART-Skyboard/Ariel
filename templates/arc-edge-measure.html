@@ -214,8 +214,15 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
           <div class="psec-h">TRANSMISSION LINE — LIVE WAVES</div>
           <svg id="wave-strip" viewBox="0 0 300 110" style="width:100%;height:auto;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);border-radius:4px"></svg>
           <div class="togrow" style="margin-top:8px">
-            <span class="tog-lbl">Animate Waves</span>
-            <label class="tsw"><input type="checkbox" id="t-waves" checked><span class="ttrk"></span></label>
+            <span class="tog-lbl">Show Wave Strip</span>
+            <label class="tsw"><input type="checkbox" id="t-strip" checked><span class="ttrk"></span></label>
+          </div>
+
+          <div class="psec-h" style="margin-top:14px">CHART UNDERLAY — WAVE FIELD</div>
+          <svg id="wave-strip-2" viewBox="0 0 300 110" style="width:100%;height:auto;background:var(--layer-bg);border:1px solid rgba(245,166,35,0.15);border-radius:4px"></svg>
+          <div class="togrow" style="margin-top:8px">
+            <span class="tog-lbl">Show Chart Underlay</span>
+            <label class="tsw"><input type="checkbox" id="t-field" checked><span class="ttrk"></span></label>
           </div>
         </div>
 
@@ -451,8 +458,8 @@ function heatColor(t, hueMix){
 }
 
 function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
-  const showWaves = document.getElementById('t-waves').checked;
-  if(!showWaves){
+  const showField = document.getElementById('t-field').checked;
+  if(!showField){
     wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
     return;
   }
@@ -503,49 +510,36 @@ function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
    Classic incident + reflected + standing-wave envelope along a line,
    exactly the "parts people use to make up the system" view — this is
    the textbook picture of Vmax/Vmin nodes on a mismatched line. */
-const waveStripSvg = document.getElementById('wave-strip');
-function buildWaveStripStatic(){
-  waveStripSvg.innerHTML='';
-  // baseline axis
-  waveStripSvg.appendChild(svgEl('line',{x1:8,y1:55,x2:292,y2:55,stroke:'rgba(245,166,35,0.2)','stroke-width':1}));
-  // envelope path placeholders (filled each frame)
-  waveStripSvg.appendChild(svgEl('path',{id:'ws-incident', fill:'none', stroke:'var(--wave-i)','stroke-width':1.6,opacity:0.85}));
-  waveStripSvg.appendChild(svgEl('path',{id:'ws-reflected', fill:'none', stroke:'var(--wave-r)','stroke-width':1.6,opacity:0.85}));
-  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing-env-top', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
-  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing-env-bot', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
-  waveStripSvg.appendChild(svgEl('path',{id:'ws-standing', fill:'none', stroke:'var(--wave-s)','stroke-width':2.2,opacity:0.95}));
-  // Vmax / Vmin labels
-  const lblMax = svgEl('text',{id:'ws-lbl-max',x:6,y:12,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
-  lblMax.textContent='Vmax'; waveStripSvg.appendChild(lblMax);
-  const lblMin = svgEl('text',{id:'ws-lbl-min',x:6,y:104,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
-  lblMin.textContent='Vmin'; waveStripSvg.appendChild(lblMin);
+function buildWaveStrip(svgId, prefix){
+  const stripSvg = document.getElementById(svgId);
+  stripSvg.innerHTML='';
+  stripSvg.appendChild(svgEl('line',{x1:8,y1:55,x2:292,y2:55,stroke:'rgba(245,166,35,0.2)','stroke-width':1}));
+  stripSvg.appendChild(svgEl('path',{id:prefix+'-incident', fill:'none', stroke:'var(--wave-i)','stroke-width':1.6,opacity:0.85}));
+  stripSvg.appendChild(svgEl('path',{id:prefix+'-reflected', fill:'none', stroke:'var(--wave-r)','stroke-width':1.6,opacity:0.85}));
+  stripSvg.appendChild(svgEl('path',{id:prefix+'-standing-env-top', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
+  stripSvg.appendChild(svgEl('path',{id:prefix+'-standing-env-bot', fill:'none', stroke:'var(--wave-s)','stroke-width':1,opacity:0.55,'stroke-dasharray':'2,3'}));
+  stripSvg.appendChild(svgEl('path',{id:prefix+'-standing', fill:'none', stroke:'var(--wave-s)','stroke-width':2.2,opacity:0.95}));
+  const lblMax = svgEl('text',{x:6,y:12,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
+  lblMax.textContent='Vmax'; stripSvg.appendChild(lblMax);
+  const lblMin = svgEl('text',{x:6,y:104,fill:'var(--wave-s)','font-size':7,'font-family':"'Share Tech Mono',monospace"});
+  lblMin.textContent='Vmin'; stripSvg.appendChild(lblMin);
 }
-buildWaveStripStatic();
+buildWaveStrip('wave-strip','ws');
+buildWaveStrip('wave-strip-2','ws2');
 
-function drawWaveStrip(gMag, gAngRad, freqMHz){
-  if(!document.getElementById('t-waves').checked){
-    ['ws-incident','ws-reflected','ws-standing','ws-standing-env-top','ws-standing-env-bot'].forEach(id=>{
-      document.getElementById(id).setAttribute('d','');
-    });
-    return;
-  }
+function drawOneWaveStrip(prefix, gMag, gAngRad, freqMHz){
   const W=300, MID=55, AMP=32;
-  const N=120; // sample points
-  // Spatial wavenumber scaled so higher frequency visibly animates faster/tighter
-  const k = 0.06 + (freqMHz/6000)*0.10; // rad per px, tame range
-  const wSpeed = 1.1 + (freqMHz/6000)*2.2; // temporal speed scales with freq
+  const N=120;
+  const k = 0.06 + (freqMHz/6000)*0.10;
+  const wSpeed = 1.1 + (freqMHz/6000)*2.2;
 
   let dInc='', dRef='', dSta='', dTop='', dBot='';
   for(let i=0;i<=N;i++){
     const x = i/N*W;
     const phaseSpatial = k*x;
-    // Incident traveling wave: moves in +x direction (toward load, rightward)
     const yInc = MID - AMP*Math.sin(phaseSpatial - waveT*wSpeed);
-    // Reflected traveling wave: moves in -x direction, amplitude/phase from Γ
     const yRef = MID - AMP*gMag*Math.sin(phaseSpatial + waveT*wSpeed + gAngRad);
-    // Standing wave = superposition
     const ySta = MID - (AMP*Math.sin(phaseSpatial - waveT*wSpeed) + AMP*gMag*Math.sin(phaseSpatial + waveT*wSpeed + gAngRad));
-    // Envelope: |1+Γe^{-2jkx}| shape (classic standing wave envelope)
     const envPhase = 2*phaseSpatial - gAngRad;
     const envMag = Math.sqrt(1 + gMag*gMag + 2*gMag*Math.cos(envPhase));
     const yTop = MID - AMP*envMag;
@@ -558,11 +552,25 @@ function drawWaveStrip(gMag, gAngRad, freqMHz){
     dTop += `${cmd}${x.toFixed(1)},${yTop.toFixed(1)} `;
     dBot += `${cmd}${x.toFixed(1)},${yBot.toFixed(1)} `;
   }
-  document.getElementById('ws-incident').setAttribute('d',dInc);
-  document.getElementById('ws-reflected').setAttribute('d',dRef);
-  document.getElementById('ws-standing').setAttribute('d',dSta);
-  document.getElementById('ws-standing-env-top').setAttribute('d',dTop);
-  document.getElementById('ws-standing-env-bot').setAttribute('d',dBot);
+  document.getElementById(prefix+'-incident').setAttribute('d',dInc);
+  document.getElementById(prefix+'-reflected').setAttribute('d',dRef);
+  document.getElementById(prefix+'-standing').setAttribute('d',dSta);
+  document.getElementById(prefix+'-standing-env-top').setAttribute('d',dTop);
+  document.getElementById(prefix+'-standing-env-bot').setAttribute('d',dBot);
+}
+
+function drawWaveStrip(gMag, gAngRad, freqMHz){
+  const show = document.getElementById('t-strip').checked;
+  if(!show){
+    ['ws-incident','ws-reflected','ws-standing','ws-standing-env-top','ws-standing-env-bot',
+     'ws2-incident','ws2-reflected','ws2-standing','ws2-standing-env-top','ws2-standing-env-bot'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(el) el.setAttribute('d','');
+    });
+    return;
+  }
+  drawOneWaveStrip('ws', gMag, gAngRad, freqMHz);
+  drawOneWaveStrip('ws2', gMag, gAngRad, freqMHz);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -766,10 +774,12 @@ function waveAnimLoop(ts){
   requestAnimationFrame(waveAnimLoop);
   const dt = Math.min((ts-lastFrameTime)/1000, 0.05);
   lastFrameTime = ts;
-  if(document.getElementById('t-waves').checked){
+  const fieldOn = document.getElementById('t-field').checked;
+  const stripOn = document.getElementById('t-strip').checked;
+  if(fieldOn || stripOn){
     waveT += dt * 2.2;
-    drawWaveField(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
-    drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
+    if(fieldOn) drawWaveField(lastGamma.gr, lastGamma.gi, lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
+    if(stripOn) drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);
   }
 }
 requestAnimationFrame(waveAnimLoop);
