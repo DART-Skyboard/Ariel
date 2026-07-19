@@ -268,7 +268,7 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   if (U.glowOn > 0.5) {
     a *= pow(1.0 - d, 1.6);
   } else {
-    a *= smoothstep(1.0, 0.82, d); // crisp dot, thin AA edge only, no soft haze
+    a *= 1.0 - smoothstep(0.82, 1.0, d); // crisp dot, thin AA edge only, no soft haze
   }
   return vec4<f32>(in.color.rgb, a);
 }
@@ -359,10 +359,18 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
 /* ───────────────────────── init ───────────────────────── */
 async function initGPU(canvas){
-  if(!('gpu' in navigator)){ S.supported=false; return false; }
+  if(!('gpu' in navigator)){
+    S.supported=false;
+    S.failReason = {kind:'no-api', detail:"This browser doesn't implement the WebGPU API at all. Try a recent Chrome, Edge, or Safari (18+)."};
+    return false;
+  }
   try{
     const adapter = await navigator.gpu.requestAdapter();
-    if(!adapter){ S.supported=false; return false; }
+    if(!adapter){
+      S.supported=false;
+      S.failReason = {kind:'no-adapter', detail:'WebGPU is implemented here, but no compatible GPU adapter was returned — likely hardware acceleration is disabled, or the GPU is blocklisted on this device. Check chrome://gpu or your browser\'s hardware-acceleration setting.'};
+      return false;
+    }
     const device = await adapter.requestDevice();
     const context = canvas.getContext('webgpu');
     const format = navigator.gpu.getPreferredCanvasFormat();
@@ -375,6 +383,11 @@ async function initGPU(canvas){
   }catch(err){
     console.error('[ArcEdge3D] WebGPU init failed:', err);
     S.supported=false;
+    // This is the important distinction: the API IS supported here, something
+    // in our own setup (buffer/shader/pipeline code) threw. Blaming "the
+    // browser doesn't support WebGPU" in this case would send debugging in
+    // the wrong direction entirely.
+    S.failReason = {kind:'init-error', detail:`WebGPU is supported here, but the 3D scene failed to initialize: ${err && err.message ? err.message : err}. This is very likely a bug in the scene setup, not a browser limitation — check the browser console for the full error.`};
     return false;
   }
 }
@@ -1199,7 +1212,14 @@ async function toggle3D(){
       const ok = await initGPU(canvas);
       if(!ok){
         S.unsupported = true;
-        if(msgEl) msgEl.style.display='flex';
+        if(msgEl){
+          const titleEl = document.getElementById('s3d-fallback-title');
+          const detailEl = document.getElementById('s3d-fallback-detail');
+          const reason = S.failReason || {kind:'unknown', detail:'Unknown error — check the browser console.'};
+          if(titleEl) titleEl.textContent = reason.kind==='init-error' ? 'Failed to start the 3D scene' : 'WebGPU not available';
+          if(detailEl) detailEl.textContent = reason.detail;
+          msgEl.style.display='flex';
+        }
         return; // stay on the fallback screen — the button below still flips wrap3d back off
       }
       if(msgEl) msgEl.style.display='none';
