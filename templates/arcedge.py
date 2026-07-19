@@ -1,11 +1,12 @@
 bl_info = {
     "name": "Arc Edge - Dual Scene Setup (Cycles/Eevee) + Doc Circumference",
     "author": "Justin Venable CEO @ Radical Deepscale / Based on ArcEdge.blend reference",
-    "version": (1, 0, 9),
-    "blender": (4, 3, 2),
+    "version": (1, 1, 0),
+    "blender": (5, 0, 1),
+    "maintainer": "Radical Deepscale <justin@dartmeadow.com>",
     "location": "3D View > Sidebar > Arc Edge",
     "description": "Generate custom arcs, create scene spheres with node materials (Cycles/Eevee), measure arcs with doc-based circumference, animated overlay.",
-    "category": "3D View",
+    "category": "Object",
 }
 
 import bpy
@@ -48,7 +49,8 @@ def doc_circle_verts(diameter, steps, cx, cy):
         angle = current_len / radius
         x = cx + radius * cos(angle)
         y = cy + radius * sin(angle)
-        verts.append((x, y))
+        # --- NEW (Blender 5.0+) ---
+        verts.append((x, y, 0.0)) # Must include Z axis
         current_len += length_per_step
     return verts
 
@@ -68,7 +70,8 @@ def doc_partial_arc_verts(diameter, start_fraction, end_fraction, steps, cx, cy)
         angle = current_len / radius
         x = cx + radius * cos(angle)
         y = cy + radius * sin(angle)
-        verts.append((x, y))
+        # --- FIX: Must be 3D ---
+        verts.append((x, y, 0.0)) 
         current_len += length_per_step
     return verts
 
@@ -160,8 +163,9 @@ def draw_measure_overlay():
     global ARCEDGE_MEASURE_OP_INSTANCE
     progress = ARCEDGE_MEASURE_OP_INSTANCE.progress if ARCEDGE_MEASURE_OP_INSTANCE else 0.0
 
-    shader = gpu.shader.from_builtin('2D_UNIFORM_COLOR')
-    gpu.state.blend_set("ALPHA")
+    # --- NEW (Blender 5.0+) ---
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR') # Generic Uniform
+    gpu.state.blend_set("ALPHA_PREMULT") # Explicit blending mode
 
     # Big circle (teal) with doc diameter = 40
     big_verts = doc_circle_verts(diameter=40, steps=64, cx=base_x, cy=base_y)
@@ -387,8 +391,12 @@ def create_scene_setup_cycles():
     node_mix.location = (600, 0)
     node_principled = nodes.new("ShaderNodeBsdfPrincipled")
     node_principled.location = (300, 100)
-    if "Transmission" in node_principled.inputs:
-        node_principled.inputs["Transmission"].default_value = 0.5
+    # --- OLD ---
+    if "Transmission" in node_principled.inputs: node_principled.inputs["Transmission"].default_value = 0.5
+    # --- NEW (Blender 5.0+) ---
+    # Check for both to maintain backward compatibility if desired, or just target new
+    if "Transmission Weight" in node_principled.inputs: node_principled.inputs["Transmission Weight"].default_value = 0.5
+    elif "Transmission" in node_principled.inputs: node_principled.inputs["Transmission"].default_value = 0.5
     node_principled.inputs["Base Color"].default_value = (0.5, 0.8, 1.0, 1.0)
     node_principled.inputs["Roughness"].default_value = 0.2
     node_transparent = nodes.new("ShaderNodeBsdfTransparent")
@@ -501,7 +509,12 @@ def create_scene_setup_eevee():
     bpy.ops.mesh.primitive_uv_sphere_add(radius=5, location=(0, 0, 0), segments=32, ring_count=16)
     main_sphere = bpy.context.active_object
     main_sphere.name = "MainSphere"
+    # --- NEW (Blender 5.0+) ---
     mat_main = bpy.data.materials.new(name="MainSphereMat")
+    mat_main.use_nodes = True # Required for Eevee Next rendering
+    bsdf = mat_main.node_tree.nodes.get("Principled BSDF")
+    if bsdf: bsdf.inputs["Base Color"].default_value = (0.529, 0.808, 0.922, 0.25)
+    bsdf.inputs["Alpha"].default_value = 0.25
     mat_main.diffuse_color = (0.529, 0.808, 0.922, 0.25)
     main_sphere.data.materials.append(mat_main)
     bpy.ops.mesh.primitive_uv_sphere_add(radius=2.5, location=(0, 0, 0), segments=32, ring_count=16)
@@ -1100,186 +1113,248 @@ class ARCEDGE_OT_MeasureArc(bpy.types.Operator):
         return {'FINISHED'}
     
 def create_geometry_nodes_for_arcs():
-    """Creates a geometry node setup replicating the preset structure from the screenshot, 
-    including physics properties, gravity selection, and extrusion with enhanced physics calculations."""
+    """
+    Creates a geometry node setup replicating the provided screenshot reference.
+    Includes:
+    - 3 Custom Arcs (Bezier Segments)
+    - Profile Circle driven by 'Extrude Thickness'
+    - Curve to Mesh & Join Geometry (keeping original mesh)
+    - Physics Calculation Nodes (Mass, Volume, Weight, Density)
+    - Gravity Preset Selector (Earth, Moon, Mars, etc.)
+    """
 
-    # Ensure a selected object exists
+    # 1. Get Active Object
     obj = bpy.context.active_object
     if not obj:
         print("No active object selected.")
         return
 
-    # Ensure the Geometry Nodes modifier is present
+    # 2. Get/Create Modifier and Node Group
     if "ArcEdge_GeoNodes" not in obj.modifiers:
         geo_modifier = obj.modifiers.new(name="ArcEdge_GeoNodes", type='NODES')
+    else:
+        geo_modifier = obj.modifiers["ArcEdge_GeoNodes"]
+
+    # Create new Node Tree if missing
+    if geo_modifier.node_group is None:
         node_group = bpy.data.node_groups.new(name="ArcEdge_GeoNodes", type='GeometryNodeTree')
         geo_modifier.node_group = node_group
     else:
-        geo_modifier = obj.modifiers["ArcEdge_GeoNodes"]
-        if geo_modifier.node_group is None:
-            node_group = bpy.data.node_groups.new(name="ArcEdge_GeoNodes", type='GeometryNodeTree')
-            geo_modifier.node_group = node_group
-        else:
-            node_group = geo_modifier.node_group
+        node_group = geo_modifier.node_group
 
-    # Ensure nodes exist before clearing
-    if node_group.nodes:
-        node_group.nodes.clear()
-    else:
-        print("Warning: Node group has no nodes yet.")
+    # 3. Clear existing Nodes and Interface
+    node_group.nodes.clear()
+    if hasattr(node_group, "interface"):
+        node_group.interface.clear()
 
-    # Ensure interface exists before adding sockets
-    if not hasattr(node_group, "interface"):
-        print("Error: node_group interface missing!")
-        return
+    # 4. Define Interface Sockets (Matching Screenshot)
+    # Input: Geometry Input
+    socket_geo_in = node_group.interface.new_socket(name="Geometry Input", in_out='INPUT', socket_type='NodeSocketGeometry')
+    
+    # Input: Extrude Thickness
+    socket_thick = node_group.interface.new_socket(name="Extrude Thickness", in_out='INPUT', socket_type='NodeSocketFloat')
+    socket_thick.default_value = 0.05
+    socket_thick.min_value = 0.001
 
-    # ---- DEFINE INTERFACE SOCKETS ----
-    node_group.interface.new_socket(name="Geometry Input", in_out='INPUT', socket_type='NodeSocketGeometry')
-    node_group.interface.new_socket(name="Mesh Output", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    # Input: Gravity Strength
+    socket_grav = node_group.interface.new_socket(name="Gravity Strength", in_out='INPUT', socket_type='NodeSocketFloat')
+    socket_grav.default_value = 9.81
 
-    # Extrude Thickness Input
-    thickness_socket = node_group.interface.new_socket(name="Extrude Thickness", in_out='INPUT', socket_type='NodeSocketFloat')
-    thickness_socket.default_value = 0.1  
+    # Output: Mesh Output
+    socket_geo_out = node_group.interface.new_socket(name="Mesh Output", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
-    # Gravity Strength Input
-    gravity_socket = node_group.interface.new_socket(name="Gravity Strength", in_out='INPUT', socket_type='NodeSocketFloat')
-    gravity_socket.default_value = 9.81  
-
-    # ---- CREATE INPUT/OUTPUT NODES ----
+    # 5. Create Group Input/Output Nodes
     group_input = node_group.nodes.new("NodeGroupInput")
+    group_input.location = (-600, 200)
+    
     group_output = node_group.nodes.new("NodeGroupOutput")
-    group_input.location = (-500, 0)
-    group_output.location = (500, 0)
+    group_output.location = (800, 200)
 
-    # ---- ADD ARC CURVE NODES (Bezier Segments) ----
-    arc_nodes = []
-    for i in range(3):
+    # ---------------------------------------------------------
+    # ARC GENERATION & EXTRUSION
+    # ---------------------------------------------------------
+
+    # 1. Profile Circle (Controlled by Input)
+    profile_circle = node_group.nodes.new("GeometryNodeCurvePrimitiveCircle")
+    profile_circle.label = "Profile Curve"
+    profile_circle.location = (-400, 100)
+    # Link 'Extrude Thickness' -> Radius
+    node_group.links.new(group_input.outputs[1], profile_circle.inputs[0])
+
+    # 2. Arc Configurations (Defaulting to a visible Gimbal shape)
+    # Note: Screenshot values were specific to a scene (-145m), 
+    # we use relative values here so it works on any object immediately.
+    arc_configs = [
+        # Arc 1: Vertical Ring
+        {"s": (0, -1, 0), "sh": (0, -0.5, 0.5), "eh": (0, 0.5, 0.5), "e": (0, 1, 0)},
+        # Arc 2: Horizontal Ring
+        {"s": (-1, 0, 0), "sh": (-0.5, 0.5, 0), "eh": (0.5, 0.5, 0), "e": (1, 0, 0)},
+        # Arc 3: Depth Ring
+        {"s": (0, 0, -1), "sh": (0.5, 0, -0.5), "eh": (0.5, 0, 0.5), "e": (0, 0, 1)}
+    ]
+
+    curve_to_mesh_nodes = []
+
+    for i, config in enumerate(arc_configs):
+        y_pos = 100 - (i * 200)
+        
+        # Bezier Segment
         arc_node = node_group.nodes.new("GeometryNodeCurvePrimitiveBezierSegment")
-        arc_node.name = f"Custom_Arc_{i+1}"
         arc_node.label = f"Custom Arc {i+1}"
-        arc_node.location = (-200, i * -200)
-        arc_nodes.append(arc_node)
+        arc_node.location = (-200, y_pos)
+        
+        # Set default handles for a nice arc shape
+        arc_node.inputs["Start"].default_value = config["s"]
+        arc_node.inputs["Start Handle"].default_value = config["sh"]
+        arc_node.inputs["End Handle"].default_value = config["eh"]
+        arc_node.inputs["End"].default_value = config["e"]
+        
+        # Curve to Mesh
+        c2m = node_group.nodes.new("GeometryNodeCurveToMesh")
+        c2m.location = (50, y_pos)
+        
+        # Link Arc -> Curve
+        node_group.links.new(arc_node.outputs["Curve"], c2m.inputs["Curve"])
+        # Link Profile -> Profile Curve
+        node_group.links.new(profile_circle.outputs["Curve"], c2m.inputs["Profile Curve"])
+        
+        curve_to_mesh_nodes.append(c2m)
 
-    # ---- Create Profile Circle for Extrusion ----
-    profile_curve = node_group.nodes.new("GeometryNodeCurvePrimitiveCircle")
-    profile_curve.inputs["Radius"].default_value = 0.1  
-    profile_curve.location = (-400, -500)
+    # 3. Join Geometry
+    join_geo = node_group.nodes.new("GeometryNodeJoinGeometry")
+    join_geo.location = (300, 200)
 
-    # Connect "Extrude Thickness" to Circle Radius
-    node_group.links.new(group_input.outputs["Extrude Thickness"], profile_curve.inputs["Radius"])
+    # Connect Original Geometry (Input -> Join)
+    node_group.links.new(group_input.outputs["Geometry Input"], join_geo.inputs["Geometry"])
 
-    # ---- Apply "CURVE TO MESH" for Extrusion ----
-    extrude_nodes = []
-    for i, arc_node in enumerate(arc_nodes):
-        extrude_node = node_group.nodes.new("GeometryNodeCurveToMesh")
-        extrude_node.location = (0, i * -200)
-        extrude_nodes.append(extrude_node)
+    # Connect All Arcs (C2M -> Join)
+    for c2m in curve_to_mesh_nodes:
+        node_group.links.new(c2m.outputs["Mesh"], join_geo.inputs["Geometry"])
 
-        node_group.links.new(arc_node.outputs["Curve"], extrude_node.inputs["Curve"])
-        node_group.links.new(profile_curve.outputs["Curve"], extrude_node.inputs["Profile Curve"])
+    # 4. Set Material (Ensure visibility)
+    set_mat = node_group.nodes.new("GeometryNodeSetMaterial")
+    set_mat.location = (500, 200)
+    if obj.active_material:
+        set_mat.inputs[2].default_value = obj.active_material
+    
+    node_group.links.new(join_geo.outputs[0], set_mat.inputs[0])
+    node_group.links.new(set_mat.outputs[0], group_output.inputs["Mesh Output"])
 
-    # ---- JOIN ALL EXTRUDED ARCS ----
-    join_geometry = node_group.nodes.new("GeometryNodeJoinGeometry")
-    join_geometry.location = (200, -100)
+    # ---------------------------------------------------------
+    # PHYSICS PROPERTIES (Left Side in Screenshot)
+    # ---------------------------------------------------------
+    phys_x = -900
+    phys_y_start = 0
 
-    for extrude_node in extrude_nodes:
-        node_group.links.new(extrude_node.outputs["Mesh"], join_geometry.inputs["Geometry"])
+    # Frame for organization
+    phys_frame = node_group.nodes.new("NodeFrame")
+    phys_frame.label = "Physics Properties"
+    phys_frame.location = (phys_x, phys_y_start)
 
-    # ---- ADD PHYSICS FRAME ----
-    physics_frame = node_group.nodes.new("NodeFrame")
-    physics_frame.label = "Physics Properties"
-    physics_frame.location = (-600, -400)
+    # Mass
+    mass = node_group.nodes.new("ShaderNodeValue")
+    mass.label = "Mass: Quantity of Mol"
+    mass.outputs[0].default_value = 0.0
+    mass.location = (phys_x, phys_y_start)
+    mass.parent = phys_frame
 
-    # ---- New PHYSICS NODES ----
-    physics_nodes = {}
+    # Volume (Vector Math as per screenshot)
+    volume = node_group.nodes.new("ShaderNodeVectorMath")
+    volume.label = "Volume Dimensions"
+    volume.operation = 'MULTIPLY'
+    volume.inputs[0].default_value = (1, 1, 1) # Avoid zero volume
+    volume.location = (phys_x + 100, phys_y_start - 100)
+    volume.parent = phys_frame
 
-    # Mass: "Quantity of Mol"
-    mass_node = node_group.nodes.new("ShaderNodeValue")
-    mass_node.name = "Mass"
-    mass_node.label = "Mass: Quantity of Mol"
-    mass_node.outputs[0].default_value = 0.0  
-    mass_node.location = (-600, -400)
-    physics_nodes["Mass"] = mass_node
+    # Weight (Mass * Gravity)
+    weight = node_group.nodes.new("ShaderNodeMath")
+    weight.label = "Weight (kg)"
+    weight.operation = 'MULTIPLY'
+    weight.location = (phys_x + 300, phys_y_start - 50)
+    weight.parent = phys_frame
 
-    # Volume: "Volume Dimensions" with X, Y, Z Inputs
-    volume_node = node_group.nodes.new("ShaderNodeVectorMath")
-    volume_node.name = "Volume"
-    volume_node.label = "Volume Dimensions"
-    volume_node.operation = 'MULTIPLY'
-    volume_node.location = (-600, -450)
-    physics_nodes["Volume"] = volume_node
+    # Density (Mass / Volume)
+    density = node_group.nodes.new("ShaderNodeMath")
+    density.label = "Density (kg/m^3)"
+    density.operation = 'DIVIDE'
+    density.location = (phys_x + 300, phys_y_start - 200)
+    density.parent = phys_frame
 
-    # Weight: Mass × Gravity (Dropdown for Units)
-    weight_node = node_group.nodes.new("ShaderNodeMath")
-    weight_node.name = "Weight"
-    weight_node.label = "Weight (kg)"
-    weight_node.operation = 'MULTIPLY'
-    weight_node.inputs[1].default_value = 9.81  
-    weight_node.location = (-600, -500)
-    physics_nodes["Weight"] = weight_node
+    # Wiring Physics
+    node_group.links.new(mass.outputs[0], weight.inputs[0])       # Mass -> Weight
+    node_group.links.new(mass.outputs[0], density.inputs[0])      # Mass -> Density
+    node_group.links.new(volume.outputs[0], density.inputs[1])    # Volume -> Density
 
-    # Density: Mass ÷ Volume
-    density_node = node_group.nodes.new("ShaderNodeMath")
-    density_node.name = "Density"
-    density_node.label = "Density (kg/m³)"
-    density_node.operation = 'DIVIDE'
-    density_node.location = (-600, -550)
-    physics_nodes["Density"] = density_node
+    # Temperature & Velocity (Visual placeholders from screenshot)
+    temp = node_group.nodes.new("ShaderNodeMix") # Generic Mix for 5.0
+    temp.data_type = 'RGBA'
+    temp.label = "Temperature"
+    temp.location = (phys_x + 500, phys_y_start - 50)
+    temp.parent = phys_frame
+    
+    vel = node_group.nodes.new("ShaderNodeMix")
+    vel.data_type = 'RGBA'
+    vel.label = "Velocity"
+    vel.location = (phys_x + 500, phys_y_start - 200)
+    vel.parent = phys_frame
 
-    # Temperature: Select Fahrenheit or Celsius
-    temp_node = node_group.nodes.new("ShaderNodeMixRGB")
-    temp_node.name = "Temperature"
-    temp_node.label = "Temperature (°C / °F)"
-    temp_node.location = (-600, -600)
-    physics_nodes["Temperature"] = temp_node
+    # ---------------------------------------------------------
+    # GRAVITY PRESETS (Bottom Left in Screenshot)
+    # ---------------------------------------------------------
+    grav_x = -900
+    grav_y = -400
 
-    # Velocity: Select km/h, mph, m/s, m/s²
-    velocity_node = node_group.nodes.new("ShaderNodeMixRGB")
-    velocity_node.name = "Velocity"
-    velocity_node.label = "Velocity (km/h, mph, m/s)"
-    velocity_node.location = (-600, -650)
-    physics_nodes["Velocity"] = velocity_node
+    grav_frame = node_group.nodes.new("NodeFrame")
+    grav_frame.label = "Gravity Presets"
+    grav_frame.location = (grav_x, grav_y)
 
-    # ---- ADD GRAVITY FRAME ----
-    gravity_frame = node_group.nodes.new("NodeFrame")
-    gravity_frame.label = "Gravity Presets"
-    gravity_frame.location = (-600, -800)
-
-    # Gravity Values (m/s²)
-    gravity_values = {
-        "Earth": 9.81,
-        "Moon": 1.62,
-        "Mars": 3.71,
-        "Venus": 8.87,
-        "Jupiter": 24.79
+    # Gravity Selector (Index Switch for Blender 5.0)
+    # This replaces the legacy MixRGB logic for cleaner planet selection
+    grav_switch = node_group.nodes.new("GeometryNodeIndexSwitch")
+    grav_switch.label = "Gravity Selector"
+    grav_switch.data_type = 'FLOAT'
+    grav_switch.location = (grav_x + 200, grav_y)
+    grav_switch.index_switch_items.clear()
+    
+    # Planets
+    planets = {
+        "Earth": 9.810,
+        "Moon": 1.620,
+        "Mars": 3.710,
+        "Venus": 8.870,
+        "Jupiter": 24.790
     }
+    
+    for i, (name, val) in enumerate(planets.items()):
+        p_node = node_group.nodes.new("ShaderNodeValue")
+        p_node.label = f"{name} Gravity"
+        p_node.outputs[0].default_value = val
+        p_node.location = (grav_x, grav_y - (i * 60))
+        p_node.parent = grav_frame
+        
+        # Add to Switch
+        grav_switch.index_switch_items.new()
+        node_group.links.new(p_node.outputs[0], grav_switch.inputs[i+1])
 
-    gravity_inputs = {}
-    for i, (planet, value) in enumerate(gravity_values.items()):
-        node = node_group.nodes.new("ShaderNodeValue")
-        node.name = f"{planet}_Gravity"
-        node.label = f"{planet} Gravity"
-        node.outputs[0].default_value = value
-        node.location = (-600, -800 - (i * 50))
-        node.parent = gravity_frame  
-        gravity_inputs[planet] = node
+    # Planet Index Controller
+    p_index = node_group.nodes.new("ShaderNodeValue")
+    p_index.label = "Planet Index"
+    p_index.outputs[0].default_value = 0 # Earth Default
+    p_index.location = (grav_x + 200, grav_y + 100)
+    
+    node_group.links.new(p_index.outputs[0], grav_switch.inputs[0])
 
-    # ---- ADD GRAVITY SELECTION NODE ----
-    gravity_node = node_group.nodes.new("ShaderNodeMixRGB")
-    gravity_node.name = "Gravity_Selector"
-    gravity_node.label = "Gravity Selector"
-    gravity_node.blend_type = 'ADD'
-    gravity_node.location = (-400, -800)
+    # Connect Gravity Selector to Weight Calculation
+    node_group.links.new(grav_switch.outputs[0], weight.inputs[1])
 
-    # Connect Gravity Presets
-    for i, planet in enumerate(gravity_values.keys()):
-        node_group.links.new(gravity_inputs[planet].outputs[0], gravity_node.inputs[1 if i == 0 else 2])
+    # 6. FORCE UPDATE MODIFIER INPUTS (Fixes Invisible Arc Issue)
+    # Explicitly set the modifier value to ensure it doesn't default to 0.0
+    for input_socket in node_group.interface.items_tree:
+        if input_socket.name == "Extrude Thickness":
+            geo_modifier[input_socket.identifier] = 0.05
 
-    # ---- CONNECT FINAL OUTPUT ----
-    node_group.links.new(join_geometry.outputs["Geometry"], group_output.inputs["Mesh Output"])
-
-    print("Arc Edge Geometry Nodes setup created successfully with full physics calculations.")
-
+    print("Arc Edge Geometry Nodes reconstructed with default connection setup.")
+    
 # -------------------------------------------------------------------
 # UI PANEL
 # -------------------------------------------------------------------
