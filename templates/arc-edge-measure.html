@@ -432,14 +432,25 @@ buildChart();
    Paints the live interference pattern (incident + reflected,
    scaled/phased by Γ) as a radial field across the whole disc, so
    the chart's R/X circles visibly overlay the peaks & nulls.
+
+   Radial Field and Left-Right Strip are independent layers with
+   their OWN pixel buffers so they can render simultaneously and
+   be composited together — neither one clears the other's work.
 ═══════════════════════════════════════════════════════════════ */
 const waveCanvas = document.getElementById('wave-field');
 const wctx = waveCanvas.getContext('2d');
 const FIELD_RES = 220; // low-res field grid, upscaled by canvas draw — keeps this fast
-const fieldCanvas = document.createElement('canvas');
-fieldCanvas.width = FIELD_RES; fieldCanvas.height = FIELD_RES;
-const fctx = fieldCanvas.getContext('2d');
-const fieldImg = fctx.createImageData(FIELD_RES, FIELD_RES);
+
+// Separate offscreen buffer PER LAYER so they never overwrite each other
+const radialCanvas = document.createElement('canvas');
+radialCanvas.width = FIELD_RES; radialCanvas.height = FIELD_RES;
+const rctx = radialCanvas.getContext('2d');
+const radialImg = rctx.createImageData(FIELD_RES, FIELD_RES);
+
+const stripCanvas = document.createElement('canvas');
+stripCanvas.width = FIELD_RES; stripCanvas.height = FIELD_RES;
+const sctx = stripCanvas.getContext('2d');
+const stripImg = sctx.createImageData(FIELD_RES, FIELD_RES);
 
 // Heat gradient lookup: 0=null(dark navy) .. 1=peak(white-hot cyan/magenta blend)
 function heatColor(t, hueMix){
@@ -462,7 +473,7 @@ function drawRadialField(gr, gi, gMag, gAngRad, freqMHz){
   const k = 0.35 + (freqMHz/6000)*0.55;
   const t = waveT;
 
-  const data = fieldImg.data;
+  const data = radialImg.data;
   for(let py=0; py<FIELD_RES; py++){
     for(let px=0; px<FIELD_RES; px++){
       const dx = px-cxN, dy = py-cyN;
@@ -483,10 +494,7 @@ function drawRadialField(gr, gi, gMag, gAngRad, freqMHz){
       data[idx+3] = Math.round(190*edgeFade);
     }
   }
-  fctx.putImageData(fieldImg,0,0);
-  wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
-  wctx.imageSmoothingEnabled = true;
-  wctx.drawImage(fieldCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
+  rctx.putImageData(radialImg,0,0);
 }
 
 /* Left-right traveling-wave strip painted onto the large canvas —
@@ -498,7 +506,7 @@ function drawStripField(gMag, gAngRad, freqMHz){
   const wSpeed = 1.1 + (freqMHz/6000)*2.2;
   const t = waveT;
 
-  const data = fieldImg.data;
+  const data = stripImg.data;
   for(let py=0; py<FIELD_RES; py++){
     for(let px=0; px<FIELD_RES; px++){
       const dx = px-rN, dy = py-cyN;
@@ -526,36 +534,41 @@ function drawStripField(gMag, gAngRad, freqMHz){
       b = b*(1-glowS) + 0*glowS*0.95 + b*glowS*0.05;
 
       data[idx]=Math.min(255,r|0); data[idx+1]=Math.min(255,g|0); data[idx+2]=Math.min(255,b|0);
+      // Strip layer is drawn SECOND when both are on, so its own background
+      // pixels stay fully transparent — only the wave curves themselves
+      // (glowI/glowR/glowS > 0) contribute. Otherwise it would occlude the
+      // radial field layer underneath with an opaque navy background.
+      const curveGlow = Math.max(glowI, glowR, glowS);
       const edgeFade = distFromCenter > rN-6 ? Math.max(0,(rN-distFromCenter)/6) : 1;
-      data[idx+3] = Math.round(200*edgeFade);
+      data[idx+3] = Math.round(200*edgeFade*curveGlow);
     }
   }
-  fctx.putImageData(fieldImg,0,0);
-  wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
-  wctx.imageSmoothingEnabled = true;
-  wctx.drawImage(fieldCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
+  sctx.putImageData(stripImg,0,0);
 }
 
 function drawWaveField(gr, gi, gMag, gAngRad, freqMHz){
   const fieldOn = document.getElementById('t-field').checked;
   const stripOn = document.getElementById('t-field-strip').checked;
-  if(!fieldOn && !stripOn){
-    wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
-    return;
+
+  wctx.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+  wctx.imageSmoothingEnabled = true;
+
+  if(!fieldOn && !stripOn) return;
+
+  // Composite both layers into the same visible canvas in one pass —
+  // each layer has its own buffer so neither overwrites the other.
+  if(fieldOn){
+    drawRadialField(gr, gi, gMag, gAngRad, freqMHz);
+    wctx.globalAlpha = 1.0;
+    wctx.drawImage(radialCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
   }
-  // If both are on, radial field takes visual priority (drawn), strip layered conceptually
-  // — practically we let the user pick one primary view at a time per toggle state,
-  // drawing radial first then strip overlay-blended if both checked.
-  if(fieldOn) drawRadialField(gr, gi, gMag, gAngRad, freqMHz);
   if(stripOn){
-    if(!fieldOn){
-      drawStripField(gMag, gAngRad, freqMHz);
-    } else {
-      // Both on: blend strip on top with reduced alpha via a second pass
-      wctx.globalAlpha = 0.55;
-      drawStripField(gMag, gAngRad, freqMHz);
-      wctx.globalAlpha = 1.0;
-    }
+    drawStripField(gMag, gAngRad, freqMHz);
+    // When layered on top of the radial field, strip curves render at
+    // full opacity (their background is already transparent — see
+    // curveGlow masking above) so both patterns stay clearly visible.
+    wctx.globalAlpha = 1.0;
+    wctx.drawImage(stripCanvas, 0, 0, waveCanvas.width, waveCanvas.height);
   }
 }
 
