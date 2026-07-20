@@ -68,7 +68,9 @@ const OUTER_R   = 1.0;     // outer great-sphere radius, world units
 const UNIT_R    = OUTER_R/3;    // 6 axis-offset "unit" spheres
 const MID_R     = OUTER_R*0.62; // 6 mid-tier spheres (larger copy of the same 6 directions)
 const MAX_MEASURES = 12;
-const TUBE_PTS  = 220;     // points per wave tube (per axis, per wave type)
+const DEFAULT_SHELL_COUNT = 1000;   // total points across the whole chart shell (structure)
+const DEFAULT_CURVE_COUNT = 300;    // points per individual wave tube (per axis, per wave type)
+const MAX_PX_SIZE = 20;             // slider ceiling, in real screen pixels
 const TUBE_TYPES = ['incident','reflected','standing'];
 const AXES = [
   {name:'x', dir:[1,0,0]},
@@ -82,11 +84,23 @@ const TYPE_COLOR = {
 };
 const AXIS_TINT = { x:1.0, y:0.82, z:0.64 }; // slight per-axis brightness split so 3 axes stay visually separable
 
+// Distributes a lat/long point grid across a target point count. Used both
+// for the chart shell (split proportionally across its 15 sub-spheres by
+// surface area) and could be reused anywhere else a "N points on a sphere"
+// grid is needed.
+function sphereGridDims(target){
+  target = Math.max(20, target);
+  const rings = Math.max(3, Math.round(Math.sqrt(target/2)));
+  const longs = Math.max(4, Math.round(target/(rings+1)));
+  return {rings, longs};
+}
+
 /* ───────────────────────── module state ───────────────────────── */
 const S = {
   active: false,
   ready: false,
   supported: null,       // null=unknown, true/false once checked
+  unsupported: false,
   device: null, context: null, format: null, canvas: null,
   // camera (orbit)
   cam: { az: 0.7, el: 0.35, dist: 3.1, target:[0,0,0] },
@@ -99,14 +113,25 @@ const S = {
   physicsOn: false,
   indicatorsOn: true,
   time: 0,
+  // per-group appearance config — sizePx is REAL screen pixels (1..MAX_PX_SIZE),
+  // recomputed to world units every frame based on current camera distance so
+  // "1px" actually means ~1px on screen regardless of zoom, not a fixed
+  // world-space size that happens to look like different pixel counts
+  // depending how far the camera is (that was the old, wrong behavior).
+  appearance: {
+    shell:     { count: DEFAULT_SHELL_COUNT, sizePx: 1, glow: true },
+    incident:  { sizePx: 1, glow: true },
+    reflected: { sizePx: 1, glow: true },
+    standing:  { sizePx: 1, glow: true },
+  },
+  curvePointCount: DEFAULT_CURVE_COUNT, // points per tube, shared across all 9 (3 types x 3 axes)
   // GPU buffers, filled during init
-  structureBuf:null, structureCount:0,
-  gimbalBuf:null, gimbalCount:0,
-  measureBuf:null, measureCapacity: MAX_MEASURES*40,
-  waveParticleBuf:null, waveParticleCount:0,
-  arcCurveBuf:null, arcCurveCount:0,
-  uniformBuf:null,
+  structureCount:0,
+  gimbalCount:0,
+  waveParticleCount:0, waveTypeCount:0,
+  arcCurveCount:0,
   renderPipeline:null, computePipeline:null,
+
   bindGroupRender:null, bindGroupCompute:null,
   depthTex:null,
 };
@@ -131,9 +156,23 @@ function sphereContourPoints(radius, center, poleAxis, ringsLat, ringsLong, out)
   }
 }
 
-function buildStructurePositions(){
+function buildStructurePositions(targetCount){
   const pos = [], col = [];
   const push = (arr, r,g,b, n) => { for(let i=0;i<n;i++) arr.push(r,g,b); };
+
+  // Split the requested total across the 3 sphere "families" (6 unit + 6 mid
+  // + 3 outer), weighted by surface area so density stays visually even
+  // regardless of the target count the person dials in.
+  const families = [
+    {n:6, r:UNIT_R},
+    {n:6, r:MID_R*0.5},
+    {n:3, r:OUTER_R},
+  ];
+  const totalWeight = families.reduce((s,f)=> s + f.n*f.r*f.r, 0);
+  const perSphereDims = families.map(f=>{
+    const familyShare = targetCount * (f.n*f.r*f.r/totalWeight);
+    return sphereGridDims(familyShare/f.n);
+  });
 
   // 6 unit spheres, tangent at origin, centered ±UNIT_R along each axis
   const unitDirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
@@ -141,7 +180,8 @@ function buildStructurePositions(){
   unitDirs.forEach((d,i)=>{
     const before = pos.length/3;
     const center = [d[0]*UNIT_R, d[1]*UNIT_R, d[2]*UNIT_R];
-    sphereContourPoints(UNIT_R, center, i<2?'x':(i<4?'y':'z'), 14, 22, pos);
+    const dims = perSphereDims[0];
+    sphereContourPoints(UNIT_R, center, i<2?'x':(i<4?'y':'z'), dims.rings, dims.longs, pos);
     const n = pos.length/3 - before;
     push(col, unitColors[i][0],unitColors[i][1],unitColors[i][2], n);
   });
@@ -150,7 +190,8 @@ function buildStructurePositions(){
   unitDirs.forEach((d,i)=>{
     const before = pos.length/3;
     const center = [d[0]*MID_R*0.5, d[1]*MID_R*0.5, d[2]*MID_R*0.5];
-    sphereContourPoints(MID_R*0.5, center, i<2?'x':(i<4?'y':'z'), 12, 18, pos);
+    const dims = perSphereDims[1];
+    sphereContourPoints(MID_R*0.5, center, i<2?'x':(i<4?'y':'z'), dims.rings, dims.longs, pos);
     const n = pos.length/3 - before;
     push(col, unitColors[i][0]*0.55+0.15, unitColors[i][1]*0.55+0.15, unitColors[i][2]*0.55+0.2, n);
   });
@@ -158,7 +199,8 @@ function buildStructurePositions(){
   // 3 orthogonal outer great-sphere wireframes (poles along x, y, z) — the "Smith sphere" boundary
   ['x','y','z'].forEach((axis)=>{
     const before = pos.length/3;
-    sphereContourPoints(OUTER_R, [0,0,0], axis, 20, 30, pos);
+    const dims = perSphereDims[2];
+    sphereContourPoints(OUTER_R, [0,0,0], axis, dims.rings, dims.longs, pos);
     const n = pos.length/3 - before;
     push(col, 0.62,0.86,0.92, n);
   });
@@ -395,19 +437,7 @@ async function initGPU(canvas){
 function buildBuffers(){
   const device = S.device;
 
-  // ---- static structure point cloud ----
-  const struct = buildStructurePositions();
-  S.structureCount = struct.count;
-  const structPos = new Float32Array(struct.count*4);
-  const structCol = new Float32Array(struct.count*4);
-  for(let i=0;i<struct.count;i++){
-    structPos[i*4]=struct.positions[i*3]; structPos[i*4+1]=struct.positions[i*3+1];
-    structPos[i*4+2]=struct.positions[i*3+2]; structPos[i*4+3]=1.6; // size mul
-    structCol[i*4]=struct.colors[i*3]; structCol[i*4+1]=struct.colors[i*3+1];
-    structCol[i*4+2]=struct.colors[i*3+2]; structCol[i*4+3]=0.55;
-  }
-  S.structurePosBuf = makeStorageBuffer(structPos, 'struct-pos');
-  S.structureColBuf = makeStorageBuffer(structCol, 'struct-col');
+  buildStructureBuffers(S.appearance.shell.count);
 
   // ---- gimbal (green) point cluster ----
   const gOff = pointClusterOffsets(48, OUTER_R*0.045);
@@ -426,12 +456,84 @@ function buildBuffers(){
   for(let i=0;i<MAX_MEASURES*perMarker;i++){ mCol[i*4]=0.25; mCol[i*4+1]=0.55; mCol[i*4+2]=1.0; mCol[i*4+3]=0.9; }
   S.measureColBuf = makeStorageBuffer(mCol, 'measure-col');
 
-  // ---- wave tube particles (dynamic, compute-driven) ----
+  buildWaveBuffers(S.curvePointCount);
+
+  // ---- arc-edge triangulation curve (rebuilt on demand) ----
+  S.arcCurveBuf = makeStorageBuffer(new Float32Array(600*4), 'arc-curve', true);
+  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(600*4).fill(0), 'arc-curve-col', true);
+  S.arcCurveCount = 0;
+
+  // ---- uniforms ----
+  // Uniforms struct = mat4x4<f32>(64) + camRight vec4(16) + camUp vec4(16)
+  // + pointSize/glowOn/sizeScale/_pad2 (4×4=16) = 112 bytes.
+  // One buffer PER APPEARANCE GROUP (not one shared buffer) — WebGPU
+  // queue.writeBuffer calls all land before a submitted command buffer
+  // executes, so writing a *shared* uniform buffer multiple times per
+  // frame (once per group, right before each group's draw call) would
+  // only ever be seen with its LAST-written value by every draw in that
+  // submission, not the value that was current at the time each draw was
+  // issued. Separate buffers per group sidesteps that entirely.
+  const uniformDesc = { size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST };
+  S.uniformBufs = {
+    shell: device.createBuffer(uniformDesc),
+    incident: device.createBuffer(uniformDesc),
+    reflected: device.createBuffer(uniformDesc),
+    standing: device.createBuffer(uniformDesc),
+    accent: device.createBuffer(uniformDesc), // gimbal + measurement markers + arc-edge curve
+  };
+  S.simParamsBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+}
+
+// Builds (or rebuilds, on a count change) the static chart-shell point
+// cloud. Destroys any previous GPU buffers first so changing the count
+// doesn't leak GPU memory across repeated adjustments.
+function buildStructureBuffers(targetCount){
+  if(S.structurePosBuf) S.structurePosBuf.destroy();
+  if(S.structureColBuf) S.structureColBuf.destroy();
+
+  const struct = buildStructurePositions(targetCount);
+  S.structureCount = struct.count;
+  const structPos = new Float32Array(struct.count*4);
+  const structCol = new Float32Array(struct.count*4);
+  for(let i=0;i<struct.count;i++){
+    structPos[i*4]=struct.positions[i*3]; structPos[i*4+1]=struct.positions[i*3+1];
+    structPos[i*4+2]=struct.positions[i*3+2]; structPos[i*4+3]=1.0; // sizeMul — real sizing now comes from the shell appearance group's pixel-size uniform, not a baked-in per-point multiplier
+    structCol[i*4]=struct.colors[i*3]; structCol[i*4+1]=struct.colors[i*3+1];
+    structCol[i*4+2]=struct.colors[i*3+2]; structCol[i*4+3]=0.85;
+  }
+  S.structurePosBuf = makeStorageBuffer(structPos, 'struct-pos');
+  S.structureColBuf = makeStorageBuffer(structCol, 'struct-col');
+
+  // bind group references the buffer objects directly, so it must be
+  // rebuilt whenever they're recreated — no-ops harmlessly on first call
+  // since buildPipelines() (which creates the layout) hasn't run yet.
+  if(S.renderBindLayout){
+    S.bgStructure = S.device.createBindGroup({ layout:S.renderBindLayout, entries:[
+      {binding:0,resource:{buffer:S.uniformBufs.shell}},
+      {binding:1,resource:{buffer:S.structurePosBuf}},
+      {binding:2,resource:{buffer:S.structureColBuf}},
+    ]});
+  }
+}
+
+// Builds (or rebuilds, on a count change) the 9 wave-tube particle buffers
+// (3 wave types × 3 axes, `pointsPerCurve` points each, laid out
+// contiguously per type so each type's block can be drawn with its own
+// appearance settings via a firstInstance-offset draw call).
+function buildWaveBuffers(pointsPerCurve){
+  pointsPerCurve = Math.max(8, Math.round(pointsPerCurve));
+  S.curvePointCount = pointsPerCurve;
+  S.waveTypeCount = pointsPerCurve * AXES.length;
+
+  if(S.waveParticleBuf) S.waveParticleBuf.destroy();
+  if(S.waveOutPosBuf) S.waveOutPosBuf.destroy();
+  if(S.waveColBuf) S.waveColBuf.destroy();
+
   const baseArr = [];
   TUBE_TYPES.forEach((type, ti)=>{
     AXES.forEach((axis)=>{
-      for(let i=0;i<TUBE_PTS;i++){
-        const t = i/TUBE_PTS, ang = t*Math.PI*2;
+      for(let i=0;i<pointsPerCurve;i++){
+        const t = i/pointsPerCurve, ang = t*Math.PI*2;
         // circular path in the plane perpendicular to axis.dir, radius depends on wave type tier
         const rTier = 0.7 + ti*0.13;
         const rad = OUTER_R*rTier;
@@ -461,24 +563,35 @@ function buildBuffers(){
   TUBE_TYPES.forEach((type)=>{
     AXES.forEach((axis)=>{
       const c = TYPE_COLOR[type], tint = AXIS_TINT[axis.name];
-      for(let i=0;i<TUBE_PTS;i++){
+      for(let i=0;i<pointsPerCurve;i++){
         waveColArr[idx*4]=c[0]*tint; waveColArr[idx*4+1]=c[1]*tint; waveColArr[idx*4+2]=c[2]*tint;
-        waveColArr[idx*4+3]=0.85; idx++;
+        waveColArr[idx*4+3]=0.9; idx++;
       }
     });
   });
   S.waveColBuf = makeStorageBuffer(waveColArr, 'wave-col');
 
-  // ---- arc-edge triangulation curve (rebuilt on demand) ----
-  S.arcCurveBuf = makeStorageBuffer(new Float32Array(600*4), 'arc-curve', true);
-  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(600*4).fill(0), 'arc-curve-col', true);
-  S.arcCurveCount = 0;
-
-  // ---- uniforms ----
-  // Uniforms struct = mat4x4<f32>(64) + camRight vec4(16) + camUp vec4(16)
-  // + pointSize/_pad0/_pad1/_pad2 (4×4=16) = 112 bytes.
-  S.uniformBuf = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  S.simParamsBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  if(S.renderBindLayout){
+    S.bgWaveByType = {};
+    TUBE_TYPES.forEach(type=>{
+      S.bgWaveByType[type] = S.device.createBindGroup({ layout:S.renderBindLayout, entries:[
+        {binding:0,resource:{buffer:S.uniformBufs[type]}},
+        {binding:1,resource:{buffer:S.waveOutPosBuf}},
+        {binding:2,resource:{buffer:S.waveColBuf}},
+      ]});
+    });
+  }
+  if(S.computeBindLayout){
+    S.computeBindGroup = S.device.createBindGroup({
+      layout: S.computeBindLayout,
+      entries:[
+        {binding:0, resource:{buffer:S.waveParticleBuf}},
+        {binding:1, resource:{buffer:S.waveOutPosBuf}},
+        {binding:2, resource:{buffer:S.simParamsBuf}},
+        {binding:3, resource:{buffer:S.measureStrengthBuf}},
+      ]
+    });
+  }
 }
 
 function makeStorageBuffer(dataF32, label /*, writable — kept as a param for call-site clarity, but every
@@ -540,28 +653,37 @@ function buildPipelines(){
     ]
   });
 
+  // Structure + per-type wave bind groups weren't created yet when
+  // buildBuffers() first ran (this bind group layout didn't exist until
+  // just now) — create them here for the initial load. On later count
+  // rebuilds, buildStructureBuffers()/buildWaveBuffers() recreate these
+  // themselves since the layout exists by then.
   S.bgStructure = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBuf}},
+    {binding:0,resource:{buffer:S.uniformBufs.shell}},
     {binding:1,resource:{buffer:S.structurePosBuf}},
     {binding:2,resource:{buffer:S.structureColBuf}},
   ]});
+  S.bgWaveByType = {};
+  TUBE_TYPES.forEach(type=>{
+    S.bgWaveByType[type] = device.createBindGroup({ layout:S.renderBindLayout, entries:[
+      {binding:0,resource:{buffer:S.uniformBufs[type]}},
+      {binding:1,resource:{buffer:S.waveOutPosBuf}},
+      {binding:2,resource:{buffer:S.waveColBuf}},
+    ]});
+  });
+
   S.bgGimbal = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBuf}},
+    {binding:0,resource:{buffer:S.uniformBufs.accent}},
     {binding:1,resource:{buffer:S.gimbalPosBuf}},
     {binding:2,resource:{buffer:S.gimbalColBuf}},
   ]});
   S.bgMeasure = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBuf}},
+    {binding:0,resource:{buffer:S.uniformBufs.accent}},
     {binding:1,resource:{buffer:S.measurePosBuf}},
     {binding:2,resource:{buffer:S.measureColBuf}},
   ]});
-  S.bgWave = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBuf}},
-    {binding:1,resource:{buffer:S.waveOutPosBuf}},
-    {binding:2,resource:{buffer:S.waveColBuf}},
-  ]});
   S.bgArc = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBuf}},
+    {binding:0,resource:{buffer:S.uniformBufs.accent}},
     {binding:1,resource:{buffer:S.arcCurveBuf}},
     {binding:2,resource:{buffer:S.arcCurveColBuf}},
   ]});
@@ -639,7 +761,7 @@ function writeMeasureBuffer(){
   S.device.queue.writeBuffer(S.measureStrengthBuf, 0, strengths);
 }
 
-const POINT_SIZE_MAX_BASE = 0.028; // world-unit half-size at slider=1.0 (this was the old fixed default)
+const ACCENT_PX_SIZE = 5; // fixed size for the interactive gimbal/measurement handles — not user-configurable, sized for tap/drag-ability rather than aesthetics
 
 function updateUniforms(){
   const canvas = S.canvas;
@@ -650,7 +772,8 @@ function updateUniforms(){
     S.cam.target[2] + S.cam.dist*Math.cos(S.cam.el)*Math.cos(S.cam.az),
   ];
   const view = M4.lookAt(eye, S.cam.target, [0,1,0]);
-  const proj = M4.perspective(50*Math.PI/180, aspect, 0.05, 40);
+  const fovRad = 50*Math.PI/180;
+  const proj = M4.perspective(fovRad, aspect, 0.05, 40);
   const vp = M4.multiply(proj, view);
 
   // camera right/up in world space for billboarding — also cached on S so
@@ -662,22 +785,40 @@ function updateUniforms(){
   right = v3norm(right);
   const camUp = [right[1]*fwd[2]-right[2]*fwd[1], right[2]*fwd[0]-right[0]*fwd[2], right[0]*fwd[1]-right[1]*fwd[0]];
 
-  const sizeEl = document.getElementById('s3d-pointsize');
-  const glowEl = document.getElementById('s3d-glow');
-  const sizeScale = sizeEl ? Math.max(0.03, Math.min(1, parseFloat(sizeEl.value))) : 0.14;
-  const glowOn = (!glowEl || glowEl.checked) ? 1 : 0;
+  // True screen-pixel -> world-unit conversion, evaluated at the camera's
+  // current distance to the chart center. This is the fix for "the scale
+  // wasn't working from one pixel or above": the old version scaled an
+  // arbitrary fixed world-space size by a 0..1 fraction, which only
+  // incidentally looked like different pixel counts depending on zoom —
+  // it wasn't actually tracking real screen pixels at all. Recomputing
+  // this every frame from cam.dist means "1px" reads as ~1px on screen
+  // whether you're zoomed in or out.
+  const rectHeight = canvas.getBoundingClientRect().height || canvas.height;
+  const worldPerPx = (2*S.cam.dist*Math.tan(fovRad/2)) / Math.max(1, rectHeight);
 
-  const u = new Float32Array(24);
-  u.set(vp, 0);
-  u.set([right[0],right[1],right[2],0], 16);
-  u.set([camUp[0],camUp[1],camUp[2],0], 20);
-  const u2 = new Float32Array(4);
-  u2[0] = POINT_SIZE_MAX_BASE * (canvas.height/720) * sizeScale;
-  u2[1] = glowOn;
-  u2[2] = sizeScale;
-  const full = new Float32Array(24+4);
-  full.set(u,0); full.set(u2,24);
-  S.device.queue.writeBuffer(S.uniformBuf, 0, full);
+  const camBlock = new Float32Array(24);
+  camBlock.set(vp, 0);
+  camBlock.set([right[0],right[1],right[2],0], 16);
+  camBlock.set([camUp[0],camUp[1],camUp[2],0], 20);
+
+  function writeGroup(bufKey, pxSize, glowOn){
+    const sizeScale = Math.max(0.03, Math.min(1, pxSize/MAX_PX_SIZE));
+    const tail = new Float32Array(4);
+    tail[0] = pxSize * worldPerPx; // pointSize (world half-size)
+    tail[1] = glowOn ? 1 : 0;
+    tail[2] = sizeScale;
+    const full = new Float32Array(28);
+    full.set(camBlock,0); full.set(tail,24);
+    S.device.queue.writeBuffer(S.uniformBufs[bufKey], 0, full);
+  }
+
+  const ap = S.appearance;
+  writeGroup('shell', ap.shell.sizePx, ap.shell.glow);
+  writeGroup('incident', ap.incident.sizePx, ap.incident.glow);
+  writeGroup('reflected', ap.reflected.sizePx, ap.reflected.glow);
+  writeGroup('standing', ap.standing.sizePx, ap.standing.glow);
+  writeGroup('accent', ACCENT_PX_SIZE, true);
+
   S._lastEye = eye;
   S._camRight = right;
   S._camUp = camUp;
@@ -716,8 +857,10 @@ function render(){
   pass.setBindGroup(0, S.bgStructure);
   pass.draw(6, S.structureCount, 0, 0);
 
-  pass.setBindGroup(0, S.bgWave);
-  pass.draw(6, S.waveParticleCount, 0, 0);
+  TUBE_TYPES.forEach((type, ti)=>{
+    pass.setBindGroup(0, S.bgWaveByType[type]);
+    pass.draw(6, S.waveTypeCount, 0, ti*S.waveTypeCount);
+  });
 
   if(S.arcCurveCount>0){
     pass.setBindGroup(0, S.bgArc);
@@ -956,6 +1099,7 @@ function attachInteraction(canvas){
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX-rect.left, y = e.clientY-rect.top;
     const hit = S.ready ? nearestHit(x,y) : null;
+    console.log('[ArcEdge3D] pointerdown at', x.toFixed(0), y.toFixed(0), '-> hit:', hit);
     mode = hit ? (hit.type==='gimbal' ? 'gimbal' : 'measure:'+hit.index) : 'orbit';
     lx=e.clientX; ly=e.clientY;
   });
@@ -1172,6 +1316,110 @@ async function exportGLB(){
 }
 
 /* ───────────────────────── HUD wiring ───────────────────────── */
+const GROUP_LABELS = { shell:'SMITH CHART SHELL', incident:'INCIDENT CURVES', reflected:'REFLECTED CURVES', standing:'STANDING CURVES' };
+const GROUP_COLORS = { shell:'#a3dce8', incident:'#00c8ff', reflected:'#ff3ec8', standing:'#ffb300' };
+
+// Builds the "⚙ POINTS" panel: one card for the chart shell (its own point
+// count + size + glow) and one card per wave type (shared curve-point-count
+// input + its own size + glow) — per spec: "individual point size adjuster
+// for each of the interactive parts... so they can individually have their
+// own pixel size", with counts as "an input for each" (shell) plus one
+// shared curve-count input (since curves were specified as "300 each" as a
+// single default, not per-type).
+function buildAppearancePanel(){
+  const panel = document.getElementById('s3d-panel-appearance');
+  if(!panel) return;
+
+  let html = '<div class="s3d-h">POINT CLOUD SETTINGS</div>';
+
+  // Shell card — own count + size + glow
+  html += `
+    <div class="s3d-pcard" data-group="shell">
+      <div class="s3d-pcard-top">
+        <span class="s3d-pcard-label" style="color:${GROUP_COLORS.shell}">${GROUP_LABELS.shell}</span>
+        <label class="tsw"><input type="checkbox" class="s3d-pc-glow" checked><span class="ttrk"></span></label>
+      </div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">COUNT</span>
+        <input type="number" class="s3d-pc-count" min="60" max="6000" step="20" value="${S.appearance.shell.count}">
+      </div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">SIZE</span>
+        <input type="range" class="s3d-pc-size" min="1" max="${MAX_PX_SIZE}" step="0.5" value="${S.appearance.shell.sizePx}">
+        <span class="s3d-pcval">${S.appearance.shell.sizePx}px</span>
+      </div>
+    </div>`;
+
+  // Shared curve-point-count input, once
+  html += `
+    <div class="s3d-pcard" data-group="curvecount">
+      <div class="s3d-pcard-top"><span class="s3d-pcard-label">POINTS PER CURVE</span></div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">COUNT</span>
+        <input type="number" id="s3d-pc-curvecount" min="20" max="1200" step="10" value="${S.curvePointCount}">
+        <span style="font-size:8px;color:var(--muted)">× 9 tubes</span>
+      </div>
+    </div>`;
+
+  // One card per wave type — own size + glow, sharing the curve count above
+  TUBE_TYPES.forEach(type=>{
+    html += `
+    <div class="s3d-pcard" data-group="${type}">
+      <div class="s3d-pcard-top">
+        <span class="s3d-pcard-label" style="color:${GROUP_COLORS[type]}">${GROUP_LABELS[type]}</span>
+        <label class="tsw"><input type="checkbox" class="s3d-pc-glow" checked><span class="ttrk"></span></label>
+      </div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">SIZE</span>
+        <input type="range" class="s3d-pc-size" min="1" max="${MAX_PX_SIZE}" step="0.5" value="${S.appearance[type].sizePx}">
+        <span class="s3d-pcval">${S.appearance[type].sizePx}px</span>
+      </div>
+    </div>`;
+  });
+
+  panel.innerHTML = html;
+
+  // wire size sliders (cheap — just updates S.appearance, read every frame, no rebuild)
+  panel.querySelectorAll('.s3d-pcard[data-group]').forEach(card=>{
+    const group = card.dataset.group;
+    if(group==='curvecount') return;
+    const sizeEl = card.querySelector('.s3d-pc-size');
+    const valEl = card.querySelector('.s3d-pcval');
+    const glowEl = card.querySelector('.s3d-pc-glow');
+    if(sizeEl){
+      sizeEl.addEventListener('input', ()=>{
+        const px = parseFloat(sizeEl.value)||1;
+        S.appearance[group].sizePx = px;
+        if(valEl) valEl.textContent = px+'px';
+      });
+    }
+    if(glowEl){
+      glowEl.addEventListener('change', ()=>{ S.appearance[group].glow = glowEl.checked; });
+    }
+  });
+
+  // shell count — rebuild on change (blur/enter), not on every keystroke
+  const shellCountEl = panel.querySelector('.s3d-pc-count');
+  if(shellCountEl){
+    shellCountEl.addEventListener('change', ()=>{
+      const n = Math.max(60, Math.min(6000, parseInt(shellCountEl.value,10)||DEFAULT_SHELL_COUNT));
+      shellCountEl.value = n;
+      S.appearance.shell.count = n;
+      buildStructureBuffers(n);
+    });
+  }
+
+  // shared curve point count — rebuild all 9 tubes on change
+  const curveCountEl = document.getElementById('s3d-pc-curvecount');
+  if(curveCountEl){
+    curveCountEl.addEventListener('change', ()=>{
+      const n = Math.max(20, Math.min(1200, parseInt(curveCountEl.value,10)||DEFAULT_CURVE_COUNT));
+      curveCountEl.value = n;
+      buildWaveBuffers(n);
+    });
+  }
+}
+
 function wireHUD(){
   const addBtn = document.getElementById('s3d-add');
   const clearBtn = document.getElementById('s3d-clear');
@@ -1180,6 +1428,7 @@ function wireHUD(){
   const indTog = document.getElementById('s3d-indicators');
   const pngBtns = document.querySelectorAll('[data-s3d-png]');
   const glbBtn = document.getElementById('s3d-export-glb');
+  const appearanceBtn = document.getElementById('s3d-appearance-toggle');
 
   addBtn && addBtn.addEventListener('click', addMeasurement);
   clearBtn && clearBtn.addEventListener('click', clearMeasurements);
@@ -1188,7 +1437,13 @@ function wireHUD(){
   indTog && indTog.addEventListener('change', (e)=>{ S.indicatorsOn = e.target.checked; refreshLabels(); });
   pngBtns.forEach(b=> b.addEventListener('click', ()=> exportPNG(parseInt(b.dataset.s3dPng,10))));
   glbBtn && glbBtn.addEventListener('click', exportGLB);
+  appearanceBtn && appearanceBtn.addEventListener('click', ()=>{
+    const panel = document.getElementById('s3d-panel-appearance');
+    if(!panel) return;
+    panel.style.display = (panel.style.display==='none') ? 'block' : 'none';
+  });
 
+  buildAppearancePanel();
   renderMeasureList();
 }
 
@@ -1255,6 +1510,8 @@ function resizeCanvas(){
   if(canvas.width===w && canvas.height===h) return; // avoid pointless GPU texture churn
   canvas.width = w;
   canvas.height = h;
+  console.log('[ArcEdge3D] canvas resized — CSS box:', rect.width.toFixed(1)+'x'+rect.height.toFixed(1),
+    'buffer:', w+'x'+h, 'dpr:', dpr, 'aspect:', (w/h).toFixed(4));
   S.depthTex && S.depthTex.destroy();
   S.depthTex = null;
 }
