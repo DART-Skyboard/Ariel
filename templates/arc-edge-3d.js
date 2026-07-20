@@ -1300,10 +1300,31 @@ async function exportPNG(px){
 // wave motion is procedural/compute-driven and isn't something a static
 // GLB format can carry without a full keyframe-baking pass (flagged as a
 // follow-up rather than faked here).
+// Expands one point into a tiny tetrahedron (4 triangular faces, written
+// non-indexed = 12 vertices) so it shows up as real triangulated geometry
+// instead of a POINTS-mode primitive. This matters because most
+// triangle-mesh tools — Nomad Sculpt very much included — don't render
+// glTF point-cloud primitives (mode:0) at all; they'll show a mesh node
+// in the scene list with zero visible/sculptable geometry, which is
+// exactly "nothing in the file" even though the file itself is valid.
+function pushTetrahedron(cx,cy,cz, size, r,g,b, outPos, outCol){
+  const v0=[cx, cy+size, cz];
+  const v1=[cx-size, cy-size, cz+size];
+  const v2=[cx+size, cy-size, cz+size];
+  const v3=[cx, cy-size, cz-size];
+  const faces = [[v0,v1,v2],[v0,v2,v3],[v0,v3,v1],[v1,v3,v2]];
+  for(const tri of faces){
+    for(const v of tri){
+      outPos.push(v[0],v[1],v[2]);
+      outCol.push(r,g,b);
+    }
+  }
+}
+
 async function exportGLB(){
   if(!S.ready) return;
   const device = S.device;
-  const positions=[], colors=[];
+  const rawPos=[], rawCol=[];
   const pull = async (buf, count)=>{
     const bytes = count*4*4;
     const readBuf = device.createBuffer({ size:bytes, usage: GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ });
@@ -1322,16 +1343,34 @@ async function exportGLB(){
   const gimbalPos = await pull(S.gimbalPosBuf, S.gimbalCount);
   const gimbalCol = await pull(S.gimbalColBuf, S.gimbalCount);
 
-  function append(src, count, stride){
+  function collect(posArr, colArr, count){
     for(let i=0;i<count;i++){
-      positions.push(src[0][i*4], src[0][i*4+1], src[0][i*4+2]);
-      colors.push(src[1][i*4], src[1][i*4+1], src[1][i*4+2]);
+      rawPos.push(posArr[i*4], posArr[i*4+1], posArr[i*4+2]);
+      rawCol.push(colArr[i*4], colArr[i*4+1], colArr[i*4+2]);
     }
   }
-  append([structPos,structCol], S.structureCount);
-  append([wavePos,waveCol], S.waveParticleCount);
-  append([gimbalPos,gimbalCol], S.gimbalCount);
-  S.measures.forEach(m=>{ positions.push(m.pos[0],m.pos[1],m.pos[2]); colors.push(0.25,0.55,1.0); });
+  collect(structPos, structCol, S.structureCount);
+  collect(wavePos, waveCol, S.waveParticleCount);
+  collect(gimbalPos, gimbalCol, S.gimbalCount);
+  S.measures.forEach(m=>{ rawPos.push(m.pos[0],m.pos[1],m.pos[2]); rawCol.push(0.25,0.55,1.0); });
+
+  // Expand every point into a small tetrahedron. Gimbal/measurement
+  // markers get a slightly bigger size since they're meant to read as
+  // distinguishable interactive handles rather than fine chart texture.
+  const TETRA_SIZE = 0.007;
+  const TETRA_SIZE_ACCENT = 0.018;
+  const positions=[], colors=[];
+  // gimbal + measurement points are collected right after structure+wave,
+  // in that order (see collect() calls above) — this is simply that
+  // boundary, not something that needs to vary based on whether
+  // measurements happen to be present.
+  const accentStart = S.structureCount + S.waveParticleCount;
+  const totalPoints = rawPos.length/3;
+  for(let i=0;i<totalPoints;i++){
+    const size = i>=accentStart ? TETRA_SIZE_ACCENT : TETRA_SIZE;
+    pushTetrahedron(rawPos[i*3],rawPos[i*3+1],rawPos[i*3+2], size,
+      rawCol[i*3],rawCol[i*3+1],rawCol[i*3+2], positions, colors);
+  }
 
   const posF32 = new Float32Array(positions);
   const colF32 = new Float32Array(colors);
@@ -1346,7 +1385,8 @@ async function exportGLB(){
     asset:{ version:'2.0', generator:'Arc Edge 3D Point Cloud Exporter' },
     scenes:[{nodes:[0]}], scene:0,
     nodes:[{mesh:0, name:'ArcEdge3D_PointCloud_Snapshot'}],
-    meshes:[{primitives:[{ attributes:{POSITION:0, COLOR_0:1}, mode:0 }]}],
+    // mode omitted — glTF default is 4 (TRIANGLES), which is what this now is
+    meshes:[{primitives:[{ attributes:{POSITION:0, COLOR_0:1} }]}],
     accessors:[
       {bufferView:0, componentType:5126, count:positions.length/3, type:'VEC3', min, max},
       {bufferView:1, componentType:5126, count:colors.length/3, type:'VEC3'},
