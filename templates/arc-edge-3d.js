@@ -113,7 +113,9 @@ const S = {
   physicsOn: false,
   indicatorsOn: true,
   closeLoop: false,   // connect the last measurement point back to the first
-  closeShape: false,  // also fold the green gimbal in as a vertex when closing
+  curveToolActive: false,     // when on, tapping a blue marker selects/deselects it; tapping green finalizes
+  curveToolSelection: [],     // indices into S.measures currently selected, in-progress
+  curveGroups: [],            // finalized: array of arrays of measurement indices, each spoked to the gimbal
   time: 0,
   // per-group appearance config — sizePx is REAL screen pixels (1..MAX_PX_SIZE),
   // recomputed to world units every frame based on current camera distance so
@@ -781,20 +783,25 @@ function writeGimbalBuffer(){
 function writeMeasureBuffer(){
   const per = S.measurePerMarker;
   const arr = new Float32Array(MAX_MEASURES*per*4);
+  const colArr = new Float32Array(MAX_MEASURES*per*4);
   const strengths = new Float32Array(MAX_MEASURES*4);
   S.measures.forEach((m, mi)=>{
     if(mi>=MAX_MEASURES) return;
     const offs = m._offsets || (m._offsets = pointClusterOffsets(per, OUTER_R*0.032));
+    const selected = S.curveToolActive && S.curveToolSelection.includes(mi);
+    const cr = selected?1.0:0.25, cg = selected?0.95:0.55, cb = selected?0.2:1.0;
     for(let i=0;i<per;i++){
       const idx = mi*per+i;
       arr[idx*4]  = m.pos[0]+offs[i*3];
       arr[idx*4+1]= m.pos[1]+offs[i*3+1];
       arr[idx*4+2]= m.pos[2]+offs[i*3+2];
       arr[idx*4+3]= 1.15;
+      colArr[idx*4]=cr; colArr[idx*4+1]=cg; colArr[idx*4+2]=cb; colArr[idx*4+3]=0.9;
     }
     strengths[mi*4]=m.pos[0]; strengths[mi*4+1]=m.pos[1]; strengths[mi*4+2]=m.pos[2]; strengths[mi*4+3]=0.35;
   });
   S.device.queue.writeBuffer(S.measurePosBuf, 0, arr);
+  S.device.queue.writeBuffer(S.measureColBuf, 0, colArr);
   S.device.queue.writeBuffer(S.measureStrengthBuf, 0, strengths);
 }
 
@@ -974,62 +981,112 @@ function addMeasurement(){
   writeMeasureBuffer();
   renderMeasureList();
 }
+// Curve groups/selection reference measurement array indices — fix them
+// up when a measurement is removed so they don't silently point at the
+// wrong marker (or a now out-of-range one) after the array shifts.
+function reindexCurveGroupsAfterRemoval(removedIdx){
+  S.curveGroups = S.curveGroups
+    .map(group => group.filter(i=>i!==removedIdx).map(i=> i>removedIdx ? i-1 : i))
+    .filter(group => group.length>0);
+  S.curveToolSelection = S.curveToolSelection
+    .filter(i=>i!==removedIdx).map(i=> i>removedIdx ? i-1 : i);
+}
+
 function removeMeasurement(idx){
   S.measures.splice(idx,1);
+  reindexCurveGroupsAfterRemoval(idx);
   // relabel M1..Mn to stay sequential after a removal
   S.measures.forEach((m,i)=>{ m.label = `M${i+1}`; });
   S.arcCurveCount = 0;
   writeMeasureBuffer();
   renderMeasureList();
+  updateCurveToolStatus();
   const out = document.getElementById('s3d-triresult');
   if(out) out.textContent = '—';
 }
 function clearMeasurements(){
   S.measures = [];
+  S.curveGroups = [];
+  S.curveToolSelection = [];
   S.arcCurveCount = 0;
   writeMeasureBuffer();
   renderMeasureList();
+  updateCurveToolStatus();
   const out = document.getElementById('s3d-triresult');
   if(out) out.textContent = '—';
+}
+function clearCurveGroups(){
+  S.curveGroups = [];
+  S.curveToolSelection = [];
+  writeMeasureBuffer();
+  updateCurveToolStatus();
+  const out = document.getElementById('s3d-triresult');
+  if(S.measures.length>=2) triangulate(); else if(out) out.textContent='—';
+}
+function toggleCurveToolSelection(idx){
+  const pos = S.curveToolSelection.indexOf(idx);
+  if(pos>=0) S.curveToolSelection.splice(pos,1);
+  else S.curveToolSelection.push(idx);
+  writeMeasureBuffer();
+  updateCurveToolStatus();
+}
+function finalizeCurveToolGroup(){
+  if(S.curveToolSelection.length===0) return;
+  S.curveGroups.push(S.curveToolSelection.slice());
+  S.curveToolSelection = [];
+  S.curveToolActive = false;
+  const tog = document.getElementById('s3d-curvetool');
+  if(tog) tog.checked = false;
+  writeMeasureBuffer();
+  updateCurveToolStatus();
+  triangulate();
+}
+function updateCurveToolStatus(){
+  const el = document.getElementById('s3d-curvetool-status');
+  if(!el) return;
+  if(!S.curveToolActive){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.textContent = S.curveToolSelection.length
+    ? `Selected: ${S.curveToolSelection.map(i=>S.measures[i]?S.measures[i].label:'?').join(', ')} — tap the green gimbal to connect them`
+    : 'Curve tool active — tap blue markers to select, tap again to deselect, then tap the green gimbal to connect them';
 }
 
 // Arc-edge convention ported from the 2D chart: c = d × 3 (not π), applied
 // to the straight-line "diameter" between each pair of measurement points.
 function docCircumference3D(d){ return d*3; }
 
-// Ordered vertex list for the connected shape: the measurement points in
-// the order they were added, plus the green gimbal appended as an extra
-// vertex when "Close Shape" is on (per spec: closing the shape means
-// connecting the measurement points to the gimbal, not just to each
-// other). Labels carry through so both the curve and the readout agree
-// on what's what, however many points are on the scene.
-function getShapeVertices(){
-  const verts = S.measures.map(m=>({ pos:m.pos, label:m.label }));
-  if(S.closeShape){
-    verts.push({ pos: gimbalWorldPos(), label:'GIMBAL' });
-  }
-  return verts;
-}
-// Segment list to actually draw/measure: consecutive pairs, plus one more
-// closing the loop back to the first vertex when Close Loop or Close
-// Shape is on. Recomputed fresh every call (cheap — this is just JS math
-// over at most MAX_MEASURES+1 points) so it always reflects whichever
-// gimbal was most recently dragged, including the green one when it's
-// part of the shape.
+// Segment list to actually draw/measure:
+//  - consecutive measurement pairs in add order, plus one more closing
+//    the loop back to the first when Close Loop is on
+//  - one spoke segment per measurement index in each finalized curve-tool
+//    group, connecting straight to the CURRENT (live) green gimbal
+//    position — this is the "select some blue markers, then tap green"
+//    tool, and can be done multiple times to build up several separate
+//    groups, each independently spoked to wherever the gimbal is now
 function getShapeSegments(){
-  const verts = getShapeVertices();
+  const measureVerts = S.measures.map(m=>({ pos:m.pos, label:m.label }));
   const segs = [];
-  for(let i=0;i<verts.length-1;i++) segs.push({a:verts[i], b:verts[i+1]});
-  if((S.closeLoop || S.closeShape) && verts.length>=2){
-    segs.push({a:verts[verts.length-1], b:verts[0]});
+  for(let i=0;i<measureVerts.length-1;i++) segs.push({a:measureVerts[i], b:measureVerts[i+1]});
+  if(S.closeLoop && measureVerts.length>=2){
+    segs.push({a:measureVerts[measureVerts.length-1], b:measureVerts[0]});
+  }
+  if(S.curveGroups.length>0){
+    const gimbalVert = { pos: gimbalWorldPos(), label:'GIMBAL' };
+    S.curveGroups.forEach(group=>{
+      group.forEach(idx=>{
+        const m = S.measures[idx];
+        if(!m) return;
+        segs.push({a:{pos:m.pos, label:m.label}, b:gimbalVert});
+      });
+    });
   }
   return segs;
 }
 
 function triangulate(){
-  if(S.measures.length<2){
+  if(S.measures.length<2 && S.curveGroups.length===0){
     const out = document.getElementById('s3d-triresult');
-    if(out) out.textContent='Add at least 2 measurement points first.';
+    if(out) out.textContent='Add at least 2 measurement points, or connect some with the curve tool.';
     return;
   }
   const segs = getShapeSegments();
@@ -1045,7 +1102,10 @@ function triangulate(){
 
   const out = document.getElementById('s3d-triresult');
   if(out){
-    const closedNote = S.closeShape ? ' (closed through gimbal)' : (S.closeLoop ? ' (closed loop)' : '');
+    const notes = [];
+    if(S.closeLoop) notes.push('closed loop');
+    if(S.curveGroups.length>0) notes.push(`${S.curveGroups.length} curve group${S.curveGroups.length===1?'':'s'} to gimbal`);
+    const closedNote = notes.length ? ` (${notes.join(', ')})` : '';
     out.innerHTML = `PATH LENGTH: <b>${totalDist.toFixed(3)}</b> du &nbsp; ARC-EDGE DOC: <b>${totalDoc.toFixed(3)}</b> du${closedNote}<br>` +
       rows.join(' · ');
   }
@@ -1184,6 +1244,15 @@ function attachInteraction(canvas){
     const x = e.clientX-rect.left, y = e.clientY-rect.top;
     const hit = S.ready ? nearestHit(x,y) : null;
     console.log('[ArcEdge3D] pointerdown at', x.toFixed(0), y.toFixed(0), '-> hit:', hit);
+
+    if(S.curveToolActive && hit){
+      if(hit.type==='measure') toggleCurveToolSelection(hit.index);
+      else if(hit.type==='gimbal') finalizeCurveToolGroup();
+      mode = null; // handled as a selection tap, not a drag
+      lx=e.clientX; ly=e.clientY;
+      return;
+    }
+
     mode = hit ? (hit.type==='gimbal' ? 'gimbal' : 'measure:'+hit.index) : 'orbit';
     lx=e.clientX; ly=e.clientY;
   });
@@ -1278,7 +1347,7 @@ function frameLoop(ts){
   writeGimbalBuffer();
   updateUniforms();
   runComputePass(dt);
-  if(S.measures.length>=2) buildArcCurve(); else S.arcCurveCount = 0;
+  if(S.measures.length>=2 || S.curveGroups.length>0) buildArcCurve(); else S.arcCurveCount = 0;
   render();
   refreshLabels();
 }
@@ -1574,7 +1643,8 @@ function wireHUD(){
   const physTog = document.getElementById('s3d-physics');
   const indTog = document.getElementById('s3d-indicators');
   const closeLoopTog = document.getElementById('s3d-closeloop');
-  const closeShapeTog = document.getElementById('s3d-closeshape');
+  const curveToolTog = document.getElementById('s3d-curvetool');
+  const curveClearBtn = document.getElementById('s3d-curveclear');
   const pngBtns = document.querySelectorAll('[data-s3d-png]');
   const glbBtn = document.getElementById('s3d-export-glb');
   const appearanceBtn = document.getElementById('s3d-appearance-toggle');
@@ -1588,10 +1658,13 @@ function wireHUD(){
     S.closeLoop = e.target.checked;
     if(S.measures.length>=2) triangulate();
   });
-  closeShapeTog && closeShapeTog.addEventListener('change', (e)=>{
-    S.closeShape = e.target.checked;
-    if(S.measures.length>=2) triangulate();
+  curveToolTog && curveToolTog.addEventListener('change', (e)=>{
+    S.curveToolActive = e.target.checked;
+    if(!S.curveToolActive) S.curveToolSelection = []; // turning it off manually discards any in-progress pick
+    writeMeasureBuffer();
+    updateCurveToolStatus();
   });
+  curveClearBtn && curveClearBtn.addEventListener('click', clearCurveGroups);
   pngBtns.forEach(b=> b.addEventListener('click', ()=> exportPNG(parseInt(b.dataset.s3dPng,10))));
   glbBtn && glbBtn.addEventListener('click', exportGLB);
   appearanceBtn && appearanceBtn.addEventListener('click', ()=>{
