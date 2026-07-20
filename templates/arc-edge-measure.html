@@ -361,6 +361,18 @@ input[type=range]{width:100%;accent-color:var(--accent1);height:2px;cursor:point
             <span class="tog-lbl">Left-Right Wave Strip</span>
             <label class="tsw"><input type="checkbox" id="t-field-strip"><span class="ttrk"></span></label>
           </div>
+
+          <div class="psec-h" style="margin-top:14px">AUDIO REACTIVE</div>
+          <div class="togrow">
+            <span class="tog-lbl">Mic Input (drives 2D + 3D waves)</span>
+            <label class="tsw"><input type="checkbox" id="t-mic"><span class="ttrk"></span></label>
+          </div>
+          <div id="mic-meter-wrap" style="display:none;margin-top:8px">
+            <div style="height:4px;border-radius:2px;background:rgba(245,166,35,0.12);overflow:hidden">
+              <div id="mic-meter-bar" style="height:100%;width:0%;background:var(--accent1);transition:width 0.06s linear"></div>
+            </div>
+          </div>
+          <div id="mic-status" style="margin-top:6px;font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
         </div>
 
         <div class="psec">
@@ -620,10 +632,11 @@ function drawRadialField(gr, gi, gMag, gAngRad, freqMHz){
       if(distFromCenter > rN+1){
         data[idx+3]=0; continue;
       }
-      const incident = Math.sin(k*(rN-distFromCenter)*0.25 - t*1.6);
+      const micBoost = 1 + micLevel*0.9;
+      const incident = Math.sin(k*(rN-distFromCenter)*0.25 - t*1.6) * micBoost;
       const ddx=px-mpx, ddy=py-mpy;
       const distFromMatch = Math.hypot(ddx,ddy);
-      const reflected = gMag * Math.sin(k*distFromMatch*0.25 + t*1.6 + gAngRad);
+      const reflected = gMag * Math.sin(k*distFromMatch*0.25 + t*1.6 + gAngRad) * micBoost;
       const sum = incident + reflected;
       const norm = (sum + (1+gMag)) / (2*(1+gMag)+1e-6);
       const [r,g,b] = heatColor(norm, 0.5 + 0.5*Math.sin(distFromMatch*0.02));
@@ -639,7 +652,7 @@ function drawRadialField(gr, gi, gMag, gAngRad, freqMHz){
    same incident/reflected/standing math as the small menu strip,
    scaled to fill the disc and clipped circular. */
 function drawStripField(gMag, gAngRad, freqMHz){
-  const W = FIELD_RES, cyN = FIELD_RES/2, rN = FIELD_RES/2, AMP = rN*0.55;
+  const W = FIELD_RES, cyN = FIELD_RES/2, rN = FIELD_RES/2, AMP = rN*0.55*(1+micLevel*0.55);
   const k = (0.06 + (freqMHz/6000)*0.10) * 4; // scaled for field-res canvas width
   const wSpeed = 1.1 + (freqMHz/6000)*2.2;
   const t = waveT;
@@ -731,7 +744,7 @@ function buildWaveStrip(svgId, prefix){
 buildWaveStrip('wave-strip','ws');
 
 function drawOneWaveStrip(prefix, gMag, gAngRad, freqMHz){
-  const W=300, MID=55, AMP=32;
+  const W=300, MID=55, AMP=32*(1+micLevel*0.5);
   const N=120;
   const k = 0.06 + (freqMHz/6000)*0.10;
   const wSpeed = 1.1 + (freqMHz/6000)*2.2;
@@ -800,6 +813,64 @@ function drawRingOverlay(gr, gi, matchQuality){
 const state = { r:50, x:0, z0:50, freq:100 };
 let lastGamma = {gr:0, gi:0, gMag:0, gAngRad:0, freq:100};
 let waveT = 0; // animation clock (radians), advanced by the render loop
+
+/* ── Mic input — drives both the 2D wave amplitude and (via the bare
+   `micLevel` identifier, read directly by arc-edge-3d.js the same way it
+   already reads `state`/`lastGamma`) the 3D wave-tube oscillation. ── */
+let micLevel = 0;        // smoothed 0..1 RMS level, read every frame by both scenes
+let micEnabled = false;
+let micStream = null, micAudioCtx = null, micAnalyser = null, micData = null;
+
+async function enableMic(){
+  const statusEl = document.getElementById('mic-status');
+  const meterWrap = document.getElementById('mic-meter-wrap');
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    micAudioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const src = micAudioCtx.createMediaStreamSource(micStream);
+    micAnalyser = micAudioCtx.createAnalyser();
+    micAnalyser.fftSize = 512;
+    micData = new Uint8Array(micAnalyser.frequencyBinCount);
+    src.connect(micAnalyser);
+    micEnabled = true;
+    if(statusEl) statusEl.textContent = '';
+    if(meterWrap) meterWrap.style.display = 'block';
+  }catch(err){
+    console.error('[mic] getUserMedia failed:', err);
+    micEnabled = false;
+    const denied = err && (err.name==='NotAllowedError' || err.name==='PermissionDeniedError');
+    if(statusEl) statusEl.textContent = denied
+      ? 'Mic permission denied — allow microphone access in the browser/site settings to use this.'
+      : 'Could not access the microphone on this device.';
+    const tog = document.getElementById('t-mic');
+    if(tog) tog.checked = false;
+  }
+}
+function disableMic(){
+  if(micStream) micStream.getTracks().forEach(t=>t.stop());
+  if(micAudioCtx) micAudioCtx.close().catch(()=>{});
+  micStream = null; micAudioCtx = null; micAnalyser = null; micData = null;
+  micEnabled = false; micLevel = 0;
+  const meterWrap = document.getElementById('mic-meter-wrap');
+  const bar = document.getElementById('mic-meter-bar');
+  if(meterWrap) meterWrap.style.display = 'none';
+  if(bar) bar.style.width = '0%';
+}
+function pollMic(){
+  if(!micEnabled || !micAnalyser) return;
+  micAnalyser.getByteTimeDomainData(micData);
+  let sum = 0;
+  for(let i=0;i<micData.length;i++){ const v=(micData[i]-128)/128; sum += v*v; }
+  const rms = Math.sqrt(sum/micData.length);
+  // light smoothing so the driven amplitude reads as a level, not raw jitter
+  micLevel = micLevel*0.72 + Math.min(1, rms*3.2)*0.28;
+  const bar = document.getElementById('mic-meter-bar');
+  if(bar) bar.style.width = Math.round(micLevel*100)+'%';
+}
+document.getElementById('t-mic').addEventListener('change', (e)=>{
+  if(e.target.checked) enableMic(); else disableMic();
+});
+
 
 function computeAndRender(){
   const {r,x,z0} = state;
@@ -969,6 +1040,7 @@ function waveAnimLoop(ts){
   requestAnimationFrame(waveAnimLoop);
   const dt = Math.min((ts-lastFrameTime)/1000, 0.05);
   lastFrameTime = ts;
+  pollMic();
   const canvasOn = document.getElementById('t-field').checked || document.getElementById('t-field-strip').checked;
   waveT += dt * 2.2; // menu strip animates independent of canvas toggles
   drawWaveStrip(lastGamma.gMag, lastGamma.gAngRad, lastGamma.freq);

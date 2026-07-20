@@ -327,7 +327,7 @@ struct WaveParticle {
 struct SimParams {
   time: f32, dt: f32, freqMHz: f32, gammaMag: f32,
   gammaAngle: f32, physicsOn: f32, gravity: f32, atmDensity: f32,
-  measureCount: f32, _p0: f32, _p1: f32, _p2: f32,
+  measureCount: f32, micLevel: f32, _p1: f32, _p2: f32,
 };
 struct Measure { pos: vec4<f32> }; // xyz + strength
 
@@ -359,7 +359,7 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
   // kinematic sine displacement along the local outward normal of the base position
   let dirLen = max(length(pt.basePos.xyz), 0.0001);
   let n = pt.basePos.xyz / dirLen;
-  let osc = sin(phase * k - params.time * wSpeed) * (0.05 + params.gammaMag*0.05);
+  let osc = sin(phase * k - params.time * wSpeed) * (0.05 + params.gammaMag*0.05) * (1.0 + params.micLevel*1.4);
   var kinematicPos = clampToOuterSphere(pt.basePos.xyz + n * osc);
 
   if (params.physicsOn > 0.5) {
@@ -835,10 +835,15 @@ function updateUniforms(){
 function runComputePass(dt){
   const g = currentGammaState();
   S.time += dt;
+  // micLevel is a top-level `let` in the inline <script> in
+  // arc-edge-measure.html — same shared-script-realm pattern as
+  // state/lastGamma, read directly by name since this file executes as a
+  // deferred classic script after that one has already run.
+  const mic = (typeof micLevel !== 'undefined') ? micLevel : 0;
   const params = new Float32Array([
     S.time, dt, g.freq||100, g.gMag||0,
     g.gAngRad||0, S.physicsOn?1:0, 1.4, 0.9,
-    S.measures.length, 0,0,0
+    S.measures.length, mic, 0,0
   ]);
   S.device.queue.writeBuffer(S.simParamsBuf, 0, params);
 
