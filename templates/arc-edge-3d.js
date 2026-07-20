@@ -611,7 +611,15 @@ function buildPipelines(){
 
   S.renderBindLayout = device.createBindGroupLayout({
     entries:[
-      {binding:0, visibility:GPUShaderStage.VERTEX, buffer:{type:'uniform'}},
+      // binding 0 (the uniform) is read by BOTH stages: vertex uses
+      // viewProj/camRight/camUp/pointSize, fragment uses glowOn/sizeScale
+      // for the glow-toggle math. Visibility must cover every stage that
+      // actually accesses a binding — VERTEX-only here (a leftover from
+      // before the fragment shader touched U at all) made the whole
+      // pipeline invalid, which is why nothing ever rendered: WebGPU
+      // doesn't throw a catchable JS exception for this, it just produces
+      // an unusable pipeline that silently draws nothing.
+      {binding:0, visibility:GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer:{type:'uniform'}},
       {binding:1, visibility:GPUShaderStage.VERTEX, buffer:{type:'read-only-storage'}},
       {binding:2, visibility:GPUShaderStage.VERTEX, buffer:{type:'read-only-storage'}},
     ]
