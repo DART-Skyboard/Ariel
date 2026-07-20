@@ -125,6 +125,7 @@ const S = {
     incident:  { sizePx: 2, glow: true },
     reflected: { sizePx: 2, glow: true },
     standing:  { sizePx: 2, glow: true },
+    arc:       { sizePx: 3, glow: true }, // the yellow arc-edge/shape curve connecting measurement points (+ gimbal, when Close Shape is on)
   },
   curvePointCount: DEFAULT_CURVE_COUNT, // points per tube, shared across all 9 (3 types x 3 axes)
   // GPU buffers, filled during init
@@ -486,8 +487,8 @@ function buildBuffers(){
   buildWaveBuffers(S.curvePointCount);
 
   // ---- arc-edge triangulation curve (rebuilt on demand) ----
-  S.arcCurveBuf = makeStorageBuffer(new Float32Array(800*4), 'arc-curve', true);
-  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(800*4).fill(0), 'arc-curve-col', true);
+  S.arcCurveBuf = makeStorageBuffer(new Float32Array(2600*4), 'arc-curve', true);
+  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(2600*4).fill(0), 'arc-curve-col', true);
   S.arcCurveCount = 0;
 
   // ---- uniforms ----
@@ -506,7 +507,8 @@ function buildBuffers(){
     incident: device.createBuffer(uniformDesc),
     reflected: device.createBuffer(uniformDesc),
     standing: device.createBuffer(uniformDesc),
-    accent: device.createBuffer(uniformDesc), // gimbal + measurement markers + arc-edge curve
+    accent: device.createBuffer(uniformDesc), // gimbal + measurement markers
+    arc: device.createBuffer(uniformDesc),    // the arc-edge/shape curve
   };
   S.simParamsBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 }
@@ -718,7 +720,7 @@ function buildPipelines(){
     {binding:2,resource:{buffer:S.measureColBuf}},
   ]});
   S.bgArc = device.createBindGroup({ layout:S.renderBindLayout, entries:[
-    {binding:0,resource:{buffer:S.uniformBufs.accent}},
+    {binding:0,resource:{buffer:S.uniformBufs.arc}},
     {binding:1,resource:{buffer:S.arcCurveBuf}},
     {binding:2,resource:{buffer:S.arcCurveColBuf}},
   ]});
@@ -852,6 +854,7 @@ function updateUniforms(){
   writeGroup('incident', ap.incident.sizePx, ap.incident.glow);
   writeGroup('reflected', ap.reflected.sizePx, ap.reflected.glow);
   writeGroup('standing', ap.standing.sizePx, ap.standing.glow);
+  writeGroup('arc', ap.arc.sizePx, ap.arc.glow);
   writeGroup('accent', ACCENT_PX_SIZE, true);
 
   S._lastEye = eye;
@@ -1048,8 +1051,17 @@ function triangulate(){
   }
 }
 
-const ARC_CURVE_CAPACITY = 800; // (MAX_MEASURES + 1 for the gimbal) segments * 60 steps comfortably fits
-const ARC_STEPS_PER_SEG = 60;
+// Buffer sized for worst case: MAX_MEASURES+1 (gimbal) segments at the
+// steps-per-segment ceiling below (13 * 200 = 2600).
+const ARC_CURVE_CAPACITY = 2600;
+
+// Steps per segment scales with the shared "points per curve" setting
+// (the same one driving the 9 wave tubes) instead of being stuck at a
+// fixed density regardless — floor/ceiling keep it sane at the extremes
+// of that input's range.
+function arcStepsPerSegment(){
+  return Math.max(20, Math.min(200, Math.round(S.curvePointCount/8)));
+}
 
 // Builds the point-cloud "tube" curve connecting the measurement points
 // (and the gimbal, when Close Shape is on) in order, respecting
@@ -1057,10 +1069,11 @@ const ARC_STEPS_PER_SEG = 60;
 // (see frameLoop) so it stays live as any gimbal — including the green
 // one — gets dragged, not just when Triangulate is clicked.
 function buildArcCurve(){
+  const stepsPerSeg = arcStepsPerSegment();
   const pts=[];
   getShapeSegments().forEach(({a,b})=>{
-    for(let s=0;s<ARC_STEPS_PER_SEG;s++){
-      const t = s/ARC_STEPS_PER_SEG;
+    for(let s=0;s<stepsPerSeg;s++){
+      const t = s/stepsPerSeg;
       // gentle great-circle-ish bow outward from chart center for visual clarity
       const lerp=[a.pos[0]+(b.pos[0]-a.pos[0])*t, a.pos[1]+(b.pos[1]-a.pos[1])*t, a.pos[2]+(b.pos[2]-a.pos[2])*t];
       const bow = Math.sin(t*Math.PI)*0.08;
@@ -1072,12 +1085,14 @@ function buildArcCurve(){
   const posArr = new Float32Array(ARC_CURVE_CAPACITY*4);
   const colArr = new Float32Array(ARC_CURVE_CAPACITY*4);
   for(let i=0;i<n;i++){
-    posArr[i*4]=pts[i*3]; posArr[i*4+1]=pts[i*3+1]; posArr[i*4+2]=pts[i*3+2]; posArr[i*4+3]=1.1;
+    posArr[i*4]=pts[i*3]; posArr[i*4+1]=pts[i*3+1]; posArr[i*4+2]=pts[i*3+2]; posArr[i*4+3]=1.0;
     colArr[i*4]=1.0; colArr[i*4+1]=0.83; colArr[i*4+2]=0.14; colArr[i*4+3]=0.95;
   }
   S.device.queue.writeBuffer(S.arcCurveBuf, 0, posArr);
   S.device.queue.writeBuffer(S.arcCurveColBuf, 0, colArr);
   S.arcCurveCount = n;
+  const countEl = document.getElementById('s3d-arc-count-val');
+  if(countEl) countEl.textContent = n;
 }
 
 // Full rebuild of the measurement list — one card per marker, each with
@@ -1486,6 +1501,28 @@ function buildAppearancePanel(){
       </div>
     </div>`;
   });
+
+  // Arc-edge shape curve — the yellow curve connecting measurement points
+  // (+ gimbal, when Close Shape is on). No independent count input here —
+  // per spec, its density tracks the shared "points per curve" setting
+  // above automatically; this just shows the live resulting count.
+  html += `
+    <div class="s3d-pcard" data-group="arc">
+      <div class="s3d-pcard-top">
+        <span class="s3d-pcard-label" style="color:#ffd42a">ARC EDGE / SHAPE CURVE</span>
+        <label class="tsw"><input type="checkbox" class="s3d-pc-glow" checked><span class="ttrk"></span></label>
+      </div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">COUNT</span>
+        <span id="s3d-arc-count-val" style="color:var(--accent1)">${S.arcCurveCount||0}</span>
+        <span style="font-size:8px;color:var(--muted)">(tracks points-per-curve above)</span>
+      </div>
+      <div class="s3d-pcard-row">
+        <span class="s3d-pcl">SIZE</span>
+        <input type="range" class="s3d-pc-size" min="1" max="${MAX_PX_SIZE}" step="0.5" value="${S.appearance.arc.sizePx}">
+        <span class="s3d-pcval">${S.appearance.arc.sizePx}px</span>
+      </div>
+    </div>`;
 
   panel.innerHTML = html;
 
