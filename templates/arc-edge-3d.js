@@ -112,6 +112,8 @@ const S = {
   measures: [],           // [{pos:[x,y,z], r, thetaDeg, phiDeg, label}]
   physicsOn: false,
   indicatorsOn: true,
+  closeLoop: false,   // connect the last measurement point back to the first
+  closeShape: false,  // also fold the green gimbal in as a vertex when closing
   time: 0,
   // per-group appearance config — sizePx is REAL screen pixels (1..MAX_PX_SIZE),
   // recomputed to world units every frame based on current camera distance so
@@ -119,10 +121,10 @@ const S = {
   // world-space size that happens to look like different pixel counts
   // depending how far the camera is (that was the old, wrong behavior).
   appearance: {
-    shell:     { count: DEFAULT_SHELL_COUNT, sizePx: 1, glow: true },
-    incident:  { sizePx: 1, glow: true },
-    reflected: { sizePx: 1, glow: true },
-    standing:  { sizePx: 1, glow: true },
+    shell:     { count: DEFAULT_SHELL_COUNT, sizePx: 2.5, glow: true },
+    incident:  { sizePx: 2, glow: true },
+    reflected: { sizePx: 2, glow: true },
+    standing:  { sizePx: 2, glow: true },
   },
   curvePointCount: DEFAULT_CURVE_COUNT, // points per tube, shared across all 9 (3 types x 3 axes)
   // GPU buffers, filled during init
@@ -327,7 +329,7 @@ struct WaveParticle {
 struct SimParams {
   time: f32, dt: f32, freqMHz: f32, gammaMag: f32,
   gammaAngle: f32, physicsOn: f32, gravity: f32, atmDensity: f32,
-  measureCount: f32, micLevel: f32, _p1: f32, _p2: f32,
+  measureCount: f32, micLevel: f32, waveTypeCount: f32, _p2: f32,
 };
 struct Measure { pos: vec4<f32> }; // xyz + strength
 
@@ -356,10 +358,35 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let wSpeed = 1.1 + (params.freqMHz/6000.0) * 2.2;
   let phase = pt.basePos.w;
 
+  // Which of the 3 wave types this particle belongs to — types are laid
+  // out as contiguous blocks of waveTypeCount particles each (see JS
+  // buildWaveBuffers), so integer-dividing the global index recovers it
+  // without needing a per-particle type field.
+  let typeCount = max(1u, u32(params.waveTypeCount));
+  let typeIdx = i / typeCount; // 0=incident, 1=reflected, 2=standing
+
+  var ampBase = 0.08;
+  if (typeIdx == 1u) {
+    // reflected wave amplitude IS |Γ| by definition — near-flat at a good
+    // match, swelling hard as the gimbal moves toward the mismatch/edge.
+    // This is deliberately the most dramatic responder to gimbal position.
+    ampBase = 0.02 + params.gammaMag * 0.55;
+  } else if (typeIdx == 2u) {
+    // standing wave: the classic VSWR envelope, sqrt(1 + |Γ|² + 2|Γ|cos(φ)) —
+    // produces the familiar swelling antinodes / pinched nodes pattern as
+    // mismatch increases, same math as the 2D chart's envelope.
+    let envPhase = phase * 2.0 - params.gammaAngle;
+    let envMag = sqrt(1.0 + params.gammaMag*params.gammaMag + 2.0*params.gammaMag*cos(envPhase));
+    ampBase = 0.05 * envMag;
+  }
+  // else typeIdx == 0u (incident): stays at the steady base amplitude —
+  // physically correct (the forward wave doesn't care about the load) and
+  // gives a visual reference to compare the other two against.
+
   // kinematic sine displacement along the local outward normal of the base position
   let dirLen = max(length(pt.basePos.xyz), 0.0001);
   let n = pt.basePos.xyz / dirLen;
-  let osc = sin(phase * k - params.time * wSpeed) * (0.05 + params.gammaMag*0.05) * (1.0 + params.micLevel*1.4);
+  let osc = sin(phase * k - params.time * wSpeed) * ampBase * (1.0 + params.micLevel*1.4);
   var kinematicPos = clampToOuterSphere(pt.basePos.xyz + n * osc);
 
   if (params.physicsOn > 0.5) {
@@ -459,8 +486,8 @@ function buildBuffers(){
   buildWaveBuffers(S.curvePointCount);
 
   // ---- arc-edge triangulation curve (rebuilt on demand) ----
-  S.arcCurveBuf = makeStorageBuffer(new Float32Array(600*4), 'arc-curve', true);
-  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(600*4).fill(0), 'arc-curve-col', true);
+  S.arcCurveBuf = makeStorageBuffer(new Float32Array(800*4), 'arc-curve', true);
+  S.arcCurveColBuf = makeStorageBuffer(new Float32Array(800*4).fill(0), 'arc-curve-col', true);
   S.arcCurveCount = 0;
 
   // ---- uniforms ----
@@ -843,7 +870,7 @@ function runComputePass(dt){
   const params = new Float32Array([
     S.time, dt, g.freq||100, g.gMag||0,
     g.gAngRad||0, S.physicsOn?1:0, 1.4, 0.9,
-    S.measures.length, mic, 0,0
+    S.measures.length, mic, S.waveTypeCount, 0
   ]);
   S.device.queue.writeBuffer(S.simParamsBuf, 0, params);
 
@@ -967,54 +994,83 @@ function clearMeasurements(){
 // to the straight-line "diameter" between each pair of measurement points.
 function docCircumference3D(d){ return d*3; }
 
+// Ordered vertex list for the connected shape: the measurement points in
+// the order they were added, plus the green gimbal appended as an extra
+// vertex when "Close Shape" is on (per spec: closing the shape means
+// connecting the measurement points to the gimbal, not just to each
+// other). Labels carry through so both the curve and the readout agree
+// on what's what, however many points are on the scene.
+function getShapeVertices(){
+  const verts = S.measures.map(m=>({ pos:m.pos, label:m.label }));
+  if(S.closeShape){
+    verts.push({ pos: gimbalWorldPos(), label:'GIMBAL' });
+  }
+  return verts;
+}
+// Segment list to actually draw/measure: consecutive pairs, plus one more
+// closing the loop back to the first vertex when Close Loop or Close
+// Shape is on. Recomputed fresh every call (cheap — this is just JS math
+// over at most MAX_MEASURES+1 points) so it always reflects whichever
+// gimbal was most recently dragged, including the green one when it's
+// part of the shape.
+function getShapeSegments(){
+  const verts = getShapeVertices();
+  const segs = [];
+  for(let i=0;i<verts.length-1;i++) segs.push({a:verts[i], b:verts[i+1]});
+  if((S.closeLoop || S.closeShape) && verts.length>=2){
+    segs.push({a:verts[verts.length-1], b:verts[0]});
+  }
+  return segs;
+}
+
 function triangulate(){
   if(S.measures.length<2){
     const out = document.getElementById('s3d-triresult');
     if(out) out.textContent='Add at least 2 measurement points first.';
     return;
   }
-  // pairwise distances + doc-circumference, sequential path
+  const segs = getShapeSegments();
   let totalDist=0, totalDoc=0;
-  const pairs=[];
-  for(let i=0;i<S.measures.length-1;i++){
-    const a=S.measures[i].pos, b=S.measures[i+1].pos;
-    const d = Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+  const rows = segs.map(({a,b})=>{
+    const d = Math.hypot(a.pos[0]-b.pos[0], a.pos[1]-b.pos[1], a.pos[2]-b.pos[2]);
     const doc = docCircumference3D(d);
     totalDist+=d; totalDoc+=doc;
-    pairs.push({i,j:i+1,d,doc});
-  }
-  // centroid
-  const c=[0,0,0];
-  S.measures.forEach(m=>{ c[0]+=m.pos[0]; c[1]+=m.pos[1]; c[2]+=m.pos[2]; });
-  c[0]/=S.measures.length; c[1]/=S.measures.length; c[2]/=S.measures.length;
+    return `${a.label}→${b.label}: d=${d.toFixed(3)} doc=${doc.toFixed(3)}`;
+  });
 
   buildArcCurve();
 
   const out = document.getElementById('s3d-triresult');
   if(out){
-    out.innerHTML = `PATH LENGTH: <b>${totalDist.toFixed(3)}</b> du &nbsp; ARC-EDGE DOC: <b>${totalDoc.toFixed(3)}</b> du<br>` +
-      pairs.map(p=>`M${p.i+1}→M${p.j+1}: d=${p.d.toFixed(3)} doc=${p.doc.toFixed(3)}`).join(' · ');
+    const closedNote = S.closeShape ? ' (closed through gimbal)' : (S.closeLoop ? ' (closed loop)' : '');
+    out.innerHTML = `PATH LENGTH: <b>${totalDist.toFixed(3)}</b> du &nbsp; ARC-EDGE DOC: <b>${totalDoc.toFixed(3)}</b> du${closedNote}<br>` +
+      rows.join(' · ');
   }
 }
 
-// build a point-cloud "tube" curve stepping through all measurement points in order
+const ARC_CURVE_CAPACITY = 800; // (MAX_MEASURES + 1 for the gimbal) segments * 60 steps comfortably fits
+const ARC_STEPS_PER_SEG = 60;
+
+// Builds the point-cloud "tube" curve connecting the measurement points
+// (and the gimbal, when Close Shape is on) in order, respecting
+// Close Loop / Close Shape. Called every frame once 2+ measurements exist
+// (see frameLoop) so it stays live as any gimbal — including the green
+// one — gets dragged, not just when Triangulate is clicked.
 function buildArcCurve(){
   const pts=[];
-  const STEPS_PER_SEG = 60;
-  for(let i=0;i<S.measures.length-1;i++){
-    const a=S.measures[i].pos, b=S.measures[i+1].pos;
-    for(let s=0;s<STEPS_PER_SEG;s++){
-      const t = s/STEPS_PER_SEG;
+  getShapeSegments().forEach(({a,b})=>{
+    for(let s=0;s<ARC_STEPS_PER_SEG;s++){
+      const t = s/ARC_STEPS_PER_SEG;
       // gentle great-circle-ish bow outward from chart center for visual clarity
-      const lerp=[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+      const lerp=[a.pos[0]+(b.pos[0]-a.pos[0])*t, a.pos[1]+(b.pos[1]-a.pos[1])*t, a.pos[2]+(b.pos[2]-a.pos[2])*t];
       const bow = Math.sin(t*Math.PI)*0.08;
       const len = Math.hypot(lerp[0],lerp[1],lerp[2])||1;
       pts.push(lerp[0]+lerp[0]/len*bow, lerp[1]+lerp[1]/len*bow, lerp[2]+lerp[2]/len*bow);
     }
-  }
-  const n = Math.min(600, pts.length/3);
-  const posArr = new Float32Array(600*4);
-  const colArr = new Float32Array(600*4);
+  });
+  const n = Math.min(ARC_CURVE_CAPACITY, pts.length/3);
+  const posArr = new Float32Array(ARC_CURVE_CAPACITY*4);
+  const colArr = new Float32Array(ARC_CURVE_CAPACITY*4);
   for(let i=0;i<n;i++){
     posArr[i*4]=pts[i*3]; posArr[i*4+1]=pts[i*3+1]; posArr[i*4+2]=pts[i*3+2]; posArr[i*4+3]=1.1;
     colArr[i*4]=1.0; colArr[i*4+1]=0.83; colArr[i*4+2]=0.14; colArr[i*4+3]=0.95;
@@ -1207,6 +1263,7 @@ function frameLoop(ts){
   writeGimbalBuffer();
   updateUniforms();
   runComputePass(dt);
+  if(S.measures.length>=2) buildArcCurve(); else S.arcCurveCount = 0;
   render();
   refreshLabels();
 }
@@ -1439,6 +1496,8 @@ function wireHUD(){
   const triBtn = document.getElementById('s3d-triangulate');
   const physTog = document.getElementById('s3d-physics');
   const indTog = document.getElementById('s3d-indicators');
+  const closeLoopTog = document.getElementById('s3d-closeloop');
+  const closeShapeTog = document.getElementById('s3d-closeshape');
   const pngBtns = document.querySelectorAll('[data-s3d-png]');
   const glbBtn = document.getElementById('s3d-export-glb');
   const appearanceBtn = document.getElementById('s3d-appearance-toggle');
@@ -1448,6 +1507,14 @@ function wireHUD(){
   triBtn && triBtn.addEventListener('click', triangulate);
   physTog && physTog.addEventListener('change', (e)=>{ S.physicsOn = e.target.checked; });
   indTog && indTog.addEventListener('change', (e)=>{ S.indicatorsOn = e.target.checked; refreshLabels(); });
+  closeLoopTog && closeLoopTog.addEventListener('change', (e)=>{
+    S.closeLoop = e.target.checked;
+    if(S.measures.length>=2) triangulate();
+  });
+  closeShapeTog && closeShapeTog.addEventListener('change', (e)=>{
+    S.closeShape = e.target.checked;
+    if(S.measures.length>=2) triangulate();
+  });
   pngBtns.forEach(b=> b.addEventListener('click', ()=> exportPNG(parseInt(b.dataset.s3dPng,10))));
   glbBtn && glbBtn.addEventListener('click', exportGLB);
   appearanceBtn && appearanceBtn.addEventListener('click', ()=>{
