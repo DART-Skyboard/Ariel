@@ -1667,8 +1667,14 @@ function wireHUD(){
   curveClearBtn && curveClearBtn.addEventListener('click', clearCurveGroups);
   pngBtns.forEach(b=> b.addEventListener('click', ()=> exportPNG(parseInt(b.dataset.s3dPng,10))));
   glbBtn && glbBtn.addEventListener('click', exportGLB);
+  const triPanelBtn = document.getElementById('s3d-triangulation-toggle');
   appearanceBtn && appearanceBtn.addEventListener('click', ()=>{
     const panel = document.getElementById('s3d-panel-appearance');
+    if(!panel) return;
+    panel.style.display = (panel.style.display==='none') ? 'block' : 'none';
+  });
+  triPanelBtn && triPanelBtn.addEventListener('click', ()=>{
+    const panel = document.getElementById('s3d-panel-right');
     if(!panel) return;
     panel.style.display = (panel.style.display==='none') ? 'block' : 'none';
   });
