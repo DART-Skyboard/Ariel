@@ -1069,6 +1069,7 @@ body {
           <div class="tree-item active" onclick="switchTab('sch')" style="padding-left:30px"><span class="ti-icon">📄</span> Ariel_NPU.SchDoc</div>
           <div class="tree-item" onclick="switchTab('pcb')" style="padding-left:30px"><span class="ti-icon">🟥</span> Ariel_NPU.PcbDoc</div>
           <div class="tree-item" onclick="switchTab('bom')" style="padding-left:30px"><span class="ti-icon">📊</span> BOM.BomDoc</div>
+          <div class="tree-item" onclick="switchTab('wafer')" style="padding-left:30px"><span class="ti-icon">🔵</span> ArielNPU.WaferDoc</div>
           <div class="tree-item folder" style="padding-left:22px">▾ 📂 Outputs</div>
           <div class="tree-item" style="padding-left:30px"><span class="ti-icon">📑</span> Fabrication.OutJob</div>
           <div class="tree-item" style="padding-left:30px"><span class="ti-icon">📑</span> Assembly.OutJob</div>
@@ -1120,6 +1121,7 @@ body {
       <div class="view-tab" id="tab-draft" onclick="switchTab('draft')">DRAFTSMAN</div>
       <div class="view-tab" id="tab-bom" onclick="switchTab('bom')">BOM</div>
       <div class="view-tab" id="tab-npu" onclick="switchTab('npu')" style="color:var(--magenta)">NPU SPEC</div>
+      <div class="view-tab" id="tab-wafer" onclick="switchTab('wafer')" style="color:var(--cyan)">WAFER</div>
     </div>
 
     <!-- VIEW AREA -->
@@ -1176,10 +1178,10 @@ body {
           <button class="overlay-btn" onclick="snapshot3D()">📷 SNAPSHOT</button>
         </div>
         <div class="view-3d-info" id="3d-info">
-          <div>MODEL: <span style="color:var(--cyan)">Ariel NPU v1</span></div>
-          <div>ARCH: <span style="color:var(--magenta)">Circle Transistor</span></div>
-          <div>LAYERS: <span style="color:var(--gold)">4-Layer PCB</span></div>
-          <div>DIMS: <span style="color:var(--green)">42 × 38 mm</span></div>
+          <div>MODEL: <span style="color:var(--cyan)">Ariel NPU Carrier Board v1</span></div>
+          <div>ARCH: <span style="color:var(--magenta)">BRPN v1 · Circle Tx · EUV</span></div>
+          <div>LAYERS: <span style="color:var(--gold)">8-Layer PCB</span></div>
+          <div>DIMS: <span style="color:var(--green)">170 × 110 mm</span></div>
           <div id="cam-info">CAM: ORBIT ACTIVE</div>
         </div>
       </div>
@@ -1348,6 +1350,24 @@ body {
               Target: <span class="npu-val">Ariel NPU hardware</span>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ===== WAFER VIEW ===== -->
+      <div class="view-panel" id="view-wafer">
+        <canvas id="wafer-canvas" style="width:100%;height:100%;display:block;"></canvas>
+        <div class="view-3d-overlay" id="wafer-overlay">
+          <button class="overlay-btn" onclick="resetWaferCamera()">⟳ RESET CAM</button>
+          <button class="overlay-btn" onclick="toggleWaferWireframe()">⬡ WIREFRAME</button>
+          <button class="overlay-btn" onclick="snapshotWafer()">📷 SNAPSHOT</button>
+        </div>
+        <div class="view-3d-info" id="wafer-info">
+          <div>WAFER: <span style="color:var(--cyan)">Ariel NPU v1 — 300mm EUV</span></div>
+          <div>ARCH: <span style="color:var(--magenta)">Circle Tx · BRPN v1</span></div>
+          <div>PROCESS: <span style="color:var(--gold)">EUV Lithography</span></div>
+          <div>SHELLS: <span style="color:var(--green)">GEO → MAR → AERO</span></div>
+          <div>DIES: <span style="color:var(--cyan)" id="wafer-die-count">~300 per wafer</span></div>
+          <div id="wafer-cam-info">CAM: ORBIT ACTIVE</div>
         </div>
       </div>
 
@@ -1636,7 +1656,7 @@ window.createArielScene = function(engine, canvas) {
   scene.clearColor = new BABYLON.Color4(0.008, 0.02, 0.03, 1);
 
   // Focus orbit camera bounds
-  const camera = new BABYLON.ArcRotateCamera("cam", -Math.PI/3, Math.PI/3.5, 22, BABYLON.Vector3.Zero(), scene);
+  const camera = new BABYLON.ArcRotateCamera("cam", -Math.PI/4, Math.PI/3.2, 30, new BABYLON.Vector3(0,0,0), scene);
   camera.attachControl(canvas, true);
   camera.lowerRadiusLimit = 5;
   camera.upperRadiusLimit = 80;
@@ -1703,8 +1723,8 @@ window.createArielScene = function(engine, canvas) {
   matSilver.specularColor = new BABYLON.Color3(0.9, 0.9, 1);
   matSilver.specularPower = 200;
 
-  // Solid PCB mesh
-  const board = BABYLON.MeshBuilder.CreateBox("board", {width: 8.4, height: 0.2, depth: 7.6}, scene);
+  // ── Carrier Motherboard — 170×110mm scaled ──
+  const board = BABYLON.MeshBuilder.CreateBox("board", {width: 17, height: 0.22, depth: 11}, scene);
   board.material = matPCB;
 
   // Silkscreen annotation plane
@@ -1717,24 +1737,89 @@ window.createArielScene = function(engine, canvas) {
   matSilk.alpha = 0.15;
   silkPlane.material = matSilk;
 
-  // Main Lead Edge MCU (RP2350 QFN-60)
-  const mcu = BABYLON.MeshBuilder.CreateBox("mcu", {width: 2.4, height: 0.6, depth: 2.4}, scene);
-  mcu.position = new BABYLON.Vector3(0.5, 0.4, 0.2);
-  mcu.material = matIC;
+  // ── NPU Socket (LGA land-grid for Ariel NPU die package) ──
+  const matSocket = new BABYLON.StandardMaterial("matSocket", scene);
+  matSocket.diffuseColor = new BABYLON.Color3(0.06, 0.06, 0.07);
+  matSocket.specularColor = new BABYLON.Color3(0.3, 0.3, 0.4);
+  const socket = BABYLON.MeshBuilder.CreateBox("socket", {width: 4.2, height: 0.18, depth: 4.2}, scene);
+  socket.position = new BABYLON.Vector3(0, 0.19, 0);
+  socket.material = matSocket;
 
-  // Outer QFN structural leads layout
-  for (let i = 0; i < 15; i++) {
-    const pin = BABYLON.MeshBuilder.CreateBox("pin"+i, {width: 0.08, height: 0.05, depth: 0.2}, scene);
-    pin.position = new BABYLON.Vector3(-1.2 + i * 0.17, 0.125, 1.3);
-    pin.material = matCopper;
-    const pin2 = pin.clone("pin2_"+i);
-    pin2.position.z = -0.9;
-    if (i < 12) {
-      const pin3 = pin.clone("pin3_"+i);
-      pin3.position = new BABYLON.Vector3(1.3, 0.125, -0.8 + i * 0.17);
-      pin3.rotation.y = Math.PI/2;
-      const pin4 = pin3.clone("pin4_"+i);
-      pin4.position.x = -0.7;
+  // Socket contact grid (LGA pins)
+  for (let r=-4; r<=4; r++) {
+    for (let c=-4; c<=4; c++) {
+      if(Math.abs(r)===4 && Math.abs(c)===4) continue; // corner relief
+      const contact = BABYLON.MeshBuilder.CreateCylinder("sgc"+r+"_"+c, {height:0.06, diameter:0.08, tessellation:6}, scene);
+      contact.position = new BABYLON.Vector3(c*0.42, 0.31, r*0.42);
+      contact.material = matCopper;
+    }
+  }
+
+  // ── Ariel NPU Die Package (BGA carrier) ──
+  const matNPU = new BABYLON.StandardMaterial("matNPU", scene);
+  matNPU.diffuseColor = new BABYLON.Color3(0.04, 0.05, 0.06);
+  matNPU.specularColor = new BABYLON.Color3(0.5, 0.6, 0.8);
+  matNPU.specularPower = 300;
+  matNPU.emissiveColor = new BABYLON.Color3(0.01, 0.02, 0.04);
+  const npuPkg = BABYLON.MeshBuilder.CreateBox("npuPkg", {width: 3.8, height: 0.55, depth: 3.8}, scene);
+  npuPkg.position = new BABYLON.Vector3(0, 0.56, 0);
+  npuPkg.material = matNPU;
+
+  // Die top surface — iridescent silicon
+  const matDie = new BABYLON.StandardMaterial("matDie", scene);
+  matDie.diffuseColor = new BABYLON.Color3(0.12, 0.14, 0.22);
+  matDie.specularColor = new BABYLON.Color3(0.8, 0.85, 1.0);
+  matDie.specularPower = 512;
+  matDie.emissiveColor = new BABYLON.Color3(0.02, 0.04, 0.08);
+  const dieSurface = BABYLON.MeshBuilder.CreateBox("dieSurf", {width: 3.4, height: 0.04, depth: 3.4}, scene);
+  dieSurface.position = new BABYLON.Vector3(0, 0.85, 0);
+  dieSurface.material = matDie;
+
+  // BRPN shell rings on die (GEO=outer, MAR=middle, AERO=inner)
+  const matGEO = new BABYLON.StandardMaterial("matGEO", scene);
+  matGEO.emissiveColor = new BABYLON.Color3(0, 0.9, 0.5);
+  matGEO.alpha = 0.55;
+  const geoRing = BABYLON.MeshBuilder.CreateTorus("geoRing", {diameter:3.0, thickness:0.06, tessellation:48}, scene);
+  geoRing.position = new BABYLON.Vector3(0, 0.88, 0);
+  geoRing.rotation.x = Math.PI/2;
+  geoRing.material = matGEO;
+
+  const matMAR = new BABYLON.StandardMaterial("matMAR", scene);
+  matMAR.emissiveColor = new BABYLON.Color3(0, 0.6, 1.0);
+  matMAR.alpha = 0.6;
+  const marRing = BABYLON.MeshBuilder.CreateTorus("marRing", {diameter:2.0, thickness:0.05, tessellation:48}, scene);
+  marRing.position = new BABYLON.Vector3(0, 0.88, 0);
+  marRing.rotation.x = Math.PI/2;
+  marRing.material = matMAR;
+
+  const matAERO = new BABYLON.StandardMaterial("matAERO", scene);
+  matAERO.emissiveColor = new BABYLON.Color3(0.9, 0, 0.9);
+  matAERO.alpha = 0.65;
+  const aeroRing = BABYLON.MeshBuilder.CreateTorus("aeroRing", {diameter:1.0, thickness:0.04, tessellation:48}, scene);
+  aeroRing.position = new BABYLON.Vector3(0, 0.88, 0);
+  aeroRing.rotation.x = Math.PI/2;
+  aeroRing.material = matAERO;
+
+  // LEATR trace grid on die (19 order pathway lines)
+  const matTrace = new BABYLON.StandardMaterial("matTrace", scene);
+  matTrace.emissiveColor = new BABYLON.Color3(0, 0.75, 1.0);
+  matTrace.alpha = 0.4;
+  for(let t=0; t<7; t++){
+    const traceH = BABYLON.MeshBuilder.CreateBox("trH"+t, {width:3.2, height:0.01, depth:0.025}, scene);
+    traceH.position = new BABYLON.Vector3(0, 0.865, -1.5+t*0.5);
+    traceH.material = matTrace;
+    const traceV = BABYLON.MeshBuilder.CreateBox("trV"+t, {width:0.025, height:0.01, depth:3.2}, scene);
+    traceV.position = new BABYLON.Vector3(-1.5+t*0.5, 0.865, 0);
+    traceV.material = matTrace;
+  }
+
+  // BGA solder balls on underside of package
+  for(let br=-4; br<=4; br+=1){
+    for(let bc=-4; bc<=4; bc+=1){
+      if(Math.abs(br)===4&&Math.abs(bc)===4) continue;
+      const ball = BABYLON.MeshBuilder.CreateSphere("bg"+br+"_"+bc,{diameter:0.12,segments:4},scene);
+      ball.position = new BABYLON.Vector3(bc*0.4, 0.28, br*0.4);
+      ball.material = matCopper;
     }
   }
 
@@ -1764,15 +1849,108 @@ window.createArielScene = function(engine, canvas) {
     });
   });
 
-  // Receptacle details (USB-C & Debug pins)
-  const usb = BABYLON.MeshBuilder.CreateBox("usb", {width: 1.2, height: 0.45, depth: 0.65}, scene);
-  usb.position = new BABYLON.Vector3(3.6, 0.32, -2.5);
-  usb.material = matSilver;
-  const usbInner = BABYLON.MeshBuilder.CreateBox("usbInner", {width: 0.9, height: 0.25, depth: 0.3}, scene);
-  usbInner.position = new BABYLON.Vector3(3.6, 0.32, -2.75);
-  const matUsbI = new BABYLON.StandardMaterial("musbI", scene);
-  matUsbI.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
-  usbInner.material = matUsbI;
+  // ── I/O Port Bank (rear edge, z = -5.4) ──
+  const portZ = -5.3;
+  const matPort = new BABYLON.StandardMaterial("matPort", scene);
+  matPort.diffuseColor = new BABYLON.Color3(0.6, 0.62, 0.66);
+  matPort.specularColor = new BABYLON.Color3(0.9, 0.9, 1); matPort.specularPower = 200;
+
+  // USB-C x2
+  [-5.5,-4.0].forEach((x,i)=>{
+    const p = BABYLON.MeshBuilder.CreateBox("usbC"+i,{width:0.9,height:0.38,depth:0.5},scene);
+    p.position = new BABYLON.Vector3(x, 0.35, portZ);
+    p.material = matPort;
+    const inner = BABYLON.MeshBuilder.CreateBox("usbCI"+i,{width:0.65,height:0.22,depth:0.25},scene);
+    inner.position = new BABYLON.Vector3(x, 0.35, portZ-0.25);
+    inner.material = matIC;
+  });
+
+  // HDMI 2.1
+  const hdmi = BABYLON.MeshBuilder.CreateBox("hdmi",{width:1.4,height:0.55,depth:0.5},scene);
+  hdmi.position = new BABYLON.Vector3(-2.2, 0.38, portZ); hdmi.material = matPort;
+  const hdmiI = BABYLON.MeshBuilder.CreateBox("hdmiI",{width:1.2,height:0.35,depth:0.25},scene);
+  hdmiI.position = new BABYLON.Vector3(-2.2,0.38,portZ-0.25); hdmiI.material = matIC;
+
+  // DisplayPort
+  const dp = BABYLON.MeshBuilder.CreateBox("dp",{width:1.2,height:0.55,depth:0.5},scene);
+  dp.position = new BABYLON.Vector3(-0.4, 0.38, portZ); dp.material = matPort;
+
+  // RJ45 Ethernet (x2 stacked)
+  const matRJ = new BABYLON.StandardMaterial("matRJ",scene);
+  matRJ.diffuseColor = new BABYLON.Color3(0.08,0.08,0.09);
+  const rj45 = BABYLON.MeshBuilder.CreateBox("rj45",{width:1.65,height:1.3,depth:0.5},scene);
+  rj45.position = new BABYLON.Vector3(1.8, 0.75, portZ); rj45.material = matRJ;
+  // LED indicators on RJ45
+  [[1.1,0.35],[1.1,1.15]].forEach(([x,y],i)=>{
+    const led = BABYLON.MeshBuilder.CreateSphere("rjled"+i,{diameter:0.12,segments:4},scene);
+    led.position = new BABYLON.Vector3(x, y, portZ-0.02);
+    led.material = i===0 ? matCyan : matGreen;
+  });
+
+  // PCIe x16 edge connector (bottom of board)
+  const pcie = BABYLON.MeshBuilder.CreateBox("pcie",{width:8.5,height:0.35,depth:0.45},scene);
+  pcie.position = new BABYLON.Vector3(-0.5, 0.0, 4.8);
+  const matPCIe = new BABYLON.StandardMaterial("mPCIe",scene);
+  matPCIe.diffuseColor = new BABYLON.Color3(0.5,0.18,0.02);
+  matPCIe.specularColor = new BABYLON.Color3(0.8,0.5,0.1);
+  pcie.material = matPCIe;
+  // PCIe gold fingers
+  for(let gi=0; gi<36; gi++){
+    const gf = BABYLON.MeshBuilder.CreateBox("gf"+gi,{width:0.06,height:0.1,depth:0.35},scene);
+    gf.position = new BABYLON.Vector3(-4.3+gi*0.24, 0.0, 4.9); gf.material = matCopper;
+  }
+
+  // M.2 NVMe slot
+  const m2 = BABYLON.MeshBuilder.CreateBox("m2",{width:2.8,height:0.15,depth:0.35},scene);
+  m2.position = new BABYLON.Vector3(-5.5, 0.18, 1.5);
+  const matM2 = new BABYLON.StandardMaterial("mM2",scene); matM2.diffuseColor = new BABYLON.Color3(0.35,0.1,0.02);
+  m2.material = matM2;
+
+  // WiFi/BT module + antenna connectors
+  const wifi = BABYLON.MeshBuilder.CreateBox("wifi",{width:1.8,height:0.35,depth:1.2},scene);
+  wifi.position = new BABYLON.Vector3(-5.5,0.28,3.2); wifi.material = matIC;
+  const matAnt = new BABYLON.StandardMaterial("mAnt",scene);
+  matAnt.diffuseColor = new BABYLON.Color3(0.7,0.7,0.7); matAnt.specularPower = 200;
+  [-5.0,-5.9].forEach((x,i)=>{
+    const ant = BABYLON.MeshBuilder.CreateCylinder("ant"+i,{height:3.5,diameter:0.08,tessellation:8},scene);
+    ant.position = new BABYLON.Vector3(x, 2.1, 3.2); ant.material = matAnt;
+    const tip = BABYLON.MeshBuilder.CreateSphere("atip"+i,{diameter:0.18,segments:4},scene);
+    tip.position = new BABYLON.Vector3(x, 3.9, 3.2); tip.material = matCyan;
+  });
+
+  // DDR5 memory slots (x4)
+  for(let m=0; m<4; m++){
+    const dimm = BABYLON.MeshBuilder.CreateBox("dimm"+m,{width:0.22,height:1.8,depth:5.5},scene);
+    dimm.position = new BABYLON.Vector3(4.5+m*0.7, 1.0, -0.2);
+    const matDIMM = new BABYLON.StandardMaterial("mDIMM"+m,scene);
+    matDIMM.diffuseColor = new BABYLON.Color3(0.05,0.12,0.05);
+    dimm.material = matDIMM;
+    // gold fingers
+    const gf = BABYLON.MeshBuilder.CreateBox("dimmgf"+m,{width:0.22,height:0.2,depth:5.0},scene);
+    gf.position = new BABYLON.Vector3(4.5+m*0.7, 0.1, -0.2); gf.material = matCopper;
+  }
+
+  // Power delivery ICs (VRM array)
+  for(let v=0;v<6;v++){
+    const vrm = BABYLON.MeshBuilder.CreateBox("vrm"+v,{width:0.55,height:0.4,depth:0.55},scene);
+    vrm.position = new BABYLON.Vector3(-4.5+v*0.7, 0.3, -3.2);
+    const matVRM = new BABYLON.StandardMaterial("mVRM"+v,scene);
+    matVRM.diffuseColor = new BABYLON.Color3(0.18,0.15,0.08);
+    vrm.material = matVRM;
+  }
+
+  // ATX power connector (24-pin)
+  const atx = BABYLON.MeshBuilder.CreateBox("atx",{width:2.4,height:0.9,depth:1.5},scene);
+  atx.position = new BABYLON.Vector3(7.2, 0.55, -2.0);
+  const matATX = new BABYLON.StandardMaterial("mATX",scene); matATX.diffuseColor = new BABYLON.Color3(0.12,0.12,0.14);
+  atx.material = matATX;
+  for(let ap=0;ap<12;ap++){
+    ['front','back'].forEach((side,s)=>{
+      const apin = BABYLON.MeshBuilder.CreateBox("apin"+ap+side,{width:0.1,height:0.6,depth:0.1},scene);
+      apin.position = new BABYLON.Vector3(6.3+ap*0.18, 0.55, s===0?-1.45:-2.45);
+      apin.material = matCopper;
+    });
+  }
 
   // SWD Pin socket blocks
   for (let i = 0; i < 5; i++) {
@@ -2955,7 +3133,9 @@ window.switchTab = function(tab) {
   document.getElementById('sb-mode').textContent = tab.toUpperCase() + ' VIEW';
   window.currentTab = tab;
 
-  if (tab === '3d') {
+  if (tab === 'wafer') {
+    setTimeout(window.initWaferScene, 120);
+  } else if (tab === '3d') {
     setTimeout(window.initBabylon, 100);
   } else if (tab === 'sch') {
     setTimeout(window.drawSchematic, 50);
@@ -3131,6 +3311,186 @@ document.addEventListener('DOMContentLoaded', () => {
     window.drawDraftsman();
   }, 100);
 });
+</script>
+
+
+<!-- ===== ARIEL NPU WAFER 3D SCENE ===== -->
+<script>
+(function(){
+  var _wEngine, _wScene, _wWireframe = false;
+
+  window.initWaferScene = function(){
+    var canvas = document.getElementById('wafer-canvas');
+    if(!canvas || _wEngine) return;
+    try {
+      _wEngine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true});
+      _wScene = createWaferScene(_wEngine, canvas);
+      _wEngine.runRenderLoop(function(){ if(_wScene) _wScene.render(); });
+      window.addEventListener('resize', function(){ if(_wEngine) _wEngine.resize(); });
+    } catch(e){
+      console.warn('Wafer scene failed:', e);
+    }
+  };
+
+  window.resetWaferCamera = function(){
+    if(_wScene){
+      var cam = _wScene.getCameraByName('waferCam');
+      if(cam){ cam.alpha=-Math.PI/4; cam.beta=Math.PI/3.5; cam.radius=28; }
+    }
+  };
+  window.toggleWaferWireframe = function(){
+    _wWireframe = !_wWireframe;
+    if(_wScene) _wScene.meshes.forEach(function(m){ if(m.material) m.material.wireframe=_wWireframe; });
+  };
+  window.snapshotWafer = function(){
+    if(_wEngine){
+      BABYLON.Tools.CreateScreenshotUsingRenderTarget(_wEngine, _wScene.activeCamera, {precision:1.0});
+    }
+  };
+
+  function createWaferScene(engine, canvas){
+    var scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.005, 0.008, 0.012, 1);
+
+    // Camera
+    var cam = new BABYLON.ArcRotateCamera("waferCam", -Math.PI/4, Math.PI/3.5, 28, BABYLON.Vector3.Zero(), scene);
+    cam.attachControl(canvas, true);
+    cam.lowerRadiusLimit = 8;
+    cam.upperRadiusLimit = 60;
+    cam.wheelPrecision = 40;
+
+    // Lighting — cool studio
+    var hemi = new BABYLON.HemisphericLight("wh", new BABYLON.Vector3(0,1,0), scene);
+    hemi.intensity = 0.2;
+    hemi.diffuse = new BABYLON.Color3(0.4, 0.6, 1);
+    hemi.groundColor = new BABYLON.Color3(0.02, 0.03, 0.05);
+    var spot1 = new BABYLON.PointLight("ws1", new BABYLON.Vector3(15, 20, 10), scene);
+    spot1.intensity = 2.0; spot1.diffuse = new BABYLON.Color3(0.5, 0.85, 1.0);
+    var spot2 = new BABYLON.PointLight("ws2", new BABYLON.Vector3(-12, 18, -8), scene);
+    spot2.intensity = 1.4; spot2.diffuse = new BABYLON.Color3(0.8, 0.3, 1.0);
+    var spot3 = new BABYLON.PointLight("ws3", new BABYLON.Vector3(0, 25, 0), scene);
+    spot3.intensity = 0.8; spot3.diffuse = new BABYLON.Color3(1, 1, 0.9);
+
+    // ── Silicon wafer disc ──
+    var matWafer = new BABYLON.StandardMaterial("matWafer", scene);
+    matWafer.diffuseColor = new BABYLON.Color3(0.08, 0.10, 0.18);
+    matWafer.specularColor = new BABYLON.Color3(0.95, 0.95, 1.0);
+    matWafer.specularPower = 1024;
+    matWafer.emissiveColor = new BABYLON.Color3(0.01, 0.02, 0.06);
+    var waferDisc = BABYLON.MeshBuilder.CreateCylinder("wafer",{height:0.08, diameter:20, tessellation:128}, scene);
+    waferDisc.material = matWafer;
+
+    // Notch (flat on wafer edge at angle)
+    var notch = BABYLON.MeshBuilder.CreateBox("notch",{width:0.8, height:0.1, depth:0.6}, scene);
+    notch.position = new BABYLON.Vector3(0, 0, -10.0);
+    var matNotch = new BABYLON.StandardMaterial("mNotch",scene);
+    matNotch.diffuseColor = new BABYLON.Color3(0.005, 0.008, 0.015);
+    notch.material = matNotch;
+
+    // Edge bevel ring
+    var edgeRing = BABYLON.MeshBuilder.CreateTorus("edgeRing",{diameter:20.0, thickness:0.12, tessellation:128}, scene);
+    edgeRing.rotation.x = Math.PI/2;
+    var matEdge = new BABYLON.StandardMaterial("mEdge",scene);
+    matEdge.diffuseColor = new BABYLON.Color3(0.4, 0.42, 0.55);
+    matEdge.specularColor = new BABYLON.Color3(0.9, 0.9, 1); matEdge.specularPower = 512;
+    edgeRing.material = matEdge;
+
+    // ── Die grid — LEATR NPU dies ──
+    // Each die = 16×16mm approx, grid across 300mm wafer circle
+    var dieW = 1.55, dieD = 1.55, dieH = 0.06;
+    var waferR = 9.5;
+    var dieCount = 0;
+    var colors = [
+      new BABYLON.Color3(0.02, 0.15, 0.28), new BABYLON.Color3(0.02, 0.12, 0.22),
+      new BABYLON.Color3(0.04, 0.18, 0.32), new BABYLON.Color3(0.03, 0.14, 0.26)
+    ];
+    var matDies = colors.map(function(c,i){
+      var m = new BABYLON.StandardMaterial("mDie"+i, scene);
+      m.diffuseColor = c;
+      m.specularColor = new BABYLON.Color3(0.7, 0.75, 1); m.specularPower = 800;
+      m.emissiveColor = new BABYLON.Color3(0.005, 0.015, 0.04);
+      return m;
+    });
+
+    // BRPN shell trace material (cyan traces on die)
+    var matDieTr = new BABYLON.StandardMaterial("mDieTr",scene);
+    matDieTr.emissiveColor = new BABYLON.Color3(0, 0.7, 1.0);
+    matDieTr.alpha = 0.5;
+
+    var gridR = 12, gridC = 12;
+    for(var row=-gridR; row<=gridR; row++){
+      for(var col=-gridC; col<=gridC; col++){
+        var dx = col*(dieW+0.05), dz = row*(dieD+0.05);
+        var dist = Math.sqrt(dx*dx + dz*dz);
+        if(dist + dieW*0.7 > waferR) continue; // clip to circle
+        var die = BABYLON.MeshBuilder.CreateBox("die_"+row+"_"+col, {width:dieW, height:dieH, depth:dieD}, scene);
+        die.position = new BABYLON.Vector3(dx, 0.07, dz);
+        die.material = matDies[(Math.abs(row)+Math.abs(col))%4];
+        // BRPN micro trace on each die (cyan line)
+        var tr = BABYLON.MeshBuilder.CreateBox("dtr_"+row+"_"+col,{width:dieW*0.85,height:0.01,depth:0.015},scene);
+        tr.position = new BABYLON.Vector3(dx, 0.105, dz);
+        tr.material = matDieTr;
+        dieCount++;
+      }
+    }
+    document.getElementById('wafer-die-count').textContent = '~' + dieCount + ' dies per wafer';
+
+    // ── BRPN Shell annotation rings on wafer surface ──
+    // GEO shell (outer) - green
+    var matGEO = new BABYLON.StandardMaterial("wGEO",scene);
+    matGEO.emissiveColor = new BABYLON.Color3(0, 1, 0.5); matGEO.alpha = 0.45;
+    var geoR = BABYLON.MeshBuilder.CreateTorus("wGeoRing",{diameter:18, thickness:0.08, tessellation:96},scene);
+    geoR.rotation.x = Math.PI/2; geoR.position.y = 0.1; geoR.material = matGEO;
+
+    // MAR shell (middle) - cyan
+    var matMAR = new BABYLON.StandardMaterial("wMAR",scene);
+    matMAR.emissiveColor = new BABYLON.Color3(0, 0.6, 1); matMAR.alpha = 0.5;
+    var marR = BABYLON.MeshBuilder.CreateTorus("wMarRing",{diameter:12, thickness:0.07, tessellation:96},scene);
+    marR.rotation.x = Math.PI/2; marR.position.y = 0.1; marR.material = matMAR;
+
+    // AERO shell (inner) - magenta
+    var matAERO = new BABYLON.StandardMaterial("wAERO",scene);
+    matAERO.emissiveColor = new BABYLON.Color3(1, 0, 0.85); matAERO.alpha = 0.55;
+    var aeroR = BABYLON.MeshBuilder.CreateTorus("wAeroRing",{diameter:5.5, thickness:0.06, tessellation:96},scene);
+    aeroR.rotation.x = Math.PI/2; aeroR.position.y = 0.1; aeroR.material = matAERO;
+
+    // LEATR core center indicator
+    var matCore = new BABYLON.StandardMaterial("wCore",scene);
+    matCore.emissiveColor = new BABYLON.Color3(1, 0.9, 0);
+    var coreDisc = BABYLON.MeshBuilder.CreateCylinder("wCoreDisc",{height:0.02, diameter:0.6, tessellation:32},scene);
+    coreDisc.position.y = 0.1; coreDisc.material = matCore;
+
+    // ── Dicing scribe lines ──
+    var matScribe = new BABYLON.StandardMaterial("mScribe",scene);
+    matScribe.emissiveColor = new BABYLON.Color3(0.12, 0.14, 0.2); matScribe.alpha = 0.35;
+    for(var sl=-gridR; sl<=gridR; sl++){
+      var sx = sl*(dieD+0.05);
+      var scrH = BABYLON.MeshBuilder.CreateBox("scrH"+sl,{width:20,height:0.005,depth:0.03},scene);
+      scrH.position = new BABYLON.Vector3(0, 0.085, sx); scrH.material = matScribe;
+      var scrV = BABYLON.MeshBuilder.CreateBox("scrV"+sl,{width:0.03,height:0.005,depth:20},scene);
+      scrV.position = new BABYLON.Vector3(sx, 0.085, 0); scrV.material = matScribe;
+    }
+
+    // Subtle particle glow field
+    var ps = new BABYLON.ParticleSystem("waferParticles", 400, scene);
+    ps.emitter = new BABYLON.Vector3(0, 0.5, 0);
+    ps.minEmitBox = new BABYLON.Vector3(-9, 0, -9);
+    ps.maxEmitBox = new BABYLON.Vector3(9, 2, 9);
+    ps.color1 = new BABYLON.Color4(0, 0.7, 1, 0.15);
+    ps.color2 = new BABYLON.Color4(0.6, 0, 1, 0.08);
+    ps.colorDead = new BABYLON.Color4(0, 0, 0, 0);
+    ps.minSize = 0.05; ps.maxSize = 0.15;
+    ps.minLifeTime = 1.5; ps.maxLifeTime = 3.0;
+    ps.emitRate = 60;
+    ps.direction1 = new BABYLON.Vector3(-0.2, 1, -0.2);
+    ps.direction2 = new BABYLON.Vector3(0.2, 2, 0.2);
+    ps.gravity = new BABYLON.Vector3(0, -0.5, 0);
+    ps.minEmitPower = 0.2; ps.maxEmitPower = 0.6;
+    ps.start();
+
+    return scene;
+  }
+})();
 </script>
 
 </body>
