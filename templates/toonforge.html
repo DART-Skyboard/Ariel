@@ -646,7 +646,7 @@ input[type=color] {
 //  Three.js WebGL + custom GLSL toon shaders
 // ═══════════════════════════════════════════════
 
-const GLB_URL = null; // loaded on demand via ⊕ GLB button
+const GLB_URL = '/static/autumn-biped-anim.glb';
 
 // ────────────────────────────────────────────────
 //  PROCEDURAL DEMO SCENE — loads instantly, no network
@@ -723,6 +723,12 @@ const LAYERS = [
 ];
 let activeLayer = 0;
 
+// ── Animation ──
+let mixer = null;
+let animActions = [];
+let animClipNames = [];
+let animRoot = null;
+
 // ── SVG textures ──
 let svgTexture = null;
 let svgMaskTexture = null;
@@ -739,6 +745,9 @@ let frameCount = 0, lastFPSTime = 0;
 //  TOON VERTEX SHADER
 // ────────────────────────────────────────────────
 const toonVert = `
+#ifdef USE_SKINNING
+  #include <skinning_pars_vertex>
+#endif
 varying vec3 vNormal;
 varying vec3 vViewDir;
 varying vec3 vWorldPos;
@@ -750,13 +759,23 @@ uniform float uWaveFreq;
 void main() {
   vUv = uv;
   vec3 pos = position;
-  // Animated surface wave
+  vec3 norm = normal;
+
+  #ifdef USE_SKINNING
+    #include <skinbase_vertex>
+    #include <skinnormal_vertex>
+    #include <skinning_vertex>
+    pos = transformed;
+    norm = objectNormal;
+  #endif
+
+  // Animated surface wave (additive on top of skinning)
   float wave = sin(pos.x * uWaveFreq + uTime) * cos(pos.z * uWaveFreq * 0.7 + uTime * 0.8) * uWaveAmp;
   pos.y += wave;
 
   vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
   vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
-  vNormal = normalize(normalMatrix * normal);
+  vNormal = normalize(normalMatrix * norm);
   vViewDir = normalize(-mvPos.xyz);
   gl_Position = projectionMatrix * mvPos;
 }`;
@@ -905,10 +924,22 @@ void main() {
 //  OUTLINE VERTEX
 // ────────────────────────────────────────────────
 const outlineVert = `
+#ifdef USE_SKINNING
+  #include <skinning_pars_vertex>
+#endif
 uniform float uOutlineWidth;
 uniform float uOutlineBias;
 void main() {
-  vec3 pos = position + normal * uOutlineWidth * (0.5 + uOutlineBias * 0.5);
+  vec3 pos = position;
+  vec3 norm = normal;
+  #ifdef USE_SKINNING
+    #include <skinbase_vertex>
+    #include <skinnormal_vertex>
+    #include <skinning_vertex>
+    pos = transformed;
+    norm = objectNormal;
+  #endif
+  pos += norm * uOutlineWidth * (0.5 + uOutlineBias * 0.5);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
 }`;
 
@@ -1039,9 +1070,11 @@ function init() {
   resize();
   window.addEventListener('resize', resize);
 
-  buildDemoScene();
+  buildDemoScene(); // show fallback instantly
   buildUI();
   requestAnimationFrame(loop);
+  // Auto-load the biped after UI is ready
+  setTimeout(() => loadGLB(GLB_URL), 100);
 }
 
 function resize() {
@@ -1057,20 +1090,22 @@ function resize() {
 // ────────────────────────────────────────────────
 //  TOON MATERIAL
 // ────────────────────────────────────────────────
-function makeToonMaterial(side=THREE.FrontSide) {
+function makeToonMaterial(side=THREE.FrontSide, isSkinned=false) {
   return new THREE.ShaderMaterial({
     vertexShader: toonVert,
     fragmentShader: toonFrag,
     side,
     uniforms: getToonUniforms(),
+    skinning: isSkinned,
   });
 }
 
-function makeOutlineMaterial() {
+function makeOutlineMaterial(isSkinned=false) {
   return new THREE.ShaderMaterial({
     vertexShader: outlineVert,
     fragmentShader: outlineFrag,
     side: THREE.BackSide,
+    skinning: isSkinned,
     uniforms: {
       uOutlineWidth: { value: S.outline },
       uOutlineBias:  { value: S.obias },
@@ -1191,13 +1226,18 @@ function setLoad(pct, msg) {
 }
 
 function loadGLB(url, isUser=false) {
-  // Clear old meshes
+  // Stop existing mixer
+  if (mixer) { mixer.stopAllAction(); mixer = null; }
+  animActions = []; animClipNames = [];
+
+  // Remove old scene objects
+  if (animRoot) { scene.remove(animRoot); animRoot = null; }
   toonMeshes.forEach(m => scene.remove(m));
   outlineMeshes.forEach(m => scene.remove(m));
   toonMeshes = []; outlineMeshes = [];
 
   document.getElementById('loading-screen').style.display = 'flex';
-  setLoad(10, isUser ? 'Loading your GLB...' : 'Loading Autumn.glb…');
+  setLoad(10, isUser ? 'Loading model...' : 'Loading Autumn biped…');
 
   const loader = new THREE.GLTFLoader();
   loader.load(url,
@@ -1205,51 +1245,75 @@ function loadGLB(url, isUser=false) {
       setLoad(80, 'Building toon materials…');
       const root = gltf.scene;
 
-      // Center and scale
+      // ── Center and scale ──
       const box = new THREE.Box3().setFromObject(root);
       const cen = box.getCenter(new THREE.Vector3());
       const siz = box.getSize(new THREE.Vector3());
       const maxD = Math.max(siz.x, siz.y, siz.z);
       const sc = 2.5 / maxD;
       root.scale.setScalar(sc);
-      root.position.sub(cen.multiplyScalar(sc));
+      root.position.set(-cen.x * sc, -box.min.y * sc, -cen.z * sc);
 
+      // ── Replace materials IN-PLACE to preserve skeleton/skin bindings ──
       root.traverse(child => {
-        if (!child.isMesh) return;
-        child.geometry.computeVertexNormals();
+        if (!child.isMesh && !child.isSkinnedMesh) return;
+        if (child.geometry) child.geometry.computeVertexNormals();
 
-        // Toon mesh
-        const toonMat = makeToonMaterial(THREE.FrontSide);
-        const toon = new THREE.Mesh(child.geometry, toonMat);
-        toon.matrix.copy(child.matrixWorld);
-        toon.matrix.decompose(toon.position, toon.quaternion, toon.scale);
-        toon.position.multiplyScalar(sc);
-        toon.scale.multiplyScalar(sc);
-        scene.add(toon);
-        toonMeshes.push(toon);
+        const isSkinned = child.isSkinnedMesh;
 
-        // Outline mesh
-        const outMat = makeOutlineMaterial();
-        const out = new THREE.Mesh(child.geometry, outMat);
-        out.position.copy(toon.position);
-        out.quaternion.copy(toon.quaternion);
-        out.scale.copy(toon.scale);
-        scene.add(out);
-        outlineMeshes.push(out);
-
-        // Wireframe override if active
+        // Replace with toon material, keeping skinning
+        const toonMat = makeToonMaterial(THREE.FrontSide, isSkinned);
         if (S.wireframe) toonMat.wireframe = true;
+        child.material = toonMat;
+        toonMeshes.push(child);
+
+        // Add a sibling outline skinned/mesh
+        const OutClass = isSkinned ? THREE.SkinnedMesh : THREE.Mesh;
+        const outMesh = new OutClass(child.geometry, makeOutlineMaterial(isSkinned));
+        if (isSkinned && child.skeleton) {
+          outMesh.bind(child.skeleton, child.bindMatrix);
+        }
+        // Outline follows its toon sibling via parent transform
+        child.parent.add(outMesh);
+        outlineMeshes.push(outMesh);
       });
 
-      setLoad(100, 'Ready');
+      // Add entire hierarchy to scene (preserves skeleton)
+      scene.add(root);
+      animRoot = root;
+
+      // ── Animation mixer ──
+      if (gltf.animations && gltf.animations.length > 0) {
+        mixer = new THREE.AnimationMixer(root);
+        gltf.animations.forEach((clip, i) => {
+          animClipNames.push(clip.name || `Clip ${i+1}`);
+          const action = mixer.clipAction(clip);
+          animActions.push(action);
+        });
+        // Auto-play first clip
+        if (animActions[0]) {
+          currentAction = animActions[0];
+          currentAction.play();
+        }
+        // Rebuild anim clip selector in right panel
+        buildClipSelector();
+        setLoad(100, `Ready — ${gltf.animations.length} animation clip(s)`);
+      } else {
+        setLoad(100, 'Ready — no animation clips found');
+      }
+
       setTimeout(() => {
         document.getElementById('loading-screen').style.display = 'none';
-      }, 400);
+      }, 300);
 
-      // Reset cam
-      camera.position.set(0, 0.8, 3.0);
-      camera.lookAt(0, 0, 0);
-      controls.target.set(0, 0, 0);
+      // Fit camera
+      const newBox = new THREE.Box3().setFromObject(root);
+      const newSiz = newBox.getSize(new THREE.Vector3());
+      const newCen = newBox.getCenter(new THREE.Vector3());
+      const dist = Math.max(newSiz.x, newSiz.y, newSiz.z) * 1.6;
+      camera.position.set(newCen.x, newCen.y + newSiz.y * 0.2, newCen.z + dist);
+      camera.lookAt(newCen);
+      controls.target.copy(newCen);
       controls.update();
     },
     (prog) => {
@@ -1257,11 +1321,38 @@ function loadGLB(url, isUser=false) {
       setLoad(pct, `Loading… ${Math.round(pct)}%`);
     },
     (err) => {
-      setLoad(100, 'Load error — check console');
       console.error('GLB load error:', err);
-      document.getElementById('loading-screen').style.display = 'none';
+      setLoad(0, 'Load failed — showing demo scene');
+      buildDemoScene();
     }
   );
+}
+
+function buildClipSelector() {
+  // Build or replace clip buttons in right panel anim section
+  let wrap = document.getElementById('anim-clip-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'anim-clip-wrap';
+    wrap.style.cssText = 'margin-top:8px';
+    const rs = document.getElementById('right-scroll');
+    if (rs) rs.insertBefore(wrap, rs.firstChild);
+  }
+  wrap.innerHTML = '<div class="section-label" style="margin-top:0">ANIMATION CLIPS</div>';
+  animClipNames.forEach((name, i) => {
+    const b = document.createElement('div');
+    b.className = 'anim-btn' + (i===0?' active':'');
+    b.textContent = name;
+    b.style.cssText = 'margin-bottom:4px;font-size:0.6rem;padding:6px 8px;text-align:left;';
+    b.addEventListener('click', () => {
+      document.querySelectorAll('#anim-clip-wrap .anim-btn').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      if (currentAction) currentAction.fadeOut(0.3);
+      currentAction = animActions[i];
+      currentAction.reset().fadeIn(0.3).play();
+    });
+    wrap.appendChild(b);
+  });
 }
 
 // ────────────────────────────────────────────────
@@ -1292,6 +1383,9 @@ function loop(ts) {
   // Update time uniforms
   toonMeshes.forEach(m => { if(m.material.uniforms?.uTime) m.material.uniforms.uTime.value = animT; });
   postQuad.material.uniforms.uTime.value = animT;
+
+  // Update animation mixer
+  if (mixer) mixer.update(dt);
 
   controls.update();
 
@@ -1451,7 +1545,10 @@ function wireControls() {
   wireSlider('s-vig',      'vig',       'v-vig');
   wireSlider('s-grain',    'grain',     'v-grain', 3);
   wireSlider('s-eyeradius','eyeradius', 'v-eyeradius');
-  wireSlider('s-aspeed',   'aspeed',    'v-aspeed', 1);
+  wireSlider('s-aspeed', 'aspeed', 'v-aspeed', 1);
+  document.getElementById('s-aspeed').addEventListener('input', () => {
+    if (mixer) mixer.timeScale = S.aspeed;
+  });
   wireSlider('s-wamp',     'wamp',      'v-wamp');
   wireSlider('s-wfreq',    'wfreq',     'v-wfreq', 1);
   wireSlider('s-rotspd',   'rotspd',    'v-rotspd');
@@ -1582,13 +1679,8 @@ function wireControls() {
   document.getElementById('file-svg-mask').addEventListener('change', e => { if(e.target.files[0]) loadSVG(e.target.files[0], false); });
 
   // GLB import — toolbar button offers Autumn.glb or custom file
-  document.getElementById('btn-import-glb').addEventListener('click', () => {
-    if (confirm('Load built-in Autumn.glb demo model?\n\nOK = load Autumn.glb\nCancel = choose your own file')) {
-      loadGLB('/static/Autumn.glb', false);
-    } else {
-      document.getElementById('file-glb').click();
-    }
-  });
+  // GLB button — load your own file; built-in loads automatically on start
+  document.getElementById('btn-import-glb').addEventListener('click', () => document.getElementById('file-glb').click());
   document.getElementById('file-glb').addEventListener('change', e => {
     const f = e.target.files[0];
     if (!f) return;
