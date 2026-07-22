@@ -604,7 +604,7 @@ input[type=color] {
     <div id="loading-screen">
       <h2>TOONFORGE LOADING</h2>
       <div class="load-bar-wrap"><div id="load-bar"></div></div>
-      <div id="load-msg">Initialising WebGL...</div>
+      <div id="load-msg">Building demo scene…</div>
     </div>
     <div id="vp-label">TOON FORGE · RENDER VIEWPORT</div>
     <div id="vp-mode-badge">CEL SHADER</div>
@@ -634,9 +634,9 @@ input[type=color] {
 <input type="file" id="file-glb" accept=".glb,.gltf" style="display:none">
 <input type="file" id="file-svg-mask" accept=".svg,image/svg+xml" style="display:none">
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/loaders/GLTFLoader.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/controls/OrbitControls.js"></script>
+<script src="https://unpkg.com/three@0.134.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
 
 <script>
 'use strict';
@@ -646,7 +646,56 @@ input[type=color] {
 //  Three.js WebGL + custom GLSL toon shaders
 // ═══════════════════════════════════════════════
 
-const GLB_URL = '/static/Autumn.glb';
+const GLB_URL = null; // loaded on demand via ⊕ GLB button
+
+// ────────────────────────────────────────────────
+//  PROCEDURAL DEMO SCENE — loads instantly, no network
+// ────────────────────────────────────────────────
+function buildDemoScene() {
+  toonMeshes.forEach(m => scene.remove(m));
+  outlineMeshes.forEach(m => scene.remove(m));
+  toonMeshes = []; outlineMeshes = [];
+
+  const add = (geo, x, y, z) => {
+    const toon = new THREE.Mesh(geo, makeToonMaterial());
+    toon.position.set(x, y, z);
+    scene.add(toon);
+    toonMeshes.push(toon);
+    const out = new THREE.Mesh(geo, makeOutlineMaterial());
+    out.position.set(x, y, z);
+    scene.add(out);
+    outlineMeshes.push(out);
+  };
+
+  // Central figure — torso (capsule-ish via scaled sphere+cylinder)
+  add(new THREE.SphereGeometry(0.55, 32, 32), 0, 0.9, 0);     // head
+  add(new THREE.CylinderGeometry(0.38, 0.28, 1.0, 32), 0, 0.1, 0); // torso
+  add(new THREE.SphereGeometry(0.28, 24, 24), 0, -0.5, 0);    // hips
+
+  // Arms
+  add(new THREE.CylinderGeometry(0.1, 0.08, 0.7, 16), -0.62, 0.2, 0.1);
+  add(new THREE.CylinderGeometry(0.1, 0.08, 0.7, 16),  0.62, 0.2, 0.1);
+  // Legs
+  add(new THREE.CylinderGeometry(0.12, 0.09, 0.85, 16), -0.2, -1.05, 0);
+  add(new THREE.CylinderGeometry(0.12, 0.09, 0.85, 16),  0.2, -1.05, 0);
+
+  // Floating orbs
+  add(new THREE.SphereGeometry(0.22, 24, 24), -1.6,  0.6,  -0.5);
+  add(new THREE.SphereGeometry(0.16, 24, 24),  1.5,  0.3,  -0.4);
+  add(new THREE.SphereGeometry(0.12, 24, 24),  0.9,  1.4,   0.2);
+  add(new THREE.TorusGeometry(0.55, 0.09, 16, 48), 0, 0, 0); // ring around figure
+
+  // Ground plane
+  add(new THREE.CylinderGeometry(2.2, 2.2, 0.06, 48), 0, -1.55, 0);
+
+  camera.position.set(0, 0.5, 3.8);
+  camera.lookAt(0, 0.2, 0);
+  controls.target.set(0, 0.2, 0);
+  controls.update();
+
+  document.getElementById('loading-screen').style.display = 'none';
+  setLoad(100, 'Demo scene ready — import a GLB to use your own model');
+}
 
 // ── Shader State ──
 const S = {
@@ -990,7 +1039,7 @@ function init() {
   resize();
   window.addEventListener('resize', resize);
 
-  loadGLB(GLB_URL);
+  buildDemoScene();
   buildUI();
   requestAnimationFrame(loop);
 }
@@ -1532,8 +1581,14 @@ function wireControls() {
   document.getElementById('btn-svg-mask').addEventListener('click', () => document.getElementById('file-svg-mask').click());
   document.getElementById('file-svg-mask').addEventListener('change', e => { if(e.target.files[0]) loadSVG(e.target.files[0], false); });
 
-  // GLB import
-  document.getElementById('btn-import-glb').addEventListener('click', () => document.getElementById('file-glb').click());
+  // GLB import — toolbar button offers Autumn.glb or custom file
+  document.getElementById('btn-import-glb').addEventListener('click', () => {
+    if (confirm('Load built-in Autumn.glb demo model?\n\nOK = load Autumn.glb\nCancel = choose your own file')) {
+      loadGLB('/static/Autumn.glb', false);
+    } else {
+      document.getElementById('file-glb').click();
+    }
+  });
   document.getElementById('file-glb').addEventListener('change', e => {
     const f = e.target.files[0];
     if (!f) return;
@@ -1589,11 +1644,23 @@ function refreshAllControls() {
   set('s-wfreq',     S.wfreq);    setT('v-wfreq',     S.wfreq, 1);
   set('s-rotspd',    S.rotspd);   setT('v-rotspd',    S.rotspd);
   set('s-bob',       S.bob);      setT('v-bob',       S.bob, 3);
-  set('s-eyeradius', S.eyeradius); setT('v-eyeradius', S.eyeradius);
-  // Toggles
-  ['refraction','glass','pulse','ripple','svgflow','autorot','sym','eyeiso','halftone','hatch'].forEach(k => {
-    const tog = document.getElementById('tog-'+k);
-    if (tog) tog.classList.toggle('on', !!S[k] || !!S[k.replace('sym','symmetry')]);
+  set('s-svgopac',   S.svgopac);  setT('v-svgopac',   S.svgopac);
+  set('s-svgscale',  S.svgscale); setT('v-svgscale',  S.svgscale);
+  set('s-svgspeed',  S.svgspeed); setT('v-svgspeed',  S.svgspeed, 1);
+  // Toggles — map element id suffix → S key
+  const togMap = {
+    'refraction':'refraction','glass':'glass','pulse':'pulse','ripple':'ripple',
+    'svgflow':'svgflow','autorot':'autorot','sym':'symmetry','eyeiso':'eyeiso',
+    'halftone':'halftone','hatch':'hatch'
+  };
+  Object.entries(togMap).forEach(([elKey, sKey]) => {
+    const tog = document.getElementById('tog-'+elKey);
+    if (tog) tog.classList.toggle('on', !!S[sKey]);
+  });
+  // Sync right-panel anim buttons
+  const animKeys = ['autorot','pulse','ripple','svgflow','halftone','hatch','refraction','glass'];
+  document.querySelectorAll('#anim-mode-grid .anim-btn').forEach((b, i) => {
+    if (animKeys[i] !== undefined) b.classList.toggle('active', !!S[animKeys[i]]);
   });
 }
 
