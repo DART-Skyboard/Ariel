@@ -707,7 +707,7 @@ const S = {
   lx: 0.50, ly: 1.00, lz: 0.60,
   lightColor: [1,1,1], ambientColor: [0.1,0.16,0.23],
   tint: [0.902, 0.224, 0.275],
-  sat: 1.20, contrast: 1.10, vig: 0.30, grain: 0.03,
+  sat: 1.20, contrast: 1.10, vig: 0.20, grain: 0.0,
   halftone: false, hatch: false,
   symmetry: false, eyeradius: 0.12, eyeiso: false,
   pulse: false, ripple: false, svgflow: false,
@@ -745,9 +745,12 @@ let frameCount = 0, lastFPSTime = 0;
 //  TOON VERTEX SHADER
 // ────────────────────────────────────────────────
 const toonVert = `
-#ifdef USE_SKINNING
-  #include <skinning_pars_vertex>
-#endif
+// Inline skinning uniforms (set by Three.js when skinning:true)
+uniform mat4 bindMatrix;
+uniform mat4 bindMatrixInverse;
+uniform mat4 boneMatrices[128];
+uniform bool uSkinned;
+
 varying vec3 vNormal;
 varying vec3 vViewDir;
 varying vec3 vWorldPos;
@@ -756,22 +759,49 @@ uniform float uTime;
 uniform float uWaveAmp;
 uniform float uWaveFreq;
 
+// Skinning attributes (present when SkinnedMesh)
+attribute vec4 skinIndex;
+attribute vec4 skinWeight;
+
+mat4 getBoneMatrix(float i) {
+  return boneMatrices[int(i)];
+}
+
 void main() {
   vUv = uv;
   vec3 pos = position;
   vec3 norm = normal;
 
-  #ifdef USE_SKINNING
-    #include <skinbase_vertex>
-    #include <skinnormal_vertex>
-    #include <skinning_vertex>
-    pos = transformed;
-    norm = objectNormal;
-  #endif
+  if (uSkinned) {
+    mat4 boneMatX = getBoneMatrix(skinIndex.x);
+    mat4 boneMatY = getBoneMatrix(skinIndex.y);
+    mat4 boneMatZ = getBoneMatrix(skinIndex.z);
+    mat4 boneMatW = getBoneMatrix(skinIndex.w);
 
-  // Animated surface wave (additive on top of skinning)
-  float wave = sin(pos.x * uWaveFreq + uTime) * cos(pos.z * uWaveFreq * 0.7 + uTime * 0.8) * uWaveAmp;
-  pos.y += wave;
+    // Skin position
+    vec4 skinVertex = bindMatrix * vec4(pos, 1.0);
+    vec4 skinned =
+      skinWeight.x * boneMatX * skinVertex +
+      skinWeight.y * boneMatY * skinVertex +
+      skinWeight.z * boneMatZ * skinVertex +
+      skinWeight.w * boneMatW * skinVertex;
+    pos = (bindMatrixInverse * skinned).xyz;
+
+    // Skin normal
+    mat4 skinMatrix =
+      skinWeight.x * boneMatX +
+      skinWeight.y * boneMatY +
+      skinWeight.z * boneMatZ +
+      skinWeight.w * boneMatW;
+    skinMatrix = bindMatrixInverse * skinMatrix * bindMatrix;
+    norm = vec4(skinMatrix * vec4(norm, 0.0)).xyz;
+  }
+
+  // Surface wave (only when not skinning to avoid fighting rig)
+  if (!uSkinned) {
+    float wave = sin(pos.x * uWaveFreq + uTime) * cos(pos.z * uWaveFreq * 0.7 + uTime * 0.8) * uWaveAmp;
+    pos.y += wave;
+  }
 
   vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
   vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
@@ -924,22 +954,35 @@ void main() {
 //  OUTLINE VERTEX
 // ────────────────────────────────────────────────
 const outlineVert = `
-#ifdef USE_SKINNING
-  #include <skinning_pars_vertex>
-#endif
+uniform mat4 bindMatrix;
+uniform mat4 bindMatrixInverse;
+uniform mat4 boneMatrices[128];
+uniform bool uSkinned;
+attribute vec4 skinIndex;
+attribute vec4 skinWeight;
 uniform float uOutlineWidth;
 uniform float uOutlineBias;
+
+mat4 getOBoneMatrix(float i) { return boneMatrices[int(i)]; }
+
 void main() {
   vec3 pos = position;
   vec3 norm = normal;
-  #ifdef USE_SKINNING
-    #include <skinbase_vertex>
-    #include <skinnormal_vertex>
-    #include <skinning_vertex>
-    pos = transformed;
-    norm = objectNormal;
-  #endif
-  pos += norm * uOutlineWidth * (0.5 + uOutlineBias * 0.5);
+
+  if (uSkinned) {
+    mat4 bX = getOBoneMatrix(skinIndex.x);
+    mat4 bY = getOBoneMatrix(skinIndex.y);
+    mat4 bZ = getOBoneMatrix(skinIndex.z);
+    mat4 bW = getOBoneMatrix(skinIndex.w);
+    vec4 sv = bindMatrix * vec4(pos, 1.0);
+    vec4 sk = skinWeight.x*bX*sv + skinWeight.y*bY*sv + skinWeight.z*bZ*sv + skinWeight.w*bW*sv;
+    pos = (bindMatrixInverse * sk).xyz;
+    mat4 sm = skinWeight.x*bX + skinWeight.y*bY + skinWeight.z*bZ + skinWeight.w*bW;
+    sm = bindMatrixInverse * sm * bindMatrix;
+    norm = vec4(sm * vec4(norm, 0.0)).xyz;
+  }
+
+  pos += normalize(norm) * uOutlineWidth * (0.5 + uOutlineBias * 0.5);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
 }`;
 
@@ -1091,12 +1134,13 @@ function resize() {
 //  TOON MATERIAL
 // ────────────────────────────────────────────────
 function makeToonMaterial(side=THREE.FrontSide, isSkinned=false) {
+  const u = getToonUniforms();
+  u.uSkinned.value = isSkinned;
   return new THREE.ShaderMaterial({
     vertexShader: toonVert,
     fragmentShader: toonFrag,
     side,
-    uniforms: getToonUniforms(),
-    skinning: isSkinned,
+    uniforms: u,
   });
 }
 
@@ -1105,11 +1149,14 @@ function makeOutlineMaterial(isSkinned=false) {
     vertexShader: outlineVert,
     fragmentShader: outlineFrag,
     side: THREE.BackSide,
-    skinning: isSkinned,
     uniforms: {
-      uOutlineWidth: { value: S.outline },
-      uOutlineBias:  { value: S.obias },
-      uOutlineColor: { value: new THREE.Vector3(...S.outlineColor) },
+      uOutlineWidth:     { value: S.outline },
+      uOutlineBias:      { value: S.obias },
+      uOutlineColor:     { value: new THREE.Vector3(...S.outlineColor) },
+      uSkinned:          { value: isSkinned },
+      bindMatrix:        { value: new THREE.Matrix4() },
+      bindMatrixInverse: { value: new THREE.Matrix4() },
+      boneMatrices:      { value: null },
     }
   });
 }
@@ -1155,6 +1202,10 @@ function getToonUniforms() {
     uBlendMode:  { value: layer ? (blendMap[layer.blend] ?? 0) : 0 },
     uWaveAmp:    { value: S.wamp },
     uWaveFreq:   { value: S.wfreq },
+    uSkinned:    { value: false },
+    bindMatrix:        { value: new THREE.Matrix4() },
+    bindMatrixInverse: { value: new THREE.Matrix4() },
+    boneMatrices:      { value: null },
   };
 }
 
@@ -1267,13 +1318,20 @@ function loadGLB(url, isUser=false) {
         child.material = toonMat;
         toonMeshes.push(child);
 
-        // Add a sibling outline skinned/mesh
-        const OutClass = isSkinned ? THREE.SkinnedMesh : THREE.Mesh;
-        const outMesh = new OutClass(child.geometry, makeOutlineMaterial(isSkinned));
+        // Sync skeleton uniforms into toon material
         if (isSkinned && child.skeleton) {
-          outMesh.bind(child.skeleton, child.bindMatrix);
+          child.material.uniforms.bindMatrix.value.copy(child.bindMatrix);
+          child.material.uniforms.bindMatrixInverse.value.copy(child.bindMatrixInverse);
+          // boneMatrices updated per-frame in loop
         }
-        // Outline follows its toon sibling via parent transform
+
+        // Add a sibling outline mesh (plain Mesh, no SkinnedMesh needed —
+        // we pass bone data via uniforms and handle it in the shader)
+        const outMesh = new THREE.Mesh(child.geometry, makeOutlineMaterial(isSkinned));
+        if (isSkinned && child.skeleton) {
+          outMesh.material.uniforms.bindMatrix.value.copy(child.bindMatrix);
+          outMesh.material.uniforms.bindMatrixInverse.value.copy(child.bindMatrixInverse);
+        }
         child.parent.add(outMesh);
         outlineMeshes.push(outMesh);
       });
@@ -1386,6 +1444,18 @@ function loop(ts) {
 
   // Update animation mixer
   if (mixer) mixer.update(dt);
+
+  // Push current bone matrices to shader uniforms
+  toonMeshes.forEach(m => {
+    if (m.isSkinnedMesh && m.skeleton && m.material.uniforms?.boneMatrices) {
+      m.skeleton.update();
+      m.material.uniforms.boneMatrices.value = m.skeleton.boneMatrices;
+      const om = outlineMeshes[toonMeshes.indexOf(m)];
+      if (om && om.material.uniforms?.boneMatrices) {
+        om.material.uniforms.boneMatrices.value = m.skeleton.boneMatrices;
+      }
+    }
+  });
 
   controls.update();
 
