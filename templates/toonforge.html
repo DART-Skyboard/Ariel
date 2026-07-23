@@ -327,11 +327,15 @@ input[type=color]{width:26px;height:20px;border:1px solid var(--edge);border-rad
 </div><!-- main -->
 
 <input type="file" id="file-svg" accept=".svg,image/svg+xml" style="display:none">
-<input type="file" id="file-glb" accept=".glb,.gltf,.obj,.fbx,.stl" style="display:none">
+<input type="file" id="file-glb" accept=".glb,.gltf,.fbx,.obj,.stl,.dae,.zip" style="display:none">
 <input type="file" id="file-svg-mask" accept=".svg,image/svg+xml" style="display:none">
 
 <script src="https://unpkg.com/three@0.134.0/build/three.min.js"></script>
 <script src="https://unpkg.com/three@0.134.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/FBXLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/OBJLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/STLLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/ColladaLoader.js"></script>
 <script src="https://unpkg.com/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
 <script>
 'use strict';
@@ -459,19 +463,58 @@ function init() {
 
   clock = new THREE.Clock();
 
-  resize();
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', () => { resize(); });
   buildUI();
-  requestAnimationFrame(loop);
-  loadGLB(GLB_URL);
+  buildFallbackScene(); // show something immediately
+
+  // Defer resize + GLB load until after layout paints
+  requestAnimationFrame(() => {
+    resize();
+    requestAnimationFrame(() => {
+      resize();
+      loadGLB(GLB_URL);
+    });
+  });
+}
+
+function buildFallbackScene() {
+  // Instant procedural scene while GLB loads
+  const geo = new THREE.SphereGeometry(0.7, 32, 32);
+  const mat = new THREE.MeshToonMaterial({ color:0xe63946, gradientMap:gradTex, skinning:false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(0, 0.7, 0);
+  scene.add(mesh);
+  toonMeshes.push(mesh);
+  const outMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0x000000, side:THREE.BackSide }));
+  outMesh.position.copy(mesh.position);
+  outMesh.scale.setScalar(1.08);
+  scene.add(outMesh);
+  outlineMeshes.push(outMesh);
+
+  const geo2 = new THREE.CylinderGeometry(0.3, 0.25, 1.0, 24);
+  const mat2 = new THREE.MeshToonMaterial({ color:0xe63946, gradientMap:gradTex, skinning:false });
+  const mesh2 = new THREE.Mesh(geo2, mat2);
+  mesh2.position.set(0, -0.1, 0);
+  scene.add(mesh2); toonMeshes.push(mesh2);
+  const out2 = new THREE.Mesh(geo2, new THREE.MeshBasicMaterial({ color:0x000000, side:THREE.BackSide }));
+  out2.scale.setScalar(1.08); out2.position.copy(mesh2.position);
+  scene.add(out2); outlineMeshes.push(out2);
+
+  camera.position.set(0, 0.5, 3.5);
+  camera.lookAt(0, 0.3, 0);
+  controls.target.set(0, 0.3, 0);
+  document.getElementById('loading-screen').style.display = 'none';
 }
 
 function resize() {
   const el = document.getElementById('vp-wrap');
-  const w = el.clientWidth, h = el.clientHeight;
-  renderer.setSize(w, h);
+  // offsetWidth/Height work even before first paint; fall back to window
+  const w = el.offsetWidth  || window.innerWidth;
+  const h = el.offsetHeight || (window.innerHeight - 40);
+  if (w < 10 || h < 10) return; // not ready yet
+  renderer.setSize(w, h, false); // false = don't set canvas CSS size (let CSS do it)
   renderTarget.setSize(w, h);
-  camera.aspect = w/h;
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
   postQuad.material.uniforms.uRes.value.set(w, h);
 }
@@ -496,90 +539,144 @@ function clearScene() {
   if (mixer) { mixer.stopAllAction(); mixer = null; }
   animActions = []; currentAction = null;
   if (sceneRoot) { scene.remove(sceneRoot); sceneRoot = null; }
-  outlineMeshes.forEach(m => { if(m.parent) m.parent.remove(m); });
+  // Remove all toon + outline meshes (includes fallback procedural meshes)
+  [...toonMeshes, ...outlineMeshes].forEach(m => { if(m.parent) m.parent.remove(m); });
   toonMeshes = []; outlineMeshes = [];
 }
 
-function loadGLB(url, isUser=false) {
+// Universal model loader — GLB/GLTF, FBX, OBJ, STL, DAE, ZIP(GLB inside)
+function loadGLB(url, isUser=false, filename='') {
   clearScene();
   document.getElementById('loading-screen').style.display = 'flex';
-  setLoad(5, isUser ? 'Loading model…' : 'Loading Autumn biped…');
+  setLoad(5, isUser ? `Loading ${filename || 'model'}…` : 'Loading Autumn biped…');
 
-  new THREE.GLTFLoader().load(url, gltf => {
-    setLoad(85, 'Applying cel shader…');
-    const root = gltf.scene;
+  const ext = (filename || url).split('?')[0].split('.').pop().toLowerCase();
 
-    // Center + scale
-    const box = new THREE.Box3().setFromObject(root);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const sc = 2.5 / maxDim;
-    root.scale.setScalar(sc);
-    root.position.set(-center.x*sc, -box.min.y*sc, -center.z*sc);
-
-    // Replace materials in-place — MeshToonMaterial handles SkinnedMesh natively
-    root.traverse(child => {
-      if (!child.isMesh && !child.isSkinnedMesh) return;
-      if (child.geometry) child.geometry.computeVertexNormals();
-      const mat = makeToonMat();
-      mat.skinning = child.isSkinnedMesh;
-      child.material = mat;
-      toonMeshes.push(child);
-
-      // Outline: clone as SkinnedMesh if needed, render backface expanded
-      const OutClass = child.isSkinnedMesh ? THREE.SkinnedMesh : THREE.Mesh;
-      const outMesh = new OutClass(child.geometry, new THREE.MeshBasicMaterial({
-        color: new THREE.Color(...S.outlineColor),
-        side: THREE.BackSide,
-        skinning: child.isSkinnedMesh,
-      }));
-      outMesh.scale.setScalar(1 + S.ow * 10);
-      if (child.isSkinnedMesh && child.skeleton) {
-        outMesh.bind(child.skeleton, child.bindMatrix);
-      }
-      child.parent.add(outMesh);
-      outlineMeshes.push(outMesh);
-    });
-
-    scene.add(root);
-    sceneRoot = root;
-
-    // Fit camera
-    const nb = new THREE.Box3().setFromObject(root);
-    const nc = nb.getCenter(new THREE.Vector3());
-    const ns = nb.getSize(new THREE.Vector3());
-    const dist = Math.max(ns.x, ns.y, ns.z) * 1.7;
-    camera.position.set(nc.x, nc.y + ns.y*0.15, nc.z + dist);
-    camera.lookAt(nc);
-    controls.target.copy(nc);
-    controls.update();
-
-    // Animation mixer
-    if (gltf.animations?.length) {
-      mixer = new THREE.AnimationMixer(root);
-      gltf.animations.forEach((clip, i) => {
-        const action = mixer.clipAction(clip);
-        animActions.push(action);
+  // ZIP: extract first GLB/OBJ/FBX inside
+  if (ext === 'zip') {
+    setLoad(20, 'Extracting ZIP…');
+    fetch(url)
+      .then(r => r.arrayBuffer())
+      .then(buf => {
+        // Use a simple ZIP reader via JSZip if available, else try as GLB
+        if (window.JSZip) {
+          JSZip.loadAsync(buf).then(zip => {
+            const entries = Object.keys(zip.files).filter(n => /\.(glb|gltf|fbx|obj|stl|dae)$/i.test(n));
+            if (!entries.length) { setLoad(0,'No model found in ZIP'); return; }
+            zip.files[entries[0]].async('arraybuffer').then(data => {
+              const blob = new Blob([data]);
+              const innerUrl = URL.createObjectURL(blob);
+              loadGLB(innerUrl, true, entries[0]);
+            });
+          });
+        } else {
+          // Try loading directly as GLB binary
+          loadFromBuffer(buf, 'glb', filename);
+        }
       });
-      currentAction = animActions[0];
-      currentAction.play();
-      buildClipList(gltf.animations.map((c,i) => c.name || `Clip ${i+1}`));
-    } else {
-      document.getElementById('clip-list').innerHTML = '<div style="font-size:.63rem;color:var(--dim);padding:4px">No animation clips</div>';
-    }
+    return;
+  }
 
-    setLoad(100, 'Ready');
-    setTimeout(() => { document.getElementById('loading-screen').style.display = 'none'; }, 300);
-
-  }, prog => {
+  const onProgress = prog => {
     const pct = prog.total ? Math.round(prog.loaded/prog.total*78)+5 : 40;
     setLoad(pct, `${Math.round(pct)}%`);
-  }, err => {
-    console.error('GLB error:', err);
-    setLoad(0, 'Load failed');
+  };
+  const onError = err => {
+    console.error('Load error:', err);
+    setLoad(0, 'Load failed — check console');
     document.getElementById('loading-screen').style.display = 'none';
+    buildFallbackScene();
+  };
+
+  if (ext === 'fbx') {
+    if (!THREE.FBXLoader) { onError('FBXLoader not available'); return; }
+    new THREE.FBXLoader().load(url, obj => applyToonToObject(obj, null), onProgress, onError);
+  } else if (ext === 'obj') {
+    if (!THREE.OBJLoader) { onError('OBJLoader not available'); return; }
+    new THREE.OBJLoader().load(url, obj => applyToonToObject(obj, null), onProgress, onError);
+  } else if (ext === 'stl') {
+    if (!THREE.STLLoader) { onError('STLLoader not available'); return; }
+    new THREE.STLLoader().load(url, geo => {
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, makeToonMat());
+      const grp = new THREE.Group(); grp.add(mesh);
+      applyToonToObject(grp, null);
+    }, onProgress, onError);
+  } else if (ext === 'dae') {
+    if (!THREE.ColladaLoader) { onError('ColladaLoader not available'); return; }
+    new THREE.ColladaLoader().load(url, col => applyToonToObject(col.scene, col.animations || []), onProgress, onError);
+  } else {
+    // Default: GLB / GLTF
+    new THREE.GLTFLoader().load(url, gltf => applyToonToObject(gltf.scene, gltf.animations || []), onProgress, onError);
+  }
+}
+
+function applyToonToObject(root, animations) {
+  setLoad(88, 'Applying cel shader…');
+
+  // Center + fit
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const sc = 2.5 / maxDim;
+  root.scale.setScalar(sc);
+  root.position.set(-center.x*sc, -box.min.y*sc, -center.z*sc);
+
+  // Apply toon materials in-place
+  root.traverse(child => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    if (child.geometry) child.geometry.computeVertexNormals();
+    const mat = makeToonMat();
+    mat.skinning = child.isSkinnedMesh;
+    child.material = mat;
+    toonMeshes.push(child);
+
+    // Outline mesh
+    const OutClass = child.isSkinnedMesh ? THREE.SkinnedMesh : THREE.Mesh;
+    const outMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(...S.outlineColor),
+      side: THREE.BackSide,
+      skinning: child.isSkinnedMesh,
+    });
+    const outMesh = new OutClass(child.geometry, outMat);
+    outMesh.scale.setScalar(1 + S.ow * 10);
+    if (child.isSkinnedMesh && child.skeleton) {
+      outMesh.bind(child.skeleton, child.bindMatrix);
+    }
+    child.parent.add(outMesh);
+    outlineMeshes.push(outMesh);
   });
+
+  scene.add(root);
+  sceneRoot = root;
+
+  // Fit camera
+  const nb = new THREE.Box3().setFromObject(root);
+  const nc = nb.getCenter(new THREE.Vector3());
+  const ns = nb.getSize(new THREE.Vector3());
+  const dist = Math.max(ns.x, ns.y, ns.z) * 1.8;
+  camera.position.set(nc.x, nc.y + ns.y*0.1, nc.z + dist);
+  camera.lookAt(nc);
+  controls.target.copy(nc);
+  controls.update();
+
+  // Animation mixer
+  if (animations && animations.length) {
+    mixer = new THREE.AnimationMixer(root);
+    animations.forEach((clip, i) => {
+      animActions.push(mixer.clipAction(clip));
+    });
+    currentAction = animActions[0];
+    currentAction.play();
+    buildClipList(animations.map((c,i) => c.name || `Clip ${i+1}`));
+  } else {
+    document.getElementById('clip-list').innerHTML =
+      '<div style="font-size:.63rem;color:var(--dim);padding:4px">No animation clips</div>';
+  }
+
+  setLoad(100, 'Ready');
+  setTimeout(() => { document.getElementById('loading-screen').style.display = 'none'; }, 250);
 }
 
 function buildClipList(names) {
@@ -641,6 +738,7 @@ function applyShader() {
 // ── Render loop ──
 function loop(ts) {
   requestAnimationFrame(loop);
+  resize(); // keep canvas sized correctly each frame (cheap if unchanged)
   const dt = clock.getDelta();
   animT += dt;
 
@@ -875,8 +973,12 @@ function buildUI() {
   document.getElementById('btn-import-glb').addEventListener('click',()=>document.getElementById('file-glb').click());
   document.getElementById('file-glb').addEventListener('change', e => {
     const f=e.target.files[0]; if(!f) return;
-    loadGLB(URL.createObjectURL(f), true);
+    loadGLB(URL.createObjectURL(f), true, f.name);
   });
+  // Load JSZip for ZIP support
+  const jszipScript = document.createElement('script');
+  jszipScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  document.head.appendChild(jszipScript);
 
   // Viewport buttons
   document.getElementById('btn-reset-cam').addEventListener('click', () => {
