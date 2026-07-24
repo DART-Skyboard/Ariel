@@ -262,7 +262,71 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 </script>
 <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
 <script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { ColladaLoader } from "three/addons/loaders/ColladaLoader.js";
+import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
+import { GPUComputationRenderer } from "three/addons/misc/GPUComputationRenderer.js";
 
+// ═══════════════════════════════════════════════════════════════
+//  ARC FLOW — mechanical fluid-flow prototyping
+//  Radical Deepscale LLC / DART Meadow — derived from the BTU
+//  Thermal Calculator, re-scoped to full 3D flow-network simulation.
+// ═══════════════════════════════════════════════════════════════
+
+const DEMO_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/CombustionChamber.glb";
+
+// ── Renderer / scene / camera ──────────────────────────────────
+const viewportEl = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(viewportEl.clientWidth, viewportEl.clientHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+viewportEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x060a10);
+scene.fog = new THREE.FogExp2(0x060a10, 0.006);
+
+const camera = new THREE.PerspectiveCamera(50, viewportEl.clientWidth / viewportEl.clientHeight, 0.05, 5000);
+camera.position.set(18, 14, 22);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0, 10, 0);
+
+// Lighting — Sun + Sky, matching ArcLake's own IBL approach
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(20, 40, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x4488ff, 0x0a0e18, 0.9));
+scene.add(new THREE.AmbientLight(0x223344, 0.4));
+
+const grid = new THREE.GridHelper(60, 60, 0x0d3a44, 0x0a1a20);
+scene.add(grid);
+
+function onResize() {
+  const w = viewportEl.clientWidth, h = viewportEl.clientHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+new ResizeObserver(onResize).observe(viewportEl);
+
+function animateBase() {
+  requestAnimationFrame(animateBase);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animateBase();
 
 // ── State ─────────────────────────────────────────────────────
 const state = {
