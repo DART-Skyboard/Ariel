@@ -295,6 +295,8 @@ import { GPUComputationRenderer } from "three/addons/misc/GPUComputationRenderer
 // cold->hot visual language. Declared up top since the floor's material
 // (created during initial scene setup, before the particle system exists)
 // needs it too.
+let appReady = false; // flips true once all setup has run (see end of module)
+
 const THERMAL_RAMP_GLSL = `
   vec3 thermalRamp(float t) {
     vec3 cold = vec3(0.2, 0.55, 1.0);
@@ -375,6 +377,17 @@ scene.add(grid);
 const FLOOR_SIZE = 80;
 const floorGeo = new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE, 1, 1);
 floorGeo.rotateX(-Math.PI / 2);
+
+// Declared up here (not down beside the particle system where they're
+// actually built) because the floor-heat setup below runs during initial
+// scene construction and references them. With `let`, reading a variable
+// before its declaration line executes is a temporal-dead-zone
+// ReferenceError — which kills the whole module script, so nothing after
+// it runs at all. That's exactly what broke the previous build: the page
+// rendered its HTML/CSS fine but no scene ever loaded.
+let particleSystem = null;
+let particleSplatMaterial = null;
+let partHeatEmissiveApplied = false;
 
 let floorHeatRes = 512; // "Thermal Resolution" — texture-space detail for
                          // the heat pattern, independent of any mesh's own
@@ -500,7 +513,11 @@ new ResizeObserver(onResize).observe(viewportEl);
 function animateBase() {
   requestAnimationFrame(animateBase);
   controls.update();
-  if (typeof state !== 'undefined') {
+  // `typeof state` is NOT a safe guard here: for a let/const still in its
+  // temporal dead zone, even typeof throws a ReferenceError (unlike an
+  // undeclared variable). animateBase() starts before `state` is declared,
+  // so use a plain flag that's genuinely false until setup finishes.
+  if (appReady) {
     if (state.simRunning && particleSystem) renderFloorHeatPass();
     if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
   }
@@ -1526,8 +1543,8 @@ function runSealCheck() {
 // propellant tanks never actually reached the nozzle, only ones that
 // started directly inside the chamber did.
 const MAX_WAYPOINTS = 10;
-let particleSystem = null;
-let particleSplatMaterial = null;
+// particleSystem / particleSplatMaterial are declared near the floor-heat
+// system above (they're referenced during initial setup).
 
 function buildFlowGraph() {
   refreshAllOpenings();
@@ -1589,7 +1606,7 @@ function computePartHeatLevels(links) {
   return heat;
 }
 
-let partHeatEmissiveApplied = false;
+// partHeatEmissiveApplied is declared near the top (used by the render loop).
 function updatePartThermalTint(links) {
   const heat = computePartHeatLevels(links);
   for (const part of state.parts) {
@@ -1986,6 +2003,7 @@ window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, comput
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
 // additional files alongside it (imports are additive; see onSceneLoaded).
+appReady = true;
 loadDemo();
 </script>
 
