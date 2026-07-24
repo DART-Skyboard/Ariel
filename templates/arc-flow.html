@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#060a10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Arc Flow · Radical Deepscale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet">
+<style>
+/* ── DESIGN TOKENS — matches existing /btu.html system ────────── */
+:root{
+  --bg:        #060a10;
+  --bg2:       #0a0e18;
+  --glass:     rgba(8,14,26,0.88);
+  --card:      rgba(255,255,255,0.035);
+  --acc:       #00e5ff;
+  --acc-d:     rgba(0,229,255,0.25);
+  --acc-g:     rgba(0,229,255,0.12);
+  --warm:      #ff8a3d;
+  --warm-d:    rgba(255,138,61,0.28);
+  --warm-g:    rgba(255,138,61,0.10);
+  --cold:      #4ea8ff;
+  --ok:        #39ff7a;
+  --err:       #ff4d6a;
+  --txt:       #dceeff;
+  --txt-d:     rgba(220,238,255,0.45);
+  --bdr:       rgba(0,229,255,0.16);
+  --bdr-s:     rgba(0,229,255,0.38);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  width:100%;height:100%;overflow:hidden;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(255,138,61,0.07) 0%, transparent 55%),
+    radial-gradient(ellipse at 85% 15%, rgba(0,229,255,0.06) 0%, transparent 50%),
+    var(--bg);
+  color:var(--txt);
+  font-family:'Exo 2',sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--acc);text-decoration:none}
+button{font-family:inherit}
+
+/* ── HEADER ────────────────────────────────────────────────── */
+#hdr{
+  position:relative;z-index:50;height:50px;flex:0 0 50px;
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+  background:linear-gradient(180deg,rgba(6,10,16,.97) 0%,rgba(6,10,16,.85) 100%);
+  border-bottom:1px solid var(--bdr);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+}
+.hl{font-family:'Orbitron',sans-serif;font-weight:900;font-size:12px;
+    letter-spacing:3.5px;color:var(--acc);text-transform:uppercase;white-space:nowrap;}
+.hs{width:1px;height:18px;background:var(--bdr-s);flex:0 0 1px;}
+.ht{font-weight:300;font-size:11px;letter-spacing:2px;color:var(--txt-d);text-transform:uppercase;white-space:nowrap;}
+.hback{margin-left:auto;font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:2px;
+  color:var(--acc);border:1px solid var(--bdr-s);background:var(--acc-g);
+  padding:6px 12px;border-radius:6px;cursor:pointer;text-transform:uppercase;flex:0 0 auto;}
+.hback:hover{background:var(--acc-d);}
+#playBtn{
+  font-family:'Orbitron',sans-serif;font-size:10px;letter-spacing:2px;font-weight:700;
+  color:#06110c;background:var(--ok);border:none;border-radius:6px;padding:7px 16px;
+  cursor:pointer;text-transform:uppercase;flex:0 0 auto;
+}
+#playBtn.playing{background:var(--warm);color:#1a0d02;}
+#partCount{font-size:10px;color:var(--txt-d);white-space:nowrap;}
+</style>
+</head>
+<style>
+/* ── LAYOUT ────────────────────────────────────────────────── */
+body{display:flex;flex-direction:column;}
+#main{flex:1 1 auto;display:flex;min-height:0;position:relative;}
+#viewport{flex:1 1 auto;position:relative;min-width:0;}
+#viewport canvas{display:block;width:100%;height:100%;}
+
+#leftPanel, #rightPanel{
+  width:270px;flex:0 0 270px;overflow-y:auto;overflow-x:hidden;
+  background:var(--glass);border-right:1px solid var(--bdr);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  padding:14px 12px 40px;
+}
+#rightPanel{border-right:none;border-left:1px solid var(--bdr);}
+@media (max-width:900px){
+  #leftPanel,#rightPanel{position:absolute;top:0;bottom:0;z-index:20;transition:transform .25s ease;}
+  #leftPanel{left:0;transform:translateX(-100%);}
+  #rightPanel{right:0;transform:translateX(100%);}
+  #leftPanel.open{transform:translateX(0);}
+  #rightPanel.open{transform:translateX(0);}
+}
+
+.sec-h{font-family:'Orbitron',sans-serif;font-size:9px;letter-spacing:2.5px;
+  color:var(--acc);text-transform:uppercase;margin:16px 0 8px;display:flex;align-items:center;gap:6px;}
+.sec-h:first-child{margin-top:0;}
+.sec-sub{font-size:10px;color:var(--txt-d);line-height:1.5;margin-bottom:10px;}
+
+/* Part list rows */
+.part-row{
+  display:flex;align-items:center;gap:8px;padding:9px 10px;margin-bottom:5px;
+  background:var(--card);border:1px solid rgba(255,255,255,0.06);border-radius:8px;
+  cursor:pointer;font-size:11.5px;transition:all .12s;
+}
+.part-row:hover{background:rgba(255,255,255,0.06);}
+.part-row.active{border-color:var(--bdr-s);background:var(--acc-g);}
+.part-row .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:#555;}
+.part-row.type-container .dot{background:var(--cold);}
+.part-row.type-pipe .dot{background:var(--warm);}
+.part-row.type-chamber .dot{background:var(--err);}
+.part-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.part-row .tg{font-size:8px;color:var(--txt-d);text-transform:uppercase;letter-spacing:1px;}
+
+/* Buttons / inputs */
+.btnrow{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;}
+.btn{
+  font-size:10px;letter-spacing:0.5px;padding:8px 10px;border-radius:7px;
+  background:var(--card);border:1px solid rgba(255,255,255,0.1);color:var(--txt);
+  cursor:pointer;flex:1 1 auto;text-align:center;transition:all .12s;
+}
+.btn:hover{background:rgba(255,255,255,0.08);}
+.btn.on{background:var(--acc-g);border-color:var(--bdr-s);color:var(--acc);}
+.btn.warn{border-color:var(--warm-d);}
+.btn.warn.on{background:var(--warm-g);border-color:var(--warm);color:var(--warm);}
+.btn.danger{border-color:rgba(255,77,106,0.3);}
+.btn.danger.on{background:rgba(255,77,106,0.12);border-color:var(--err);color:var(--err);}
+.btn.full{flex:1 1 100%;}
+.btn:disabled{opacity:0.35;cursor:not-allowed;}
+
+label.field{display:block;font-size:9.5px;color:var(--txt-d);text-transform:uppercase;
+  letter-spacing:1px;margin:10px 0 4px;}
+input[type=number],input[type=text],select{
+  width:100%;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);
+  border-radius:6px;color:var(--txt);font-size:12px;padding:7px 9px;font-family:'Exo 2',sans-serif;
+}
+select{cursor:pointer;}
+input[type=range]{width:100%;accent-color:var(--acc);}
+.rowsplit{display:flex;gap:8px;}
+.rowsplit > *{flex:1;}
+.readout{font-size:11px;color:var(--acc);background:rgba(0,229,255,0.06);
+  border:1px solid var(--bdr);border-radius:6px;padding:7px 9px;margin-top:4px;}
+.readout .u{color:var(--txt-d);font-size:9px;margin-left:4px;}
+
+/* Opening candidate list */
+.open-cand{
+  display:flex;align-items:center;gap:8px;padding:8px 9px;margin-bottom:5px;
+  background:var(--card);border:1px solid rgba(255,255,255,0.08);border-radius:7px;
+  cursor:pointer;font-size:10.5px;
+}
+.open-cand:hover{border-color:var(--bdr-s);}
+.open-cand.selected{background:var(--acc-g);border-color:var(--bdr-s);}
+.open-cand .oi{flex:1;}
+.open-cand .otag{font-size:8px;padding:2px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:0.5px;}
+.otag.entrance{background:rgba(78,168,255,0.18);color:var(--cold);}
+.otag.exit{background:rgba(255,138,61,0.18);color:var(--warm);}
+.otag.nozzle{background:rgba(255,77,106,0.18);color:var(--err);}
+.otag.unset{background:rgba(255,255,255,0.08);color:var(--txt-d);}
+
+.seal-ok{color:var(--ok);font-size:10px;display:flex;align-items:center;gap:5px;margin-top:6px;}
+.seal-bad{color:var(--err);font-size:10px;display:flex;align-items:center;gap:5px;margin-top:6px;}
+
+/* Empty state */
+#emptyState{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;text-align:center;padding:30px;gap:14px;z-index:5;pointer-events:none;}
+#emptyState.hidden{display:none;}
+#emptyState .big{font-family:'Orbitron',sans-serif;font-size:14px;letter-spacing:2px;color:var(--acc);text-transform:uppercase;}
+#emptyState .small{font-size:11.5px;color:var(--txt-d);max-width:340px;line-height:1.6;}
+#dropZone{
+  pointer-events:auto;border:2px dashed var(--bdr-s);border-radius:16px;padding:26px 40px;
+  cursor:pointer;transition:all .15s;
+}
+#dropZone:hover,#dropZone.drag{background:var(--acc-g);border-color:var(--acc);}
+#dropZone input{display:none;}
+
+/* Panel toggle buttons (mobile) */
+.panelToggle{display:none;position:absolute;z-index:25;top:10px;background:var(--glass);
+  border:1px solid var(--bdr-s);border-radius:8px;padding:8px 10px;color:var(--acc);cursor:pointer;font-size:14px;}
+@media (max-width:900px){.panelToggle{display:block;}}
+#toggleLeft{left:10px;}
+#toggleRight{right:10px;}
+
+/* Loading spinner */
+#loadingOverlay{position:absolute;inset:0;background:rgba(6,10,16,0.85);z-index:60;
+  display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;}
+#loadingOverlay.hidden{display:none;}
+.spinner{width:34px;height:34px;border:3px solid var(--bdr);border-top-color:var(--acc);
+  border-radius:50%;animation:spin 0.8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+#loadingText{font-size:11px;color:var(--txt-d);letter-spacing:1px;}
+</style>
+<body>
+<div id="hdr">
+  <span class="hl">Arc Flow</span>
+  <div class="hs"></div>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping</span>
+  <span id="partCount"></span>
+  <button id="playBtn" disabled>▶ Simulate</button>
+  <a class="hback" href="/">← Grid</a>
+</div>
+
+<div id="main">
+  <button class="panelToggle" id="toggleLeft">☰</button>
+  <button class="panelToggle" id="toggleRight">⚙</button>
+
+  <div id="leftPanel">
+    <div class="sec-h">◈ Scene</div>
+    <div class="btnrow">
+      <button class="btn" id="btnImport">Import File</button>
+      <button class="btn danger" id="btnClear">Clear Scene</button>
+    </div>
+    <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip" style="display:none">
+    <div class="sec-sub">glb · gltf · obj · fbx · stl · dae · zip</div>
+
+    <div class="sec-h">◈ Parts</div>
+    <div id="partList"></div>
+
+    <div class="sec-h">◈ Atmosphere</div>
+    <label class="field">Environment Preset</label>
+    <select id="atmoPreset">
+      <option value="earth">Earth · Sea Level</option>
+      <option value="mars">Mars · Surface</option>
+      <option value="vacuum">Vacuum · Space</option>
+      <option value="custom">Custom</option>
+    </select>
+    <label class="field">Ambient Pressure (psi)</label>
+    <input type="number" id="atmoPsi" value="14.696" step="0.01">
+    <div class="readout" id="atmoReadout">14.696 psi <span class="u">= 1 atm · Earth sea level</span></div>
+
+    <div class="sec-h">◈ Particles</div>
+    <label class="field">Particles per Container</label>
+    <input type="number" id="particlesPerContainer" value="300" min="10" max="4000" step="10">
+  </div>
+
+  <div id="viewport">
+    <div id="emptyState">
+      <div class="big">No Scene Loaded</div>
+      <div id="dropZone">
+        <div class="small">Drop a .glb / .gltf / .obj / .fbx / .stl / .dae / .zip file here,<br>or tap to browse — or load the propulsion demo file.</div>
+      </div>
+      <button class="btn" id="btnLoadDemo" style="max-width:260px;">Load Demo — Propellant Feed System</button>
+    </div>
+    <div id="loadingOverlay" class="hidden">
+      <div class="spinner"></div>
+      <div id="loadingText">Loading…</div>
+    </div>
+  </div>
+
+  <div id="rightPanel">
+    <div id="noSelection" class="sec-sub" style="margin-top:20px;">Select a part from the list, or click it in the viewport, to classify it and set its properties.</div>
+    <div id="partDetail" style="display:none;"></div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+<script type="module">
+
+
+// ── State ─────────────────────────────────────────────────────
+const state = {
+  root: null,             // THREE.Group holding the loaded scene
+  parts: [],              // [{ name, object3D, type, geometry(merged), ...props }]
+  selectedPart: null,
+  flowMode: false,
+  openingCandidates: [],  // candidates for the part currently in flow-selection mode
+  selectedOpening: null,
+  simRunning: false,
+};
+window._arcFlowState = state; // for debugging from console
+
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingText = document.getElementById('loadingText');
+const emptyState = document.getElementById('emptyState');
+function setLoading(on, msg) {
+  loadingOverlay.classList.toggle('hidden', !on);
+  if (msg) loadingText.textContent = msg;
+}
+
+// ── Loader routing by extension ────────────────────────────────
+const gltfLoader = new GLTFLoader();
+const objLoader = new OBJLoader();
+const fbxLoader = new FBXLoader();
+const stlLoader = new STLLoader();
+const daeLoader = new ColladaLoader();
+
+function extOf(name) { return name.split('.').pop().toLowerCase(); }
+
+async function loadFromArrayBuffer(name, buf, siblingFiles) {
+  const ext = extOf(name);
+  const blobUrl = URL.createObjectURL(new Blob([buf]));
+  return new Promise((resolve, reject) => {
+    if (ext === 'glb' || ext === 'gltf') {
+      gltfLoader.load(blobUrl, (gltf) => resolve(gltf.scene), undefined, reject);
+    } else if (ext === 'stl') {
+      const geo = stlLoader.parse(buf);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x8899aa, metalness:0.6, roughness:0.4 }));
+      const group = new THREE.Group(); group.add(mesh); group.name = name.replace(/\.[^.]+$/, '');
+      resolve(group);
+    } else if (ext === 'obj') {
+      // Best-effort .mtl lookup among sibling files (zip case)
+      const mtlName = Object.keys(siblingFiles || {}).find(f => extOf(f) === 'mtl');
+      if (mtlName) {
+        const mtlLoader = new MTLLoader();
+        const mtlText = new TextDecoder().decode(siblingFiles[mtlName]);
+        const materials = mtlLoader.parse(mtlText, '');
+        materials.preload();
+        objLoader.setMaterials(materials);
+      }
+      const text = new TextDecoder().decode(buf);
+      const obj = objLoader.parse(text);
+      resolve(obj);
+    } else if (ext === 'fbx') {
+      const obj = fbxLoader.parse(buf, '');
+      resolve(obj);
+    } else if (ext === 'dae') {
+      const text = new TextDecoder().decode(buf);
+      const dae = daeLoader.parse(text, '');
+      resolve(dae.scene);
+    } else {
+      reject(new Error('Unsupported file type: ' + ext));
+    }
+    URL.revokeObjectURL(blobUrl);
+  });
+}
+
+async function loadFile(file) {
+  setLoading(true, 'Reading ' + file.name + '…');
+  const ext = extOf(file.name);
+  try {
+    if (ext === 'zip') {
+      const zip = await JSZip.loadAsync(file);
+      const entries = Object.keys(zip.files).filter(f => !zip.files[f].dir);
+      const modelName = entries.find(f => ['glb','gltf','obj','fbx','stl','dae'].includes(extOf(f)));
+      if (!modelName) throw new Error('No supported 3D model found inside the zip.');
+      const buf = await zip.files[modelName].async('arraybuffer');
+      const siblings = {};
+      for (const f of entries) {
+        if (f === modelName) continue;
+        siblings[f] = await zip.files[f].async('uint8array');
+      }
+      setLoading(true, 'Parsing ' + modelName + '…');
+      const object = await loadFromArrayBuffer(modelName, buf, siblings);
+      onSceneLoaded(object);
+    } else {
+      const buf = await file.arrayBuffer();
+      setLoading(true, 'Parsing ' + file.name + '…');
+      const object = await loadFromArrayBuffer(file.name, buf, null);
+      onSceneLoaded(object);
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Could not load file: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function loadDemo() {
+  setLoading(true, 'Downloading demo propulsion system…');
+  try {
+    const res = await fetch(DEMO_URL);
+    if (!res.ok) throw new Error('Demo file not found on server.');
+    const buf = await res.arrayBuffer();
+    const object = await loadFromArrayBuffer('CombustionChamber.glb', buf, null);
+    onSceneLoaded(object);
+  } catch (err) {
+    console.error(err);
+    alert('Could not load demo file: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ── Scene load / normalize / part extraction ───────────────────
+function clearScene() {
+  if (state.root) { scene.remove(state.root); state.root = null; }
+  state.parts = [];
+  state.selectedPart = null;
+  exitFlowMode();
+  document.getElementById('partList').innerHTML = '';
+  document.getElementById('partCount').textContent = '';
+  document.getElementById('playBtn').disabled = true;
+  showNoSelection();
+  emptyState.classList.remove('hidden');
+}
+
+function onSceneLoaded(object) {
+  clearScene();
+  state.root = new THREE.Group();
+  state.root.add(object);
+  scene.add(state.root);
+
+  // Auto-fit scale + ground the model — user can override per-part later
+  const box = new THREE.Box3().setFromObject(state.root);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim > 40 || maxDim < 2) {
+    const s = 20 / maxDim;
+    state.root.scale.setScalar(s);
+  }
+  const box2 = new THREE.Box3().setFromObject(state.root);
+  state.root.position.y -= box2.min.y; // sit on the grid
+
+  // Collect named top-level parts. If the loader gave us one node per part
+  // (glTF/GLB with named nodes, like the demo file), each direct child is a
+  // part. If it's a single flat mesh (raw OBJ/STL), treat the whole thing
+  // as one part named after the file.
+  const candidates = [];
+  object.traverse(n => { if (n.isMesh) candidates.push(n); });
+
+  const byName = new Map();
+  for (const mesh of candidates) {
+    let owner = mesh;
+    while (owner.parent && owner.parent !== object && owner.parent.name) owner = owner.parent;
+    const key = owner.name || mesh.name || ('Part ' + (byName.size + 1));
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(mesh);
+  }
+  if (byName.size === 0) {
+    byName.set(object.name || 'Imported Part', candidates);
+  }
+
+  let colorIdx = 0;
+  for (const [name, meshes] of byName.entries()) {
+    const part = {
+      name, meshes, type: null,
+      // Container fields
+      contents: 'oxidizer', massKg: 0, tempK: 288,
+      // Openings: [{ id, centroid(world Vec3), normal(world Vec3), perimeter, role: 'entrance'|'exit'|'nozzle'|null }]
+      openings: [],
+      volumeM3: null,
+      material: 'Al-Li 2195 (aerospace alloy)', densityKgM3: 2630,
+    };
+    // Tag original materials so we can restore after x-ray/highlight
+    for (const m of meshes) {
+      m.userData.origMaterial = m.material;
+      m.castShadow = true; m.receiveShadow = true;
+    }
+    state.parts.push(part);
+  }
+
+  buildPartListUI();
+  document.getElementById('partCount').textContent = state.parts.length + ' part' + (state.parts.length===1?'':'s');
+  document.getElementById('playBtn').disabled = false;
+  emptyState.classList.add('hidden');
+
+  // Frame camera on the loaded model
+  const box3 = new THREE.Box3().setFromObject(state.root);
+  const center = new THREE.Vector3(); box3.getCenter(center);
+  const sphere = new THREE.Sphere(); box3.getBoundingSphere(sphere);
+  controls.target.copy(center);
+  const dist = sphere.radius * 2.4;
+  camera.position.copy(center).add(new THREE.Vector3(dist*0.7, dist*0.55, dist*0.7));
+  camera.near = Math.max(sphere.radius/500, 0.01); camera.far = sphere.radius*50;
+  camera.updateProjectionMatrix();
+}
+
+// ── Boundary-loop ("opening") detection ─────────────────────────
+// Real production CFD/CAD tools detect holes topologically: any triangle
+// edge that belongs to only ONE triangle is a boundary edge (the mesh is
+// open there). Chaining connected boundary edges into loops gives every
+// hole in the mesh — pipe ends, ports, etc. These meshes have MANY small
+// loops too (panel seams, bolt holes), so we rank by perimeter length and
+// let the user confirm which large loops are real flow openings.
+function detectOpenings(part) {
+  const edgeMap = new Map(); // "a_b" (sorted) -> { count, va, vb }
+  const posArrays = [];
+
+  for (const mesh of part.meshes) {
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index ? geo.index.array : null;
+    const worldMatrix = mesh.matrixWorld;
+    const triCount = idx ? idx.length/3 : pos.count/3;
+    const getVert = (i) => {
+      const v = new THREE.Vector3().fromBufferAttribute(pos, i);
+      return v.applyMatrix4(worldMatrix);
+    };
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
+      const edges = [[i0,i1],[i1,i2],[i2,i0]];
+      for (const [a,b] of edges) {
+        const va = getVert(a), vb = getVert(b);
+        // Key by rounded world position (glTF meshes may not share indices
+        // across primitives even where they touch) so coincident verts merge.
+        const ka = va.x.toFixed(4)+','+va.y.toFixed(4)+','+va.z.toFixed(4);
+        const kb = vb.x.toFixed(4)+','+vb.y.toFixed(4)+','+vb.z.toFixed(4);
+        const key = ka < kb ? ka+'|'+kb : kb+'|'+ka;
+        if (!edgeMap.has(key)) edgeMap.set(key, { count: 0, va, vb, ka, kb });
+        edgeMap.get(key).count++;
+      }
+    }
+  }
+
+  // Boundary edges = seen exactly once
+  const boundary = [...edgeMap.values()].filter(e => e.count === 1);
+
+  // Build adjacency (vertex-key -> [edge...]) and walk connected chains into loops
+  const adj = new Map();
+  for (const e of boundary) {
+    if (!adj.has(e.ka)) adj.set(e.ka, []);
+    if (!adj.has(e.kb)) adj.set(e.kb, []);
+    adj.get(e.ka).push(e); adj.get(e.kb).push(e);
+  }
+  const visited = new Set();
+  const loops = [];
+  for (const e of boundary) {
+    const startKey = e.ka;
+    if (visited.has(startKey)) continue;
+    // Walk the chain from this vertex
+    const loopPts = [];
+    let curKey = startKey, curEdge = e, guard = 0;
+    while (curEdge && !visited.has(curKey) && guard++ < 20000) {
+      visited.add(curKey);
+      const pt = curEdge.ka === curKey ? curEdge.va : curEdge.vb;
+      loopPts.push(pt);
+      const nextKey = curEdge.ka === curKey ? curEdge.kb : curEdge.ka;
+      const options = (adj.get(nextKey) || []).filter(x => x !== curEdge);
+      curEdge = options[0];
+      curKey = nextKey;
+    }
+    if (loopPts.length >= 6) loops.push(loopPts); // discard tiny noise (<6 pts)
+  }
+
+  // Summarize each loop: centroid, approximate normal (Newell's method), perimeter
+  const summarized = loops.map((pts, i) => {
+    const centroid = new THREE.Vector3();
+    pts.forEach(p => centroid.add(p));
+    centroid.divideScalar(pts.length);
+    const normal = new THREE.Vector3();
+    for (let k = 0; k < pts.length; k++) {
+      const p1 = pts[k], p2 = pts[(k+1)%pts.length];
+      normal.x += (p1.y - p2.y) * (p1.z + p2.z);
+      normal.y += (p1.z - p2.z) * (p1.x + p2.x);
+      normal.z += (p1.x - p2.x) * (p1.y + p2.y);
+    }
+    normal.normalize();
+    let perimeter = 0;
+    for (let k = 0; k < pts.length; k++) perimeter += pts[k].distanceTo(pts[(k+1)%pts.length]);
+    const radius = perimeter / (2*Math.PI);
+    return { id: 'op' + i, points: pts, centroid, normal, perimeter, radius, role: null };
+  });
+
+  summarized.sort((a,b) => b.perimeter - a.perimeter);
+  return summarized;
+}
+
+// Signed volume of a closed mesh via the divergence theorem —
+// sum over triangles of (1/6)·(v0 · (v1 × v2)), in world space.
+function computeVolume(part) {
+  let vol = 0;
+  for (const mesh of part.meshes) {
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index ? geo.index.array : null;
+    const wm = mesh.matrixWorld;
+    const triCount = idx ? idx.length/3 : pos.count/3;
+    const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
+      v0.fromBufferAttribute(pos, i0).applyMatrix4(wm);
+      v1.fromBufferAttribute(pos, i1).applyMatrix4(wm);
+      v2.fromBufferAttribute(pos, i2).applyMatrix4(wm);
+      vol += v0.dot(v1.clone().cross(v2)) / 6;
+    }
+  }
+  return Math.abs(vol); // world units^3 (meters, if the model is metric)
+}
+
+// ── Part list UI ─────────────────────────────────────────────
+function buildPartListUI() {
+  const listEl = document.getElementById('partList');
+  listEl.innerHTML = '';
+  state.parts.forEach((part, i) => {
+    const row = document.createElement('div');
+    row.className = 'part-row' + (part.type ? ' type-' + part.type : '');
+    row.innerHTML = `<span class="dot"></span><span class="nm">${part.name}</span>
+      <span class="tg">${part.type ? part.type : '—'}</span>`;
+    row.onclick = () => selectPart(i);
+    listEl.appendChild(row);
+  });
+}
+
+function highlightSelection() {
+  for (const part of state.parts) {
+    const isSel = part === state.selectedPart;
+    for (const m of part.meshes) {
+      if (!m.userData.origMaterial) continue;
+      if (isSel && !state.flowMode) {
+        m.material = m.userData.origMaterial.clone();
+        m.material.emissive = new THREE.Color(0x00e5ff);
+        m.material.emissiveIntensity = 0.35;
+      } else {
+        m.material = m.userData.origMaterial;
+      }
+    }
+  }
+  // Reflect active row in the list
+  [...document.getElementById('partList').children].forEach((row, i) => {
+    row.classList.toggle('active', state.parts[i] === state.selectedPart);
+  });
+}
+
+function selectPart(i) {
+  exitFlowMode();
+  state.selectedPart = state.parts[i];
+  highlightSelection();
+  renderPartDetail();
+}
+
+function showNoSelection() {
+  document.getElementById('noSelection').style.display = 'block';
+  document.getElementById('partDetail').style.display = 'none';
+}
+
+const ATMO = {
+  earth:  { psi: 14.696, label: '1 atm · Earth sea level' },
+  mars:   { psi: 0.087,  label: '≈0.6% Earth · Mars surface' },
+  vacuum: { psi: 0.0,    label: 'hard vacuum · deep space' },
+};
+
+// ── Part detail / classification panel ──────────────────────────
+function renderPartDetail() {
+  const part = state.selectedPart;
+  if (!part) { showNoSelection(); return; }
+  document.getElementById('noSelection').style.display = 'none';
+  const el = document.getElementById('partDetail');
+  el.style.display = 'block';
+
+  let html = `<div class="sec-h">◈ ${part.name}</div>`;
+  html += `<div class="btnrow">
+    <button class="btn ${part.type==='container'?'on':''}" data-settype="container">Container</button>
+    <button class="btn warn ${part.type==='pipe'?'on':''}" data-settype="pipe">Pipe</button>
+    <button class="btn danger ${part.type==='chamber'?'on':''}" data-settype="chamber">Combustion Chamber</button>
+  </div>`;
+
+  if (part.type === 'container') {
+    if (part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+    const massReadout = part.massKg > 0
+      ? `${(part.massKg / part.volumeM3).toFixed(1)} kg/m³ effective density`
+      : 'enter mass below';
+    html += `
+      <div class="sec-h">Contents</div>
+      <select id="f_contents">
+        <option value="oxidizer" ${part.contents==='oxidizer'?'selected':''}>Oxidizer — Liquid Oxygen (LOX)</option>
+        <option value="fuel" ${part.contents==='fuel'?'selected':''}>Fuel — RP-1 Kerosene</option>
+        <option value="helium" ${part.contents==='helium'?'selected':''}>Pressurant — Helium</option>
+      </select>
+
+      <label class="field">Material (default: aerospace alloy)</label>
+      <input type="text" id="f_material" value="${part.material}">
+
+      <label class="field">Auto-Computed Volume</label>
+      <div class="readout">${part.volumeM3.toFixed(4)} <span class="u">m³</span></div>
+
+      <label class="field">Mass (kg)</label>
+      <input type="number" id="f_mass" value="${part.massKg || ''}" min="0" step="1">
+      <div class="readout" id="f_densityReadout">${massReadout}</div>
+
+      <label class="field">Starting Temperature (K)</label>
+      <input type="number" id="f_temp" value="${part.tempK}" step="1">
+
+      <div class="sec-h">Openings</div>
+      <div class="sec-sub">Enter Flow Selection to detect and mark this part's openings (entrance/exit).</div>
+      <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
+      ${renderOpeningsSummary(part)}
+    `;
+  } else if (part.type === 'pipe') {
+    html += `
+      <label class="field">Hose / Pipe Material</label>
+      <select id="f_material">
+        <option ${part.material.includes('braided')?'selected':''}>Stainless-steel braided flex hose</option>
+        <option ${part.material.includes('PTFE')?'selected':''}>PTFE-lined composite hose</option>
+        <option ${part.material.includes('Inconel')?'selected':''}>Inconel rigid line</option>
+      </select>
+      <div class="sec-sub">Pipes inherit internal pressure from whichever containers they connect — no manual pressure entry needed. A thermal/stress compute map runs along this part during simulation.</div>
+
+      <div class="sec-h">Openings</div>
+      <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
+      ${renderOpeningsSummary(part)}
+    `;
+  } else if (part.type === 'chamber') {
+    html += `
+      <label class="field">Alloy (default: chamber/nozzle superalloy)</label>
+      <input type="text" id="f_material" value="${part.material.includes('Inconel') ? part.material : 'Inconel 718 (chamber/nozzle superalloy)'}">
+      <div class="sec-sub">All non-nozzle openings are entrances (propellant inlets). The nozzle opening is marked separately as <b>Nozzle Exit</b>.</div>
+
+      <div class="sec-h">Openings</div>
+      <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
+      ${renderOpeningsSummary(part, true)}
+    `;
+  } else {
+    html += `<div class="sec-sub" style="margin-top:14px;">Choose a type above to configure this part.</div>`;
+  }
+
+  el.innerHTML = html;
+  wireDetailEvents(part);
+}
+
+function renderOpeningsSummary(part, isChamber) {
+  if (!part.openings.length) return `<div class="sec-sub">No openings marked yet.</div>`;
+  return part.openings.map(o => {
+    const tag = o.role || 'unset';
+    const label = o.role === 'nozzle' ? 'NOZZLE EXIT' : (o.role || 'unassigned').toUpperCase();
+    return `<div class="open-cand"><span class="oi">${o.id} · r≈${o.radius.toFixed(2)}</span>
+      <span class="otag ${tag}">${label}</span></div>`;
+  }).join('');
+}
+
+function wireDetailEvents(part) {
+  document.querySelectorAll('[data-settype]').forEach(btn => {
+    btn.onclick = () => {
+      part.type = btn.dataset.settype;
+      if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+      buildPartListUI(); highlightSelection(); renderPartDetail();
+    };
+  });
+  const f = id => document.getElementById(id);
+  if (f('f_contents')) f('f_contents').onchange = e => part.contents = e.target.value;
+  if (f('f_material')) f('f_material').onchange = e => part.material = e.target.value;
+  if (f('f_mass')) f('f_mass').oninput = e => {
+    part.massKg = parseFloat(e.target.value) || 0;
+    const r = f('f_densityReadout');
+    if (r) r.textContent = part.massKg > 0
+      ? `${(part.massKg / part.volumeM3).toFixed(1)} kg/m³ effective density`
+      : 'enter mass above';
+  };
+  if (f('f_temp')) f('f_temp').oninput = e => part.tempK = parseFloat(e.target.value) || 288;
+  if (f('btnFlowMode')) f('btnFlowMode').onclick = () => enterFlowMode(part);
+}
+
+// ── Flow Selection Mode ─────────────────────────────────────────
+const openingRingGroup = new THREE.Group();
+scene.add(openingRingGroup);
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function makeRing(candidate, color) {
+  const curve = new THREE.CatmullRomCurve3(candidate.points, true);
+  const geo = new THREE.TubeGeometry(curve, Math.max(candidate.points.length, 8), candidate.radius*0.035, 6, true);
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 999;
+  mesh.userData.candidate = candidate;
+  return mesh;
+}
+
+function enterFlowMode(part) {
+  exitFlowModeVisualsOnly();
+  state.flowMode = true;
+  state.selectedPart = part;
+
+  // X-ray everything except the active part
+  for (const p of state.parts) {
+    for (const m of p.meshes) {
+      if (p === part) { m.material = m.userData.origMaterial; m.visible = true; }
+      else {
+        m.material = new THREE.MeshBasicMaterial({ color: 0x223344, transparent: true, opacity: 0.06, depthWrite: false });
+      }
+    }
+  }
+
+  const candidates = detectOpenings(part);
+  // Keep the top candidates by perimeter; small mesh noise (bolt holes, seams)
+  // trails off fast, so cut at whichever is larger: top 8, or a 15%-of-max threshold.
+  const maxP = candidates[0] ? candidates[0].perimeter : 0;
+  const filtered = candidates.filter((c, i) => i < 8 || c.perimeter > maxP * 0.15).slice(0, 10);
+  state.openingCandidates = filtered;
+  part.openings = filtered.map(c => ({ ...c, role: (part.openings.find(o=>o.id===c.id)||{}).role || null }));
+
+  openingRingGroup.clear();
+  part.openings.forEach(o => {
+    const color = o.role === 'entrance' ? 0x4ea8ff : o.role === 'exit' ? 0xff8a3d : o.role === 'nozzle' ? 0xff4d6a : 0x888888;
+    openingRingGroup.add(makeRing(o, color));
+  });
+
+  renderFlowModePanel(part);
+}
+
+function exitFlowModeVisualsOnly() {
+  openingRingGroup.clear();
+  for (const p of state.parts) for (const m of p.meshes) m.material = m.userData.origMaterial;
+}
+function exitFlowMode() {
+  state.flowMode = false;
+  exitFlowModeVisualsOnly();
+}
+
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (!state.flowMode) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(openingRingGroup.children, false);
+  if (hits.length) selectOpeningCandidate(hits[0].object.userData.candidate);
+});
+
+function selectOpeningCandidate(candidate) {
+  state.selectedOpening = candidate;
+  renderFlowModePanel(state.selectedPart);
+}
+
+function renderFlowModePanel(part) {
+  const el = document.getElementById('partDetail');
+  const isChamber = part.type === 'chamber';
+  let html = `<div class="sec-h">◈ Flow Selection — ${part.name}</div>
+    <div class="sec-sub">${part.openings.length} opening${part.openings.length===1?'':'s'} detected. Tap a ring in the viewport, or a row below, then mark it.</div>`;
+
+  html += part.openings.map(o => {
+    const sel = state.selectedOpening && state.selectedOpening.id === o.id;
+    const tag = o.role || 'unset';
+    const label = o.role === 'nozzle' ? 'NOZZLE EXIT' : (o.role || 'unassigned').toUpperCase();
+    return `<div class="open-cand ${sel?'selected':''}" data-openid="${o.id}">
+      <span class="oi">${o.id} · r≈${o.radius.toFixed(2)}</span>
+      <span class="otag ${tag}">${label}</span></div>`;
+  }).join('');
+
+  if (state.selectedOpening) {
+    html += `<div class="btnrow" style="margin-top:10px;">
+      <button class="btn" data-role="entrance">Mark Entrance</button>
+      <button class="btn warn" data-role="exit">Mark Exit</button>
+      ${isChamber ? '<button class="btn danger" data-role="nozzle">Mark Nozzle Exit</button>' : ''}
+    </div>`;
+  }
+
+  html += `<button class="btn full" style="margin-top:12px;" id="btnDoneFlow">Done — Back to Properties</button>`;
+  el.innerHTML = html;
+
+  document.querySelectorAll('[data-openid]').forEach(row => {
+    row.onclick = () => selectOpeningCandidate(part.openings.find(o => o.id === row.dataset.openid));
+  });
+  document.querySelectorAll('[data-role]').forEach(btn => {
+    btn.onclick = () => {
+      state.selectedOpening.role = btn.dataset.role;
+      const color = btn.dataset.role === 'entrance' ? 0x4ea8ff : btn.dataset.role === 'exit' ? 0xff8a3d : 0xff4d6a;
+      const ring = openingRingGroup.children.find(r => r.userData.candidate.id === state.selectedOpening.id);
+      if (ring) ring.material.color.setHex(color);
+      renderFlowModePanel(part);
+      runSealCheck();
+    };
+  });
+  document.getElementById('btnDoneFlow').onclick = () => {
+    exitFlowMode();
+    highlightSelection();
+    renderPartDetail();
+  };
+}
+
+// ── Seal / gap validation ────────────────────────────────────────
+// Where one part's Exit and another's Entrance sit close together, treat
+// touching surfaces as a sealed joint (fluid still flows across it) — but
+// flag it if the openings are farther apart than a small tolerance, which
+// means the source file has a real gap that needs fixing and re-importing.
+function runSealCheck() {
+  const exits = [], entrances = [];
+  for (const part of state.parts) {
+    for (const o of part.openings) {
+      if (o.role === 'exit' || o.role === 'nozzle') exits.push({ part, o });
+      if (o.role === 'entrance') entrances.push({ part, o });
+    }
+  }
+  const results = [];
+  for (const ex of exits) {
+    let best = null, bestDist = Infinity;
+    for (const en of entrances) {
+      if (en.part === ex.part) continue;
+      const d = ex.o.centroid.distanceTo(en.o.centroid);
+      if (d < bestDist) { bestDist = d; best = en; }
+    }
+    if (best) {
+      const tolerance = Math.max(ex.o.radius, best.o.radius) * 0.25;
+      results.push({ from: ex.part.name, to: best.part.name, dist: bestDist, ok: bestDist <= tolerance });
+    }
+  }
+  state.sealResults = results;
+  return results;
+}
+
+// ── Particle flow simulation ─────────────────────────────────────
+// Compute-shader-driven flow: each particle's path (its container's
+// interior → its exit → the connected part's interior → ... → the
+// chamber's nozzle exit) is packed into a GPU data texture as a list of
+// waypoints. A vertex shader samples that texture and advances each
+// particle along its path purely on the GPU, driven by a uTime uniform —
+// no per-frame JS per-particle work. Color encodes a simple thermal-band
+// heuristic (path progress + pressure drop) matching the stress/flow
+// visualization the tool calls for.
+
+const MAX_WAYPOINTS = 6;
+let particleSystem = null;
+
+function buildFlowGraph() {
+  // part -> { entrancePart, exitTargetPart } via nearest opening match
+  const links = new Map(); // exitingPart -> { targetPart, viaOpening }
+  for (const part of state.parts) {
+    const exitOpening = part.openings.find(o => o.role === 'exit');
+    if (!exitOpening) continue;
+    let best = null, bestDist = Infinity;
+    for (const other of state.parts) {
+      if (other === part) continue;
+      const entrance = other.openings.find(o => o.role === 'entrance');
+      if (!entrance) continue;
+      const d = exitOpening.centroid.distanceTo(entrance.centroid);
+      if (d < bestDist) { bestDist = d; best = { other, entrance }; }
+    }
+    if (best) links.set(part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
+  }
+  return links;
+}
+
+function partCentroid(part) {
+  const box = new THREE.Box3();
+  for (const m of part.meshes) box.expandByObject(m);
+  const c = new THREE.Vector3(); box.getCenter(c);
+  return c;
+}
+
+function buildParticlePath(part, links, depth) {
+  // Waypoints: [own centroid, own exit point, ... next part's centroid, exit point ...] up to MAX_WAYPOINTS,
+  // terminating at a chamber's nozzle-exit opening if reached.
+  const path = [partCentroid(part)];
+  let cur = part;
+  for (let i = 0; i < MAX_WAYPOINTS - 1 && path.length < MAX_WAYPOINTS; i++) {
+    if (cur.type === 'chamber') {
+      const nozzle = cur.openings.find(o => o.role === 'nozzle');
+      if (nozzle) { path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2))); }
+      break;
+    }
+    const link = links.get(cur);
+    if (!link) break;
+    path.push(link.viaOpening.centroid);
+    path.push(partCentroid(link.target));
+    cur = link.target;
+  }
+  while (path.length < MAX_WAYPOINTS) path.push(path[path.length - 1].clone());
+  return path.slice(0, MAX_WAYPOINTS);
+}
+
+function buildParticleSystem() {
+  if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
+
+  const links = buildFlowGraph();
+  const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 300;
+  const containers = state.parts.filter(p => p.type === 'container' || p.type === 'chamber');
+
+  const positions = []; // dummy per-instance base (unused, geometry is a single point at origin)
+  const waypointData = []; // MAX_WAYPOINTS * 3 floats per particle
+  const phase = [];
+  const speed = [];
+  const thermalSeed = [];
+
+  for (const part of containers) {
+    const n = part.type === 'chamber' ? Math.round(perContainer * 0.5) : perContainer;
+    for (let i = 0; i < n; i++) {
+      const path = buildParticlePath(part, links, 0);
+      for (const wp of path) waypointData.push(wp.x, wp.y, wp.z);
+      phase.push(Math.random());
+      speed.push(0.15 + Math.random() * 0.25);
+      thermalSeed.push(part.contents === 'oxidizer' ? 0.15 : part.contents === 'fuel' ? 0.55 : 0.85);
+    }
+  }
+
+  const count = phase.length;
+  if (count === 0) return;
+
+  // Pack waypoints into a DataTexture: width = MAX_WAYPOINTS, height = count, RGB = xyz
+  const texWidth = MAX_WAYPOINTS, texHeight = count;
+  const data = new Float32Array(texWidth * texHeight * 4);
+  for (let p = 0; p < count; p++) {
+    for (let w = 0; w < MAX_WAYPOINTS; w++) {
+      const srcIdx = (p * MAX_WAYPOINTS + w) * 3;
+      const dstIdx = (p * texWidth + w) * 4;
+      data[dstIdx]   = waypointData[srcIdx];
+      data[dstIdx+1] = waypointData[srcIdx+1];
+      data[dstIdx+2] = waypointData[srcIdx+2];
+      data[dstIdx+3] = 1.0;
+    }
+  }
+  const waypointTex = new THREE.DataTexture(data, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
+  waypointTex.needsUpdate = true;
+  waypointTex.magFilter = THREE.NearestFilter; waypointTex.minFilter = THREE.NearestFilter;
+
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0]), 3));
+  const rowIdx = new Float32Array(count);
+  for (let i = 0; i < count; i++) rowIdx[i] = i;
+  geo.setAttribute('aRow', new THREE.InstancedBufferAttribute(rowIdx, 1));
+  geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(new Float32Array(phase), 1));
+  geo.setAttribute('aSpeed', new THREE.InstancedBufferAttribute(new Float32Array(speed), 1));
+  geo.setAttribute('aThermal', new THREE.InstancedBufferAttribute(new Float32Array(thermalSeed), 1));
+  geo.instanceCount = count;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uWaypoints: { value: waypointTex },
+      uTexHeight: { value: texHeight },
+      uSize: { value: 6.0 },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform sampler2D uWaypoints;
+      uniform float uTexHeight;
+      uniform float uSize;
+      attribute float aRow;
+      attribute float aPhase;
+      attribute float aSpeed;
+      attribute float aThermal;
+      varying float vThermal;
+      varying float vProgress;
+
+      vec3 sampleWaypoint(float row, float w) {
+        float u = (w + 0.5) / ${MAX_WAYPOINTS}.0;
+        float v = (row + 0.5) / uTexHeight;
+        return texture2D(uWaypoints, vec2(u, v)).xyz;
+      }
+      void main() {
+        float progress = fract(uTime * aSpeed + aPhase);
+        vProgress = progress;
+        vThermal = aThermal + progress * 0.4; // heats up as it travels toward the chamber
+        float segF = progress * ${MAX_WAYPOINTS - 1}.0;
+        float seg = floor(segF);
+        float segT = fract(segF);
+        vec3 a = sampleWaypoint(aRow, seg);
+        vec3 b = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+        vec3 pos = mix(a, b, segT);
+        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * (200.0 / -mv.z);
+      }
+    `,
+    fragmentShader: `
+      varying float vThermal;
+      varying float vProgress;
+      void main() {
+        vec2 c = gl_PointCoord - vec2(0.5);
+        if (length(c) > 0.5) discard;
+        // Thermal gradient: cold blue -> cyan -> warm orange -> white-hot
+        vec3 cold = vec3(0.2, 0.55, 1.0);
+        vec3 mid  = vec3(0.0, 0.9, 0.85);
+        vec3 warm = vec3(1.0, 0.55, 0.15);
+        vec3 hot  = vec3(1.0, 0.95, 0.85);
+        float t = clamp(vThermal, 0.0, 1.0);
+        vec3 col = t < 0.33 ? mix(cold, mid, t/0.33)
+                 : t < 0.66 ? mix(mid, warm, (t-0.33)/0.33)
+                 : mix(warm, hot, (t-0.66)/0.34);
+        float edge = smoothstep(0.5, 0.35, length(c));
+        gl_FragColor = vec4(col, edge);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  });
+
+  particleSystem = new THREE.Points(geo, mat);
+  particleSystem.frustumCulled = false;
+  scene.add(particleSystem);
+}
+
+let simClock = new THREE.Clock();
+function animateParticles() {
+  requestAnimationFrame(animateParticles);
+  if (state.simRunning && particleSystem) {
+    particleSystem.material.uniforms.uTime.value += simClock.getDelta() * 0.35;
+  } else {
+    simClock.getDelta();
+  }
+}
+animateParticles();
+
+// ── UI wiring ─────────────────────────────────────────────────
+document.getElementById('btnImport').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+document.getElementById('btnClear').onclick = () => { if (confirm('Clear the scene?')) clearScene(); };
+document.getElementById('btnLoadDemo').onclick = loadDemo;
+
+const dropZone = document.getElementById('dropZone');
+dropZone.onclick = () => document.getElementById('fileInput').click();
+['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag'); }));
+dropZone.addEventListener('drop', e => { if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+viewportEl.addEventListener('dragover', e => e.preventDefault());
+viewportEl.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+
+// Atmosphere presets
+const atmoPresetEl = document.getElementById('atmoPreset');
+const atmoPsiEl = document.getElementById('atmoPsi');
+const atmoReadout = document.getElementById('atmoReadout');
+atmoPresetEl.onchange = () => {
+  const key = atmoPresetEl.value;
+  if (key === 'custom') { atmoPsiEl.disabled = false; return; }
+  const p = ATMO[key];
+  atmoPsiEl.value = p.psi; atmoPsiEl.disabled = false;
+  atmoReadout.innerHTML = `${p.psi} psi <span class="u">= ${p.label}</span>`;
+};
+atmoPsiEl.oninput = () => {
+  atmoReadout.innerHTML = `${atmoPsiEl.value} psi <span class="u">custom ambient pressure</span>`;
+  atmoPresetEl.value = 'custom';
+};
+
+// Play / Simulate
+const playBtn = document.getElementById('playBtn');
+playBtn.onclick = () => {
+  if (!state.simRunning) {
+    const sealResults = runSealCheck();
+    const bad = sealResults.filter(r => !r.ok);
+    if (bad.length) {
+      const msg = bad.map(b => `${b.from} → ${b.to}: gap of ${b.dist.toFixed(3)} units — check the file and re-import.`).join('\n');
+      if (!confirm(`Seal check found ${bad.length} unsealed connection(s):\n\n${msg}\n\nRun the simulation anyway?`)) return;
+    }
+    exitFlowMode();
+    buildParticleSystem();
+    state.simRunning = true;
+    playBtn.textContent = '■ Stop';
+    playBtn.classList.add('playing');
+  } else {
+    state.simRunning = false;
+    playBtn.textContent = '▶ Simulate';
+    playBtn.classList.remove('playing');
+  }
+};
+
+// Mobile panel toggles
+document.getElementById('toggleLeft').onclick = () => document.getElementById('leftPanel').classList.toggle('open');
+document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
+
+// Expose for debugging / follow-on iteration
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck };
+</script>
+
+
+<!--
+  Arc Flow — Radical Deepscale LLC / DART Meadow
+  Derived from the BTU Thermal Calculator, re-scoped to full 3D
+  mechanical fluid-flow network prototyping (propulsion feed systems,
+  and general fluid-through-structure flow).
+
+  Design reference: DreamWorks Animation's OpenMoonRay (Apache 2.0),
+  studied via github.com/dartsolarpunk/DARTopenmoonray, informed the
+  environment/lighting approach shared with ArcLake iOS.
+  https://github.com/OpenMoonRay/moonray
+-->
+</body>
+</html>
