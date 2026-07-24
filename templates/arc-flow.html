@@ -211,6 +211,8 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     </div>
     <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip" style="display:none">
     <div class="sec-sub">glb · gltf · obj · fbx · stl · dae · zip</div>
+    <button class="btn full" id="btnResetDefaults">Reset to Default Settings</button>
+    <div class="sec-sub">Snaps the demo propulsion parts (if loaded) back to their pre-configured types, contents, pressures, and opening roles — without re-importing the file.</div>
 
     <div class="sec-h">◈ Parts</div>
     <div id="partList"></div>
@@ -435,12 +437,82 @@ async function loadDemo() {
     const buf = await res.arrayBuffer();
     const object = await loadFromArrayBuffer('CombustionChamber.glb', buf, null);
     onSceneLoaded(object);
+    applyDefaultDemoConfiguration();
   } catch (err) {
     console.error(err);
     alert('Could not load demo file: ' + err.message);
   } finally {
     setLoading(false);
   }
+}
+
+// Pre-configured defaults for the demo propulsion file — classification,
+// contents, realistic pressures, and opening roles (entrance/exit/nozzle),
+// all matching the real flow topology of this specific file: two parallel
+// feed trains (helium pressurant -> propellant tank -> feed pipe) both
+// terminating at the shared combustion chamber. Someone can load the demo,
+// hit Simulate immediately with zero setup, or change anything and use
+// "Reset to Default Settings" to snap back to this configuration without
+// re-importing the file.
+//
+// Pressures are realistic for a pressure-fed small engine (no turbopump,
+// matching how this file's plumbing is laid out): helium storage tanks at
+// 4500 psi (typical COPV storage pressure), propellant tanks regulated
+// down to 400 psi (comfortably above chamber pressure to drive flow,
+// without needing pump assistance) — not a precise CFD-grade figure, but a
+// physically reasonable starting point for a prototype.
+const DEFAULT_DEMO_CONFIG = {
+  'OxidizerPressure': { type: 'container', contents: 'helium',   internalPsi: 4500, openingCount: 1 },
+  'Oxidizer':         { type: 'container', contents: 'oxidizer', internalPsi: 400,  openingCount: 2 },
+  'OxidizerChannel':  { type: 'pipe',                                              openingCount: 2 },
+  'FuelPressure':     { type: 'container', contents: 'helium',   internalPsi: 4500, openingCount: 1 },
+  'Fuel':             { type: 'container', contents: 'fuel',     internalPsi: 400,  openingCount: 2 },
+  'FuelChannel':      { type: 'pipe',                                              openingCount: 2 },
+  'CombustionChamber':{ type: 'chamber',                                          openingCount: 3 },
+};
+
+function applyDefaultDemoConfiguration() {
+  let applied = 0;
+  for (const part of state.parts) {
+    const baseName = part.name.replace(/\s*\(\d+\)$/, ''); // strip a " (2)" disambiguation suffix, if any
+    const cfg = DEFAULT_DEMO_CONFIG[baseName];
+    if (!cfg) continue;
+
+    part.type = cfg.type;
+    if (cfg.contents) part.contents = cfg.contents;
+    if (cfg.internalPsi) part.internalPsi = cfg.internalPsi;
+    if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+
+    // Every part in this demo is a vertical tank/pipe, so sorting detected
+    // openings by world-space Y reliably distinguishes "upper" (where flow
+    // comes IN from whatever's above) from "lower" (where it exits toward
+    // whatever's below) — matching the physically-verified stacking order
+    // of this specific file (pressurant tanks on top, feeding down through
+    // propellant tanks and channels into the chamber at the bottom).
+    const candidates = detectOpenings(part);
+    const top = candidates.slice(0, cfg.openingCount);
+    if (cfg.openingCount === 1) {
+      if (top[0]) top[0].role = 'exit';
+    } else if (cfg.openingCount === 2) {
+      top.sort((a, b) => b.centroid.y - a.centroid.y);
+      if (top[0]) top[0].role = 'entrance';
+      if (top[1]) top[1].role = 'exit';
+    } else if (cfg.openingCount === 3) {
+      // Chamber: the nozzle throat is the lowest and widest opening; the
+      // other two (higher up, where the two feed channels connect) are
+      // propellant entrances.
+      top.sort((a, b) => a.centroid.y - b.centroid.y);
+      if (top[0]) top[0].role = 'nozzle';
+      if (top[1]) top[1].role = 'entrance';
+      if (top[2]) top[2].role = 'entrance';
+    }
+    part.openings = top;
+    applied++;
+  }
+  buildPartListUI();
+  highlightSelection();
+  if (state.selectedPart) renderPartDetail();
+  return applied;
 }
 
 // ── Scene load / normalize / part extraction ───────────────────
@@ -514,7 +586,7 @@ function onSceneLoaded(object) {
     const part = {
       name, meshes, type: null,
       // Container fields
-      contents: 'oxidizer', massKg: 0, tempK: 288,
+      contents: 'oxidizer', massKg: 0, tempK: 288, internalPsi: 60,
       // Openings: [{ id, centroid(world Vec3), normal(world Vec3), perimeter, role: 'entrance'|'exit'|'nozzle'|null }]
       openings: [],
       volumeM3: null,
@@ -553,6 +625,27 @@ function onSceneLoaded(object) {
 // hole in the mesh — pipe ends, ports, etc. These meshes have MANY small
 // loops too (panel seams, bolt holes), so we rank by perimeter length and
 // let the user confirm which large loops are real flow openings.
+// Shared by auto-detected boundary loops AND manually painted opening
+// strokes (see the paint-select tool below) — both just need to turn a
+// ring of points into a centroid/normal/perimeter/radius summary.
+function summarizeLoop(pts, id) {
+  const centroid = new THREE.Vector3();
+  pts.forEach(p => centroid.add(p));
+  centroid.divideScalar(pts.length);
+  const normal = new THREE.Vector3();
+  for (let k = 0; k < pts.length; k++) {
+    const p1 = pts[k], p2 = pts[(k+1)%pts.length];
+    normal.x += (p1.y - p2.y) * (p1.z + p2.z);
+    normal.y += (p1.z - p2.z) * (p1.x + p2.x);
+    normal.z += (p1.x - p2.x) * (p1.y + p2.y);
+  }
+  normal.normalize();
+  let perimeter = 0;
+  for (let k = 0; k < pts.length; k++) perimeter += pts[k].distanceTo(pts[(k+1)%pts.length]);
+  const radius = perimeter / (2*Math.PI);
+  return { id, points: pts, centroid, normal, perimeter, radius, role: null };
+}
+
 function detectOpenings(part) {
   const edgeMap = new Map(); // "a_b" (sorted) -> { count, va, vb }
   const posArrays = [];
@@ -614,24 +707,7 @@ function detectOpenings(part) {
   }
 
   // Summarize each loop: centroid, approximate normal (Newell's method), perimeter
-  const summarized = loops.map((pts, i) => {
-    const centroid = new THREE.Vector3();
-    pts.forEach(p => centroid.add(p));
-    centroid.divideScalar(pts.length);
-    const normal = new THREE.Vector3();
-    for (let k = 0; k < pts.length; k++) {
-      const p1 = pts[k], p2 = pts[(k+1)%pts.length];
-      normal.x += (p1.y - p2.y) * (p1.z + p2.z);
-      normal.y += (p1.z - p2.z) * (p1.x + p2.x);
-      normal.z += (p1.x - p2.x) * (p1.y + p2.y);
-    }
-    normal.normalize();
-    let perimeter = 0;
-    for (let k = 0; k < pts.length; k++) perimeter += pts[k].distanceTo(pts[(k+1)%pts.length]);
-    const radius = perimeter / (2*Math.PI);
-    return { id: 'op' + i, points: pts, centroid, normal, perimeter, radius, role: null };
-  });
-
+  const summarized = loops.map((pts, i) => summarizeLoop(pts, 'op' + i));
   summarized.sort((a,b) => b.perimeter - a.perimeter);
   return summarized;
 }
@@ -751,6 +827,10 @@ function renderPartDetail() {
       <label class="field">Starting Temperature (K)</label>
       <input type="number" id="f_temp" value="${part.tempK}" step="1">
 
+      <label class="field">Internal Pressure (psi)</label>
+      <input type="number" id="f_psi" value="${part.internalPsi}" step="10">
+      <div class="sec-sub">Pipes inherit this automatically from whichever container they connect to — no need to set it there too.</div>
+
       <div class="sec-h">Openings</div>
       <div class="sec-sub">Enter Flow Selection to detect and mark this part's openings (entrance/exit).</div>
       <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
@@ -817,6 +897,7 @@ function wireDetailEvents(part) {
       : 'enter mass above';
   };
   if (f('f_temp')) f('f_temp').oninput = e => part.tempK = parseFloat(e.target.value) || 288;
+  if (f('f_psi')) f('f_psi').oninput = e => part.internalPsi = parseFloat(e.target.value) || 0;
   if (f('btnFlowMode')) f('btnFlowMode').onclick = () => enterFlowMode(part);
 }
 
@@ -874,20 +955,94 @@ function exitFlowModeVisualsOnly() {
 }
 function exitFlowMode() {
   state.flowMode = false;
+  setPaintMode(false);
   exitFlowModeVisualsOnly();
+}
+
+// Two ways to indicate an opening: (1) tap near it and snap to the nearest
+// auto-detected edge loop (above), or (2) turn on Paint Mode and slide a
+// finger/cursor around the opening's outermost faces directly — for cases
+// where auto-detection missed it, or it's just more natural to trace the
+// rim by hand. Painting takes over the drag gesture from OrbitControls
+// while active (re-enabled the moment the stroke ends).
+state.paintMode = false;
+state.paintPoints = [];
+let paintingNow = false;
+
+function setPaintMode(on) {
+  state.paintMode = on;
+  if (!on) { paintingNow = false; state.paintPoints = []; controls.enabled = true; }
 }
 
 // Tap-to-select in the viewport. OrbitControls also listens on this same
 // canvas for drag-to-orbit, so a plain 'click'/'pointerdown' would fire on
 // every rotate gesture too — only treat it as a tap if the pointer barely
 // moved and released quickly, same distinction a touch UI needs anywhere
-// else a drag gesture shares space with a tap gesture.
+// else a drag gesture shares space with a tap gesture. (Paint mode is the
+// deliberate exception — there, dragging IS the intended gesture.)
 let pointerDownPos = null, pointerDownTime = 0;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   pointerDownPos = { x: ev.clientX, y: ev.clientY };
   pointerDownTime = performance.now();
+
+  if (state.flowMode && state.paintMode) {
+    paintingNow = true;
+    state.paintPoints = [];
+    controls.enabled = false; // dragging paints, it doesn't orbit the camera
+    addPaintPointFromEvent(ev);
+  }
 });
+
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (!paintingNow) return;
+  addPaintPointFromEvent(ev);
+});
+
+function addPaintPointFromEvent(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const part = state.selectedPart;
+  if (!part) return;
+  const hits = raycaster.intersectObjects(part.meshes, false);
+  if (!hits.length) return;
+  const pt = hits[0].point;
+  const last = state.paintPoints[state.paintPoints.length - 1];
+  if (!last || last.distanceTo(pt) > 0.02) { // skip near-duplicate points from a slow drag
+    state.paintPoints.push(pt.clone());
+    drawPaintPreview();
+  }
+}
+
+let paintPreviewLine = null;
+function drawPaintPreview() {
+  if (paintPreviewLine) { openingRingGroup.remove(paintPreviewLine); paintPreviewLine.geometry.dispose(); }
+  if (state.paintPoints.length < 2) return;
+  const geo = new THREE.BufferGeometry().setFromPoints(state.paintPoints);
+  const mat = new THREE.LineBasicMaterial({ color: 0xffee66, depthTest: false, linewidth: 2 });
+  paintPreviewLine = new THREE.Line(geo, mat);
+  paintPreviewLine.renderOrder = 1000;
+  openingRingGroup.add(paintPreviewLine);
+}
+
+function finishPaintStroke() {
+  paintingNow = false;
+  controls.enabled = true;
+  if (paintPreviewLine) { openingRingGroup.remove(paintPreviewLine); paintPreviewLine.geometry.dispose(); paintPreviewLine = null; }
+  const part = state.selectedPart;
+  if (!part || state.paintPoints.length < 3) { state.paintPoints = []; return; }
+
+  const loop = summarizeLoop(state.paintPoints, 'paint' + Date.now());
+  part.openings.push(loop);
+  openingRingGroup.add(makeRing(loop, 0x888888));
+  state.selectedOpening = loop;
+  state.paintPoints = [];
+  renderFlowModePanel(part);
+}
+
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  if (paintingNow) { finishPaintStroke(); return; }
   if (!pointerDownPos) return;
   const dx = ev.clientX - pointerDownPos.x, dy = ev.clientY - pointerDownPos.y;
   const moved = Math.sqrt(dx*dx + dy*dy);
@@ -976,7 +1131,10 @@ function renderFlowModePanel(part) {
   const el = document.getElementById('partDetail');
   const isChamber = part.type === 'chamber';
   let html = `<div class="sec-h">◈ Flow Selection — ${part.name}</div>
-    <div class="sec-sub">${part.openings.length} opening${part.openings.length===1?'':'s'} detected. Tap a ring in the viewport, or a row below, then mark it.</div>`;
+    <div class="sec-sub">${part.openings.length} opening${part.openings.length===1?'':'s'} detected. Tap a ring in the viewport, or a row below, then mark it — or slide around the opening's outermost faces directly.</div>
+    <button class="btn full ${state.paintMode ? 'warn on' : ''}" id="btnPaintMode">
+      ${state.paintMode ? '✎ Paint Mode ON — drag around an opening\'s rim' : '✎ Paint an Opening by Sliding on It'}
+    </button>`;
 
   html += part.openings.map(o => {
     const sel = state.selectedOpening && state.selectedOpening.id === o.id;
@@ -998,6 +1156,10 @@ function renderFlowModePanel(part) {
   html += `<button class="btn full" style="margin-top:12px;" id="btnDoneFlow">Done — Back to Properties</button>`;
   el.innerHTML = html;
 
+  document.getElementById('btnPaintMode').onclick = () => {
+    setPaintMode(!state.paintMode);
+    renderFlowModePanel(part);
+  };
   document.querySelectorAll('[data-openid]').forEach(row => {
     row.onclick = () => selectOpeningCandidate(part.openings.find(o => o.id === row.dataset.openid));
   });
@@ -1311,6 +1473,12 @@ animateParticles();
 document.getElementById('btnImport').onclick = () => document.getElementById('fileInput').click();
 document.getElementById('fileInput').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
 document.getElementById('btnClear').onclick = () => { if (confirm('Clear the scene?')) clearScene(); };
+document.getElementById('btnResetDefaults').onclick = () => {
+  const n = applyDefaultDemoConfiguration();
+  alert(n > 0
+    ? `Reset ${n} part(s) to their default configuration.`
+    : `No parts in the current scene match the demo's named parts — nothing to reset. (This only affects the demo propulsion parts, by name.)`);
+};
 document.getElementById('btnLoadDemo').onclick = loadDemo;
 
 const dropZone = document.getElementById('dropZone');
