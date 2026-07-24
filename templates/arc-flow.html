@@ -457,26 +457,37 @@ function clearScene() {
 }
 
 function onSceneLoaded(object) {
-  clearScene();
-  state.root = new THREE.Group();
-  state.root.add(object);
-  scene.add(state.root);
+  // Additive import — each call ADDS to the existing scene rather than
+  // replacing it. Only the explicit Clear Scene button wipes everything
+  // (see clearScene() above). This lets someone build up a scene from
+  // several files without losing earlier work.
+  const firstImport = !state.root;
+  if (firstImport) {
+    state.root = new THREE.Group();
+    scene.add(state.root);
+  }
 
-  // Auto-fit scale + ground the model — user can override per-part later
-  const box = new THREE.Box3().setFromObject(state.root);
+  // Auto-fit THIS import's own scale only — rescaling the shared root on
+  // every import would shrink/distort whatever was already placed there.
+  const importGroup = new THREE.Group();
+  importGroup.add(object);
+  const box = new THREE.Box3().setFromObject(importGroup);
   const size = new THREE.Vector3(); box.getSize(size);
   const maxDim = Math.max(size.x, size.y, size.z);
   if (maxDim > 40 || maxDim < 2) {
-    const s = 20 / maxDim;
-    state.root.scale.setScalar(s);
+    importGroup.scale.setScalar(20 / maxDim);
   }
-  const box2 = new THREE.Box3().setFromObject(state.root);
-  state.root.position.y -= box2.min.y; // sit on the grid
+  state.root.add(importGroup);
 
-  // Collect named top-level parts. If the loader gave us one node per part
-  // (glTF/GLB with named nodes, like the demo file), each direct child is a
-  // part. If it's a single flat mesh (raw OBJ/STL), treat the whole thing
-  // as one part named after the file.
+  if (firstImport) {
+    const box2 = new THREE.Box3().setFromObject(state.root);
+    state.root.position.y -= box2.min.y; // sit the very first import on the grid
+  }
+
+  // Collect named top-level parts from just the NEW object. If the loader
+  // gave us one node per part (glTF/GLB with named nodes, like the demo
+  // file), each direct child is a part. If it's a single flat mesh (raw
+  // OBJ/STL), treat the whole thing as one part named after the file.
   const candidates = [];
   object.traverse(n => { if (n.isMesh) candidates.push(n); });
 
@@ -492,8 +503,14 @@ function onSceneLoaded(object) {
     byName.set(object.name || 'Imported Part', candidates);
   }
 
-  let colorIdx = 0;
-  for (const [name, meshes] of byName.entries()) {
+  const existingNames = new Set(state.parts.map(p => p.name));
+  for (const [rawName, meshes] of byName.entries()) {
+    // Disambiguate if this name already exists in the scene (e.g. the
+    // demo file imported twice, or two files that both name a part "Body").
+    let name = rawName, n = 2;
+    while (existingNames.has(name)) { name = `${rawName} (${n++})`; }
+    existingNames.add(name);
+
     const part = {
       name, meshes, type: null,
       // Container fields
@@ -503,9 +520,11 @@ function onSceneLoaded(object) {
       volumeM3: null,
       material: 'Al-Li 2195 (aerospace alloy)', densityKgM3: 2630,
     };
-    // Tag original materials so we can restore after x-ray/highlight
+    // Tag original materials (for x-ray/highlight restore) and the owning
+    // part (so a tap on this mesh in the viewport can select it directly).
     for (const m of meshes) {
       m.userData.origMaterial = m.material;
+      m.userData.ownerPart = part;
       m.castShadow = true; m.receiveShadow = true;
     }
     state.parts.push(part);
@@ -858,14 +877,45 @@ function exitFlowMode() {
   exitFlowModeVisualsOnly();
 }
 
+// Tap-to-select in the viewport. OrbitControls also listens on this same
+// canvas for drag-to-orbit, so a plain 'click'/'pointerdown' would fire on
+// every rotate gesture too — only treat it as a tap if the pointer barely
+// moved and released quickly, same distinction a touch UI needs anywhere
+// else a drag gesture shares space with a tap gesture.
+let pointerDownPos = null, pointerDownTime = 0;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
-  if (!state.flowMode) return;
+  pointerDownPos = { x: ev.clientX, y: ev.clientY };
+  pointerDownTime = performance.now();
+});
+renderer.domElement.addEventListener('pointerup', (ev) => {
+  if (!pointerDownPos) return;
+  const dx = ev.clientX - pointerDownPos.x, dy = ev.clientY - pointerDownPos.y;
+  const moved = Math.sqrt(dx*dx + dy*dy);
+  const elapsed = performance.now() - pointerDownTime;
+  pointerDownPos = null;
+  if (moved > 6 || elapsed > 500) return; // was a drag/orbit, not a tap
+
   const rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(openingRingGroup.children, false);
-  if (hits.length) selectOpeningCandidate(hits[0].object.userData.candidate);
+
+  if (state.flowMode) {
+    const hits = raycaster.intersectObjects(openingRingGroup.children, false);
+    if (hits.length) selectOpeningCandidate(hits[0].object.userData.candidate);
+    return;
+  }
+
+  // Not in flow mode — a tap on any part's mesh selects that part, same as
+  // tapping its row in the left-hand list.
+  if (!state.root) return;
+  const hits = raycaster.intersectObject(state.root, true);
+  const hit = hits.find(h => h.object.userData && h.object.userData.ownerPart);
+  if (hit) {
+    const part = hit.object.userData.ownerPart;
+    const idx = state.parts.indexOf(part);
+    if (idx >= 0) selectPart(idx);
+  }
 });
 
 function selectOpeningCandidate(candidate) {
@@ -1198,6 +1248,11 @@ document.getElementById('toggleRight').onclick = () => document.getElementById('
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck };
+
+// Preload the demo project automatically on page open — no click required.
+// Someone can still Clear Scene and import their own file, or import
+// additional files alongside it (imports are additive; see onSceneLoaded).
+loadDemo();
 </script>
 
 
