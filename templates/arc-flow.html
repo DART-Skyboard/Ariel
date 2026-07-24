@@ -232,6 +232,15 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <div class="sec-h">◈ Particles</div>
     <label class="field">Particles per Container</label>
     <input type="number" id="particlesPerContainer" value="300" min="10" max="4000" step="10">
+
+    <label class="field">Thermal Resolution</label>
+    <select id="thermalResolution">
+      <option value="256">256 — light</option>
+      <option value="512" selected>512 — default</option>
+      <option value="1024">1024 — detailed</option>
+      <option value="2048">2048 — max detail</option>
+    </select>
+    <div class="sec-sub">Texture-space detail for the floor's heat-splash pattern and per-part thermal shading — independent of any object's own mesh density, so a low-poly import still gets crisp thermal detail. 512 is a solid default; raise it if you want finer detail and your device can spare the GPU memory, lower it if the simulation feels sluggish.</div>
   </div>
 
   <div id="viewport">
@@ -266,6 +275,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
@@ -279,6 +289,24 @@ import { GPUComputationRenderer } from "three/addons/misc/GPUComputationRenderer
 //  Radical Deepscale LLC / DART Meadow — derived from the BTU
 //  Thermal Calculator, re-scoped to full 3D flow-network simulation.
 // ═══════════════════════════════════════════════════════════════
+
+// Shared thermal color ramp — used by BOTH the particle display material
+// and the floor's heat-accumulation visualization, so they speak the same
+// cold->hot visual language. Declared up top since the floor's material
+// (created during initial scene setup, before the particle system exists)
+// needs it too.
+const THERMAL_RAMP_GLSL = `
+  vec3 thermalRamp(float t) {
+    vec3 cold = vec3(0.2, 0.55, 1.0);
+    vec3 mid  = vec3(0.0, 0.9, 0.85);
+    vec3 warm = vec3(1.0, 0.55, 0.15);
+    vec3 hot  = vec3(1.0, 0.95, 0.85);
+    t = clamp(t, 0.0, 1.0);
+    return t < 0.33 ? mix(cold, mid, t/0.33)
+         : t < 0.66 ? mix(mid, warm, (t-0.33)/0.33)
+         : mix(warm, hot, (t-0.66)/0.34);
+  }
+`;
 
 const DEMO_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/CombustionChamber.glb";
 
@@ -303,6 +331,28 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, 10, 0);
 
+// ── Translation/rotation/scale gimbal — works on ANY selected part, from
+// any imported file, not just the demo. Only active outside Flow Selection
+// mode (which already owns the drag gesture for ring-picking/paint-mode);
+// selecting a part attaches the gimbal to that part's pivot group (see
+// onSceneLoaded), so moving/rotating/scaling it moves everything that
+// part owns as one rigid unit — including any openings already marked on
+// it, which stay correct automatically (see refreshPartOpenings above).
+const transformControls = new TransformControls(camera, renderer.domElement);
+transformControls.addEventListener('dragging-changed', (ev) => { controls.enabled = !ev.value; });
+transformControls.addEventListener('objectChange', () => {
+  const part = state.selectedPart;
+  if (part) {
+    part.volumeM3 = null; // scale may have changed — recompute lazily next time it's shown
+    if (document.getElementById('f_psi')) renderPartDetail(); // keep the panel's readouts in sync live
+  }
+});
+// TransformControls' gizmo is its own Object3D in older three.js builds,
+// but newer ones expose it via getHelper() instead — support either so
+// this doesn't silently fail to appear depending on the exact addon version.
+if (typeof transformControls.getHelper === 'function') scene.add(transformControls.getHelper());
+else scene.add(transformControls);
+
 // Lighting — Sun + Sky, matching ArcLake's own IBL approach
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.position.set(20, 40, 15);
@@ -315,6 +365,130 @@ scene.add(new THREE.AmbientLight(0x223344, 0.4));
 const grid = new THREE.GridHelper(60, 60, 0x0d3a44, 0x0a1a20);
 scene.add(grid);
 
+// ── Floor plane — the collision surface flow particles disperse against ──
+// A real, physical ground plane (not just the wireframe grid overlay above,
+// which stays purely visual), with its own thermal-reaction texture: as
+// exhaust particles reach and spread across it, a ping-pong accumulation
+// buffer builds up a heat pattern here (bright where particles have been
+// splashing, fading out over time), sampled by the floor's own shader and
+// blended through the same thermal ramp the particles use.
+const FLOOR_SIZE = 80;
+const floorGeo = new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE, 1, 1);
+floorGeo.rotateX(-Math.PI / 2);
+
+let floorHeatRes = 512; // "Thermal Resolution" — texture-space detail for
+                         // the heat pattern, independent of any mesh's own
+                         // tessellation (a low-poly floor still gets a
+                         // crisp, detailed thermal pattern, since the
+                         // resolution lives in the texture, not the mesh).
+let floorHeatTargets = [null, null];
+let floorHeatIndex = 0;
+let floorOrthoCam = null;
+let floorDecayScene = null, floorDecayMat = null;
+
+function initFloorHeatSystem(resolution) {
+  if (floorHeatTargets[0]) { floorHeatTargets[0].dispose(); floorHeatTargets[1].dispose(); }
+  floorHeatRes = resolution;
+  const opts = { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+                 wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping };
+  floorHeatTargets = [
+    new THREE.WebGLRenderTarget(resolution, resolution, opts),
+    new THREE.WebGLRenderTarget(resolution, resolution, opts),
+  ];
+  floorHeatIndex = 0;
+  const prevTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(floorHeatTargets[0]); renderer.clear();
+  renderer.setRenderTarget(floorHeatTargets[1]); renderer.clear();
+  renderer.setRenderTarget(prevTarget);
+  if (particleSplatMaterial) particleSplatMaterial.uniforms.uSplatSize.value = resolution / 24;
+}
+
+floorOrthoCam = new THREE.OrthographicCamera(-FLOOR_SIZE/2, FLOOR_SIZE/2, FLOOR_SIZE/2, -FLOOR_SIZE/2, 0.1, 200);
+floorOrthoCam.position.set(0, 100, 0);
+floorOrthoCam.lookAt(0, 0, 0);
+floorOrthoCam.updateProjectionMatrix();
+
+// Decay pass — a full-screen quad sampling the PREVIOUS heat frame, output
+// slightly dimmer, so old heat fades out gradually rather than the floor
+// staying permanently lit up everywhere a particle ever touched it.
+floorDecayMat = new THREE.ShaderMaterial({
+  uniforms: { uPrev: { value: null } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D uPrev; varying vec2 vUv;
+    void main(){ gl_FragColor = texture2D(uPrev, vUv) * 0.985; }
+  `,
+  depthTest: false, depthWrite: false,
+});
+floorDecayScene = new THREE.Scene();
+floorDecayScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), floorDecayMat));
+
+initFloorHeatSystem(floorHeatRes);
+
+const floorMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uHeat: { value: null },
+    uBaseColor: { value: new THREE.Color(0x0a1218) },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: THERMAL_RAMP_GLSL + `
+    uniform sampler2D uHeat;
+    uniform vec3 uBaseColor;
+    varying vec2 vUv;
+    void main() {
+      float heat = texture2D(uHeat, vUv).r;
+      vec3 col = mix(uBaseColor, thermalRamp(heat), clamp(heat * 1.6, 0.0, 1.0));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+});
+const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+floorMesh.receiveShadow = true;
+floorMesh.position.y = 0;
+scene.add(floorMesh);
+
+// Runs once per frame while a simulation is active: dim the previous heat
+// frame into the other buffer, splat the current particle positions on top
+// (additive, and only where they're actually near the floor — see the
+// splat fragment shader), then swap buffers and hand the fresh one to the
+// floor's own material.
+function renderFloorHeatPass() {
+  if (!particleSystem || !particleSplatMaterial) return;
+  const readTarget = floorHeatTargets[floorHeatIndex];
+  const writeTarget = floorHeatTargets[1 - floorHeatIndex];
+
+  const prevRenderTarget = renderer.getRenderTarget();
+  const prevAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+
+  renderer.setRenderTarget(writeTarget);
+  renderer.clear();
+  floorDecayMat.uniforms.uPrev.value = readTarget.texture;
+  renderer.render(floorDecayScene, floorOrthoCam2D);
+
+  const originalMaterial = particleSystem.material;
+  particleSystem.material = particleSplatMaterial;
+  renderer.render(particleSystem, floorOrthoCam);
+  particleSystem.material = originalMaterial;
+
+  renderer.setRenderTarget(prevRenderTarget);
+  renderer.autoClear = prevAutoClear;
+
+  floorHeatIndex = 1 - floorHeatIndex;
+  floorMat.uniforms.uHeat.value = floorHeatTargets[floorHeatIndex].texture;
+}
+// The decay quad is defined in clip space directly (see its vertexShader),
+// so it doesn't actually need a "real" camera — any camera works since the
+// vertex shader ignores the view/projection matrices entirely. Reuse the
+// main perspective camera to avoid allocating a redundant one.
+const floorOrthoCam2D = camera;
+
 function onResize() {
   const w = viewportEl.clientWidth, h = viewportEl.clientHeight;
   camera.aspect = w / h; camera.updateProjectionMatrix();
@@ -326,6 +500,10 @@ new ResizeObserver(onResize).observe(viewportEl);
 function animateBase() {
   requestAnimationFrame(animateBase);
   controls.update();
+  if (typeof state !== 'undefined') {
+    if (state.simRunning && particleSystem) renderFloorHeatPass();
+    if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
+  }
   renderer.render(scene, camera);
 }
 animateBase();
@@ -517,6 +695,7 @@ function applyDefaultDemoConfiguration() {
 
 // ── Scene load / normalize / part extraction ───────────────────
 function clearScene() {
+  transformControls.detach();
   if (state.root) { scene.remove(state.root); state.root = null; }
   state.parts = [];
   state.selectedPart = null;
@@ -552,8 +731,15 @@ function onSceneLoaded(object) {
   state.root.add(importGroup);
 
   if (firstImport) {
+    // Elevate above the floor rather than sitting flush on it — the
+    // combustion chamber's nozzle needs real clearance underneath for its
+    // exhaust plume to be visible traveling through the air before it
+    // disperses against the floor plane, not clip straight into it.
     const box2 = new THREE.Box3().setFromObject(state.root);
-    state.root.position.y -= box2.min.y; // sit the very first import on the grid
+    const modelHeight = box2.max.y - box2.min.y;
+    const clearance = Math.max(modelHeight * 0.35, 3);
+    state.root.position.y -= box2.min.y;
+    state.root.position.y += clearance;
   }
 
   // Collect named top-level parts from just the NEW object. If the loader
@@ -583,11 +769,30 @@ function onSceneLoaded(object) {
     while (existingNames.has(name)) { name = `${rawName} (${n++})`; }
     existingNames.add(name);
 
+    // Every part gets its own pivot Group, and every one of its meshes is
+    // re-parented into it via .attach() (which preserves world transform
+    // across the reparent). This is what makes a part translatable/
+    // rotatable/scalable as one rigid unit via the gimbal below, regardless
+    // of however the source file's own hierarchy happened to nest things —
+    // and it's what lets an opening's world position stay correct forever
+    // afterward: since the pivot is a real scene-graph node, moving it
+    // moves everything parented under it automatically, for free.
+    const pivot = new THREE.Group();
+    pivot.name = name;
+    state.root.add(pivot);
+    for (const m of meshes) pivot.attach(m);
+
     const part = {
-      name, meshes, type: null,
+      name, meshes, pivot, type: null,
       // Container fields
       contents: 'oxidizer', massKg: 0, tempK: 288, internalPsi: 60,
-      // Openings: [{ id, centroid(world Vec3), normal(world Vec3), perimeter, role: 'entrance'|'exit'|'nozzle'|null }]
+      // Openings: [{ id, centroid(world Vec3 at detection time), normal(world Vec3), perimeter, role }]
+      // NOTE: for auto-detected openings, centroid/normal are re-derived
+      // fresh (see refreshPartOpenings) whenever it matters — right before
+      // running the simulation or a seal check — so translating a part
+      // with the gimbal after marking its openings still works correctly.
+      // Manually painted openings (Paint Mode) get a live-tracking marker
+      // instead, since there's no "re-detect" for a hand-traced region.
       openings: [],
       volumeM3: null,
       material: 'Al-Li 2195 (aerospace alloy)', densityKgM3: 2630,
@@ -773,6 +978,7 @@ function selectPart(i) {
   state.selectedPart = state.parts[i];
   highlightSelection();
   renderPartDetail();
+  transformControls.attach(state.selectedPart.pivot);
 }
 
 function showNoSelection() {
@@ -795,6 +1001,17 @@ function renderPartDetail() {
   el.style.display = 'block';
 
   let html = `<div class="sec-h">◈ ${part.name}</div>`;
+
+  // Move/rotate/scale gimbal — works on every part regardless of whether
+  // it's been classified yet, and regardless of source file.
+  const gm = state.gimbalMode || 'translate';
+  html += `<div class="sec-h">Position / Orientation / Size</div>
+  <div class="btnrow">
+    <button class="btn ${gm==='translate'?'on':''}" data-gimbal="translate">Move</button>
+    <button class="btn ${gm==='rotate'?'on':''}" data-gimbal="rotate">Rotate</button>
+    <button class="btn ${gm==='scale'?'on':''}" data-gimbal="scale">Scale</button>
+  </div>`;
+
   html += `<div class="btnrow">
     <button class="btn ${part.type==='container'?'on':''}" data-settype="container">Container</button>
     <button class="btn warn ${part.type==='pipe'?'on':''}" data-settype="pipe">Pipe</button>
@@ -865,6 +1082,14 @@ function renderPartDetail() {
   }
 
   el.innerHTML = html;
+  document.querySelectorAll('[data-gimbal]').forEach(btn => {
+    btn.onclick = () => {
+      state.gimbalMode = btn.dataset.gimbal;
+      transformControls.setMode(state.gimbalMode);
+      renderPartDetail();
+    };
+  });
+  transformControls.setMode(gm);
   wireDetailEvents(part);
 }
 
@@ -919,6 +1144,7 @@ function makeRing(candidate, color) {
 }
 
 function enterFlowMode(part) {
+  transformControls.detach();
   exitFlowModeVisualsOnly();
   state.flowMode = true;
   state.selectedPart = part;
@@ -982,6 +1208,7 @@ function setPaintMode(on) {
 // deliberate exception — there, dragging IS the intended gesture.)
 let pointerDownPos = null, pointerDownTime = 0;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (transformControls.dragging) return; // let the gimbal own this gesture entirely
   pointerDownPos = { x: ev.clientX, y: ev.clientY };
   pointerDownTime = performance.now();
 
@@ -1034,6 +1261,7 @@ function finishPaintStroke() {
   if (!part || state.paintPoints.length < 3) { state.paintPoints = []; return; }
 
   const loop = summarizeLoop(state.paintPoints, 'paint' + Date.now());
+  attachOpeningMarker(part, loop); // keeps this opening's world position live if the part is moved later
   part.openings.push(loop);
   openingRingGroup.add(makeRing(loop, 0x888888));
   state.selectedOpening = loop;
@@ -1042,6 +1270,7 @@ function finishPaintStroke() {
 }
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  if (transformControls.dragging) return;
   if (paintingNow) { finishPaintStroke(); return; }
   if (!pointerDownPos) return;
   const dx = ev.clientX - pointerDownPos.x, dy = ev.clientY - pointerDownPos.y;
@@ -1185,7 +1414,69 @@ function renderFlowModePanel(part) {
 // touching surfaces as a sealed joint (fluid still flows across it) — but
 // flag it if the openings are farther apart than a small tolerance, which
 // means the source file has a real gap that needs fixing and re-importing.
+// Live position tracking for manually PAINTED openings (auto-detected ones
+// don't need this — see refreshPartOpenings below, which re-derives them
+// fresh from the mesh instead). A marker is a plain empty Object3D parented
+// under the part's pivot; once attached, moving/rotating/scaling the pivot
+// via the gimbal moves the marker right along with it for free, so its
+// live world position/orientation is always correct with zero recompute
+// cost — we just ask the marker for its current world transform.
+function attachOpeningMarker(part, opening) {
+  const marker = new THREE.Object3D();
+  marker.position.copy(opening.centroid);
+  const n = opening.normal.clone().normalize();
+  marker.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), n));
+  scene.add(marker);
+  part.pivot.attach(marker); // reparents, preserving the world transform just set above
+  opening.marker = marker;
+}
+function openingLiveCentroid(opening) {
+  return opening.marker ? opening.marker.getWorldPosition(new THREE.Vector3()) : opening.centroid;
+}
+function openingLiveNormal(opening) {
+  return opening.marker ? opening.marker.getWorldDirection(new THREE.Vector3()) : opening.normal;
+}
+
+// Re-derive current world-space opening data for a part right before it
+// actually matters (a seal check or building the flow graph for
+// simulation) — this is what makes translating/rotating/scaling an
+// already-configured part with the gimbal keep working correctly. Auto-
+// detected openings are matched back to their assigned role by id:
+// detectOpenings' sort order depends only on the mesh's own LOCAL geometry
+// (relative perimeter sizes), which a rigid transform on the pivot doesn't
+// change, so the same ids come back in the same order no matter where the
+// part has been moved to. Painted openings use their live marker instead,
+// since there's no "re-detect" for a hand-traced region.
+function refreshPartOpenings(part) {
+  state.root.updateMatrixWorld(true);
+  const roleById = new Map();
+  const painted = [];
+  for (const o of part.openings) {
+    if (o.id && String(o.id).startsWith('paint')) painted.push(o);
+    else roleById.set(o.id, o.role);
+  }
+  const fresh = roleById.size ? detectOpenings(part).filter(o => roleById.has(o.id)) : [];
+  for (const o of fresh) o.role = roleById.get(o.id);
+  for (const o of painted) {
+    if (o.marker) { o.centroid = openingLiveCentroid(o); o.normal = openingLiveNormal(o); }
+  }
+  part.openings = [...fresh, ...painted];
+}
+function refreshAllOpenings() {
+  for (const part of state.parts) if (part.type) refreshPartOpenings(part);
+}
+
+// Real assemblies almost always get exported as separate-but-touching
+// parts (mating faces flush against each other) rather than actually
+// welded into one mesh — that's normal, not a mistake, and should read as
+// a sealed joint automatically in the common case. state.forcedSeals lets
+// someone explicitly confirm a junction as sealed even if it falls just
+// outside the auto tolerance (e.g. a tack-welded or lightly-fastened
+// connection that isn't perfectly flush) — once confirmed, it's
+// remembered and won't re-prompt on the next Simulate.
 function runSealCheck() {
+  refreshAllOpenings();
+  if (!state.forcedSeals) state.forcedSeals = new Set();
   const exits = [], entrances = [];
   for (const part of state.parts) {
     for (const o of part.openings) {
@@ -1202,8 +1493,15 @@ function runSealCheck() {
       if (d < bestDist) { bestDist = d; best = en; }
     }
     if (best) {
-      const tolerance = Math.max(ex.o.radius, best.o.radius) * 0.25;
-      results.push({ from: ex.part.name, to: best.part.name, dist: bestDist, ok: bestDist <= tolerance });
+      // Generous relative tolerance (parts modeled separately but meant to
+      // mate flush rarely land at EXACTLY zero distance apart) plus a small
+      // absolute floor so very narrow openings aren't held to an
+      // unreasonably tight standard.
+      const tolerance = Math.max(ex.o.radius, best.o.radius) * 0.4 + 0.03;
+      const key = ex.part.name + '|' + best.part.name;
+      const forced = state.forcedSeals.has(key);
+      results.push({ from: ex.part.name, to: best.part.name, dist: bestDist,
+                     ok: bestDist <= tolerance || forced, key, forced });
     }
   }
   state.sealResults = results;
@@ -1220,10 +1518,19 @@ function runSealCheck() {
 // heuristic (path progress + pressure drop) matching the stress/flow
 // visualization the tool calls for.
 
-const MAX_WAYPOINTS = 6;
+// Needs enough headroom for the longest real chain in a multi-hop feed
+// system (pressurant tank -> propellant tank -> feed pipe -> chamber is
+// already 7 waypoints before ever reaching the nozzle) PLUS the nozzle
+// exit itself PLUS two points arcing down to where it hits and disperses
+// on the floor. The previous budget (6) was too tight — particles from the
+// propellant tanks never actually reached the nozzle, only ones that
+// started directly inside the chamber did.
+const MAX_WAYPOINTS = 10;
 let particleSystem = null;
+let particleSplatMaterial = null;
 
 function buildFlowGraph() {
+  refreshAllOpenings();
   // part -> { entrancePart, exitTargetPart } via nearest opening match
   const links = new Map(); // exitingPart -> { targetPart, viaOpening }
   for (const part of state.parts) {
@@ -1240,6 +1547,61 @@ function buildFlowGraph() {
     if (best) links.set(part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
   }
   return links;
+}
+
+// ── Per-part thermal reaction ────────────────────────────────────
+// Every object gets a whole-part heat tint driven by its distance from the
+// combustion chamber in the flow graph, using the same thermal ramp as the
+// particles and the floor — a deliberately safe, universal technique: it
+// works on ANY imported mesh regardless of tessellation OR whether it even
+// has valid UV coordinates, since it's a uniform emissive tint rather than
+// a spatially-textured one. True per-texel surface detail (a real thermal
+// "paint" pattern across an object's own surface, matching how the floor's
+// splash pattern works) would need either clean UVs or triplanar
+// projection — a meaningfully bigger, separate piece of work; this is the
+// honest, always-correct baseline rather than a fragile attempt at that.
+function jsThermalRamp(t) {
+  t = Math.max(0, Math.min(1, t));
+  const cold = [0.2, 0.55, 1.0], mid = [0.0, 0.9, 0.85], warm = [1.0, 0.55, 0.15], hot = [1.0, 0.95, 0.85];
+  const lerp3 = (a, b, f) => [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+  if (t < 0.33) return lerp3(cold, mid, t/0.33);
+  if (t < 0.66) return lerp3(mid, warm, (t-0.33)/0.33);
+  return lerp3(warm, hot, (t-0.66)/0.34);
+}
+
+function computePartHeatLevels(links) {
+  const heat = new Map();
+  const chamber = state.parts.find(p => p.type === 'chamber');
+  if (!chamber) return heat;
+  for (const part of state.parts) {
+    if (!part.type) continue;
+    if (part === chamber) { heat.set(part, 1.0); continue; }
+    let hops = 0, cur = part, guard = 0, reached = false;
+    while (guard++ < 20) {
+      const link = links.get(cur);
+      if (!link) break;
+      cur = link.target;
+      hops++;
+      if (cur === chamber) { reached = true; break; }
+    }
+    heat.set(part, reached ? Math.max(0.15, 1 - hops * 0.22) : 0.1);
+  }
+  return heat;
+}
+
+let partHeatEmissiveApplied = false;
+function updatePartThermalTint(links) {
+  const heat = computePartHeatLevels(links);
+  for (const part of state.parts) {
+    const level = state.simRunning ? (heat.get(part) || 0) : 0;
+    const [r, g, b] = jsThermalRamp(level);
+    for (const m of part.meshes) {
+      if (!m.material || !m.material.emissive) continue;
+      m.material.emissive.setRGB(r, g, b);
+      m.material.emissiveIntensity = level * 0.55;
+    }
+  }
+  partHeatEmissiveApplied = state.simRunning;
 }
 
 function partCentroid(part) {
@@ -1264,40 +1626,160 @@ function partContainmentRadius(part) {
 }
 
 function buildParticlePath(part, links, depth) {
-  // Waypoints: [own centroid, own exit point, ... next part's centroid, exit point ...] up to MAX_WAYPOINTS,
-  // terminating at a chamber's nozzle-exit opening if reached. Each waypoint
-  // carries a containment radius too (interior of a tank vs. the tighter
-  // radius of the opening it's flowing through vs. the nozzle) — this is
-  // what keeps particles inside the actual container/pipe cross-section
-  // instead of traveling as a bare line through empty space.
+  // Waypoints: [own centroid, own exit point, next part's centroid, ...]
+  // terminating at the chamber's nozzle exit, then arcing on to where it
+  // hits and disperses across the floor. Each waypoint carries a
+  // containment radius too (interior of a tank vs. the tighter radius of
+  // whatever opening it's passing through) — this is what keeps particles
+  // inside the actual container/pipe cross-section instead of traveling
+  // as a bare line through empty space.
   const path = [partCentroid(part)];
   const radii = [partContainmentRadius(part)];
   let cur = part;
-  for (let i = 0; i < MAX_WAYPOINTS - 1 && path.length < MAX_WAYPOINTS; i++) {
+  let reachedNozzle = false;
+
+  // A part's own particles might start directly in the chamber itself.
+  if (cur.type === 'chamber') {
+    const nozzle = cur.openings.find(o => o.role === 'nozzle');
+    if (nozzle) {
+      path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
+      radii.push(nozzle.radius * 0.9);
+      reachedNozzle = true;
+    }
+  }
+
+  // Reserve 2 slots at the end for the floor-impact + floor-spread points.
+  while (!reachedNozzle && path.length < MAX_WAYPOINTS - 2) {
+    const link = links.get(cur);
+    if (!link) break;
+    path.push(link.viaOpening.centroid);
+    radii.push(link.viaOpening.radius * 0.85);
+    cur = link.target;
+    path.push(partCentroid(cur));
+    radii.push(partContainmentRadius(cur));
     if (cur.type === 'chamber') {
       const nozzle = cur.openings.find(o => o.role === 'nozzle');
       if (nozzle) {
         path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
         radii.push(nozzle.radius * 0.9);
+        reachedNozzle = true;
       }
       break;
     }
-    const link = links.get(cur);
-    if (!link) break;
-    path.push(link.viaOpening.centroid);
-    radii.push(link.viaOpening.radius * 0.85); // narrows through the opening itself
-    path.push(partCentroid(link.target));
-    radii.push(partContainmentRadius(link.target));
-    cur = link.target;
   }
+
+  // Past the nozzle: arc outward/downward until it would reach the floor
+  // plane (y=0), then a final wider spread point resting on the floor —
+  // each particle gets its own random landing offset, so the whole stream
+  // together reads as a dispersing exhaust plume rather than a single line.
+  if (reachedNozzle) {
+    const exitPt = path[path.length - 1];
+    const dropHeight = Math.max(exitPt.y, 0.1);
+    const spreadX = (Math.random() - 0.5) * dropHeight * 0.7;
+    const spreadZ = (Math.random() - 0.5) * dropHeight * 0.7;
+    const floorHit = new THREE.Vector3(exitPt.x + spreadX * 0.4, 0.05, exitPt.z + spreadZ * 0.4);
+    const floorSpread = new THREE.Vector3(exitPt.x + spreadX, 0.02, exitPt.z + spreadZ);
+    path.push(floorHit);    radii.push(radii[radii.length - 1] * 1.4);
+    path.push(floorSpread); radii.push(radii[radii.length - 1] * 1.3);
+  }
+
   while (path.length < MAX_WAYPOINTS) { path.push(path[path.length - 1].clone()); radii.push(radii[radii.length - 1]); }
   return { points: path.slice(0, MAX_WAYPOINTS), radii: radii.slice(0, MAX_WAYPOINTS) };
 }
 
+// Core position logic shared by BOTH the main perspective display material
+// AND the orthographic top-down floor-splat material — each supplies its
+// own main()/gl_PointSize afterward, since perspective point-size scaling
+// (200/-mv.z) doesn't make sense for the ortho splat pass, but the actual
+// particle position must be identical in both or the floor would react to
+// heat that isn't where the particles visually are.
+const PARTICLE_SHADER_CORE = `
+  uniform float uTime;
+  uniform sampler2D uWaypoints;
+  uniform float uTexHeight;
+  attribute float aRow;
+  attribute float aPhase;
+  attribute float aSpeed;
+  attribute float aThermal;
+  attribute float aLatU;
+  attribute float aLatV;
+  varying float vThermal;
+  varying float vProgress;
+
+  vec4 sampleWaypoint(float row, float w) {
+    float u = (w + 0.5) / ${MAX_WAYPOINTS}.0;
+    float v = (row + 0.5) / uTexHeight;
+    return texture2D(uWaypoints, vec2(u, v)); // xyz = position, w = containment radius
+  }
+  vec3 computeParticlePosition() {
+    float progress = fract(uTime * aSpeed + aPhase);
+    vProgress = progress;
+    vThermal = aThermal + progress * 0.4;
+    float segF = progress * ${MAX_WAYPOINTS - 1}.0;
+    float seg = floor(segF);
+    float segT = fract(segF);
+    vec4 a4 = sampleWaypoint(aRow, seg);
+    vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+    vec3 a = a4.xyz, b = b4.xyz;
+    vec3 centerPos = mix(a, b, segT);
+    float rad = mix(a4.w, b4.w, segT);
+    vec3 tangent = b - a;
+    float tlen = length(tangent);
+    tangent = tlen > 0.0001 ? tangent / tlen : vec3(0.0, 1.0, 0.0);
+    vec3 refUp = abs(tangent.y) > 0.98 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(tangent, refUp));
+    vec3 up2 = normalize(cross(right, tangent));
+    return centerPos + (aLatU * right + aLatV * up2) * rad;
+  }
+`;
+
+const PARTICLE_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
+  uniform float uSize;
+  void main() {
+    vec3 pos = computeParticlePosition();
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = uSize * (200.0 / -mv.z);
+  }
+`;
+
+// Splat variant: same position logic, but rendered through an orthographic
+// top-down camera onto the floor's heat-accumulation buffer, so point size
+// is just a flat screen-space size (no perspective falloff with height —
+// splashing exhaust should read the same size regardless of how high above
+// the floor it started).
+const PARTICLE_SPLAT_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
+  uniform float uSplatSize;
+  varying float vHeightAboveFloor;
+  void main() {
+    vec3 pos = computeParticlePosition();
+    vHeightAboveFloor = pos.y; // floor is always at world y = 0 in this tool
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    gl_PointSize = uSplatSize;
+  }
+`;
+const PARTICLE_SPLAT_FRAGMENT_SHADER = `
+  varying float vThermal;
+  varying float vProgress;
+  varying float vHeightAboveFloor;
+  void main() {
+    vec2 c = gl_PointCoord - vec2(0.5);
+    if (length(c) > 0.5) discard;
+    // Only particles actually near the floor paint it — one still up
+    // inside a tank shouldn't register as heat on the ground below.
+    float floorProximity = smoothstep(3.0, 0.0, vHeightAboveFloor);
+    if (floorProximity <= 0.001) discard;
+    float edge = smoothstep(0.5, 0.0, length(c));
+    gl_FragColor = vec4(vThermal, 1.0, 1.0, edge * floorProximity * 0.35);
+  }
+`;
+
 function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
+  if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
 
   const links = buildFlowGraph();
+  state.currentLinks = links; // kept for the per-frame thermal tint update
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 300;
   const containers = state.parts.filter(p => p.type === 'container' || p.type === 'chamber');
 
@@ -1379,73 +1861,14 @@ function buildParticleSystem() {
       uTexHeight: { value: texHeight },
       uSize: { value: 6.0 },
     },
-    vertexShader: `
-      uniform float uTime;
-      uniform sampler2D uWaypoints;
-      uniform float uTexHeight;
-      uniform float uSize;
-      attribute float aRow;
-      attribute float aPhase;
-      attribute float aSpeed;
-      attribute float aThermal;
-      attribute float aLatU;
-      attribute float aLatV;
-      varying float vThermal;
-      varying float vProgress;
-
-      vec4 sampleWaypoint(float row, float w) {
-        float u = (w + 0.5) / ${MAX_WAYPOINTS}.0;
-        float v = (row + 0.5) / uTexHeight;
-        return texture2D(uWaypoints, vec2(u, v)); // xyz = position, w = containment radius
-      }
-      void main() {
-        float progress = fract(uTime * aSpeed + aPhase);
-        vProgress = progress;
-        vThermal = aThermal + progress * 0.4; // heats up as it travels toward the chamber
-        float segF = progress * ${MAX_WAYPOINTS - 1}.0;
-        float seg = floor(segF);
-        float segT = fract(segF);
-        vec4 a4 = sampleWaypoint(aRow, seg);
-        vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
-        vec3 a = a4.xyz, b = b4.xyz;
-        vec3 centerPos = mix(a, b, segT);
-        float rad = mix(a4.w, b4.w, segT);
-
-        // Collision-proxy containment: offset the particle within the local
-        // cross-section (perpendicular to the direction of travel) instead
-        // of letting it travel as a bare line down the exact centerline —
-        // this is what keeps particles visually inside the tank/pipe walls
-        // rather than floating through empty space or clipping through
-        // the surface. Frame is derived from the segment tangent so the
-        // offset plane always stays perpendicular to the flow direction.
-        vec3 tangent = b - a;
-        float tlen = length(tangent);
-        tangent = tlen > 0.0001 ? tangent / tlen : vec3(0.0, 1.0, 0.0);
-        vec3 refUp = abs(tangent.y) > 0.98 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-        vec3 right = normalize(cross(tangent, refUp));
-        vec3 up2 = normalize(cross(right, tangent));
-        vec3 pos = centerPos + (aLatU * right + aLatV * up2) * rad;
-
-        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
-        gl_Position = projectionMatrix * mv;
-        gl_PointSize = uSize * (200.0 / -mv.z);
-      }
-    `,
-    fragmentShader: `
+    vertexShader: PARTICLE_VERTEX_SHADER,
+    fragmentShader: THERMAL_RAMP_GLSL + `
       varying float vThermal;
       varying float vProgress;
       void main() {
         vec2 c = gl_PointCoord - vec2(0.5);
         if (length(c) > 0.5) discard;
-        // Thermal gradient: cold blue -> cyan -> warm orange -> white-hot
-        vec3 cold = vec3(0.2, 0.55, 1.0);
-        vec3 mid  = vec3(0.0, 0.9, 0.85);
-        vec3 warm = vec3(1.0, 0.55, 0.15);
-        vec3 hot  = vec3(1.0, 0.95, 0.85);
-        float t = clamp(vThermal, 0.0, 1.0);
-        vec3 col = t < 0.33 ? mix(cold, mid, t/0.33)
-                 : t < 0.66 ? mix(mid, warm, (t-0.33)/0.33)
-                 : mix(warm, hot, (t-0.66)/0.34);
+        vec3 col = thermalRamp(vThermal);
         float edge = smoothstep(0.5, 0.35, length(c));
         gl_FragColor = vec4(col, edge);
       }
@@ -1456,6 +1879,22 @@ function buildParticleSystem() {
   particleSystem = new THREE.Points(geo, mat);
   particleSystem.frustumCulled = false;
   scene.add(particleSystem);
+
+  // Splat material for painting this same particle stream onto the floor's
+  // heat-accumulation buffer (see initFloorHeatSystem) — identical position
+  // logic (PARTICLE_SHADER_CORE), different point size + fragment output.
+  particleSplatMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: mat.uniforms.uTime, // shared reference — one clock drives both
+      uWaypoints: { value: waypointTex },
+      uTexHeight: { value: texHeight },
+      uSplatSize: { value: floorHeatRes / 24 },
+    },
+    vertexShader: PARTICLE_SPLAT_VERTEX_SHADER,
+    fragmentShader: PARTICLE_SPLAT_FRAGMENT_SHADER,
+    transparent: true, depthWrite: false, depthTest: false,
+    blending: THREE.AdditiveBlending,
+  });
 }
 
 let simClock = new THREE.Clock();
@@ -1480,6 +1919,9 @@ document.getElementById('btnResetDefaults').onclick = () => {
     : `No parts in the current scene match the demo's named parts — nothing to reset. (This only affects the demo propulsion parts, by name.)`);
 };
 document.getElementById('btnLoadDemo').onclick = loadDemo;
+document.getElementById('thermalResolution').onchange = (e) => {
+  initFloorHeatSystem(parseInt(e.target.value));
+};
 
 const dropZone = document.getElementById('dropZone');
 dropZone.onclick = () => document.getElementById('fileInput').click();
@@ -1512,8 +1954,15 @@ playBtn.onclick = () => {
     const sealResults = runSealCheck();
     const bad = sealResults.filter(r => !r.ok);
     if (bad.length) {
-      const msg = bad.map(b => `${b.from} → ${b.to}: gap of ${b.dist.toFixed(3)} units — check the file and re-import.`).join('\n');
-      if (!confirm(`Seal check found ${bad.length} unsealed connection(s):\n\n${msg}\n\nRun the simulation anyway?`)) return;
+      const msg = bad.map(b => `${b.from} → ${b.to}: gap of ${b.dist.toFixed(3)} units.`).join('\n');
+      const confirmed = confirm(
+        `${bad.length} connection(s) are farther apart than expected for a flush seal:\n\n${msg}\n\n` +
+        `If these parts are genuinely meant to connect (e.g. a tack-welded or fastened joint rather than a perfectly flush one), ` +
+        `tap OK to treat them as sealed and continue. Tap Cancel to stop and check the file instead.`
+      );
+      if (!confirmed) return;
+      if (!state.forcedSeals) state.forcedSeals = new Set();
+      for (const b of bad) state.forcedSeals.add(b.key);
     }
     exitFlowMode();
     buildParticleSystem();
