@@ -306,8 +306,34 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
           <button class="btn btn-ghost btn-full" onclick="exportImageAs('png')">PNG</button>
           <button class="btn btn-ghost btn-full" onclick="exportImageAs('jpeg')">JPEG</button>
           <button class="btn btn-ghost btn-full" onclick="exportImageAs('webp')">WebP</button>
-          <button class="btn btn-ghost btn-full" onclick="exportImageAs('bmp')" style="grid-column:span 2">BMP</button>
+          <button class="btn btn-ghost btn-full" onclick="exportImageAs('bmp')">BMP</button>
+          <button class="btn btn-ghost btn-full" onclick="showIcoPanel()">.ICO</button>
         </div>
+
+        <!-- ICO size panel — hidden until .ICO tapped -->
+        <div id="ico-panel" style="display:none;margin-top:8px;padding:10px 10px 8px;background:rgba(0,212,255,0.04);border:1px solid rgba(0,212,255,0.15);border-radius:6px">
+          <div style="font-size:9px;letter-spacing:.08em;color:var(--fg-dim);margin-bottom:8px;font-family:var(--font-mono)">ICO SIZE STACK</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="16" checked style="accent-color:var(--cyan)"> 16×16</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="24" style="accent-color:var(--cyan)"> 24×24</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="32" checked style="accent-color:var(--cyan)"> 32×32</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="48" checked style="accent-color:var(--cyan)"> 48×48</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="64" style="accent-color:var(--cyan)"> 64×64</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="128" checked style="accent-color:var(--cyan)"> 128×128</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="256" checked style="accent-color:var(--cyan)"> 256×256</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="512" style="accent-color:var(--cyan)"> 512×512</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-dim);cursor:pointer"><input type="checkbox" class="ico-sz" value="1024" style="accent-color:var(--cyan)"> 1024×1024</label>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="icoSelectAll(true)">All</button>
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="icoSelectAll(false)">None</button>
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="icoPreset('web')">Web</button>
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="icoPreset('app')">App</button>
+            <button class="btn btn-ghost" style="font-size:9px;padding:3px 8px" onclick="icoPreset('all')">All Sizes</button>
+          </div>
+          <button class="btn btn-orange btn-full" onclick="exportImageAsIco()">⬇ Export .ICO</button>
+        </div>
+
         <div class="status-line" id="img-status"></div>
       </div></div>
     </div>
@@ -877,6 +903,103 @@ function uscDownload() {
 
 
 
+
+// ── ICO Export ────────────────────────────────────────────────────────────────
+function showIcoPanel(){
+  var p=document.getElementById('ico-panel');
+  p.style.display=p.style.display==='none'?'block':'none';
+}
+function icoSelectAll(v){
+  document.querySelectorAll('.ico-sz').forEach(function(cb){cb.checked=v;});
+}
+function icoPreset(name){
+  var presets={web:[16,32,48],app:[16,32,48,128,256,512,1024],all:[16,24,32,48,64,128,256,512,1024]};
+  icoSelectAll(false);
+  (presets[name]||[]).forEach(function(sz){
+    var cb=document.querySelector('.ico-sz[value="'+sz+'"]');
+    if(cb)cb.checked=true;
+  });
+}
+function icoResizeToCanvas(imgData,size){
+  var c=document.createElement('canvas');c.width=size;c.height=size;
+  var ctx=c.getContext('2d');
+  var tmp=document.createElement('canvas');tmp.width=imgData.width;tmp.height=imgData.height;
+  tmp.getContext('2d').putImageData(imgData,0,0);
+  ctx.drawImage(tmp,0,0,size,size);
+  return c;
+}
+function icoMakeBMP32(imgData){
+  // BMP32 inside ICO: BITMAPINFOHEADER(40) + BGRA pixels (bottom-up) + AND mask
+  var w=imgData.width,h=imgData.height;
+  var maskRowBytes=Math.ceil(w/32)*4;
+  var buf=new ArrayBuffer(40+w*h*4+maskRowBytes*h);
+  var dv=new DataView(buf);var off=0;
+  dv.setUint32(off,40,true);off+=4;
+  dv.setInt32(off,w,true);off+=4;
+  dv.setInt32(off,h*2,true);off+=4;
+  dv.setUint16(off,1,true);off+=2;
+  dv.setUint16(off,32,true);off+=2;
+  off+=24; // biCompression through biClrImportant all zero
+  var px=imgData.data;
+  for(var y=h-1;y>=0;y--){
+    for(var x=0;x<w;x++){
+      var i=(y*w+x)*4;
+      dv.setUint8(off++,px[i+2]);
+      dv.setUint8(off++,px[i+1]);
+      dv.setUint8(off++,px[i]);
+      dv.setUint8(off++,px[i+3]);
+    }
+  }
+  // AND mask — zeros (alpha channel carries transparency)
+  for(var m=0;m<maskRowBytes*h;m++)dv.setUint8(off++,0);
+  return new Uint8Array(buf);
+}
+function icoMakePNG(canvas){
+  var b64=canvas.toDataURL('image/png').split(',')[1];
+  var bin=atob(b64);var arr=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+  return arr;
+}
+function exportImageAsIco(){
+  if(!currentImageData){setStatus('img-status','Load an image first');return;}
+  var sizes=[].slice.call(document.querySelectorAll('.ico-sz:checked'))
+    .map(function(cb){return parseInt(cb.value);})
+    .filter(function(s){return s>0;})
+    .sort(function(a,b){return a-b;});
+  if(!sizes.length){setStatus('img-status','Select at least one size');return;}
+  setStatus('img-status','Building .ico…');
+  var images=sizes.map(function(sz){
+    var c=icoResizeToCanvas(currentImageData,sz);
+    var usePng=sz>256;
+    var imgD=c.getContext('2d').getImageData(0,0,sz,sz);
+    return{sz:sz,data:usePng?icoMakePNG(c):icoMakeBMP32(imgD),usePng:usePng};
+  });
+  var N=images.length;
+  var dataOffset=6+N*16;
+  var totalSize=dataOffset+images.reduce(function(s,img){return s+img.data.length;},0);
+  var buf=new ArrayBuffer(totalSize);var dv=new DataView(buf);var off=0;
+  dv.setUint16(off,0,true);off+=2;
+  dv.setUint16(off,1,true);off+=2;
+  dv.setUint16(off,N,true);off+=2;
+  var imgOff=6+N*16;
+  images.forEach(function(img){
+    dv.setUint8(off++,img.sz>=256?0:img.sz);
+    dv.setUint8(off++,img.sz>=256?0:img.sz);
+    dv.setUint8(off++,0);dv.setUint8(off++,0);
+    dv.setUint16(off,1,true);off+=2;
+    dv.setUint16(off,32,true);off+=2;
+    dv.setUint32(off,img.data.length,true);off+=4;
+    dv.setUint32(off,imgOff,true);off+=4;
+    imgOff+=img.data.length;
+  });
+  images.forEach(function(img){
+    new Uint8Array(buf,off,img.data.length).set(img.data);off+=img.data.length;
+  });
+  var blob=new Blob([buf],{type:'image/x-icon'});
+  download(blob,'image_'+sizes.join('+')+'.ico');
+  setStatus('img-status','Exported .ICO — '+N+' size'+(N>1?'s':'')+': '+sizes.join(', ')+'px');
+}
+// ── End ICO Export ────────────────────────────────────────────────────────────
 </script>
 </body>
 </html>
