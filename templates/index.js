@@ -93,6 +93,9 @@ app.get('/easterisland.html', (req, res) => res.sendFile(path.join(__dirname, 't
 app.get('/hypersonic.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'hypersonic.html')));
 app.get('/LEATR.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'LEATR.html')));
 app.get('/articrenwave.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'articrenwave.html')));
+app.get('/tempest', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'tempest', 'index.html')));
+app.get('/tempest/', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'tempest', 'index.html')));
+app.get('/colfurmine-leatr.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'tempest', 'index.html')));
 
 // 5) Fallback for any other SPA routes
 app.use((req, res) => {
