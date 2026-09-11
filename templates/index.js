@@ -75,6 +75,7 @@ app.get('/autumn.html', (req, res) => res.sendFile(path.join(__dirname, 'templat
 app.get('/mn.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'mn.html')));
 app.get('/mr.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'mr.html')));
 app.get('/mp3wav.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'mp3wav.html')));
+app.get('/sun-vs-stephenson.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'sun-vs-stephenson.html')));
 app.get('/leaudiovisualizer.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'leaudiovisualizer.html')));
 app.get('/leatr.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'leatr.html')));
 app.get('/leatr-cbs.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'leatr-cbs.html')));
