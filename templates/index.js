@@ -69,6 +69,8 @@ app.get('/calculator.cpp', (req, res) => res.sendFile(path.join(__dirname, 'temp
 app.get('/arc-forge.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arc-forge.html')));
 app.get('/arcedge.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arcedge.html')));
 app.get('/arclake.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arclake.html')));
+app.get('/arclake-manifest.json', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arclake-manifest.json')));
+app.use('/arclake', express.static(path.join(__dirname, 'templates', 'arclake')));
 app.get('/arclake-atoms.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arclake-atoms.html')));
 app.get('/arclake-latin.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'arclake-latin.html')));
 app.get('/ariel-npu.html', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'ariel-npu.html')));
