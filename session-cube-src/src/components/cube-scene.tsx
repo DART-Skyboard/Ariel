@@ -324,6 +324,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   resetToken,
   onReady,
   onGpuLost,
+  liveCubeId,
 }: {
   cubes: NestCube[];
   selectedId: string;
@@ -342,6 +343,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   resetToken: number;
   onReady?: () => void;
   onGpuLost?: () => void;
+  liveCubeId?: string | null;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const live = useRef({
@@ -357,6 +359,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     resetToken,
     onReady,
     onGpuLost,
+    liveCubeId,
   });
   live.current = {
     cubes,
@@ -371,6 +374,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     resetToken,
     onReady,
     onGpuLost,
+    liveCubeId,
   };
 
   useEffect(() => {
@@ -585,6 +589,40 @@ export const CubeCanvas = memo(function CubeCanvas({
         line.position.copy(rig.group.position);
         line.scale.set((rig.model.width + 0.7) * NEST, (span + 0.55) * NEST, (rig.model.depth + 0.7) * NEST);
       });
+    };
+
+    // TF163: a genuinely separate outline for whichever cube is the live
+    // feed's — its own material/mesh/color, not a variant of the existing
+    // selection outline, since a cube can be both selected AND live at
+    // once and both states need to stay visible independently. Slightly
+    // larger scale offset than the selection outline so it reads as its
+    // own distinct halo rather than overlapping exactly.
+    const liveOutlineMat = new THREE.LineBasicMaterial({
+      color: 0x39ff8a,
+      transparent: true,
+      opacity: 0.9,
+      toneMapped: false,
+      fog: false,
+    });
+    liveOutlineMat.userData.shared = true;
+    const liveOutlineLine = new THREE.LineSegments(edgeGeo, liveOutlineMat);
+    liveOutlineLine.frustumCulled = false;
+    liveOutlineLine.raycast = () => undefined;
+    liveOutlineLine.visible = false;
+    scene.add(liveOutlineLine);
+    const placeLiveOutline = (rig: Rig | undefined) => {
+      if (!rig) {
+        liveOutlineLine.visible = false;
+        return;
+      }
+      const span = ySpan(rig.model, live.current.view.explode);
+      liveOutlineLine.visible = true;
+      liveOutlineLine.position.copy(rig.group.position);
+      liveOutlineLine.scale.set(
+        (rig.model.width + 0.95) * NEST,
+        (span + 0.8) * NEST,
+        (rig.model.depth + 0.95) * NEST,
+      );
     };
 
     const composer = touchGpu
@@ -1037,6 +1075,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       const chosen = new Set(live.current.selectedIds);
       const marked = rigs.filter((rig) => chosen.has(rig.id));
       placeOutlines(marked);
+      placeLiveOutline(rigs.find((rig) => rig.id === live.current.liveCubeId));
       if (needsFrame) {
         needsFrame = false;
         if (framePick) {
@@ -1297,6 +1336,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       pickMat.dispose();
       lineMat.dispose();
       outlineMat.dispose();
+      liveOutlineMat.dispose();
       composer?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
