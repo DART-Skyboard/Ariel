@@ -450,7 +450,6 @@ export const CubeCanvas = memo(function CubeCanvas({
     const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
     const lampGain = new Float32Array(8);
     let floorShader: THREE.ShaderMaterial | null = null;
-    let gridHelper: THREE.GridHelper | null = null;
     if (tightGpu) {
       const plain = new THREE.Mesh(
         new THREE.CircleGeometry(220, 48),
@@ -459,16 +458,6 @@ export const CubeCanvas = memo(function CubeCanvas({
       plain.rotation.x = -Math.PI / 2;
       plain.position.y = -0.1;
       scene.add(plain);
-      gridHelper = new THREE.GridHelper(40, 40, 0x3ecfb2, 0x163e38);
-      gridHelper.position.y = -0.099;
-      const mats = Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material];
-      for (const mat of mats) {
-        mat.transparent = true;
-        mat.opacity = 0.55;
-        mat.fog = false;
-        mat.toneMapped = false;
-      }
-      scene.add(gridHelper);
     } else {
       floorShader = new THREE.ShaderMaterial({
         transparent: true,
@@ -521,44 +510,20 @@ export const CubeCanvas = memo(function CubeCanvas({
       floor.rotation.x = -Math.PI / 2;
       floor.position.y = -0.1;
       scene.add(floor);
-      const gridMat = new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        vertexShader: /* glsl */ `
-          varying vec3 vWorld;
-          void main() {
-            vec4 world = modelMatrix * vec4(position, 1.0);
-            vWorld = world.xyz;
-            gl_Position = projectionMatrix * viewMatrix * world;
-          }
-        `,
-        fragmentShader: /* glsl */ `
-          varying vec3 vWorld;
-          float lineGrid(vec2 p, float scale) {
-            vec2 coord = p * scale;
-            vec2 g = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
-            return 1.0 - min(min(g.x, g.y), 1.0);
-          }
-          void main() {
-            float w = fwidth(vWorld.x);
-            float minor = lineGrid(vWorld.xz, 8.0);
-            float major = lineGrid(vWorld.xz, 0.8);
-            float far = lineGrid(vWorld.xz, 0.08);
-            float minorFade = 1.0 - smoothstep(0.02, 0.22, w);
-            float majorFade = 1.0 - smoothstep(0.16, 2.4, w);
-            float farFade = 1.0 - smoothstep(1.6, 18.0, w);
-            vec3 col = vec3(0.05, 0.16, 0.14) * minor * minorFade;
-            col += vec3(0.12, 0.38, 0.32) * major * majorFade;
-            col += vec3(0.2, 0.55, 0.46) * far * farFade;
-            float alpha = clamp(minor * minorFade * 0.28 + major * majorFade * 0.45 + far * farFade * 0.4, 0.0, 0.7);
-            float disk = 1.0 - smoothstep(80.0, 210.0, length(vWorld.xz));
-            gl_FragColor = vec4(col, alpha * disk);
-          }
-        `,
-      });
-      const grid = new THREE.Mesh(new THREE.PlaneGeometry(440, 440), gridMat);
-      grid.rotation.x = -Math.PI / 2;
+    }
+    const cell = NEST;
+    const minor = new THREE.GridHelper(cell * 2400, 2400, 0x1f6f62, 0x12332e);
+    const major = new THREE.GridHelper(cell * 8000, 800, 0x3ecfb2, 0x1a4a42);
+    for (const grid of [minor, major]) {
       grid.position.y = -0.099;
+      grid.frustumCulled = false;
+      const mats = Array.isArray(grid.material) ? grid.material : [grid.material];
+      for (const mat of mats) {
+        mat.transparent = true;
+        mat.opacity = grid === major ? 0.5 : 0.28;
+        mat.fog = false;
+        mat.toneMapped = false;
+      }
       scene.add(grid);
     }
 
@@ -905,11 +870,19 @@ export const CubeCanvas = memo(function CubeCanvas({
     };
 
     const syncLayout = (next: CubeView) => {
-      const spans = rigs.map((rig) => cubeSpan(rig.model.width, rig.model.height, rig.model.depth, next.explode));
-      let fit = 8;
-      for (const span of spans) if (span > fit) fit = span;
-      const pitch = fit + 0.65;
-      const aisle = fit * 0.9;
+      let spanX = 1;
+      let spanY = 1;
+      let spanZ = 1;
+      for (const rig of rigs) {
+        spanX = Math.max(spanX, rig.model.width);
+        spanZ = Math.max(spanZ, rig.model.depth);
+        spanY = Math.max(spanY, ySpan(rig.model, next.explode));
+      }
+      const gap = 1;
+      const stackGap = 5;
+      const pitchX = spanX + gap;
+      const pitchY = spanY + gap;
+      const pitchZ = spanZ + gap;
       const fallback = { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 };
       const stackIds: number[] = [];
       const footprints = new Map<number, { nx: number; ny: number; nz: number }>();
@@ -924,14 +897,17 @@ export const CubeCanvas = memo(function CubeCanvas({
         stackIds.push(slot.stack);
       }
       stackIds.sort((a, b) => a - b);
-      const widths = stackIds.map((id) => footprints.get(id)!.nx * pitch);
+      const widths = stackIds.map((id) => {
+        const nx = footprints.get(id)!.nx;
+        return (nx - 1) * pitchX + spanX + stackGap;
+      });
       let cursor = 0;
       const originX = new Map<number, number>();
       stackIds.forEach((id, index) => {
         originX.set(id, cursor);
-        cursor += widths[index] + aisle;
+        cursor += widths[index];
       });
-      const shift = stackIds.length ? -(cursor - aisle) / 2 : 0;
+      const shift = stackIds.length ? -(cursor - stackGap) / 2 : 0;
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
@@ -941,9 +917,9 @@ export const CubeCanvas = memo(function CubeCanvas({
       rigs.forEach((rig) => {
         const slot = rig.slot ?? fallback;
         const ox = originX.get(slot.stack) ?? 0;
-        const x = (shift + ox + slot.x * pitch) * NEST;
-        const y = slot.y * pitch * NEST;
-        const z = slot.z * pitch * NEST;
+        const x = (shift + ox + slot.x * pitchX) * NEST;
+        const y = slot.y * pitchY * NEST;
+        const z = slot.z * pitchZ * NEST;
         rig.group.position.set(x, y, z);
         rig.group.scale.setScalar(NEST);
         minX = Math.min(minX, x);
@@ -1017,21 +993,21 @@ export const CubeCanvas = memo(function CubeCanvas({
         }
       });
       const finite = Number.isFinite(minX) && Number.isFinite(maxX);
-      const extentX = finite ? maxX - minX + fit * NEST : pitch * NEST;
-      const extentY = finite ? maxY - minY + fit * NEST : pitch * NEST;
-      const extentZ = finite ? maxZ - minZ + fit * NEST : pitch * NEST;
+      const extentX = finite ? maxX - minX + spanX * NEST : pitchX * NEST;
+      const extentY = finite ? maxY - minY + spanY * NEST : pitchY * NEST;
+      const extentZ = finite ? maxZ - minZ + spanZ * NEST : pitchZ * NEST;
       if (finite) {
         aimX = (minX + maxX) / 2;
         aimY = (minY + maxY) / 2;
         aimZ = (minZ + maxZ) / 2;
       }
-      const cell = pitch * NEST;
-      const cols = Math.max(1, extentX / cell);
-      const rows = Math.max(1, extentY / cell, extentZ / cell);
-      lastCell = cell;
+      const cellPitch = pitchX * NEST;
+      const cols = Math.max(1, extentX / cellPitch);
+      const rows = Math.max(1, extentY / cellPitch, extentZ / cellPitch);
+      lastCell = cellPitch;
       lastCols = cols;
       lastRows = rows;
-      const worldPitch = pitch * NEST;
+      const worldPitch = pitchX * NEST;
       const cover = Math.max(extentX, extentZ, worldPitch * 4, 0.6);
       const bay = Math.max(worldPitch * 5, Math.min(cover, worldPitch * 12), 0.45);
       const bins = new Map<string, { x: number; y: number; z: number; n: number }>();
@@ -1286,12 +1262,6 @@ export const CubeCanvas = memo(function CubeCanvas({
         rig.haloMat.color.set(hex);
       });
       outlineMat.opacity = 0.78 + Math.sin(clock * 2.4) * 0.18;
-      if (gridHelper) {
-        const dist = Math.max(0.08, camera.position.distanceTo(controls.target));
-        const cell = dist / 16;
-        gridHelper.scale.setScalar(cell);
-        gridHelper.position.set(controls.target.x, -0.099, controls.target.z);
-      }
       controls.update();
       try {
         const gl = renderer.getContext();

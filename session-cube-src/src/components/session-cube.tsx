@@ -433,7 +433,7 @@ export function SessionCube() {
   const meanPath = average(briefs.map((brief) => brief.pathLength));
   const meanEvents = average(briefs.map((brief) => brief.events));
   const perStack = [stackDims.x, stackDims.y, stackDims.z]
-    .map((value) => Math.min(200, Math.max(1, Math.round(Number(value)) || 1)))
+    .map((value) => Math.min(10000, Math.max(1, Math.round(Number(value)) || 1)))
     .reduce((product, value) => product * value, 1);
 
   const setRangeField = (key: "from" | "to", value: number) => {
@@ -574,16 +574,16 @@ export function SessionCube() {
                 <label className="flex items-center gap-1">
                   X
                   <input
-                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
                     type="number"
                     min={1}
-                    max={200}
+                    max={10000}
                     value={stackDims.x}
                     aria-label="Stack X across"
                     title="Across"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, x: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setStackDims((dims) => ({ ...dims, x: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
                     }
                   />
                   <span>across</span>
@@ -591,16 +591,16 @@ export function SessionCube() {
                 <label className="flex items-center gap-1">
                   Y
                   <input
-                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
                     type="number"
                     min={1}
-                    max={200}
+                    max={10000}
                     value={stackDims.y}
                     aria-label="Stack Y layers up"
                     title="Layers up"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, y: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setStackDims((dims) => ({ ...dims, y: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
                     }
                   />
                   <span>layers up</span>
@@ -608,16 +608,16 @@ export function SessionCube() {
                 <label className="flex items-center gap-1">
                   Z
                   <input
-                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    className="w-16 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
                     type="number"
                     min={1}
-                    max={200}
+                    max={10000}
                     value={stackDims.z}
                     aria-label="Stack Z deep"
                     title="Deep"
                     suppressHydrationWarning
                     onChange={(event) =>
-                      setStackDims((dims) => ({ ...dims, z: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                      setStackDims((dims) => ({ ...dims, z: Math.min(10000, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
                     }
                   />
                   <span>deep</span>

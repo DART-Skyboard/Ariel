@@ -66,7 +66,7 @@ export function shellCube(cube: LoadedCube): LoadedCube {
 function clampDim(value: number): number {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n)) return 1;
-  return Math.min(200, Math.max(1, n));
+  return Math.min(10000, Math.max(1, n));
 }
 
 /** Fill order is x (across), then z (deep), then y (layers up). Existing cubes are not mutated. */
