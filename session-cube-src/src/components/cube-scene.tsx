@@ -178,7 +178,6 @@ type Rig = {
   travelerMat: THREE.MeshStandardMaterial;
   haloMat: THREE.MeshBasicMaterial;
   flareMat: THREE.SpriteMaterial;
-  glow: THREE.PointLight;
   slot?: NestCube["slot"];
 };
 
@@ -295,6 +294,7 @@ function disposeTree(root: THREE.Object3D) {
 export const CubeCanvas = memo(function CubeCanvas({
   cubes,
   selectedId,
+  selectedIds,
   view,
   stepsRef,
   playingRef,
@@ -311,6 +311,7 @@ export const CubeCanvas = memo(function CubeCanvas({
 }: {
   cubes: NestCube[];
   selectedId: string;
+  selectedIds: string[];
   view: CubeView;
   stepsRef: MutableRefObject<Record<string, number>>;
   playingRef: MutableRefObject<boolean>;
@@ -329,6 +330,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   const live = useRef({
     cubes,
     selectedId,
+    selectedIds,
     view,
     onHud,
     onPick,
@@ -338,13 +340,13 @@ export const CubeCanvas = memo(function CubeCanvas({
     resetToken,
     onReady,
   });
-  live.current = { cubes, selectedId, view, onHud, onPick, onSelect, autoRotate, onInteract, resetToken, onReady };
+  live.current = { cubes, selectedId, selectedIds, view, onHud, onPick, onSelect, autoRotate, onInteract, resetToken, onReady };
 
   useEffect(() => {
     const el = host.current;
     if (!el) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", alpha: false });
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "default", alpha: false });
     renderer.setPixelRatio(1);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.02;
@@ -360,7 +362,8 @@ export const CubeCanvas = memo(function CubeCanvas({
     scene.background = new THREE.Color("#02060a");
     const fog = new THREE.FogExp2("#02060a", 0.012);
     scene.fog = fog;
-    scene.add(new THREE.AmbientLight(0x9ec4d4, 0.35));
+    scene.add(new THREE.HemisphereLight(0xd7fff6, 0x24180c, 0.85));
+    scene.add(new THREE.AmbientLight(0xb7d5dc, 0.55));
     const moon = new THREE.DirectionalLight(0xe7f4ff, 2.8);
     moon.position.set(-8, 18, 6);
     scene.add(moon);
@@ -381,49 +384,79 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     boxGeo.userData.shared = true;
-    const ghostMat = new THREE.MeshStandardMaterial({
-      color: "#12302c",
-      emissive: "#1a6b5c",
-      emissiveIntensity: 0.55,
+    const ghostMat = new THREE.MeshBasicMaterial({
+      color: "#9ef8e6",
       transparent: true,
-      opacity: 0.16,
-      roughness: 0.18,
-      metalness: 0.25,
+      opacity: 0.34,
       depthWrite: false,
       side: THREE.DoubleSide,
+      toneMapped: false,
+      fog: false,
     });
     ghostMat.userData.shared = true;
+    const edgeGeo = new THREE.EdgesGeometry(boxGeo);
+    edgeGeo.userData.shared = true;
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: "#e7fff8",
+      transparent: true,
+      opacity: 0.95,
+      toneMapped: false,
+      fog: false,
+    });
+    edgeMat.userData.shared = true;
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     pickMat.userData.shared = true;
-    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true });
+    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, toneMapped: false, fog: false });
     lineMat.userData.shared = true;
 
-    const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(22, 64),
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        vertexShader: /* glsl */ `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: /* glsl */ `
-          varying vec2 vUv;
-          void main() {
-            vec2 p = vUv * 2.0 - 1.0;
-            float disk = smoothstep(1.0, 0.15, length(p));
-            float glow = exp(-dot(p * vec2(1.05, 1.45), p * vec2(1.05, 1.45)) * 1.8);
-            vec3 col = vec3(0.012, 0.02, 0.026);
-            col += vec3(0.05, 0.22, 0.18) * glow;
-            col += vec3(0.22, 0.12, 0.04) * glow * glow;
-            gl_FragColor = vec4(col, disk * 0.95);
-          }
-        `,
-      }),
-    );
+    const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
+    const lampGain = new Float32Array(8);
+    const floorMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: {
+        lamps: { value: lampPos },
+        gain: { value: lampGain },
+      },
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vWorld;
+        void main() {
+          vUv = uv;
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vWorld = world.xyz;
+          gl_Position = projectionMatrix * viewMatrix * world;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec2 lamps[8];
+        uniform float gain[8];
+        varying vec2 vUv;
+        varying vec3 vWorld;
+        vec3 lamp(vec3 col, vec2 at, float g) {
+          vec2 d = vWorld.xz - at;
+          float e = exp(-dot(d, d) / 420.0) * g;
+          col += vec3(0.16, 0.55, 0.44) * e;
+          col += vec3(0.72, 0.40, 0.12) * e * e;
+          return col;
+        }
+        void main() {
+          vec2 p = vUv * 2.0 - 1.0;
+          float disk = smoothstep(1.0, 0.12, length(p));
+          vec3 col = vec3(0.018, 0.028, 0.034);
+          col = lamp(col, lamps[0], gain[0]);
+          col = lamp(col, lamps[1], gain[1]);
+          col = lamp(col, lamps[2], gain[2]);
+          col = lamp(col, lamps[3], gain[3]);
+          col = lamp(col, lamps[4], gain[4]);
+          col = lamp(col, lamps[5], gain[5]);
+          col = lamp(col, lamps[6], gain[6]);
+          col = lamp(col, lamps[7], gain[7]);
+          gl_FragColor = vec4(col, disk * 0.96);
+        }
+      `,
+    });
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(22, 64), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -8.55;
     scene.add(floor);
@@ -438,28 +471,60 @@ export const CubeCanvas = memo(function CubeCanvas({
     else fadeGrid(gridMat);
     scene.add(grid);
 
-    const outline = new THREE.Group();
-    const outlineFill = new THREE.Mesh(
-      boxGeo,
-      new THREE.MeshBasicMaterial({
-        color: PALETTE.brass,
-        transparent: true,
-        opacity: 0.14,
-        side: THREE.BackSide,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    );
-    const outlineEdge = new THREE.LineSegments(
-      new THREE.EdgesGeometry(boxGeo),
-      new THREE.LineBasicMaterial({ color: PALETTE.brass, toneMapped: false }),
-    );
-    outline.add(outlineFill, outlineEdge);
-    outline.visible = false;
-    scene.add(outline);
-    const outlineMat = outlineFill.material as THREE.MeshBasicMaterial;
+    const outlineFillMat = new THREE.MeshBasicMaterial({
+      color: PALETTE.brass,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.BackSide,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+    });
+    outlineFillMat.userData.shared = true;
+    const outlineEdgeMat = new THREE.MeshBasicMaterial({
+      color: PALETTE.brass,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.92,
+      toneMapped: false,
+      fog: false,
+    });
+    outlineEdgeMat.userData.shared = true;
+    let outlineFill = new THREE.InstancedMesh(boxGeo, outlineFillMat, 8);
+    let outlineEdge = new THREE.InstancedMesh(boxGeo, outlineEdgeMat, 8);
+    outlineFill.count = 0;
+    outlineEdge.count = 0;
+    outlineFill.frustumCulled = false;
+    outlineEdge.frustumCulled = false;
+    outlineFill.raycast = () => undefined;
+    outlineEdge.raycast = () => undefined;
+    scene.add(outlineFill, outlineEdge);
+    const growOutlines = (count: number) => {
+      if (outlineFill.instanceMatrix.count >= count) {
+        outlineFill.count = count;
+        outlineEdge.count = count;
+        return;
+      }
+      const next = Math.max(count, outlineFill.instanceMatrix.count * 2);
+      scene.remove(outlineFill, outlineEdge);
+      outlineFill = new THREE.InstancedMesh(boxGeo, outlineFillMat, next);
+      outlineEdge = new THREE.InstancedMesh(boxGeo, outlineEdgeMat, next);
+      outlineFill.frustumCulled = false;
+      outlineEdge.frustumCulled = false;
+      outlineFill.raycast = () => undefined;
+      outlineEdge.raycast = () => undefined;
+      outlineFill.count = count;
+      outlineEdge.count = count;
+      scene.add(outlineFill, outlineEdge);
+    };
 
-    const composer = new EffectComposer(renderer);
+    const tightGpu =
+      /Android/i.test(navigator.userAgent) ||
+      ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
+    const composer = new EffectComposer(
+      renderer,
+      new THREE.WebGLRenderTarget(1, 1, { type: tightGpu ? THREE.UnsignedByteType : THREE.HalfFloatType }),
+    );
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.42, 0.62, 0.78);
     composer.addPass(bloom);
@@ -468,6 +533,7 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     let rigs: Rig[] = [];
     let rosterKey = "";
+    let seenSel = "";
     let detailStamp = "";
     let applied = "";
     let layoutDirty = true;
@@ -562,6 +628,9 @@ export const CubeCanvas = memo(function CubeCanvas({
       const group = new THREE.Group();
       const ghost = new THREE.Mesh(boxGeo, ghostMat);
       ghost.raycast = () => undefined;
+      const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+      edges.raycast = () => undefined;
+      ghost.add(edges);
       const pick = new THREE.Mesh(boxGeo, pickMat);
       pick.userData.cubeId = cube.id;
       const count = Math.max(2, cube.model.path.length);
@@ -600,8 +669,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       const flare = new THREE.Sprite(flareMat);
       flare.scale.set(1.1, 1.1, 1);
       flare.raycast = () => undefined;
-      const glow = new THREE.PointLight(PALETTE.brass, 10, 6, 2);
-      traveler.add(glow, flare);
+      traveler.add(flare);
       group.add(ghost, pick, pathLine, traveler, halo);
       scene.add(group);
       return {
@@ -625,7 +693,6 @@ export const CubeCanvas = memo(function CubeCanvas({
         travelerMat,
         haloMat,
         flareMat,
-        glow,
         slot: cube.slot,
       };
     };
@@ -774,15 +841,50 @@ export const CubeCanvas = memo(function CubeCanvas({
       lastCell = cell;
       lastCols = cols;
       lastRows = rows;
+      const bucket = Math.max(pitch * 2.4, 18);
+      const bins = new Map<string, { x: number; z: number; n: number }>();
+      for (const rig of rigs) {
+        const gx = Math.round(rig.group.position.x / bucket);
+        const gz = Math.round(rig.group.position.z / bucket);
+        const key = `${gx}:${gz}`;
+        const bin = bins.get(key) ?? { x: 0, z: 0, n: 0 };
+        bin.x += rig.group.position.x;
+        bin.z += rig.group.position.z;
+        bin.n += 1;
+        bins.set(key, bin);
+      }
+      const ranked = [...bins.values()].sort((a, b) => b.n - a.n).slice(0, 8);
+      for (let i = 0; i < 8; i += 1) {
+        const bin = ranked[i];
+        if (!bin) {
+          lampGain[i] = 0;
+          continue;
+        }
+        lampPos[i].set(bin.x / bin.n, bin.z / bin.n);
+        lampGain[i] = 1;
+      }
+      floorMat.uniforms.gain.value = lampGain;
       const reach = cell * Math.hypot(cols, rows) * 0.62 + 10;
       floor.scale.setScalar(Math.max(1, reach / 22));
       grid.scale.setScalar(Math.max(1, reach / 18));
-      const selected = rigs.find((rig) => rig.id === live.current.selectedId) ?? rigs[0];
-      if (selected) {
-        outline.visible = true;
-        outline.position.copy(selected.group.position);
-        outline.scale.set(selected.model.width + 0.85, ySpan(selected.model, next.explode) + 0.7, selected.model.depth + 0.85);
-      } else outline.visible = false;
+      const chosen = new Set(live.current.selectedIds);
+      const marked = rigs.filter((rig) => chosen.has(rig.id));
+      growOutlines(marked.length);
+      marked.forEach((rig, index) => {
+        const span = ySpan(rig.model, next.explode);
+        dummy.position.copy(rig.group.position);
+        dummy.quaternion.identity();
+        dummy.scale.set(rig.model.width + 0.85, span + 0.7, rig.model.depth + 0.85);
+        dummy.updateMatrix();
+        outlineFill.setMatrixAt(index, dummy.matrix);
+        dummy.scale.set(rig.model.width + 1.02, span + 0.88, rig.model.depth + 1.02);
+        dummy.updateMatrix();
+        outlineEdge.setMatrixAt(index, dummy.matrix);
+      });
+      if (marked.length) {
+        outlineFill.instanceMatrix.needsUpdate = true;
+        outlineEdge.instanceMatrix.needsUpdate = true;
+      }
       if (needsFrame) {
         needsFrame = false;
         frameHome();
@@ -808,7 +910,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           }
         });
       }
-      const showAll = cubesNow.length > 0 && cubesNow.length <= 4;
+      const showAll = cubesNow.length <= 1;
       const stamp = cubesNow.map((cube) => `${cube.id}:${showAll || cube.id === live.current.selectedId ? wallCount(cube.model) : 0}`).join("|");
       if (stamp !== detailStamp) {
         for (const rig of rigs) {
@@ -830,7 +932,8 @@ export const CubeCanvas = memo(function CubeCanvas({
     const resize = () => {
       const w = el.clientWidth || 1;
       const h = el.clientHeight || 1;
-      const pr = Math.min(window.devicePixelRatio || 1, w < 700 ? 1.15 : 1.35);
+      const prCap = w * h > 1_200_000 || tightGpu ? 1 : w < 700 ? 1.15 : 1.25;
+      const pr = Math.min(window.devicePixelRatio || 1, prCap);
       camera.aspect = w / Math.max(1, h);
       camera.fov = w < 700 ? 50 : 38;
       camera.updateProjectionMatrix();
@@ -878,12 +981,10 @@ export const CubeCanvas = memo(function CubeCanvas({
       raycaster.setFromCamera(pointer, camera);
       const marker = pickMarker();
       if (marker) {
-        live.current.onSelect(marker.id);
         live.current.onPick(marker.id, marker.index);
         return;
       }
-      const id = pickCube();
-      if (id) live.current.onSelect(id);
+      live.current.onSelect(pickCube() ?? "");
     };
     const onMove = (event: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -907,6 +1008,11 @@ export const CubeCanvas = memo(function CubeCanvas({
       clock += delta;
       const current = live.current;
       reconcile();
+      const selKey = current.selectedIds.join("|");
+      if (selKey !== seenSel) {
+        seenSel = selKey;
+        layoutDirty = true;
+      }
       const key = viewKey(current.view);
       if (key !== applied || layoutDirty) {
         applied = key;
@@ -966,13 +1072,16 @@ export const CubeCanvas = memo(function CubeCanvas({
         const hex = categoryHex(shown);
         rig.travelerMat.color.set(hex);
         rig.travelerMat.emissive.set(hex);
-        rig.glow.color.set(hex);
         rig.flareMat.color.set(hex);
         rig.haloMat.color.set(hex);
       });
-      outlineMat.opacity = 0.1 + Math.sin(clock * 2.4) * 0.05;
+      outlineFillMat.opacity = 0.12 + Math.sin(clock * 2.4) * 0.05;
       controls.update();
-      composer.render(delta);
+      try {
+        composer.render(delta);
+      } catch {
+        renderer.render(scene, camera);
+      }
       if (!announced) {
         announced = true;
         renderer.domElement.style.opacity = "1";
@@ -998,7 +1107,9 @@ export const CubeCanvas = memo(function CubeCanvas({
       clearRigs();
       disposeTree(scene);
       boxGeo.dispose();
+      edgeGeo.dispose();
       ghostMat.dispose();
+      edgeMat.dispose();
       pickMat.dispose();
       lineMat.dispose();
       composer.dispose();

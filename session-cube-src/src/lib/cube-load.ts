@@ -263,6 +263,7 @@ export async function loadCubeFiles(files: File[]): Promise<{ cubes: LoadedCube[
         errors.push(`${name}: ${err instanceof Error ? err.message : "invalid cube"}`);
       }
     });
+    if (cubes.length > 0 && cubes.length % 12 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
   }
   return { cubes, errors };
 }

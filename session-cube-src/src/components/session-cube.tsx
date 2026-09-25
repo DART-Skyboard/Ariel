@@ -145,7 +145,8 @@ function Readout({ model }: { model: CubeModel }) {
 
 export function SessionCube() {
   const [cubes, setCubes] = useState<LoadedCube[]>(() => [exampleCube()]);
-  const [selectedId, setSelectedId] = useState("example");
+  const [selectedIds, setSelectedIds] = useState<string[]>(["example"]);
+  const [multi, setMulti] = useState(false);
   const [view, setView] = useState<CubeView>(INITIAL_VIEW);
   const [step, setStep] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -171,10 +172,15 @@ export function SessionCube() {
   const focusRef = useRef<FocusRequest | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cubesRef = useRef(cubes);
+  const selectedIdsRef = useRef(selectedIds);
+  const multiRef = useRef(multi);
   cubesRef.current = cubes;
+  selectedIdsRef.current = selectedIds;
+  multiRef.current = multi;
   rangeRef.current = range;
 
-  const selected = cubes.find((cube) => cube.id === selectedId) ?? cubes[0];
+  const primaryId = selectedIds[selectedIds.length - 1] ?? "";
+  const selected = cubes.find((cube) => cube.id === primaryId);
   const selectedIndex = Math.max(0, cubes.findIndex((cube) => cube.id === selected?.id));
 
   useEffect(() => {
@@ -286,21 +292,53 @@ export function SessionCube() {
 
   const selectCube = useCallback(
     (id: string, index: number | null = null) => {
-      setCubes((prev) => {
-        const full = prev.length <= 4;
-        return prev.map((cube) => (full || cube.id === id ? realizeCube(cube) : shellCube(cube)));
-      });
-      setSelectedId(id);
-      if (index == null) {
+      if (!id) {
+        selectedIdsRef.current = [];
+        setSelectedIds([]);
         playingRef.current = false;
         setPlaying(false);
-        setStep(stepsRef.current[id] ?? 0);
         return;
       }
-      focusIndex(id, index);
+      const prevIds = selectedIdsRef.current;
+      const nextIds = !multiRef.current
+        ? [id]
+        : prevIds.includes(id)
+          ? prevIds.filter((item) => item !== id)
+          : [...prevIds, id];
+      selectedIdsRef.current = nextIds;
+      setSelectedIds(nextIds);
+      const primary = nextIds[nextIds.length - 1] ?? "";
+      setCubes((prev) => {
+        if (prev.length <= 1 && primary) return prev.map((cube) => realizeCube(cube));
+        return prev.map((cube) => (primary && cube.id === primary ? realizeCube(cube) : shellCube(cube)));
+      });
+      if (!primary) {
+        playingRef.current = false;
+        setPlaying(false);
+        return;
+      }
+      if (index == null || id !== primary) {
+        playingRef.current = false;
+        setPlaying(false);
+        setStep(stepsRef.current[primary] ?? 0);
+        return;
+      }
+      focusIndex(primary, index);
     },
     [focusIndex],
   );
+
+  const selectAll = useCallback(() => {
+    const ids = cubesRef.current.map((cube) => cube.id);
+    selectedIdsRef.current = ids;
+    setSelectedIds(ids);
+    const primary = ids[ids.length - 1] ?? "";
+    setCubes((prev) => prev.map((cube) => (cube.id === primary ? realizeCube(cube) : shellCube(cube))));
+    if (!primary) return;
+    playingRef.current = false;
+    setPlaying(false);
+    setStep(stepsRef.current[primary] ?? 0);
+  }, []);
 
   const togglePlay = useCallback(() => {
     masterRef.current = false;
@@ -340,11 +378,11 @@ export function SessionCube() {
       setCubes((prev) => {
         placed = assignStacks(prev, incoming, stackDims, newStack);
         const next = [...prev, ...placed];
-        const full = next.length <= 4;
-        return next.map((cube) => (full || cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
+        return next.map((cube) => (cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
       });
     });
-    setSelectedId(first.id);
+    selectedIdsRef.current = [first.id];
+    setSelectedIds([first.id]);
     setStep(0);
     stepsRef.current[first.id] = 0;
     setFollowAll(true);
@@ -403,6 +441,7 @@ export function SessionCube() {
               <CubeCanvas
                 cubes={cubes}
                 selectedId={selected?.id ?? ""}
+                selectedIds={selectedIds}
                 view={view}
                 stepsRef={stepsRef}
                 playingRef={playingRef}
@@ -433,8 +472,8 @@ export function SessionCube() {
               <h1 className="font-display text-3xl leading-none font-extrabold text-bone sm:text-4xl">Session Cube</h1>
               <p className="mt-2 max-w-md text-sm leading-snug text-mist">
                 {selected
-                  ? `${selected.name} · ${selected.model.width}×${selected.model.height}×${selected.model.depth} · cube ${selectedIndex + 1} of ${cubes.length}`
-                  : "Import a cube export"}
+                  ? `${selected.name} · ${selected.model.width}×${selected.model.height}×${selected.model.depth} · ${selectedIds.length} selected · cube ${selectedIndex + 1} of ${cubes.length}`
+                  : "Nothing selected — tap a cube, or use All"}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -448,7 +487,8 @@ export function SessionCube() {
                   type="button"
                   onClick={() => {
                     setCubes((prev) => (prev.some((cube) => cube.id === "example") ? prev : [exampleCube(), ...prev]));
-                    setSelectedId("example");
+                    selectedIdsRef.current = ["example"];
+                    setSelectedIds(["example"]);
                     setFollowAll(true);
                   }}
                   className="rounded-full bg-panel-2 px-3 py-2 text-xs text-bone"
@@ -460,7 +500,8 @@ export function SessionCube() {
                   onClick={() => {
                     const sample = exampleCube();
                     setCubes([sample]);
-                    setSelectedId(sample.id);
+                    selectedIdsRef.current = [sample.id];
+                    setSelectedIds([sample.id]);
                     setFollowAll(true);
                     setNotice("");
                     stepsRef.current = { example: 0 };
@@ -469,6 +510,20 @@ export function SessionCube() {
                   className="rounded-full bg-panel-2 px-3 py-2 text-xs text-mist"
                 >
                   Clear
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={multi}
+                  onClick={() => setMulti((value) => !value)}
+                  className={cn("rounded-full px-3 py-2 text-xs", multi ? "bg-brass text-ink" : "bg-panel-2 text-bone")}
+                >
+                  Multiple
+                </button>
+                <button type="button" onClick={selectAll} className="rounded-full bg-panel-2 px-3 py-2 text-xs text-bone">
+                  All
+                </button>
+                <button type="button" onClick={() => selectCube("")} className="rounded-full bg-panel-2 px-3 py-2 text-xs text-mist">
+                  None
                 </button>
                 <button
                   type="button"
@@ -779,16 +834,32 @@ export function SessionCube() {
               ? ` ${perfectMatches} perfect event match${perfectMatches === 1 ? "" : "es"} with ${selectedBrief.name}.`
               : ""}
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              aria-pressed={multi}
+              onClick={() => setMulti((value) => !value)}
+              className={cn("rounded-full px-3 py-1.5 text-xs", multi ? "bg-brass text-ink" : "bg-panel-2 text-bone")}
+            >
+              Multiple
+            </button>
+            <button type="button" onClick={selectAll} className="rounded-full bg-panel-2 px-3 py-1.5 text-xs text-bone">
+              All
+            </button>
+            <button type="button" onClick={() => selectCube("")} className="rounded-full bg-panel-2 px-3 py-1.5 text-xs text-mist">
+              None
+            </button>
+          </div>
           <div className="mt-3 max-h-40 space-y-1 overflow-y-auto">
             {cubes.map((cube, index) => (
               <button
                 key={cube.id}
                 type="button"
-                aria-pressed={cube.id === selected?.id}
+                aria-pressed={selectedIds.includes(cube.id)}
                 onClick={() => selectCube(cube.id, null)}
                 className={cn(
                   "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm",
-                  cube.id === selected?.id ? "bg-panel-2 text-bone" : "text-mist",
+                  cube.id === selected?.id ? "bg-panel-2 font-medium text-bone" : selectedIds.includes(cube.id) ? "bg-panel-2 text-bone" : "text-mist",
                 )}
               >
                 <span className="truncate">
