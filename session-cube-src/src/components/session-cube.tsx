@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, List, Pause, Play, RotateCcw, X } from "lucide-react";
+import { BookOpen, Eye, Pause, Play, RotateCcw, X } from "lucide-react";
 import { sessionExport } from "@/data/session-cube";
 import {
   cubeFromRaw,
@@ -149,7 +149,6 @@ export function SessionCube() {
   const [playing, setPlaying] = useState(false);
   const [master, setMaster] = useState(false);
   const [autoRotate, setAutoRotate] = useState(true);
-  const [listOpen, setListOpen] = useState(false);
   const [readOpen, setReadOpen] = useState(false);
   const [resetToken, setResetToken] = useState(0);
   const [showScene, setShowScene] = useState(false);
@@ -159,6 +158,8 @@ export function SessionCube() {
   const [range, setRange] = useState({ from: 1, to: 1 });
   const [followAll, setFollowAll] = useState(true);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [hud, setHud] = useState({ session: true, master: true, events: true, walk: true });
+  const toggleHud = (key: keyof typeof hud) => setHud((current) => ({ ...current, [key]: !current[key] }));
   const stepsRef = useRef<Record<string, number>>({ example: 0 });
   const playingRef = useRef(false);
   const masterRef = useRef(false);
@@ -401,9 +402,14 @@ export function SessionCube() {
           ) : null}
         </div>
 
-        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col">
-          <header className="flex flex-col gap-2 p-3 sm:p-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="pointer-events-auto glass max-w-xl rounded-2xl px-4 py-3">
+        <div className="stage-hud">
+          <div className="stage-hud-body">
+            <div className="stage-hud-main">
+              {hud.session ? (
+            <div className="pointer-events-auto glass w-full max-w-xl rounded-2xl px-4 py-3">
+              <div className="flex items-start gap-2">
+                <EyeButton label="Session Cube" open onClick={() => toggleHud("session")} />
+                <div className="min-w-0">
               <p className="font-mono text-xs tracking-widest text-verdigris uppercase">This session</p>
               <h1 className="font-display text-3xl leading-none font-extrabold text-bone sm:text-4xl">Session Cube</h1>
               <p className="mt-2 max-w-md text-sm leading-snug text-mist">
@@ -463,9 +469,18 @@ export function SessionCube() {
                 />
               </div>
               {notice ? <p className="mt-2 text-xs text-mist">{notice}</p> : null}
+                </div>
+              </div>
+            </div>
+              ) : (
+                <EyeButton label="Session Cube" open={false} onClick={() => toggleHud("session")} />
+              )}
             </div>
 
-            <div className="pointer-events-auto glass flex max-w-full flex-col gap-3 rounded-2xl p-3">
+            <div className="stage-hud-side">
+              {hud.master ? (
+            <div className="pointer-events-auto glass flex w-full gap-2 rounded-2xl p-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -543,15 +558,44 @@ export function SessionCube() {
                 />
                 <span className="w-8 font-mono text-bone">{view.floor < 0 ? "All" : view.floor}</span>
               </label>
+              </div>
+              <EyeButton label="Play all" open onClick={() => toggleHud("master")} />
             </div>
-          </header>
+              ) : (
+                <EyeButton label="Play all" open={false} onClick={() => toggleHud("master")} />
+              )}
 
-          <div className="min-h-0 flex-1" />
+              {hud.events ? (
+                <section className="stage-events pointer-events-auto glass flex w-full min-h-0 flex-col overflow-hidden rounded-2xl">
+                  <header className="flex items-center gap-2 px-3 pt-3 pb-2">
+                    <h2 className="min-w-0 flex-1 font-display text-lg text-bone">Events</h2>
+                    <span className="font-mono text-xs text-mist">{model?.eventCount ?? 0}</span>
+                    <EyeButton label="Events" open onClick={() => toggleHud("events")} />
+                  </header>
+                  <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+                    {events.map((item) => (
+                      <EventRow
+                        key={item.index}
+                        node={item.node}
+                        index={item.index}
+                        active={item.index === activeEvent}
+                        onPick={(index) => selected && focusIndex(selected.id, index)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : (
+                <EyeButton label="Events" open={false} onClick={() => toggleHud("events")} />
+              )}
+            </div>
+          </div>
 
-          <div className="flex items-end justify-between gap-3 p-3 sm:p-4">
+          <div className="flex items-end">
+            {hud.walk ? (
             <div className="pointer-events-auto glass min-w-0 flex-1 rounded-2xl px-4 py-3">
-              <div className="mb-2 flex items-start justify-between gap-3">
-                <div className="min-w-0">
+              <div className="mb-2 flex items-start gap-2">
+                <EyeButton label="Walk" open onClick={() => toggleHud("walk")} />
+                <div className="min-w-0 flex-1">
                   <p className="truncate font-display text-xl leading-tight text-bone sm:text-2xl">{heading}</p>
                   <p className="font-mono text-xs text-mist">
                     {model
@@ -579,6 +623,14 @@ export function SessionCube() {
                   >
                     <RotateCcw className="size-5" />
                   </button>
+                  <button
+                    type="button"
+                    aria-label="How to read the cube"
+                    onClick={() => setReadOpen(true)}
+                    className="grid size-11 place-items-center rounded-full bg-panel-2 text-bone"
+                  >
+                    <BookOpen className="size-5" />
+                  </button>
                 </div>
               </div>
               <input
@@ -603,89 +655,27 @@ export function SessionCube() {
                 Drag to orbit · click a cube to select it · green ring enters · coral ring exits
               </p>
             </div>
-            <div className="pointer-events-auto flex flex-col gap-2 lg:hidden">
-              <button
-                type="button"
-                aria-label="Show events"
-                onClick={() => {
-                  setListOpen(true);
-                  setReadOpen(false);
-                }}
-                className="grid size-11 place-items-center rounded-full bg-panel text-bone"
-              >
-                <List className="size-5" />
-              </button>
-              <button
-                type="button"
-                aria-label="How to read the cube"
-                onClick={() => {
-                  setReadOpen(true);
-                  setListOpen(false);
-                }}
-                className="grid size-11 place-items-center rounded-full bg-panel text-bone"
-              >
-                <BookOpen className="size-5" />
-              </button>
-            </div>
+            ) : (
+              <EyeButton label="Walk" open={false} onClick={() => toggleHud("walk")} />
+            )}
           </div>
         </div>
 
-        <aside className="absolute top-36 right-4 z-20 hidden max-h-[46%] w-72 flex-col overflow-hidden lg:flex">
-          <section className="glass flex min-h-0 flex-1 flex-col rounded-2xl">
-            <header className="flex items-center justify-between px-4 pt-3 pb-2">
-              <h2 className="font-display text-lg text-bone">Events</h2>
-              <span className="font-mono text-xs text-mist">{model?.eventCount ?? 0}</span>
-            </header>
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-              {events.map((item) => (
-                <EventRow
-                  key={item.index}
-                  node={item.node}
-                  index={item.index}
-                  active={item.index === activeEvent}
-                  onPick={(index) => selected && focusIndex(selected.id, index)}
-                />
-              ))}
-            </div>
-          </section>
-        </aside>
-
-        {listOpen || readOpen ? (
-          <div className="absolute inset-x-0 bottom-0 z-30 max-h-[70%] overflow-y-auto p-3 lg:hidden">
+        {readOpen && model ? (
+          <div className="absolute inset-x-0 bottom-0 z-30 max-h-[70%] overflow-y-auto p-3">
             <section className="glass rounded-2xl p-3">
               <header className="mb-2 flex items-center justify-between">
-                <h2 className="font-display text-lg text-bone">{listOpen ? "Events" : "How to read it"}</h2>
+                <h2 className="font-display text-lg text-bone">How to read it</h2>
                 <button
                   type="button"
                   aria-label="Close panel"
-                  onClick={() => {
-                    setListOpen(false);
-                    setReadOpen(false);
-                  }}
+                  onClick={() => setReadOpen(false)}
                   className="grid size-11 place-items-center rounded-full bg-panel-2 text-bone"
                 >
                   <X className="size-5" />
                 </button>
               </header>
-              {listOpen ? (
-                <div className="max-h-[50dvh] overflow-y-auto">
-                  {events.map((item) => (
-                    <EventRow
-                      key={item.index}
-                      node={item.node}
-                      index={item.index}
-                      active={item.index === activeEvent}
-                      onPick={(index) => {
-                        if (!selected) return;
-                        focusIndex(selected.id, index);
-                        setListOpen(false);
-                      }}
-                    />
-                  ))}
-                </div>
-              ) : model ? (
-                <Readout model={model} />
-              ) : null}
+              <Readout model={model} />
             </section>
           </div>
         ) : null}
@@ -772,6 +762,21 @@ export function SessionCube() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function EyeButton({ label, open, onClick }: { label: string; open: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="stage-eye"
+      aria-expanded={open}
+      aria-label={open ? `Collapse ${label}` : `Show ${label}`}
+      title={open ? `Hide ${label}` : label}
+      onClick={onClick}
+    >
+      <Eye className="size-4" />
+    </button>
   );
 }
 
