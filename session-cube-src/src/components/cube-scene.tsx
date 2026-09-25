@@ -46,6 +46,7 @@ const FACE: Record<WallKey, { nx: number; ny: number; nz: number; axis: "x" | "y
   front: { nx: 0, ny: 0, nz: 0.5, axis: "z" },
 };
 
+const NEST = 0.01;
 const dummy = new THREE.Object3D();
 const scratchA = new THREE.Vector3();
 const scratchB = new THREE.Vector3();
@@ -214,7 +215,19 @@ function placeWalls(mesh: THREE.InstancedMesh, walls: WallInstance[], model: Cub
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function paneMaterial(base: string, rim: string, alpha: number, power: number) {
+function paneMaterial(base: string, rim: string, alpha: number, power: number, simple = false) {
+  if (simple) {
+    const color = new THREE.Color(rim);
+    return new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: Math.min(0.62, 0.16 + alpha * 3),
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      fog: false,
+    });
+  }
   return new THREE.ShaderMaterial({
     uniforms: {
       base: { value: new THREE.Color(base) },
@@ -239,7 +252,10 @@ function makeWalls(walls: WallInstance[], material: THREE.Material) {
   return mesh;
 }
 
-function glowMaterial(gain: number) {
+function glowMaterial(gain: number, simple = false) {
+  if (simple) {
+    return new THREE.MeshBasicMaterial({ color: "#d7fff4", toneMapped: false, fog: false });
+  }
   return new THREE.ShaderMaterial({
     uniforms: { gain: { value: gain } },
     vertexShader: GLOW_VERT,
@@ -394,34 +410,36 @@ export const CubeCanvas = memo(function CubeCanvas({
     warm.position.set(14, 7, 9);
     scene.add(warm);
 
-    const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 900);
-    camera.position.set(11.4, 6.2, 13.6);
+    const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 800);
+    camera.position.set(11.4 * NEST, 6.2 * NEST, 13.6 * NEST);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.autoRotateSpeed = 0.35;
-    controls.minDistance = 6;
-    controls.maxDistance = 240;
+    controls.minDistance = 0.04;
+    controls.maxDistance = 420;
     controls.maxPolarAngle = Math.PI * 0.92;
-    controls.target.set(0, -0.4, 0);
+    controls.target.set(0, -0.004, 0);
 
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     boxGeo.userData.shared = true;
     const ghostMat = new THREE.MeshStandardMaterial({
-      color: "#12302c",
-      emissive: "#1a6b5c",
-      emissiveIntensity: 0.77,
+      color: "#1c4f46",
+      emissive: "#3ecfb2",
+      emissiveIntensity: 1.35,
       transparent: true,
-      opacity: 0.224,
-      roughness: 0.18,
-      metalness: 0.25,
+      opacity: 0.38,
+      roughness: 0.22,
+      metalness: 0.12,
       depthWrite: false,
       side: THREE.DoubleSide,
+      fog: false,
+      toneMapped: false,
     });
     ghostMat.userData.shared = true;
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     pickMat.userData.shared = true;
-    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true });
+    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, fog: false, toneMapped: false });
     lineMat.userData.shared = true;
 
     const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
@@ -450,7 +468,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         varying vec3 vWorld;
         vec3 lamp(vec3 col, vec2 at, float g) {
           vec2 d = vWorld.xz - at;
-          float e = exp(-dot(d, d) / 480.0) * g;
+          float e = exp(-dot(d, d) / 2200.0) * g;
           col += vec3(0.09, 0.28, 0.22) * e;
           col += vec3(0.28, 0.14, 0.05) * e * e;
           return min(col, vec3(0.34, 0.46, 0.42));
@@ -471,28 +489,54 @@ export const CubeCanvas = memo(function CubeCanvas({
         }
       `,
     });
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(22, 64), floorMat);
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(220, 72), floorMat);
     floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -8.55;
+    floor.position.y = -0.1;
     scene.add(floor);
-    const grid = new THREE.GridHelper(28, 28, 0x1d4a44, 0x10221f);
-    grid.position.y = -8.52;
-    const gridMat = grid.material;
-    const fadeGrid = (material: THREE.Material) => {
-      material.transparent = true;
-      material.opacity = 0.45;
-    };
-    if (Array.isArray(gridMat)) gridMat.forEach(fadeGrid);
-    else fadeGrid(gridMat);
+    const gridMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      vertexShader: /* glsl */ `
+        varying vec3 vWorld;
+        void main() {
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vWorld = world.xyz;
+          gl_Position = projectionMatrix * viewMatrix * world;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        varying vec3 vWorld;
+        float lineGrid(vec2 p, float scale) {
+          vec2 coord = p * scale;
+          vec2 g = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
+          return 1.0 - min(min(g.x, g.y), 1.0);
+        }
+        void main() {
+          float w = fwidth(vWorld.x);
+          float minor = lineGrid(vWorld.xz, 8.0);
+          float major = lineGrid(vWorld.xz, 0.8);
+          float minorFade = 1.0 - smoothstep(0.012, 0.08, w);
+          float majorFade = 1.0 - smoothstep(0.08, 0.7, w);
+          vec3 col = vec3(0.05, 0.16, 0.14) * minor * minorFade;
+          col += vec3(0.16, 0.46, 0.4) * major * majorFade;
+          float alpha = clamp(minor * minorFade * 0.28 + major * majorFade * 0.5, 0.0, 0.65);
+          float disk = 1.0 - smoothstep(40.0, 200.0, length(vWorld.xz));
+          gl_FragColor = vec4(col, alpha * disk);
+        }
+      `,
+    });
+    const grid = new THREE.Mesh(new THREE.PlaneGeometry(440, 440), gridMat);
+    grid.rotation.x = -Math.PI / 2;
+    grid.position.y = -0.099;
     scene.add(grid);
 
     const tightGpu =
       /Android/i.test(navigator.userAgent) ||
       ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
     const spots: THREE.SpotLight[] = [];
-    const spotCount = tightGpu ? 1 : 8;
+    const spotCount = tightGpu ? 4 : 8;
     for (let i = 0; i < spotCount; i += 1) {
-      const spot = new THREE.SpotLight("#d7fff4", 0, 64, Math.PI / 7, 0.72, 1.6);
+      const spot = new THREE.SpotLight("#d7fff4", 0, 56, Math.PI / 3.1, 0.7, 1.35);
       const target = new THREE.Object3D();
       spot.target = target;
       spot.castShadow = false;
@@ -502,51 +546,36 @@ export const CubeCanvas = memo(function CubeCanvas({
       spots.push(spot);
     }
 
-    const outlineFillMat = new THREE.MeshBasicMaterial({
+    const edgeGeo = new THREE.EdgesGeometry(boxGeo);
+    edgeGeo.userData.shared = true;
+    const outlineMat = new THREE.LineBasicMaterial({
       color: PALETTE.brass,
       transparent: true,
-      opacity: 0.16,
-      side: THREE.BackSide,
-      depthWrite: false,
+      opacity: 0.95,
       toneMapped: false,
       fog: false,
     });
-    outlineFillMat.userData.shared = true;
-    const outlineEdgeMat = new THREE.MeshBasicMaterial({
-      color: PALETTE.brass,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.92,
-      toneMapped: false,
-      fog: false,
-    });
-    outlineEdgeMat.userData.shared = true;
-    let outlineFill = new THREE.InstancedMesh(boxGeo, outlineFillMat, 8);
-    let outlineEdge = new THREE.InstancedMesh(boxGeo, outlineEdgeMat, 8);
-    outlineFill.count = 0;
-    outlineEdge.count = 0;
-    outlineFill.frustumCulled = false;
-    outlineEdge.frustumCulled = false;
-    outlineFill.raycast = () => undefined;
-    outlineEdge.raycast = () => undefined;
-    scene.add(outlineFill, outlineEdge);
-    const growOutlines = (count: number) => {
-      if (outlineFill.instanceMatrix.count >= count) {
-        outlineFill.count = count;
-        outlineEdge.count = count;
-        return;
+    outlineMat.userData.shared = true;
+    const outlines: THREE.LineSegments[] = [];
+    const placeOutlines = (marked: Rig[]) => {
+      while (outlines.length < marked.length) {
+        const line = new THREE.LineSegments(edgeGeo, outlineMat);
+        line.frustumCulled = false;
+        line.raycast = () => undefined;
+        scene.add(line);
+        outlines.push(line);
       }
-      const next = Math.max(count, outlineFill.instanceMatrix.count * 2);
-      scene.remove(outlineFill, outlineEdge);
-      outlineFill = new THREE.InstancedMesh(boxGeo, outlineFillMat, next);
-      outlineEdge = new THREE.InstancedMesh(boxGeo, outlineEdgeMat, next);
-      outlineFill.frustumCulled = false;
-      outlineEdge.frustumCulled = false;
-      outlineFill.raycast = () => undefined;
-      outlineEdge.raycast = () => undefined;
-      outlineFill.count = count;
-      outlineEdge.count = count;
-      scene.add(outlineFill, outlineEdge);
+      outlines.forEach((line, index) => {
+        const rig = marked[index];
+        if (!rig) {
+          line.visible = false;
+          return;
+        }
+        const span = ySpan(rig.model, live.current.view.explode);
+        line.visible = true;
+        line.position.copy(rig.group.position);
+        line.scale.set((rig.model.width + 0.7) * NEST, (span + 0.55) * NEST, (rig.model.depth + 0.7) * NEST);
+      });
     };
 
     const composer = tightGpu
@@ -651,18 +680,18 @@ export const CubeCanvas = memo(function CubeCanvas({
       const model = rig.model;
       if (wallCount(model) === 0) return;
       const detail = new THREE.Group();
-      const quiet = makeWalls(model.walls.quiet, paneMaterial("#07141a", "#1a4a42", 0.02, 2.8));
-      const shell = makeWalls(model.walls.shell, paneMaterial("#0c2420", "#3ecfb2", 0.08, 2.2));
-      const tunnel = makeWalls(model.walls.corridor, paneMaterial("#123830", "#7dffe8", 0.22, 1.7));
+      const quiet = makeWalls(model.walls.quiet, paneMaterial("#07141a", "#1a4a42", 0.02, 2.8, tightGpu));
+      const shell = makeWalls(model.walls.shell, paneMaterial("#0c2420", "#3ecfb2", 0.08, 2.2, tightGpu));
+      const tunnel = makeWalls(model.walls.corridor, paneMaterial("#123830", "#7dffe8", 0.22, 1.7, tightGpu));
       detail.add(quiet, shell, tunnel);
       const segments = Math.max(1, model.path.length - 1);
-      const pathMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 8, 1, true), glowMaterial(2.15), segments);
+      const pathMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, tightGpu ? 5 : 8, 1, true), glowMaterial(2.15, tightGpu), segments);
       pathMesh.count = Math.max(0, model.path.length - 1);
       pathMesh.frustumCulled = false;
       pathMesh.raycast = () => undefined;
       detail.add(pathMesh);
       const markers = model.path.map((node, index) => ({ node, index })).filter((item) => item.node.events.length > 0);
-      const markerMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), glowMaterial(2.7), Math.max(1, markers.length));
+      const markerMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), glowMaterial(2.7, tightGpu), Math.max(1, markers.length));
       markerMesh.count = markers.length;
       markerMesh.frustumCulled = false;
       markers.forEach((item, i) => markerMesh.setColorAt(i, tint.set(categoryHex(item.node))));
@@ -688,10 +717,10 @@ export const CubeCanvas = memo(function CubeCanvas({
       const leave = new THREE.Group();
       enter.add(new THREE.Mesh(ringGeo, enterMat));
       enter.add(new THREE.Mesh(innerGeo, new THREE.MeshStandardMaterial({ color: PALETTE.bone, emissive: PALETTE.verdigris, emissiveIntensity: 2.2, transparent: true, opacity: 0.9 })));
-      enter.add(shaft(PALETTE.verdigris));
+      if (!tightGpu) enter.add(shaft(PALETTE.verdigris));
       leave.add(new THREE.Mesh(ringGeo.clone(), exitMat));
       leave.add(new THREE.Mesh(innerGeo.clone(), new THREE.MeshStandardMaterial({ color: PALETTE.bone, emissive: PALETTE.coral, emissiveIntensity: 2.2, transparent: true, opacity: 0.9 })));
-      leave.add(shaft(PALETTE.coral));
+      if (!tightGpu) leave.add(shaft(PALETTE.coral));
       for (const ring of [...enter.children, ...leave.children]) ring.raycast = () => undefined;
       detail.add(enter, leave);
       rig.group.add(detail);
@@ -787,27 +816,29 @@ export const CubeCanvas = memo(function CubeCanvas({
     };
 
     const frameHome = () => {
-      const dist = Math.max(16, lastCell * Math.max(lastCols, lastRows) * 0.9);
-      camera.position.set(aimX + dist * 0.62, aimY + Math.max(6, dist * 0.42), aimZ + dist * 0.78);
+      const dist = Math.max(16 * NEST, lastCell * Math.max(lastCols, lastRows) * 0.9);
+      camera.position.set(aimX + dist * 0.62, aimY + Math.max(6 * NEST, dist * 0.42), aimZ + dist * 0.78);
       controls.target.set(aimX, aimY, aimZ);
-      controls.maxDistance = Math.max(80, dist * 6);
-      camera.far = Math.max(900, dist * 14);
-      camera.near = Math.min(0.1, Math.max(0.05, dist / 5000));
+      controls.minDistance = 0.04;
+      controls.maxDistance = Math.max(8, dist * 40);
+      camera.far = Math.max(80, dist * 80);
+      camera.near = Math.max(0.001, dist / 120);
       camera.updateProjectionMatrix();
-      fog.density = 1.15 / Math.max(28, dist);
+      fog.density = 0.045;
     };
 
     const frameRig = (rig: Rig) => {
       const span = cubeSpan(rig.model.width, rig.model.height, rig.model.depth, live.current.view.explode);
-      const dist = Math.max(16, span * 0.95);
+      const dist = Math.max(16, span * 0.95) * NEST;
       const p = rig.group.position;
-      camera.position.set(p.x + dist * 0.62, p.y + Math.max(6, dist * 0.42), p.z + dist * 0.78);
+      camera.position.set(p.x + dist * 0.62, p.y + Math.max(6 * NEST, dist * 0.42), p.z + dist * 0.78);
       controls.target.set(p.x, p.y, p.z);
-      controls.maxDistance = Math.max(80, dist * 8);
-      camera.far = Math.max(900, dist * 20);
-      camera.near = 0.1;
+      controls.minDistance = 0.04;
+      controls.maxDistance = Math.max(8, dist * 48);
+      camera.far = Math.max(80, dist * 90);
+      camera.near = Math.max(0.001, dist / 120);
       camera.updateProjectionMatrix();
-      fog.density = 1.15 / Math.max(28, dist);
+      fog.density = 0.045;
     };
 
     const syncLayout = (next: CubeView) => {
@@ -847,10 +878,11 @@ export const CubeCanvas = memo(function CubeCanvas({
       rigs.forEach((rig) => {
         const slot = rig.slot ?? fallback;
         const ox = originX.get(slot.stack) ?? 0;
-        const x = shift + ox + slot.x * pitch;
-        const y = slot.y * pitch;
-        const z = slot.z * pitch;
+        const x = (shift + ox + slot.x * pitch) * NEST;
+        const y = slot.y * pitch * NEST;
+        const z = slot.z * pitch * NEST;
         rig.group.position.set(x, y, z);
+        rig.group.scale.setScalar(NEST);
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
         minY = Math.min(minY, y);
@@ -868,7 +900,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           if (i >= pathMax) return;
           const [x, y, z] = gridToWorld(node.x, node.y, node.z, next.explode, rig.model);
           attr.setXYZ(i, x, y, z);
-          tint.copy(turnA).lerp(turnB, total <= 1 ? 0 : i / (total - 1));
+          tint.copy(turnA).lerp(turnB, total <= 1 ? 0 : i / (total - 1)).multiplyScalar(1.7);
           colors.setXYZ(i, tint.r, tint.g, tint.b);
         });
         attr.needsUpdate = true;
@@ -922,37 +954,38 @@ export const CubeCanvas = memo(function CubeCanvas({
         }
       });
       const finite = Number.isFinite(minX) && Number.isFinite(maxX);
-      const extentX = finite ? maxX - minX + fit : pitch;
-      const extentY = finite ? maxY - minY + fit : pitch;
-      const extentZ = finite ? maxZ - minZ + fit : pitch;
+      const extentX = finite ? maxX - minX + fit * NEST : pitch * NEST;
+      const extentY = finite ? maxY - minY + fit * NEST : pitch * NEST;
+      const extentZ = finite ? maxZ - minZ + fit * NEST : pitch * NEST;
       if (finite) {
         aimX = (minX + maxX) / 2;
         aimY = (minY + maxY) / 2;
         aimZ = (minZ + maxZ) / 2;
       }
-      const cell = pitch;
+      const cell = pitch * NEST;
       const cols = Math.max(1, extentX / cell);
       const rows = Math.max(1, extentY / cell, extentZ / cell);
       lastCell = cell;
       lastCols = cols;
       lastRows = rows;
-      const bay = 20;
-      const bins = new Map<string, { x: number; z: number; n: number }>();
+      const bay = 8;
+      const bins = new Map<string, { x: number; y: number; z: number; n: number }>();
       for (const rig of rigs) {
-        const gx = Math.round(rig.group.position.x / bay);
-        const gz = Math.round(rig.group.position.z / bay);
-        const key = `${gx}:${gz}`;
-        const bin = bins.get(key) ?? { x: gx * bay, z: gz * bay, n: 0 };
+        const p = rig.group.position;
+        const gx = Math.round(p.x / bay);
+        const gy = Math.round(p.y / bay);
+        const gz = Math.round(p.z / bay);
+        const key = `${gx}:${gy}:${gz}`;
+        const bin = bins.get(key) ?? { x: gx * bay, y: gy * bay, z: gz * bay, n: 0 };
         bin.n += 1;
         bins.set(key, bin);
       }
       const ranked = [...bins.values()]
-        .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z - (b.x * b.x + b.z * b.z))
-        .slice(0, 8);
+        .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z + a.y * a.y - (b.x * b.x + b.z * b.z + b.y * b.y))
+        .slice(0, spots.length);
       const master = Math.min(1, Math.max(0, next.lights || 0));
       const share = ranked.length > 1 ? 1 / Math.sqrt(ranked.length) : 1;
-      const power = master * 6.5 * share;
-      const focus = rigs.find((rig) => rig.id === live.current.selectedId) ?? rigs[0];
+      const power = master * 5.5 * share;
       for (let i = 0; i < 8; i += 1) {
         const bin = ranked[i];
         if (!bin || master <= 0.001) {
@@ -960,41 +993,25 @@ export const CubeCanvas = memo(function CubeCanvas({
           continue;
         }
         lampPos[i].set(bin.x, bin.z);
-        lampGain[i] = master * share * 0.85;
+        lampGain[i] = master * share * 0.8;
       }
       spots.forEach((spot, index) => {
-        const bin = tightGpu && focus ? { x: focus.group.position.x, z: focus.group.position.z } : ranked[index];
-        spot.visible = true;
+        const bin = ranked[index];
         if (!bin || master <= 0.001) {
           spot.intensity = 0;
           return;
         }
+        const len = Math.hypot(bin.x, bin.z);
+        const ox = len < 0.05 ? bay * 0.7 : (bin.x / len) * bay * 0.7;
+        const oz = len < 0.05 ? 0 : (bin.z / len) * bay * 0.7;
         spot.intensity = power;
-        spot.position.set(bin.x, 24, bin.z);
-        spot.target.position.set(bin.x, -8.5, bin.z);
+        spot.position.set(bin.x + ox, bin.y + bay * 0.65, bin.z + oz);
+        spot.target.position.set(bin.x, bin.y, bin.z);
       });
       floorMat.uniforms.gain.value = lampGain;
-      const reach = cell * Math.hypot(cols, rows) * 0.62 + 10;
-      floor.scale.setScalar(Math.max(1, reach / 22));
-      grid.scale.setScalar(Math.max(1, reach / 18));
       const chosen = new Set(live.current.selectedIds);
       const marked = rigs.filter((rig) => chosen.has(rig.id));
-      growOutlines(marked.length);
-      marked.forEach((rig, index) => {
-        const span = ySpan(rig.model, next.explode);
-        dummy.position.copy(rig.group.position);
-        dummy.quaternion.identity();
-        dummy.scale.set(rig.model.width + 0.85, span + 0.7, rig.model.depth + 0.85);
-        dummy.updateMatrix();
-        outlineFill.setMatrixAt(index, dummy.matrix);
-        dummy.scale.set(rig.model.width + 1.02, span + 0.88, rig.model.depth + 1.02);
-        dummy.updateMatrix();
-        outlineEdge.setMatrixAt(index, dummy.matrix);
-      });
-      if (marked.length) {
-        outlineFill.instanceMatrix.needsUpdate = true;
-        outlineEdge.instanceMatrix.needsUpdate = true;
-      }
+      placeOutlines(marked);
       if (needsFrame) {
         needsFrame = false;
         if (framePick) {
@@ -1029,7 +1046,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         });
       }
       if (buildQueue.length) {
-        const batch = buildQueue.splice(0, 3);
+        const batch = buildQueue.splice(0, tightGpu ? 1 : 3);
         for (const cube of batch) rigs.push(buildRig(cube));
         layoutDirty = true;
         return;
@@ -1190,7 +1207,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         rig.flareMat.color.set(hex);
         rig.haloMat.color.set(hex);
       });
-      outlineFillMat.opacity = 0.12 + Math.sin(clock * 2.4) * 0.05;
+      outlineMat.opacity = 0.72 + Math.sin(clock * 2.4) * 0.2;
       controls.update();
       try {
         const gl = renderer.getContext();
@@ -1230,9 +1247,11 @@ export const CubeCanvas = memo(function CubeCanvas({
       clearRigs();
       disposeTree(scene);
       boxGeo.dispose();
+      edgeGeo.dispose();
       ghostMat.dispose();
       pickMat.dispose();
       lineMat.dispose();
+      outlineMat.dispose();
       composer?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
