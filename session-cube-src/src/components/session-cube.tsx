@@ -247,7 +247,7 @@ export function SessionCube() {
         if (!exportRes.ok) throw new Error("no export yet");
         const raw = await exportRes.json();
         if (cancelled) return;
-        const liveCube = cubeFromRaw(raw, "Live Feed", false, `live-${config.mazeId}`);
+        const liveCube = cubeFromRaw(raw, "Live Feed", true, `live-${config.mazeId}`);
         setCubes((prev) => {
           const withoutOldLive = prev.filter((cube) => !cube.id.startsWith("live-"));
           return [...withoutOldLive, liveCube];
