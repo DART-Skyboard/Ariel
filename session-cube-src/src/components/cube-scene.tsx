@@ -29,7 +29,12 @@ export type CubeView = {
   path: boolean;
 };
 
-export type NestCube = { id: string; name: string; model: CubeModel };
+export type NestCube = {
+  id: string;
+  name: string;
+  model: CubeModel;
+  slot?: { stack: number; x: number; y: number; z: number; nx: number; ny: number; nz: number };
+};
 
 const FACE: Record<WallKey, { nx: number; ny: number; nz: number; axis: "x" | "y" | "z" }> = {
   left: { nx: -0.5, ny: 0, nz: 0, axis: "x" },
@@ -174,6 +179,7 @@ type Rig = {
   haloMat: THREE.MeshBasicMaterial;
   flareMat: THREE.SpriteMaterial;
   glow: THREE.PointLight;
+  slot?: NestCube["slot"];
 };
 
 function wallCount(model: CubeModel): number {
@@ -617,6 +623,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         haloMat,
         flareMat,
         glow,
+        slot: cube.slot,
       };
     };
 
@@ -638,17 +645,54 @@ export const CubeCanvas = memo(function CubeCanvas({
     };
 
     const syncLayout = (next: CubeView) => {
-      const n = rigs.length;
-      const cols = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, n))));
-      const rows = Math.max(1, Math.ceil(n / cols));
-      const cell = Math.max(8, ...rigs.map((rig) => cubeSpan(rig.model.width, rig.model.height, rig.model.depth, next.explode))) + 3.6;
-      lastCell = cell;
-      lastCols = cols;
-      lastRows = rows;
-      rigs.forEach((rig, index) => {
-        const col = index % cols;
-        const row = Math.floor(index / cols);
-        rig.group.position.set((col - (cols - 1) / 2) * cell, 0, (row - (rows - 1) / 2) * cell);
+      const spans = rigs.map((rig) => cubeSpan(rig.model.width, rig.model.height, rig.model.depth, next.explode));
+      const fit = spans.length ? Math.max(...spans) : 8;
+      const pitch = fit + 0.65;
+      const aisle = fit * 0.9;
+      const fallback = { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 };
+      const stackIds: number[] = [];
+      const footprints = new Map<number, { nx: number; ny: number; nz: number }>();
+      for (const rig of rigs) {
+        const slot = rig.slot ?? fallback;
+        if (footprints.has(slot.stack)) continue;
+        footprints.set(slot.stack, {
+          nx: Math.max(1, slot.nx || 1),
+          ny: Math.max(1, slot.ny || 1),
+          nz: Math.max(1, slot.nz || 1),
+        });
+        stackIds.push(slot.stack);
+      }
+      stackIds.sort((a, b) => a - b);
+      const widths = stackIds.map((id) => footprints.get(id)!.nx * pitch);
+      const totalWidth = widths.reduce((sum, width) => sum + width, 0) + aisle * Math.max(0, stackIds.length - 1);
+      let cursor = -totalWidth / 2;
+      const originX = new Map<number, number>();
+      stackIds.forEach((id, index) => {
+        const width = widths[index];
+        originX.set(id, cursor + width / 2);
+        cursor += width + aisle;
+      });
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      rigs.forEach((rig) => {
+        const slot = rig.slot ?? fallback;
+        const nx = Math.max(1, slot.nx || 1);
+        const nz = Math.max(1, slot.nz || 1);
+        const ox = originX.get(slot.stack) ?? 0;
+        const x = ox + (slot.x - (nx - 1) / 2) * pitch;
+        const y = slot.y * pitch;
+        const z = (slot.z - (nz - 1) / 2) * pitch;
+        rig.group.position.set(x, y, z);
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
         const span = ySpan(rig.model, next.explode);
         rig.ghost.scale.set(rig.model.width, span, rig.model.depth);
         rig.pick.scale.copy(rig.ghost.scale);
@@ -711,6 +755,26 @@ export const CubeCanvas = memo(function CubeCanvas({
           rig.leave.position.set(lx, ly, lz + 0.78);
         }
       });
+      for (const id of stackIds) {
+        const fp = footprints.get(id)!;
+        const ox = originX.get(id) ?? 0;
+        minX = Math.min(minX, ox - (fp.nx * pitch) / 2);
+        maxX = Math.max(maxX, ox + (fp.nx * pitch) / 2);
+        minZ = Math.min(minZ, -(fp.nz * pitch) / 2);
+        maxZ = Math.max(maxZ, (fp.nz * pitch) / 2);
+        minY = Math.min(minY, 0);
+        maxY = Math.max(maxY, fp.ny * pitch);
+      }
+      const finite = stackIds.length > 0 && Number.isFinite(minX);
+      const extentX = finite ? maxX - minX : pitch;
+      const extentY = finite ? maxY - minY : pitch;
+      const extentZ = finite ? maxZ - minZ : pitch;
+      const cell = pitch;
+      const cols = Math.max(1, extentX / cell);
+      const rows = Math.max(1, extentY / cell, extentZ / cell);
+      lastCell = cell;
+      lastCols = cols;
+      lastRows = rows;
       const reach = cell * Math.hypot(cols, rows) * 0.62 + 10;
       floor.scale.setScalar(Math.max(1, reach / 22));
       grid.scale.setScalar(Math.max(1, reach / 18));
@@ -739,7 +803,10 @@ export const CubeCanvas = memo(function CubeCanvas({
       } else {
         cubesNow.forEach((cube) => {
           const rig = rigs.find((item) => item.id === cube.id);
-          if (rig) rig.model = cube.model;
+          if (rig) {
+            rig.model = cube.model;
+            rig.slot = cube.slot;
+          }
         });
       }
       const showAll = cubesNow.length > 0 && cubesNow.length <= 4;

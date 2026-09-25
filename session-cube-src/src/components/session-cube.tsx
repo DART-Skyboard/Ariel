@@ -1,7 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { BookOpen, Eye, Pause, Play, RotateCcw, X } from "lucide-react";
 import { sessionExport } from "@/data/session-cube";
 import {
+  assignStacks,
   cubeFromRaw,
   loadCubeFiles,
   realizeCube,
@@ -155,6 +157,8 @@ export function SessionCube() {
   const [sceneLive, setSceneLive] = useState(false);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [stackDims, setStackDims] = useState({ x: 10, y: 10, z: 10 });
+  const [newStack, setNewStack] = useState(true);
   const [range, setRange] = useState({ from: 1, to: 1 });
   const [followAll, setFollowAll] = useState(true);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -331,10 +335,14 @@ export function SessionCube() {
       return;
     }
     const first = incoming[0];
-    setCubes((prev) => {
-      const next = [...prev, ...incoming];
-      const full = next.length <= 4;
-      return next.map((cube) => (full || cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
+    let placed = incoming;
+    flushSync(() => {
+      setCubes((prev) => {
+        placed = assignStacks(prev, incoming, stackDims, newStack);
+        const next = [...prev, ...placed];
+        const full = next.length <= 4;
+        return next.map((cube) => (full || cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
+      });
     });
     setSelectedId(first.id);
     setStep(0);
@@ -342,7 +350,15 @@ export function SessionCube() {
     setFollowAll(true);
     setBusy(false);
     const extra = errors.length ? ` ${errors.length} skipped.` : "";
-    setNotice(`Added ${incoming.length} cube${incoming.length === 1 ? "" : "s"}.${extra}`);
+    const dimsByStack = new Map<number, string>();
+    for (const cube of placed) dimsByStack.set(cube.slot.stack, `${cube.slot.nx}×${cube.slot.ny}×${cube.slot.nz}`);
+    const dimKinds = [...new Set(dimsByStack.values())];
+    const stackCount = dimsByStack.size;
+    const stacked =
+      dimKinds.length === 1
+        ? `${stackCount} ${stackCount === 1 ? "stack" : "stacks"} of ${dimKinds[0]}`
+        : `${stackCount} stacks`;
+    setNotice(`Added ${incoming.length} ${incoming.length === 1 ? "cube" : "cubes"} in ${stacked}.${extra}`);
   };
 
   const patch = (partial: Partial<CubeView>) => setView((current) => ({ ...current, ...partial }));
@@ -352,6 +368,9 @@ export function SessionCube() {
   const heading = node?.events[0] ? eventTitle(node.events[0]) : "Open corridor";
   const meanPath = average(briefs.map((brief) => brief.pathLength));
   const meanEvents = average(briefs.map((brief) => brief.events));
+  const perStack = [stackDims.x, stackDims.y, stackDims.z]
+    .map((value) => Math.min(200, Math.max(1, Math.round(Number(value)) || 1)))
+    .reduce((product, value) => product * value, 1);
 
   const setRangeField = (key: "from" | "to", value: number) => {
     setFollowAll(false);
@@ -467,6 +486,71 @@ export function SessionCube() {
                   suppressHydrationWarning
                   onChange={(event) => void onFiles(event.target.files)}
                 />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-none text-mist">
+                <label className="flex items-center gap-1">
+                  X
+                  <input
+                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={stackDims.x}
+                    aria-label="Stack X across"
+                    title="Across"
+                    suppressHydrationWarning
+                    onChange={(event) =>
+                      setStackDims((dims) => ({ ...dims, x: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                    }
+                  />
+                  <span>across</span>
+                </label>
+                <label className="flex items-center gap-1">
+                  Y
+                  <input
+                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={stackDims.y}
+                    aria-label="Stack Y layers up"
+                    title="Layers up"
+                    suppressHydrationWarning
+                    onChange={(event) =>
+                      setStackDims((dims) => ({ ...dims, y: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                    }
+                  />
+                  <span>layers up</span>
+                </label>
+                <label className="flex items-center gap-1">
+                  Z
+                  <input
+                    className="w-11 rounded bg-panel-2 px-1 py-0.5 font-mono text-bone"
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={stackDims.z}
+                    aria-label="Stack Z deep"
+                    title="Deep"
+                    suppressHydrationWarning
+                    onChange={(event) =>
+                      setStackDims((dims) => ({ ...dims, z: Math.min(200, Math.max(1, Math.round(Number(event.target.value)) || 1)) }))
+                    }
+                  />
+                  <span>deep</span>
+                </label>
+                <span className="font-mono text-bone">{perStack} per stack</span>
+                <label className="flex items-center gap-1" title="Off keeps filling the last stack">
+                  <input
+                    type="checkbox"
+                    className="size-3"
+                    checked={newStack}
+                    aria-label="Start a new stack"
+                    suppressHydrationWarning
+                    onChange={(event) => setNewStack(event.target.checked)}
+                  />
+                  Start a new stack
+                </label>
               </div>
               {notice ? <p className="mt-2 text-xs text-mist">{notice}</p> : null}
                 </div>

@@ -1,12 +1,23 @@
 import { gunzipSync, unzipSync, Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import { buildModel, type CubeModel, type RawExport } from "@/lib/cube-model";
 
+export type CubeSlot = {
+  stack: number;
+  x: number;
+  y: number;
+  z: number;
+  nx: number;
+  ny: number;
+  nz: number;
+};
+
 export type LoadedCube = {
   id: string;
   name: string;
   raw: RawExport;
   model: CubeModel;
   realized: boolean;
+  slot: CubeSlot;
 };
 
 let seq = 0;
@@ -38,6 +49,7 @@ export function cubeFromRaw(raw: RawExport, name: string, withWalls: boolean, id
     raw,
     model: buildModel(raw, withWalls),
     realized: withWalls,
+    slot: { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 },
   };
 }
 
@@ -49,6 +61,81 @@ export function realizeCube(cube: LoadedCube): LoadedCube {
 export function shellCube(cube: LoadedCube): LoadedCube {
   if (!cube.realized) return cube;
   return { ...cube, realized: false, model: buildModel(cube.raw, false) };
+}
+
+function clampDim(value: number): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(200, Math.max(1, n));
+}
+
+/** Fill order is x (across), then z (deep), then y (layers up). Existing cubes are not mutated. */
+export function assignStacks(
+  existing: LoadedCube[],
+  incoming: LoadedCube[],
+  dims: { x: number; y: number; z: number },
+  startNew: boolean,
+): LoadedCube[] {
+  const nxReq = clampDim(dims.x);
+  const nyReq = clampDim(dims.y);
+  const nzReq = clampDim(dims.z);
+  let maxStack = -1;
+  for (const cube of existing) maxStack = Math.max(maxStack, cube.slot.stack);
+
+  let stack: number;
+  let nx: number;
+  let ny: number;
+  let nz: number;
+  let next: number;
+
+  if (existing.length === 0) {
+    stack = 0;
+    nx = nxReq;
+    ny = nyReq;
+    nz = nzReq;
+    next = 0;
+    maxStack = 0;
+  } else if (startNew) {
+    stack = maxStack + 1;
+    nx = nxReq;
+    ny = nyReq;
+    nz = nzReq;
+    next = 0;
+    maxStack = stack;
+  } else {
+    const last = existing[existing.length - 1].slot;
+    nx = clampDim(last.nx);
+    ny = clampDim(last.ny);
+    nz = clampDim(last.nz);
+    stack = last.stack;
+    next = last.x + nx * (last.z + nz * last.y) + 1;
+    if (next >= nx * ny * nz) {
+      stack = maxStack + 1;
+      nx = nxReq;
+      ny = nyReq;
+      nz = nzReq;
+      next = 0;
+      maxStack = stack;
+    }
+  }
+
+  return incoming.map((cube) => {
+    if (next >= nx * ny * nz) {
+      stack = maxStack + 1;
+      nx = nxReq;
+      ny = nyReq;
+      nz = nzReq;
+      next = 0;
+      maxStack = stack;
+    }
+    const layer = nx * nz;
+    const y = Math.floor(next / layer);
+    const rem = next - y * layer;
+    const z = Math.floor(rem / nx);
+    const x = rem - z * nx;
+    next += 1;
+    return { ...cube, slot: { stack, x, y, z, nx, ny, nz } };
+  });
 }
 
 function baseName(path: string): string {
