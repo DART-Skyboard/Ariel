@@ -167,12 +167,18 @@ export function SessionCube() {
   const [hud, setHud] = useState({ session: true, master: true, events: true, walk: true });
   const [gpuEpoch, setGpuEpoch] = useState(0);
   const gpuStamp = useRef(0);
+  const remounting = useRef(false);
   const onGpuLost = useCallback(() => {
+    if (remounting.current) return;
     const now = Date.now();
-    if (now - gpuStamp.current < 2500) return;
+    if (now - gpuStamp.current < 900) return;
     gpuStamp.current = now;
+    remounting.current = true;
     setSceneLive(false);
     setGpuEpoch((n) => n + 1);
+    window.setTimeout(() => {
+      remounting.current = false;
+    }, 1200);
   }, []);
   const toggleHud = (key: keyof typeof hud) => setHud((current) => ({ ...current, [key]: !current[key] }));
   const stepsRef = useRef<Record<string, number>>({ example: 0 });
@@ -398,6 +404,15 @@ export function SessionCube() {
     setFollowAll(true);
     setAutoRotate(false);
     setBusy(false);
+    if (/Android/i.test(navigator.userAgent)) {
+      remounting.current = true;
+      gpuStamp.current = Date.now();
+      setSceneLive(false);
+      window.setTimeout(() => setGpuEpoch((n) => n + 1), 120);
+      window.setTimeout(() => {
+        remounting.current = false;
+      }, 1600);
+    }
     const extra = errors.length ? ` ${errors.length} skipped.` : "";
     const dimsByStack = new Map<number, string>();
     for (const cube of placed) dimsByStack.set(cube.slot.stack, `${cube.slot.nx}×${cube.slot.ny}×${cube.slot.nz}`);

@@ -379,9 +379,12 @@ export const CubeCanvas = memo(function CubeCanvas({
     const el = host.current;
     if (!el) return;
 
+    const tightGpu =
+      /Android/i.test(navigator.userAgent) ||
+      ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
     const renderer = new THREE.WebGLRenderer({
       antialias: false,
-      powerPreference: "high-performance",
+      powerPreference: tightGpu ? "default" : "high-performance",
       alpha: false,
       stencil: false,
       failIfMajorPerformanceCaveat: false,
@@ -390,6 +393,8 @@ export const CubeCanvas = memo(function CubeCanvas({
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.02;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor("#02060a", 1);
+    if (tightGpu) renderer.debug.checkShaderErrors = false;
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
@@ -410,6 +415,10 @@ export const CubeCanvas = memo(function CubeCanvas({
     warm.position.set(14, 7, 9);
     scene.add(warm);
 
+    const sun = new THREE.DirectionalLight(0xfff1d6, 0);
+    sun.position.set(8, 22, 6);
+    scene.add(sun);
+
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 800);
     camera.position.set(11.4 * NEST, 6.2 * NEST, 13.6 * NEST);
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -423,14 +432,10 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     boxGeo.userData.shared = true;
-    const ghostMat = new THREE.MeshStandardMaterial({
-      color: "#1c4f46",
-      emissive: "#3ecfb2",
-      emissiveIntensity: 1.35,
+    const ghostMat = new THREE.MeshBasicMaterial({
+      color: "#8ef3e0",
       transparent: true,
-      opacity: 0.38,
-      roughness: 0.22,
-      metalness: 0.12,
+      opacity: 0.32,
       depthWrite: false,
       side: THREE.DoubleSide,
       fog: false,
@@ -444,109 +449,155 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
     const lampGain = new Float32Array(8);
-    const floorMat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      uniforms: {
-        lamps: { value: lampPos },
-        gain: { value: lampGain },
-      },
-      vertexShader: /* glsl */ `
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        void main() {
-          vUv = uv;
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          gl_Position = projectionMatrix * viewMatrix * world;
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        uniform vec2 lamps[8];
-        uniform float gain[8];
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        vec3 lamp(vec3 col, vec2 at, float g) {
-          vec2 d = vWorld.xz - at;
-          float e = exp(-dot(d, d) / 2200.0) * g;
-          col += vec3(0.09, 0.28, 0.22) * e;
-          col += vec3(0.28, 0.14, 0.05) * e * e;
-          return min(col, vec3(0.34, 0.46, 0.42));
-        }
-        void main() {
-          vec2 p = vUv * 2.0 - 1.0;
-          float disk = smoothstep(1.0, 0.12, length(p));
-          vec3 col = vec3(0.018, 0.028, 0.034);
-          col = lamp(col, lamps[0], gain[0]);
-          col = lamp(col, lamps[1], gain[1]);
-          col = lamp(col, lamps[2], gain[2]);
-          col = lamp(col, lamps[3], gain[3]);
-          col = lamp(col, lamps[4], gain[4]);
-          col = lamp(col, lamps[5], gain[5]);
-          col = lamp(col, lamps[6], gain[6]);
-          col = lamp(col, lamps[7], gain[7]);
-          gl_FragColor = vec4(col, disk * 0.96);
-        }
-      `,
-    });
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(220, 72), floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.1;
-    scene.add(floor);
-    const gridMat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      vertexShader: /* glsl */ `
-        varying vec3 vWorld;
-        void main() {
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          gl_Position = projectionMatrix * viewMatrix * world;
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        varying vec3 vWorld;
-        float lineGrid(vec2 p, float scale) {
-          vec2 coord = p * scale;
-          vec2 g = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
-          return 1.0 - min(min(g.x, g.y), 1.0);
-        }
-        void main() {
-          float w = fwidth(vWorld.x);
-          float minor = lineGrid(vWorld.xz, 8.0);
-          float major = lineGrid(vWorld.xz, 0.8);
-          float minorFade = 1.0 - smoothstep(0.012, 0.08, w);
-          float majorFade = 1.0 - smoothstep(0.08, 0.7, w);
-          vec3 col = vec3(0.05, 0.16, 0.14) * minor * minorFade;
-          col += vec3(0.16, 0.46, 0.4) * major * majorFade;
-          float alpha = clamp(minor * minorFade * 0.28 + major * majorFade * 0.5, 0.0, 0.65);
-          float disk = 1.0 - smoothstep(40.0, 200.0, length(vWorld.xz));
-          gl_FragColor = vec4(col, alpha * disk);
-        }
-      `,
-    });
-    const grid = new THREE.Mesh(new THREE.PlaneGeometry(440, 440), gridMat);
-    grid.rotation.x = -Math.PI / 2;
-    grid.position.y = -0.099;
-    scene.add(grid);
+    let floorShader: THREE.ShaderMaterial | null = null;
+    let gridHelper: THREE.GridHelper | null = null;
+    if (tightGpu) {
+      const plain = new THREE.Mesh(
+        new THREE.CircleGeometry(220, 48),
+        new THREE.MeshBasicMaterial({ color: "#07110f", transparent: true, opacity: 0.94, depthWrite: false }),
+      );
+      plain.rotation.x = -Math.PI / 2;
+      plain.position.y = -0.1;
+      scene.add(plain);
+      gridHelper = new THREE.GridHelper(40, 40, 0x3ecfb2, 0x163e38);
+      gridHelper.position.y = -0.099;
+      const mats = Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material];
+      for (const mat of mats) {
+        mat.transparent = true;
+        mat.opacity = 0.55;
+        mat.fog = false;
+        mat.toneMapped = false;
+      }
+      scene.add(gridHelper);
+    } else {
+      floorShader = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        uniforms: {
+          lamps: { value: lampPos },
+          gain: { value: lampGain },
+          reach: { value: 6 },
+        },
+        vertexShader: /* glsl */ `
+          varying vec2 vUv;
+          varying vec3 vWorld;
+          void main() {
+            vUv = uv;
+            vec4 world = modelMatrix * vec4(position, 1.0);
+            vWorld = world.xyz;
+            gl_Position = projectionMatrix * viewMatrix * world;
+          }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform vec2 lamps[8];
+          uniform float gain[8];
+          uniform float reach;
+          varying vec2 vUv;
+          varying vec3 vWorld;
+          vec3 lamp(vec3 col, vec2 at, float g) {
+            vec2 d = vWorld.xz - at;
+            float e = exp(-dot(d, d) / max(reach * reach, 0.04)) * g;
+            col += vec3(0.09, 0.28, 0.22) * e;
+            col += vec3(0.28, 0.14, 0.05) * e * e;
+            return min(col, vec3(0.34, 0.46, 0.42));
+          }
+          void main() {
+            vec2 p = vUv * 2.0 - 1.0;
+            float disk = smoothstep(1.0, 0.12, length(p));
+            vec3 col = vec3(0.018, 0.028, 0.034);
+            col = lamp(col, lamps[0], gain[0]);
+            col = lamp(col, lamps[1], gain[1]);
+            col = lamp(col, lamps[2], gain[2]);
+            col = lamp(col, lamps[3], gain[3]);
+            col = lamp(col, lamps[4], gain[4]);
+            col = lamp(col, lamps[5], gain[5]);
+            col = lamp(col, lamps[6], gain[6]);
+            col = lamp(col, lamps[7], gain[7]);
+            gl_FragColor = vec4(col, disk * 0.96);
+          }
+        `,
+      });
+      const floor = new THREE.Mesh(new THREE.CircleGeometry(220, 72), floorShader);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.1;
+      scene.add(floor);
+      const gridMat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        vertexShader: /* glsl */ `
+          varying vec3 vWorld;
+          void main() {
+            vec4 world = modelMatrix * vec4(position, 1.0);
+            vWorld = world.xyz;
+            gl_Position = projectionMatrix * viewMatrix * world;
+          }
+        `,
+        fragmentShader: /* glsl */ `
+          varying vec3 vWorld;
+          float lineGrid(vec2 p, float scale) {
+            vec2 coord = p * scale;
+            vec2 g = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
+            return 1.0 - min(min(g.x, g.y), 1.0);
+          }
+          void main() {
+            float w = fwidth(vWorld.x);
+            float minor = lineGrid(vWorld.xz, 8.0);
+            float major = lineGrid(vWorld.xz, 0.8);
+            float far = lineGrid(vWorld.xz, 0.08);
+            float minorFade = 1.0 - smoothstep(0.02, 0.22, w);
+            float majorFade = 1.0 - smoothstep(0.16, 2.4, w);
+            float farFade = 1.0 - smoothstep(1.6, 18.0, w);
+            vec3 col = vec3(0.05, 0.16, 0.14) * minor * minorFade;
+            col += vec3(0.12, 0.38, 0.32) * major * majorFade;
+            col += vec3(0.2, 0.55, 0.46) * far * farFade;
+            float alpha = clamp(minor * minorFade * 0.28 + major * majorFade * 0.45 + far * farFade * 0.4, 0.0, 0.7);
+            float disk = 1.0 - smoothstep(80.0, 210.0, length(vWorld.xz));
+            gl_FragColor = vec4(col, alpha * disk);
+          }
+        `,
+      });
+      const grid = new THREE.Mesh(new THREE.PlaneGeometry(440, 440), gridMat);
+      grid.rotation.x = -Math.PI / 2;
+      grid.position.y = -0.099;
+      scene.add(grid);
+    }
 
-    const tightGpu =
-      /Android/i.test(navigator.userAgent) ||
-      ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
     const spots: THREE.SpotLight[] = [];
-    const spotCount = tightGpu ? 4 : 8;
+    const spotCount = tightGpu ? 2 : 8;
     for (let i = 0; i < spotCount; i += 1) {
-      const spot = new THREE.SpotLight("#d7fff4", 0, 56, Math.PI / 3.1, 0.7, 1.35);
+      const spot = new THREE.SpotLight("#d7fff4", 0, 0, Math.PI / 2.5, 0.88, 1);
       const target = new THREE.Object3D();
       spot.target = target;
       spot.castShadow = false;
-      spot.visible = true;
       spot.intensity = 0;
       scene.add(spot, target);
       spots.push(spot);
     }
 
-    const edgeGeo = new THREE.EdgesGeometry(boxGeo);
+    const edgeGeo = new THREE.BufferGeometry();
+    {
+      const s = 0.5;
+      const corners: [number, number, number][] = [
+        [-s, -s, -s], [s, -s, -s], [s, -s, s], [-s, -s, s],
+        [-s, s, -s], [s, s, -s], [s, s, s], [-s, s, s],
+      ];
+      const pairs = [
+        [0, 1], [1, 2], [2, 3], [3, 0],
+        [4, 5], [5, 6], [6, 7], [7, 4],
+        [0, 4], [1, 5], [2, 6], [3, 7],
+      ];
+      const pos = new Float32Array(pairs.length * 6);
+      let cursor = 0;
+      for (const [a, b] of pairs) {
+        pos[cursor++] = corners[a][0];
+        pos[cursor++] = corners[a][1];
+        pos[cursor++] = corners[a][2];
+        pos[cursor++] = corners[b][0];
+        pos[cursor++] = corners[b][1];
+        pos[cursor++] = corners[b][2];
+      }
+      edgeGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    }
     edgeGeo.userData.shared = true;
     const outlineMat = new THREE.LineBasicMaterial({
       color: PALETTE.brass,
@@ -617,11 +668,25 @@ export const CubeCanvas = memo(function CubeCanvas({
       bloom.strength = (rect.width || w) < 700 ? 0.3 : 0.42;
     };
     let gpuLost = false;
+    let recoverTimer = 0;
+    const scheduleRecover = () => {
+      window.clearTimeout(recoverTimer);
+      recoverTimer = window.setTimeout(() => {
+        if (!gpuLost) return;
+        if (document.visibilityState !== "visible") {
+          scheduleRecover();
+          return;
+        }
+        live.current.onGpuLost?.();
+      }, 700);
+    };
     const onLost = () => {
       gpuLost = true;
+      scheduleRecover();
     };
     const onRestore = () => {
       gpuLost = false;
+      window.clearTimeout(recoverTimer);
       rebuildTargets();
       detailStamp = "";
       layoutDirty = true;
@@ -630,15 +695,13 @@ export const CubeCanvas = memo(function CubeCanvas({
     renderer.domElement.addEventListener("webglcontextrestored", onRestore);
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
-      window.setTimeout(() => {
-        const gl = renderer.getContext();
-        if (!gl || gl.isContextLost() || gpuLost) live.current.onGpuLost?.();
-        else {
-          rebuildTargets();
-          detailStamp = "";
-          layoutDirty = true;
-        }
-      }, 60);
+      const gl = renderer.getContext();
+      if (!gl || gl.isContextLost() || gpuLost) scheduleRecover();
+      else {
+        rebuildTargets();
+        detailStamp = "";
+        layoutDirty = true;
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onVisible);
@@ -900,7 +963,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           if (i >= pathMax) return;
           const [x, y, z] = gridToWorld(node.x, node.y, node.z, next.explode, rig.model);
           attr.setXYZ(i, x, y, z);
-          tint.copy(turnA).lerp(turnB, total <= 1 ? 0 : i / (total - 1)).multiplyScalar(1.7);
+          tint.copy(turnA).lerp(turnB, total <= 1 ? 0 : i / (total - 1)).multiplyScalar(2.6);
           colors.setXYZ(i, tint.r, tint.g, tint.b);
         });
         attr.needsUpdate = true;
@@ -968,7 +1031,9 @@ export const CubeCanvas = memo(function CubeCanvas({
       lastCell = cell;
       lastCols = cols;
       lastRows = rows;
-      const bay = 8;
+      const worldPitch = pitch * NEST;
+      const cover = Math.max(extentX, extentZ, worldPitch * 4, 0.6);
+      const bay = Math.max(worldPitch * 5, Math.min(cover, worldPitch * 12), 0.45);
       const bins = new Map<string, { x: number; y: number; z: number; n: number }>();
       for (const rig of rigs) {
         const p = rig.group.position;
@@ -984,8 +1049,12 @@ export const CubeCanvas = memo(function CubeCanvas({
         .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z + a.y * a.y - (b.x * b.x + b.z * b.z + b.y * b.y))
         .slice(0, spots.length);
       const master = Math.min(1, Math.max(0, next.lights || 0));
+      moon.intensity = 0.55 + master * 0.35;
+      warm.intensity = 0.25 + master * 0.3;
+      sun.intensity = master * 2.8;
       const share = ranked.length > 1 ? 1 / Math.sqrt(ranked.length) : 1;
-      const power = master * 5.5 * share;
+      const power = master * 3.2 * share;
+      const reach = Math.max(bay * 3.4, cover * 1.15, 1.4);
       for (let i = 0; i < 8; i += 1) {
         const bin = ranked[i];
         if (!bin || master <= 0.001) {
@@ -993,7 +1062,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           continue;
         }
         lampPos[i].set(bin.x, bin.z);
-        lampGain[i] = master * share * 0.8;
+        lampGain[i] = master * share * 0.9;
       }
       spots.forEach((spot, index) => {
         const bin = ranked[index];
@@ -1002,13 +1071,16 @@ export const CubeCanvas = memo(function CubeCanvas({
           return;
         }
         const len = Math.hypot(bin.x, bin.z);
-        const ox = len < 0.05 ? bay * 0.7 : (bin.x / len) * bay * 0.7;
-        const oz = len < 0.05 ? 0 : (bin.z / len) * bay * 0.7;
+        const ox = len < 1e-3 ? bay * 0.65 : (bin.x / len) * bay * 0.65;
+        const oz = len < 1e-3 ? bay * 0.2 : (bin.z / len) * bay * 0.65;
         spot.intensity = power;
-        spot.position.set(bin.x + ox, bin.y + bay * 0.65, bin.z + oz);
+        spot.position.set(bin.x + ox, bin.y + bay * 1.25, bin.z + oz);
         spot.target.position.set(bin.x, bin.y, bin.z);
       });
-      floorMat.uniforms.gain.value = lampGain;
+      if (floorShader) {
+        floorShader.uniforms.reach.value = reach;
+        floorShader.uniforms.gain.value = lampGain;
+      }
       const chosen = new Set(live.current.selectedIds);
       const marked = rigs.filter((rig) => chosen.has(rig.id));
       placeOutlines(marked);
@@ -1025,7 +1097,13 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const reconcile = () => {
       const gl = renderer.getContext();
-      if (!gl || gl.isContextLost() || gpuLost || document.visibilityState === "hidden") return;
+      if (!gl || gl.isContextLost() || gpuLost) {
+        const cubesNow = live.current.cubes;
+        const key = cubesNow.map((cube) => cube.id).join("|");
+        if (key !== rosterKey) live.current.onGpuLost?.();
+        return;
+      }
+      if (document.visibilityState === "hidden") return;
       const cubesNow = live.current.cubes;
       const key = cubesNow.map((cube) => cube.id).join("|");
       if (key !== rosterKey) {
@@ -1207,7 +1285,13 @@ export const CubeCanvas = memo(function CubeCanvas({
         rig.flareMat.color.set(hex);
         rig.haloMat.color.set(hex);
       });
-      outlineMat.opacity = 0.72 + Math.sin(clock * 2.4) * 0.2;
+      outlineMat.opacity = 0.78 + Math.sin(clock * 2.4) * 0.18;
+      if (gridHelper) {
+        const dist = Math.max(0.08, camera.position.distanceTo(controls.target));
+        const cell = dist / 16;
+        gridHelper.scale.setScalar(cell);
+        gridHelper.position.set(controls.target.x, -0.099, controls.target.z);
+      }
       controls.update();
       try {
         const gl = renderer.getContext();
@@ -1234,6 +1318,7 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     return () => {
       cancelAnimationFrame(raf);
+      window.clearTimeout(recoverTimer);
       observer.disconnect();
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("pageshow", onVisible);
