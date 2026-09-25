@@ -10,8 +10,15 @@ function Bars({ bars }: { bars: Bar[] }) {
   useEffect(() => {
     const el = host.current;
     if (!el || bars.length === 0) return;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    const coarse =
+      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse)").matches;
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      alpha: true,
+      powerPreference: "default",
+      failIfMajorPerformanceCaveat: false,
+    });
+    renderer.setPixelRatio(coarse ? 1 : Math.min(window.devicePixelRatio || 1, 1.25));
     renderer.setClearColor(0x000000, 0);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
@@ -22,13 +29,15 @@ function Bars({ bars }: { bars: Bar[] }) {
     el.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0xd5ece4, 0.85));
-    const keyLight = new THREE.DirectionalLight(0xfff4e4, 2.2);
-    keyLight.position.set(4, 8, 6);
-    scene.add(keyLight);
-    const rim = new THREE.DirectionalLight(0x3ecfb2, 0.8);
-    rim.position.set(-6, 3, -4);
-    scene.add(rim);
+    scene.add(new THREE.AmbientLight(0xd5ece4, coarse ? 1.4 : 0.85));
+    if (!coarse) {
+      const keyLight = new THREE.DirectionalLight(0xfff4e4, 2.2);
+      keyLight.position.set(4, 8, 6);
+      scene.add(keyLight);
+      const rim = new THREE.DirectionalLight(0x3ecfb2, 0.8);
+      rim.position.set(-6, 3, -4);
+      scene.add(rim);
+    }
 
     const count = Math.max(1, bars.length);
     const gap = 0.9;
@@ -38,13 +47,15 @@ function Bars({ bars }: { bars: Bar[] }) {
       const height = 0.25 + (bar.value / max) * 2.2;
       const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(0.48, 1, 0.48),
-        new THREE.MeshStandardMaterial({
-          color: bar.color,
-          emissive: bar.color,
-          emissiveIntensity: 0.18,
-          roughness: 0.32,
-          metalness: 0.42,
-        }),
+        coarse
+          ? new THREE.MeshBasicMaterial({ color: bar.color })
+          : new THREE.MeshStandardMaterial({
+              color: bar.color,
+              emissive: bar.color,
+              emissiveIntensity: 0.18,
+              roughness: 0.32,
+              metalness: 0.42,
+            }),
       );
       mesh.scale.y = height;
       mesh.position.set((index - (count - 1) / 2) * gap, height / 2, 0);
@@ -53,7 +64,7 @@ function Bars({ bars }: { bars: Bar[] }) {
 
     const ground = new THREE.Mesh(
       new THREE.BoxGeometry(width + 1.6, 0.06, 1.4),
-      new THREE.MeshStandardMaterial({ color: "#102026", metalness: 0.65, roughness: 0.4 }),
+      new THREE.MeshBasicMaterial({ color: "#102026" }),
     );
     ground.position.y = -0.03;
     scene.add(ground);
@@ -75,18 +86,30 @@ function Bars({ bars }: { bars: Bar[] }) {
     observer.observe(el);
     let raf = 0;
     let spin = 0.4;
-    const loop = () => {
+    let last = performance.now();
+    let onScreen = true;
+    const stepMs = coarse ? 1000 / 15 : 1000 / 30;
+    const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
-      spin += 0.0025;
+      if (!onScreen || document.visibilityState === "hidden") return;
+      if (now - last < stepMs) return;
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      spin += dt * 0.15;
       camera.position.x = Math.sin(spin) * fit * 0.85;
       camera.position.z = Math.cos(spin) * fit * 0.95;
       camera.position.y = fit * 0.55;
       camera.lookAt(0, 0.75, 0);
       renderer.render(scene, camera);
     };
-    loop();
+    const seen = new IntersectionObserver((entries) => {
+      onScreen = entries.some((entry) => entry.isIntersecting);
+    });
+    seen.observe(el);
+    loop(performance.now());
     return () => {
       cancelAnimationFrame(raf);
+      seen.disconnect();
       observer.disconnect();
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh;

@@ -171,7 +171,7 @@ export function SessionCube() {
   const onGpuLost = useCallback(() => {
     if (remounting.current) return;
     const now = Date.now();
-    if (now - gpuStamp.current < 900) return;
+    if (now - gpuStamp.current < 2500) return;
     gpuStamp.current = now;
     remounting.current = true;
     setSceneLive(false);

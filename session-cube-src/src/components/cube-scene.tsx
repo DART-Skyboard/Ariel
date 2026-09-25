@@ -151,9 +151,7 @@ const VignetteShader = {
       vec4 c = texture2D(tDiffuse, vUv);
       vec2 uv = (vUv - 0.5) * vec2(1.05, 0.9);
       float vig = smoothstep(0.92, 0.28, dot(uv, uv));
-      float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
       vec3 rgb = c.rgb * mix(0.62, 1.0, vig);
-      rgb += (n - 0.5) * 0.016;
       gl_FragColor = vec4(rgb, c.a);
     }
   `,
@@ -293,7 +291,7 @@ function categoryHex(node: PathNode): string {
 }
 
 function viewKey(view: CubeView): string {
-  return `${view.explode}|${view.floor}|${view.shell ? 1 : 0}|${view.maze ? 1 : 0}|${view.tunnel ? 1 : 0}|${view.path ? 1 : 0}|${view.lights}`;
+  return `${view.explode}|${view.floor}|${view.shell ? 1 : 0}|${view.maze ? 1 : 0}|${view.tunnel ? 1 : 0}|${view.path ? 1 : 0}`;
 }
 
 function disposeTree(root: THREE.Object3D) {
@@ -382,9 +380,13 @@ export const CubeCanvas = memo(function CubeCanvas({
     const tightGpu =
       /Android/i.test(navigator.userAgent) ||
       ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
+    const touchGpu =
+      tightGpu ||
+      /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+      window.matchMedia("(pointer: coarse)").matches;
     const renderer = new THREE.WebGLRenderer({
       antialias: false,
-      powerPreference: tightGpu ? "default" : "high-performance",
+      powerPreference: touchGpu ? "default" : "high-performance",
       alpha: false,
       stencil: false,
       failIfMajorPerformanceCaveat: false,
@@ -394,7 +396,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     renderer.toneMappingExposure = 1.02;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor("#02060a", 1);
-    if (tightGpu) renderer.debug.checkShaderErrors = false;
+    if (touchGpu) renderer.debug.checkShaderErrors = false;
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
@@ -406,18 +408,11 @@ export const CubeCanvas = memo(function CubeCanvas({
     scene.background = new THREE.Color("#02060a");
     const fog = new THREE.FogExp2("#02060a", 0.012);
     scene.fog = fog;
-    scene.add(new THREE.HemisphereLight(0xd7fff6, 0x24180c, 0.85));
-    scene.add(new THREE.AmbientLight(0xb7d5dc, 0.55));
-    const moon = new THREE.DirectionalLight(0xe7f4ff, 2.8);
-    moon.position.set(-8, 18, 6);
-    scene.add(moon);
-    const warm = new THREE.DirectionalLight(0xe4a24a, 1.4);
-    warm.position.set(14, 7, 9);
-    scene.add(warm);
-
+    const hemi = new THREE.HemisphereLight(0xd7fff6, 0x24180c, 0);
+    const ambient = new THREE.AmbientLight(0xb7d5dc, 0);
     const sun = new THREE.DirectionalLight(0xfff1d6, 0);
-    sun.position.set(8, 22, 6);
-    scene.add(sun);
+    sun.position.set(4, 22, 6);
+    scene.add(hemi, ambient, sun);
 
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 800);
     camera.position.set(11.4 * NEST, 6.2 * NEST, 13.6 * NEST);
@@ -450,11 +445,10 @@ export const CubeCanvas = memo(function CubeCanvas({
     const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
     const lampGain = new Float32Array(8);
     let floorShader: THREE.ShaderMaterial | null = null;
+    let floorMat: THREE.MeshBasicMaterial | null = null;
     if (tightGpu) {
-      const plain = new THREE.Mesh(
-        new THREE.CircleGeometry(220, 48),
-        new THREE.MeshBasicMaterial({ color: "#07110f", transparent: true, opacity: 0.94, depthWrite: false }),
-      );
+      floorMat = new THREE.MeshBasicMaterial({ color: "#07110f", transparent: true, opacity: 0.94, depthWrite: false });
+      const plain = new THREE.Mesh(new THREE.CircleGeometry(220, 24), floorMat);
       plain.rotation.x = -Math.PI / 2;
       plain.position.y = -0.1;
       scene.add(plain);
@@ -512,29 +506,28 @@ export const CubeCanvas = memo(function CubeCanvas({
       scene.add(floor);
     }
     const cell = NEST;
-    const minor = new THREE.GridHelper(cell * 2400, 2400, 0x1f6f62, 0x12332e);
-    const major = new THREE.GridHelper(cell * 8000, 800, 0x3ecfb2, 0x1a4a42);
+    const minor = new THREE.GridHelper(cell * 80, 80, 0x1f6f62, 0x12332e);
+    const major = new THREE.GridHelper(cell * 1200, 30, 0x2a9a86, 0x143832);
     for (const grid of [minor, major]) {
       grid.position.y = -0.099;
-      grid.frustumCulled = false;
       const mats = Array.isArray(grid.material) ? grid.material : [grid.material];
       for (const mat of mats) {
         mat.transparent = true;
-        mat.opacity = grid === major ? 0.5 : 0.28;
-        mat.fog = false;
-        mat.toneMapped = false;
+        mat.opacity = grid === major ? 0.42 : 0.4;
+        mat.fog = true;
+        mat.toneMapped = true;
+        mat.depthWrite = false;
       }
       scene.add(grid);
     }
 
     const spots: THREE.SpotLight[] = [];
-    const spotCount = tightGpu ? 2 : 8;
+    const spotCount = touchGpu ? 0 : 4;
     for (let i = 0; i < spotCount; i += 1) {
-      const spot = new THREE.SpotLight("#d7fff4", 0, 0, Math.PI / 2.5, 0.88, 1);
+      const spot = new THREE.SpotLight("#d7fff4", 0, 40, 1.05, 0.9, 1);
       const target = new THREE.Object3D();
       spot.target = target;
       spot.castShadow = false;
-      spot.intensity = 0;
       scene.add(spot, target);
       spots.push(spot);
     }
@@ -594,7 +587,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       });
     };
 
-    const composer = tightGpu
+    const composer = touchGpu
       ? null
       : new EffectComposer(
           renderer,
@@ -611,15 +604,16 @@ export const CubeCanvas = memo(function CubeCanvas({
       const rect = el.getBoundingClientRect();
       let w = Math.max(1, Math.round(rect.width || el.clientWidth || 1));
       let h = Math.max(1, Math.round(rect.height || el.clientHeight || 1));
-      if (tightGpu) {
+      if (tightGpu || touchGpu) {
+        const cap = tightGpu ? 1280 : 1600;
         const long = Math.max(w, h);
-        if (long > 1280) {
-          const scale = 1280 / long;
+        if (long > cap) {
+          const scale = cap / long;
           w = Math.max(1, Math.round(w * scale));
           h = Math.max(1, Math.round(h * scale));
         }
       }
-      const prCap = w * h > 1_200_000 || tightGpu ? 1 : w < 700 ? 1.15 : 1.25;
+      const prCap = w * h > 1_200_000 || touchGpu ? 1 : w < 700 ? 1.15 : 1.25;
       const pr = Math.min(window.devicePixelRatio || 1, prCap);
       camera.aspect = (rect.width || w) / Math.max(1, rect.height || h);
       camera.fov = (rect.width || w) < 700 ? 50 : 38;
@@ -869,6 +863,38 @@ export const CubeCanvas = memo(function CubeCanvas({
       fog.density = 0.045;
     };
 
+    const applyLights = (masterIn: number) => {
+      const master = Math.min(1, Math.max(0, masterIn || 0));
+      hemi.intensity = master * 0.85;
+      ambient.intensity = master * 0.42;
+      sun.intensity = master * 1.45;
+      if (floorMat) floorMat.color.setRGB(0.015 + master * 0.03, 0.03 + master * 0.055, 0.028 + master * 0.04);
+      const span = Math.max(lastCell * Math.max(lastCols, lastRows), 0.2);
+      const lift = Math.max(span * 0.55, 0.28);
+      const ring = Math.max(span * 0.42, 0.16);
+      spots.forEach((spot, index) => {
+        const ang = (index / spots.length) * Math.PI * 2 + Math.PI / 4;
+        spot.position.set(aimX + Math.cos(ang) * ring, aimY + lift, aimZ + Math.sin(ang) * ring);
+        spot.target.position.set(aimX, aimY, aimZ);
+        spot.intensity = master <= 0.001 ? 0 : master * 1.8;
+      });
+      if (!floorShader) return;
+      floorShader.uniforms.reach.value = Math.max(span * 1.8, 0.9);
+      for (let i = 0; i < 8; i += 1) {
+        const spot = spots[i];
+        if (!spot || master <= 0.001) {
+          lampGain[i] = 0;
+          continue;
+        }
+        lampPos[i].set(spot.position.x, spot.position.z);
+        lampGain[i] = master * 0.8;
+      }
+      if (!spots.length && master > 0.001) {
+        lampPos[0].set(aimX, aimZ);
+        lampGain[0] = master * 0.9;
+      }
+    };
+
     const syncLayout = (next: CubeView) => {
       let spanX = 1;
       let spanY = 1;
@@ -1007,56 +1033,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       lastCell = cellPitch;
       lastCols = cols;
       lastRows = rows;
-      const worldPitch = pitchX * NEST;
-      const cover = Math.max(extentX, extentZ, worldPitch * 4, 0.6);
-      const bay = Math.max(worldPitch * 5, Math.min(cover, worldPitch * 12), 0.45);
-      const bins = new Map<string, { x: number; y: number; z: number; n: number }>();
-      for (const rig of rigs) {
-        const p = rig.group.position;
-        const gx = Math.round(p.x / bay);
-        const gy = Math.round(p.y / bay);
-        const gz = Math.round(p.z / bay);
-        const key = `${gx}:${gy}:${gz}`;
-        const bin = bins.get(key) ?? { x: gx * bay, y: gy * bay, z: gz * bay, n: 0 };
-        bin.n += 1;
-        bins.set(key, bin);
-      }
-      const ranked = [...bins.values()]
-        .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z + a.y * a.y - (b.x * b.x + b.z * b.z + b.y * b.y))
-        .slice(0, spots.length);
-      const master = Math.min(1, Math.max(0, next.lights || 0));
-      moon.intensity = 0.55 + master * 0.35;
-      warm.intensity = 0.25 + master * 0.3;
-      sun.intensity = master * 2.8;
-      const share = ranked.length > 1 ? 1 / Math.sqrt(ranked.length) : 1;
-      const power = master * 3.2 * share;
-      const reach = Math.max(bay * 3.4, cover * 1.15, 1.4);
-      for (let i = 0; i < 8; i += 1) {
-        const bin = ranked[i];
-        if (!bin || master <= 0.001) {
-          lampGain[i] = 0;
-          continue;
-        }
-        lampPos[i].set(bin.x, bin.z);
-        lampGain[i] = master * share * 0.9;
-      }
-      spots.forEach((spot, index) => {
-        const bin = ranked[index];
-        if (!bin || master <= 0.001) {
-          spot.intensity = 0;
-          return;
-        }
-        const len = Math.hypot(bin.x, bin.z);
-        const ox = len < 1e-3 ? bay * 0.65 : (bin.x / len) * bay * 0.65;
-        const oz = len < 1e-3 ? bay * 0.2 : (bin.z / len) * bay * 0.65;
-        spot.intensity = power;
-        spot.position.set(bin.x + ox, bin.y + bay * 1.25, bin.z + oz);
-        spot.target.position.set(bin.x, bin.y, bin.z);
-      });
-      if (floorShader) {
-        floorShader.uniforms.reach.value = reach;
-        floorShader.uniforms.gain.value = lampGain;
-      }
+      applyLights(next.lights);
       const chosen = new Set(live.current.selectedIds);
       const marked = rigs.filter((rig) => chosen.has(rig.id));
       placeOutlines(marked);
@@ -1073,12 +1050,7 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const reconcile = () => {
       const gl = renderer.getContext();
-      if (!gl || gl.isContextLost() || gpuLost) {
-        const cubesNow = live.current.cubes;
-        const key = cubesNow.map((cube) => cube.id).join("|");
-        if (key !== rosterKey) live.current.onGpuLost?.();
-        return;
-      }
+      if (!gl || gl.isContextLost() || gpuLost) return;
       if (document.visibilityState === "hidden") return;
       const cubesNow = live.current.cubes;
       const key = cubesNow.map((cube) => cube.id).join("|");
@@ -1126,7 +1098,8 @@ export const CubeCanvas = memo(function CubeCanvas({
     let seenReset = live.current.resetToken;
     let hudAcc = 0;
     let clock = 0;
-    const timer = new THREE.Timer();
+    let lightApplied = -1;
+    let lastNow = performance.now();
 
     const resize = () => rebuildTargets();
     resize();
@@ -1173,11 +1146,12 @@ export const CubeCanvas = memo(function CubeCanvas({
       live.current.onSelect(pickCube() ?? "");
     };
     const onMove = (event: PointerEvent) => {
+      if (touchGpu) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      renderer.domElement.style.cursor = pickMarker() || pickCube() ? "pointer" : "";
+      renderer.domElement.style.cursor = pickCube() ? "pointer" : "";
     };
     renderer.domElement.addEventListener("pointerdown", onDown);
     renderer.domElement.addEventListener("pointerup", onUp);
@@ -1186,28 +1160,38 @@ export const CubeCanvas = memo(function CubeCanvas({
     let raf = 0;
     let announced = false;
     let reported = false;
-    const loop = (now?: number) => {
+    const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
-      try {
-      timer.update(now);
-      const delta = Math.min(timer.getDelta(), 0.05);
+      const delta = Math.min(0.05, Math.max(0, (now - lastNow) / 1000));
+      lastNow = now;
       clock += delta;
       const current = live.current;
-      reconcile();
-      const selKey = current.selectedIds.join("|");
-      if (selKey !== seenSel) {
-        seenSel = selKey;
-        layoutDirty = true;
-      }
-      const key = viewKey(current.view);
-      if (key !== applied || layoutDirty) {
-        applied = key;
-        layoutDirty = false;
-        syncLayout(current.view);
-      }
-      if (current.resetToken !== seenReset) {
-        seenReset = current.resetToken;
-        if (seenReset > 0) frameHome();
+      try {
+        reconcile();
+        const selKey = current.selectedIds.join("|");
+        if (selKey !== seenSel) {
+          seenSel = selKey;
+          layoutDirty = true;
+        }
+        const key = viewKey(current.view);
+        if (key !== applied || layoutDirty) {
+          applied = key;
+          layoutDirty = false;
+          syncLayout(current.view);
+          lightApplied = current.view.lights;
+        } else if (current.view.lights !== lightApplied) {
+          lightApplied = current.view.lights;
+          applyLights(lightApplied);
+        }
+        if (current.resetToken !== seenReset) {
+          seenReset = current.resetToken;
+          if (seenReset > 0) frameHome();
+        }
+      } catch (error) {
+        if (!reported) {
+          reported = true;
+          console.error(error);
+        }
       }
       controls.autoRotate = current.autoRotate;
       const focus = focusRef.current;
@@ -1223,10 +1207,12 @@ export const CubeCanvas = memo(function CubeCanvas({
       const from = Math.max(1, rangeRef.current.from);
       const to = Math.max(from, rangeRef.current.to);
       const master = masterRef.current;
-      rigs.forEach((rig, index) => {
+      const playing = playingRef.current;
+      for (let index = 0; index < rigs.length; index += 1) {
+        const rig = rigs[index];
         const order = index + 1;
         const inRange = order >= from && order <= to;
-        const drive = (master && inRange) || (!master && playingRef.current && rig.id === current.selectedId);
+        const drive = (master && inRange) || (!master && playing && rig.id === current.selectedId);
         const limit = Math.max(1, rig.model.path.length - 1);
         let step = stepsRef.current[rig.id] ?? 0;
         if (drive) {
@@ -1246,42 +1232,45 @@ export const CubeCanvas = memo(function CubeCanvas({
         const f = clamped - i;
         const nodeFrom = rig.model.path[i];
         const nodeTo = rig.model.path[Math.min(i + 1, rig.model.path.length - 1)];
-        if (!nodeFrom || !nodeTo) return;
-        scratchA.set(...gridToWorld(nodeFrom.x, nodeFrom.y, nodeFrom.z, current.view.explode, rig.model));
-        scratchB.set(...gridToWorld(nodeTo.x, nodeTo.y, nodeTo.z, current.view.explode, rig.model));
-        scratchDir.copy(scratchA).lerp(scratchB, f);
+        if (!nodeFrom || !nodeTo) continue;
+        const fromW = gridToWorld(nodeFrom.x, nodeFrom.y, nodeFrom.z, current.view.explode, rig.model);
+        const toW = gridToWorld(nodeTo.x, nodeTo.y, nodeTo.z, current.view.explode, rig.model);
+        scratchDir.set(
+          fromW[0] + (toW[0] - fromW[0]) * f,
+          fromW[1] + (toW[1] - fromW[1]) * f,
+          fromW[2] + (toW[2] - fromW[2]) * f,
+        );
         rig.traveler.position.copy(scratchDir);
         rig.halo.position.copy(scratchDir);
-        const pulse = 1.55 + Math.sin(clock * 3.2 + index) * 0.16;
-        rig.halo.scale.setScalar(pulse);
+        rig.halo.scale.setScalar(1.55 + Math.sin(clock * 3.2 + index) * 0.16);
         const shown = nodeFrom.events[0] ? nodeFrom : nodeTo.events[0] && f > 0.65 ? nodeTo : nodeFrom;
         const hex = categoryHex(shown);
-        rig.travelerMat.color.set(hex);
-        rig.travelerMat.emissive.set(hex);
-        rig.flareMat.color.set(hex);
-        rig.haloMat.color.set(hex);
-      });
+        if (rig.travelerMat.userData.hex !== hex) {
+          rig.travelerMat.userData.hex = hex;
+          rig.travelerMat.color.set(hex);
+          rig.travelerMat.emissive.set(hex);
+          rig.flareMat.color.set(hex);
+          rig.haloMat.color.set(hex);
+        }
+      }
       outlineMat.opacity = 0.78 + Math.sin(clock * 2.4) * 0.18;
       controls.update();
-      try {
-        const gl = renderer.getContext();
-        if (!gl || gl.isContextLost()) return;
-        if (composer) composer.render(delta);
-        else renderer.render(scene, camera);
-      } catch {
-        const gl = renderer.getContext();
-        if (gl && !gl.isContextLost()) renderer.render(scene, camera);
+      const gl = renderer.getContext();
+      if (gl && !gl.isContextLost()) {
+        try {
+          if (composer) composer.render(delta);
+          else renderer.render(scene, camera);
+        } catch (error) {
+          if (!reported) {
+            reported = true;
+            console.error(error);
+          }
+        }
       }
       if (!announced) {
         announced = true;
         renderer.domElement.style.opacity = "1";
         live.current.onReady?.();
-      }
-      } catch (error) {
-        if (!reported) {
-          reported = true;
-          console.error(error);
-        }
       }
     };
     raf = requestAnimationFrame(loop);
