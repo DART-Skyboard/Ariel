@@ -1208,11 +1208,12 @@ export const CubeCanvas = memo(function CubeCanvas({
       const to = Math.max(from, rangeRef.current.to);
       const master = masterRef.current;
       const playing = playingRef.current;
+      const chosen = new Set(current.selectedIds);
       for (let index = 0; index < rigs.length; index += 1) {
         const rig = rigs[index];
         const order = index + 1;
         const inRange = order >= from && order <= to;
-        const drive = (master && inRange) || (!master && playing && rig.id === current.selectedId);
+        const drive = (master && inRange) || (!master && playing && chosen.has(rig.id));
         const limit = Math.max(1, rig.model.path.length - 1);
         let step = stepsRef.current[rig.id] ?? 0;
         if (drive) {

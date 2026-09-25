@@ -282,9 +282,17 @@ export function SessionCube() {
     ];
   }, [briefs, selectedBrief]);
 
-  const publish = useCallback((id: string, next: number, length: number) => {
+  const publish = useCallback((id: string, next: number, length: number, fanout = false) => {
     const clamped = Math.max(0, Math.min(length - 1, next));
     stepsRef.current[id] = clamped;
+    if (fanout) {
+      const ids = new Set(selectedIdsRef.current);
+      for (const cube of cubesRef.current) {
+        if (cube.id === id || !ids.has(cube.id)) continue;
+        const limit = Math.max(0, cube.model.path.length - 1);
+        stepsRef.current[cube.id] = Math.max(0, Math.min(limit, next));
+      }
+    }
     setStep(clamped);
   }, []);
 
@@ -787,7 +795,7 @@ export function SessionCube() {
                 <div className="flex shrink-0 gap-2">
                   <button
                     type="button"
-                    aria-label={playing ? "Pause the walk" : "Play the walk"}
+                    aria-label={playing ? "Pause the selected walks" : "Play every selected walk"}
                     onClick={togglePlay}
                     className="grid size-11 place-items-center rounded-full bg-brass text-ink"
                   >
@@ -821,7 +829,7 @@ export function SessionCube() {
                 max={Math.max(0, (model?.path.length ?? 1) - 1)}
                 step={0.01}
                 value={Math.min(step, Math.max(0, (model?.path.length ?? 1) - 1))}
-                aria-label="Scrub the walk"
+                aria-label="Scrub every selected walk"
                 suppressHydrationWarning
                 onChange={(event) => {
                   if (!selected) return;
@@ -829,11 +837,11 @@ export function SessionCube() {
                   masterRef.current = false;
                   setPlaying(false);
                   setMaster(false);
-                  publish(selected.id, Number(event.target.value), selected.model.path.length);
+                  publish(selected.id, Number(event.target.value), selected.model.path.length, true);
                 }}
               />
               <p className="mt-2 font-mono text-xs text-mist">
-                Drag to orbit · click a cube to select it · green ring enters · coral ring exits
+                Drag to orbit · play and scrub run every selected cube · green ring enters · coral ring exits
               </p>
             </div>
             ) : (
