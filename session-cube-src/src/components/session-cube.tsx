@@ -165,6 +165,15 @@ export function SessionCube() {
   const [followAll, setFollowAll] = useState(true);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [hud, setHud] = useState({ session: true, master: true, events: true, walk: true });
+  const [gpuEpoch, setGpuEpoch] = useState(0);
+  const gpuStamp = useRef(0);
+  const onGpuLost = useCallback(() => {
+    const now = Date.now();
+    if (now - gpuStamp.current < 2500) return;
+    gpuStamp.current = now;
+    setSceneLive(false);
+    setGpuEpoch((n) => n + 1);
+  }, []);
   const toggleHud = (key: keyof typeof hud) => setHud((current) => ({ ...current, [key]: !current[key] }));
   const stepsRef = useRef<Record<string, number>>({ example: 0 });
   const playingRef = useRef(false);
@@ -441,6 +450,7 @@ export function SessionCube() {
           {showScene ? (
             <Suspense fallback={null}>
               <CubeCanvas
+                key={gpuEpoch}
                 cubes={cubes}
                 selectedId={selected?.id ?? ""}
                 selectedIds={selectedIds}
@@ -457,6 +467,7 @@ export function SessionCube() {
                 onInteract={onInteract}
                 resetToken={resetToken}
                 onReady={onReady}
+                onGpuLost={onGpuLost}
               />
             </Suspense>
           ) : null}

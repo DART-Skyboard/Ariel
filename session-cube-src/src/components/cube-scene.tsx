@@ -309,6 +309,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   onInteract,
   resetToken,
   onReady,
+  onGpuLost,
 }: {
   cubes: NestCube[];
   selectedId: string;
@@ -326,6 +327,7 @@ export const CubeCanvas = memo(function CubeCanvas({
   onInteract: () => void;
   resetToken: number;
   onReady?: () => void;
+  onGpuLost?: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const live = useRef({
@@ -340,14 +342,34 @@ export const CubeCanvas = memo(function CubeCanvas({
     onInteract,
     resetToken,
     onReady,
+    onGpuLost,
   });
-  live.current = { cubes, selectedId, selectedIds, view, onHud, onPick, onSelect, autoRotate, onInteract, resetToken, onReady };
+  live.current = {
+    cubes,
+    selectedId,
+    selectedIds,
+    view,
+    onHud,
+    onPick,
+    onSelect,
+    autoRotate,
+    onInteract,
+    resetToken,
+    onReady,
+    onGpuLost,
+  };
 
   useEffect(() => {
     const el = host.current;
     if (!el) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "default", alpha: false });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: "high-performance",
+      alpha: false,
+      stencil: false,
+      failIfMajorPerformanceCaveat: false,
+    });
     renderer.setPixelRatio(1);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.02;
@@ -464,13 +486,18 @@ export const CubeCanvas = memo(function CubeCanvas({
     else fadeGrid(gridMat);
     scene.add(grid);
 
+    const tightGpu =
+      /Android/i.test(navigator.userAgent) ||
+      ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
     const spots: THREE.SpotLight[] = [];
-    for (let i = 0; i < 8; i += 1) {
+    const spotCount = tightGpu ? 1 : 8;
+    for (let i = 0; i < spotCount; i += 1) {
       const spot = new THREE.SpotLight("#d7fff4", 0, 64, Math.PI / 7, 0.72, 1.6);
       const target = new THREE.Object3D();
       spot.target = target;
       spot.castShadow = false;
-      spot.visible = false;
+      spot.visible = true;
+      spot.intensity = 0;
       scene.add(spot, target);
       spots.push(spot);
     }
@@ -522,29 +549,73 @@ export const CubeCanvas = memo(function CubeCanvas({
       scene.add(outlineFill, outlineEdge);
     };
 
-    const tightGpu =
-      /Android/i.test(navigator.userAgent) ||
-      ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
-    const composer = new EffectComposer(
-      renderer,
-      new THREE.WebGLRenderTarget(1, 1, { type: tightGpu ? THREE.UnsignedByteType : THREE.HalfFloatType }),
-    );
-    composer.addPass(new RenderPass(scene, camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.42, 0.62, 0.78);
-    composer.addPass(bloom);
-    composer.addPass(new OutputPass());
-    composer.addPass(new ShaderPass(VignetteShader));
-    const onRestore = () => {
-      const w = Math.max(1, el.clientWidth);
-      const h = Math.max(1, el.clientHeight);
-      renderer.setSize(w, h, false);
-      composer.setSize(w, h);
-      camera.aspect = w / h;
+    const composer = tightGpu
+      ? null
+      : new EffectComposer(
+          renderer,
+          new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }),
+        );
+    const bloom = composer ? new UnrealBloomPass(new THREE.Vector2(256, 256), 0.42, 0.62, 0.78) : null;
+    if (composer && bloom) {
+      composer.addPass(new RenderPass(scene, camera));
+      composer.addPass(bloom);
+      composer.addPass(new OutputPass());
+      composer.addPass(new ShaderPass(VignetteShader));
+    }
+    const rebuildTargets = () => {
+      const rect = el.getBoundingClientRect();
+      let w = Math.max(1, Math.round(rect.width || el.clientWidth || 1));
+      let h = Math.max(1, Math.round(rect.height || el.clientHeight || 1));
+      if (tightGpu) {
+        const long = Math.max(w, h);
+        if (long > 1280) {
+          const scale = 1280 / long;
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+        }
+      }
+      const prCap = w * h > 1_200_000 || tightGpu ? 1 : w < 700 ? 1.15 : 1.25;
+      const pr = Math.min(window.devicePixelRatio || 1, prCap);
+      camera.aspect = (rect.width || w) / Math.max(1, rect.height || h);
+      camera.fov = (rect.width || w) < 700 ? 50 : 38;
       camera.updateProjectionMatrix();
+      renderer.setPixelRatio(pr);
+      renderer.setSize(w, h, false);
+      if (!composer || !bloom) return;
+      composer.setPixelRatio(pr);
+      composer.setSize(w + 2, h + 2);
+      composer.setSize(w, h);
+      bloom.strength = (rect.width || w) < 700 ? 0.3 : 0.42;
     };
+    let gpuLost = false;
+    const onLost = () => {
+      gpuLost = true;
+    };
+    const onRestore = () => {
+      gpuLost = false;
+      rebuildTargets();
+      detailStamp = "";
+      layoutDirty = true;
+    };
+    renderer.domElement.addEventListener("webglcontextlost", onLost);
     renderer.domElement.addEventListener("webglcontextrestored", onRestore);
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      window.setTimeout(() => {
+        const gl = renderer.getContext();
+        if (!gl || gl.isContextLost() || gpuLost) live.current.onGpuLost?.();
+        else {
+          rebuildTargets();
+          detailStamp = "";
+          layoutDirty = true;
+        }
+      }, 60);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
 
     let rigs: Rig[] = [];
+    let buildQueue: NestCube[] = [];
     let rosterKey = "";
     let seenSel = "";
     let detailStamp = "";
@@ -617,11 +688,9 @@ export const CubeCanvas = memo(function CubeCanvas({
       const leave = new THREE.Group();
       enter.add(new THREE.Mesh(ringGeo, enterMat));
       enter.add(new THREE.Mesh(innerGeo, new THREE.MeshStandardMaterial({ color: PALETTE.bone, emissive: PALETTE.verdigris, emissiveIntensity: 2.2, transparent: true, opacity: 0.9 })));
-      enter.add(new THREE.PointLight(PALETTE.verdigris, 8, 6, 2));
       enter.add(shaft(PALETTE.verdigris));
       leave.add(new THREE.Mesh(ringGeo.clone(), exitMat));
       leave.add(new THREE.Mesh(innerGeo.clone(), new THREE.MeshStandardMaterial({ color: PALETTE.bone, emissive: PALETTE.coral, emissiveIntensity: 2.2, transparent: true, opacity: 0.9 })));
-      leave.add(new THREE.PointLight(PALETTE.coral, 8, 6, 2));
       leave.add(shaft(PALETTE.coral));
       for (const ring of [...enter.children, ...leave.children]) ring.raycast = () => undefined;
       detail.add(enter, leave);
@@ -879,26 +948,31 @@ export const CubeCanvas = memo(function CubeCanvas({
       }
       const ranked = [...bins.values()]
         .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z - (b.x * b.x + b.z * b.z))
-        .slice(0, spots.length);
+        .slice(0, 8);
       const master = Math.min(1, Math.max(0, next.lights || 0));
       const share = ranked.length > 1 ? 1 / Math.sqrt(ranked.length) : 1;
       const power = master * 6.5 * share;
-      for (let i = 0; i < spots.length; i += 1) {
+      const focus = rigs.find((rig) => rig.id === live.current.selectedId) ?? rigs[0];
+      for (let i = 0; i < 8; i += 1) {
         const bin = ranked[i];
-        const spot = spots[i];
         if (!bin || master <= 0.001) {
-          spot.intensity = 0;
-          spot.visible = false;
           lampGain[i] = 0;
           continue;
         }
+        lampPos[i].set(bin.x, bin.z);
+        lampGain[i] = master * share * 0.85;
+      }
+      spots.forEach((spot, index) => {
+        const bin = tightGpu && focus ? { x: focus.group.position.x, z: focus.group.position.z } : ranked[index];
         spot.visible = true;
+        if (!bin || master <= 0.001) {
+          spot.intensity = 0;
+          return;
+        }
         spot.intensity = power;
         spot.position.set(bin.x, 24, bin.z);
         spot.target.position.set(bin.x, -8.5, bin.z);
-        lampPos[i].set(bin.x, bin.z);
-        lampGain[i] = master * share;
-      }
+      });
       floorMat.uniforms.gain.value = lampGain;
       const reach = cell * Math.hypot(cols, rows) * 0.62 + 10;
       floor.scale.setScalar(Math.max(1, reach / 22));
@@ -933,17 +1007,19 @@ export const CubeCanvas = memo(function CubeCanvas({
     };
 
     const reconcile = () => {
+      const gl = renderer.getContext();
+      if (!gl || gl.isContextLost() || gpuLost || document.visibilityState === "hidden") return;
       const cubesNow = live.current.cubes;
       const key = cubesNow.map((cube) => cube.id).join("|");
       if (key !== rosterKey) {
         clearRigs();
-        rigs = cubesNow.map(buildRig);
+        buildQueue = cubesNow.slice();
         rosterKey = key;
         detailStamp = "";
         layoutDirty = true;
-        needsFrame = true;
         framePick = true;
-      } else {
+        needsFrame = false;
+      } else if (!buildQueue.length) {
         cubesNow.forEach((cube) => {
           const rig = rigs.find((item) => item.id === cube.id);
           if (rig) {
@@ -951,6 +1027,16 @@ export const CubeCanvas = memo(function CubeCanvas({
             rig.slot = cube.slot;
           }
         });
+      }
+      if (buildQueue.length) {
+        const batch = buildQueue.splice(0, 3);
+        for (const cube of batch) rigs.push(buildRig(cube));
+        layoutDirty = true;
+        return;
+      }
+      if (framePick) {
+        needsFrame = true;
+        layoutDirty = true;
       }
       const showAll = cubesNow.length <= 1;
       const stamp = cubesNow.map((cube) => `${cube.id}:${showAll || cube.id === live.current.selectedId ? wallCount(cube.model) : 0}`).join("|");
@@ -971,20 +1057,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     let clock = 0;
     const timer = new THREE.Timer();
 
-    const resize = () => {
-      const w = el.clientWidth || 1;
-      const h = el.clientHeight || 1;
-      const prCap = w * h > 1_200_000 || tightGpu ? 1 : w < 700 ? 1.15 : 1.25;
-      const pr = Math.min(window.devicePixelRatio || 1, prCap);
-      camera.aspect = w / Math.max(1, h);
-      camera.fov = w < 700 ? 50 : 38;
-      camera.updateProjectionMatrix();
-      renderer.setPixelRatio(pr);
-      renderer.setSize(w, h, false);
-      composer.setPixelRatio(pr);
-      composer.setSize(w, h);
-      bloom.strength = w < 700 ? 0.3 : 0.42;
-    };
+    const resize = () => rebuildTargets();
     resize();
     const observer = new ResizeObserver(resize);
     observer.observe(el);
@@ -1120,10 +1193,13 @@ export const CubeCanvas = memo(function CubeCanvas({
       outlineFillMat.opacity = 0.12 + Math.sin(clock * 2.4) * 0.05;
       controls.update();
       try {
-        if (renderer.getContext().isContextLost()) return;
-        composer.render(delta);
+        const gl = renderer.getContext();
+        if (!gl || gl.isContextLost()) return;
+        if (composer) composer.render(delta);
+        else renderer.render(scene, camera);
       } catch {
-        if (!renderer.getContext().isContextLost()) renderer.render(scene, camera);
+        const gl = renderer.getContext();
+        if (gl && !gl.isContextLost()) renderer.render(scene, camera);
       }
       if (!announced) {
         announced = true;
@@ -1142,6 +1218,9 @@ export const CubeCanvas = memo(function CubeCanvas({
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+      renderer.domElement.removeEventListener("webglcontextlost", onLost);
       renderer.domElement.removeEventListener("webglcontextrestored", onRestore);
       controls.removeEventListener("start", onStart);
       controls.dispose();
@@ -1154,7 +1233,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       ghostMat.dispose();
       pickMat.dispose();
       lineMat.dispose();
-      composer.dispose();
+      composer?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
