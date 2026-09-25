@@ -380,12 +380,13 @@ export function SessionCube() {
         const next = [...prev, ...placed];
         return next.map((cube) => (cube.id === first.id ? realizeCube(cube) : shellCube(cube)));
       });
+      setSelectedIds([first.id]);
     });
     selectedIdsRef.current = [first.id];
-    setSelectedIds([first.id]);
     setStep(0);
     stepsRef.current[first.id] = 0;
     setFollowAll(true);
+    setAutoRotate(false);
     setBusy(false);
     const extra = errors.length ? ` ${errors.length} skipped.` : "";
     const dimsByStack = new Map<number, string>();
