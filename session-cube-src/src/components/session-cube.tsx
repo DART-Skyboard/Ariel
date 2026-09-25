@@ -175,6 +175,9 @@ export function SessionCube() {
   const [liveActive, setLiveActive] = useState(false);
   const [liveCubeId, setLiveCubeId] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState("");
+  const liveSlotRef = useRef<LoadedCube["slot"] | null>(null);
+  const liveMazeRef = useRef("");
+  const liveSeenRef = useRef<string | null>(null);
   const gpuStamp = useRef(0);
   const remounting = useRef(false);
   const onGpuLost = useCallback(() => {
@@ -216,45 +219,71 @@ export function SessionCube() {
     setShowScene(true);
   }, []);
 
-  // TF163: polls the shared config (same file iOS writes) — when
-  // liveOn is true here AND the remote flag says enabled, fetches iOS's
-  // ready-to-load export and swaps it into the scene as its own cube,
-  // replacing the previous live cube each cycle rather than
-  // accumulating duplicates. liveOn/off here is purely this viewer's own
-  // display preference, independent of whether the feed is actually
-  // running server-side — matching "toggle off by default... independent
-  // of the actual sentient journal collecting that data."
+  // Live feed is off until the viewer turns it on. The journal repo is
+  // private, so the poll goes through the public Apps Script proxy and
+  // only the analytics-live folder. The cube stays an empty green edge
+  // box (no wall faces) and keeps its stack slot across polls.
   useEffect(() => {
     if (!liveOn) {
       setLiveActive(false);
+      setLiveCubeId(null);
+      setLiveStatus("");
+      liveSlotRef.current = null;
+      liveMazeRef.current = "";
+      liveSeenRef.current = null;
+      setCubes((prev) => (prev.some((cube) => cube.id.startsWith("live-")) ? prev.filter((cube) => !cube.id.startsWith("live-")) : prev));
+      setSelectedIds((prev) => {
+        if (!prev.some((id) => id.startsWith("live-"))) return prev;
+        const next = prev.filter((id) => !id.startsWith("live-"));
+        selectedIdsRef.current = next;
+        return next;
+      });
       return;
     }
     let cancelled = false;
-    const CONFIG_URL = "https://raw.githubusercontent.com/DART-Skyboard/leatr-ash/main/ashtree/analytics-live/config.json";
+    const gas = "https://script.google.com/macros/s/AKfycbyzkQxLR5miUXP6oDw-1AR1GIjgpzlw9iLw0gO_ZTeLfL849LWbNX7WVz_kf7yLWBKA_w/exec";
+    const readLive = async (path: string) => {
+      const res = await fetch(`${gas}?action=ashread&path=${encodeURIComponent(path)}&t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("proxy");
+      const body = (await res.json()) as { ok?: boolean; error?: string; content?: unknown };
+      if (!body || body.ok === false) throw new Error(body?.error || "unread");
+      if (body.ok === true && "content" in body) return body.content;
+      return body;
+    };
     const poll = async () => {
       try {
-        const configRes = await fetch(`${CONFIG_URL}?t=${Date.now()}`, { cache: "no-store" });
-        if (!configRes.ok) throw new Error("config unavailable");
-        const config = await configRes.json();
+        const config = (await readLive("ashtree/analytics-live/config.json")) as { enabled?: boolean; mazeId?: string };
         if (cancelled) return;
-        if (!config.enabled || !config.mazeId) {
+        if (!config?.enabled || !config.mazeId) {
           setLiveActive(false);
           setLiveStatus("Off — no active session right now.");
           return;
         }
-        const exportUrl = `https://raw.githubusercontent.com/DART-Skyboard/leatr-ash/main/ashtree/analytics-live/${config.mazeId}/latest-export.json?t=${Date.now()}`;
-        const exportRes = await fetch(exportUrl, { cache: "no-store" });
-        if (!exportRes.ok) throw new Error("no export yet");
-        const raw = await exportRes.json();
-        if (cancelled) return;
-        const liveCube = cubeFromRaw(raw, "Live Feed", true, `live-${config.mazeId}`);
-        setCubes((prev) => {
-          const withoutOldLive = prev.filter((cube) => !cube.id.startsWith("live-"));
-          return [...withoutOldLive, liveCube];
-        });
-        setLiveCubeId(liveCube.id);
+        const raw = await readLive(`ashtree/analytics-live/${config.mazeId}/latest-export.json`);
+        if (cancelled || !raw || typeof raw !== "object") return;
+        const id = `live-${config.mazeId}`;
+        const base = cubeFromRaw(raw as Parameters<typeof cubeFromRaw>[0], "Live Feed", false, id);
+        if (!liveSlotRef.current || liveMazeRef.current !== config.mazeId) {
+          const placed = assignStacks(
+            cubesRef.current.filter((cube) => !cube.id.startsWith("live-")),
+            [base],
+            { x: 1, y: 1, z: 1 },
+            true,
+          )[0];
+          liveSlotRef.current = placed.slot;
+          liveMazeRef.current = config.mazeId;
+        }
+        const liveCube = { ...base, slot: liveSlotRef.current };
+        setCubes((prev) => [...prev.filter((cube) => !cube.id.startsWith("live-")), liveCube]);
+        setLiveCubeId(id);
         setLiveActive(true);
-        setLiveStatus(`Live — ${raw.totalEvents ?? 0} events, updated ${new Date().toLocaleTimeString()}.`);
+        const total = (raw as { totalEvents?: number }).totalEvents ?? liveCube.model.eventCount;
+        setLiveStatus(`Live — ${total} events, updated ${new Date().toLocaleTimeString()}.`);
+        if (liveSeenRef.current !== id) {
+          liveSeenRef.current = id;
+          selectedIdsRef.current = [id];
+          setSelectedIds([id]);
+        }
       } catch {
         if (!cancelled) {
           setLiveActive(false);
@@ -719,6 +748,7 @@ export function SessionCube() {
                 </label>
               </div>
               {notice ? <p className="mt-2 text-xs text-mist">{notice}</p> : null}
+              {liveOn && liveStatus ? <p className="mt-1 text-xs text-verdigris">{liveStatus}</p> : null}
                 </div>
               </div>
             </div>

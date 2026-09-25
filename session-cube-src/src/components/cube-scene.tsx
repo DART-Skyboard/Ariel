@@ -605,23 +605,46 @@ export const CubeCanvas = memo(function CubeCanvas({
       fog: false,
     });
     liveOutlineMat.userData.shared = true;
+    const liveGlowMat = new THREE.LineBasicMaterial({
+      color: 0x39ff8a,
+      transparent: true,
+      opacity: 0.4,
+      toneMapped: false,
+      fog: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    liveGlowMat.userData.shared = true;
     const liveOutlineLine = new THREE.LineSegments(edgeGeo, liveOutlineMat);
+    const liveGlowLine = new THREE.LineSegments(edgeGeo, liveGlowMat);
     liveOutlineLine.frustumCulled = false;
+    liveGlowLine.frustumCulled = false;
     liveOutlineLine.raycast = () => undefined;
+    liveGlowLine.raycast = () => undefined;
     liveOutlineLine.visible = false;
-    scene.add(liveOutlineLine);
+    liveGlowLine.visible = false;
+    scene.add(liveOutlineLine, liveGlowLine);
+    const isLiveId = (id: string) => id === live.current.liveCubeId || id.startsWith("live-");
     const placeLiveOutline = (rig: Rig | undefined) => {
       if (!rig) {
         liveOutlineLine.visible = false;
+        liveGlowLine.visible = false;
         return;
       }
       const span = ySpan(rig.model, live.current.view.explode);
       liveOutlineLine.visible = true;
+      liveGlowLine.visible = true;
       liveOutlineLine.position.copy(rig.group.position);
+      liveGlowLine.position.copy(rig.group.position);
       liveOutlineLine.scale.set(
         (rig.model.width + 0.95) * NEST,
         (span + 0.8) * NEST,
         (rig.model.depth + 0.95) * NEST,
+      );
+      liveGlowLine.scale.set(
+        (rig.model.width + 1.45) * NEST,
+        (span + 1.25) * NEST,
+        (rig.model.depth + 1.45) * NEST,
       );
     };
 
@@ -800,6 +823,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       const group = new THREE.Group();
       const ghost = new THREE.Mesh(boxGeo, ghostMat);
       ghost.raycast = () => undefined;
+      ghost.visible = !isLiveId(cube.id);
       const pick = new THREE.Mesh(boxGeo, pickMat);
       pick.userData.cubeId = cube.id;
       const count = Math.max(2, cube.model.path.length);
@@ -942,28 +966,28 @@ export const CubeCanvas = memo(function CubeCanvas({
         spanZ = Math.max(spanZ, rig.model.depth);
         spanY = Math.max(spanY, ySpan(rig.model, next.explode));
       }
-      const gap = 1;
+      const gap = 2;
       const stackGap = 5;
       const pitchX = spanX + gap;
       const pitchY = spanY + gap;
       const pitchZ = spanZ + gap;
       const fallback = { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 };
       const stackIds: number[] = [];
-      const footprints = new Map<number, { nx: number; ny: number; nz: number }>();
+      const occupied = new Map<number, { nx: number; ny: number; nz: number }>();
       for (const rig of rigs) {
         const slot = rig.slot ?? fallback;
-        if (footprints.has(slot.stack)) continue;
-        footprints.set(slot.stack, {
-          nx: Math.max(1, slot.nx || 1),
-          ny: Math.max(1, slot.ny || 1),
-          nz: Math.max(1, slot.nz || 1),
+        const prev = occupied.get(slot.stack);
+        if (!prev) stackIds.push(slot.stack);
+        occupied.set(slot.stack, {
+          nx: Math.max(prev?.nx ?? 1, slot.x + 1),
+          ny: Math.max(prev?.ny ?? 1, slot.y + 1),
+          nz: Math.max(prev?.nz ?? 1, slot.z + 1),
         });
-        stackIds.push(slot.stack);
       }
       stackIds.sort((a, b) => a - b);
       const widths = stackIds.map((id) => {
-        const nx = footprints.get(id)!.nx;
-        return (nx - 1) * pitchX + spanX + stackGap;
+        const occ = occupied.get(id)!;
+        return (Math.max(1, occ.nx) - 1) * pitchX + spanX + stackGap;
       });
       let cursor = 0;
       const originX = new Map<number, number>();
@@ -986,6 +1010,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         const z = slot.z * pitchZ * NEST;
         rig.group.position.set(x, y, z);
         rig.group.scale.setScalar(NEST);
+        if (isLiveId(rig.id)) rig.ghost.visible = false;
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
         minY = Math.min(minY, y);
@@ -995,8 +1020,16 @@ export const CubeCanvas = memo(function CubeCanvas({
         const span = ySpan(rig.model, next.explode);
         rig.ghost.scale.set(rig.model.width, span, rig.model.depth);
         rig.pick.scale.copy(rig.ghost.scale);
-        const attr = rig.pathLine.geometry.getAttribute("position") as THREE.BufferAttribute;
-        const colors = rig.pathLine.geometry.getAttribute("color") as THREE.BufferAttribute;
+        const pathNeed = Math.max(2, rig.model.path.length);
+        const pathGeo = rig.pathLine.geometry;
+        const currentAttr = pathGeo.getAttribute("position") as THREE.BufferAttribute;
+        if (currentAttr.count < pathNeed) {
+          pathGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pathNeed * 3), 3));
+          pathGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pathNeed * 3), 3));
+        }
+        pathGeo.setDrawRange(0, Math.max(0, rig.model.path.length));
+        const attr = pathGeo.getAttribute("position") as THREE.BufferAttribute;
+        const colors = pathGeo.getAttribute("color") as THREE.BufferAttribute;
         const total = Math.max(1, rig.model.path.length - 1);
         const pathMax = attr.count;
         rig.model.path.forEach((node, i) => {
@@ -1104,9 +1137,11 @@ export const CubeCanvas = memo(function CubeCanvas({
       } else if (!buildQueue.length) {
         cubesNow.forEach((cube) => {
           const rig = rigs.find((item) => item.id === cube.id);
-          if (rig) {
+          if (!rig) return;
+          if (rig.model !== cube.model || rig.slot !== cube.slot) {
             rig.model = cube.model;
             rig.slot = cube.slot;
+            layoutDirty = true;
           }
         });
       }
@@ -1121,13 +1156,19 @@ export const CubeCanvas = memo(function CubeCanvas({
         layoutDirty = true;
       }
       const showAll = cubesNow.length <= 1;
-      const stamp = cubesNow.map((cube) => `${cube.id}:${showAll || cube.id === live.current.selectedId ? wallCount(cube.model) : 0}`).join("|");
+      const stamp = cubesNow
+        .map((cube) => {
+          const walls = !isLiveId(cube.id) && (showAll || cube.id === live.current.selectedId) ? wallCount(cube.model) : 0;
+          return `${cube.id}:${walls}`;
+        })
+        .join("|");
       if (stamp !== detailStamp) {
         for (const rig of rigs) {
-          const want = showAll || rig.id === live.current.selectedId;
+          const want = !isLiveId(rig.id) && (showAll || rig.id === live.current.selectedId);
           if (want && wallCount(rig.model) > 0) {
             if (!rig.detail) addDetail(rig);
           } else clearDetail(rig);
+          if (isLiveId(rig.id)) rig.ghost.visible = false;
         }
         detailStamp = stamp;
         layoutDirty = true;
@@ -1294,6 +1335,11 @@ export const CubeCanvas = memo(function CubeCanvas({
         }
       }
       outlineMat.opacity = 0.78 + Math.sin(clock * 2.4) * 0.18;
+      if (liveOutlineLine.visible) {
+        const pulse = Math.sin(clock * 2.2);
+        liveOutlineMat.opacity = 0.74 + pulse * 0.22;
+        liveGlowMat.opacity = 0.28 + pulse * 0.16;
+      }
       controls.update();
       const gl = renderer.getContext();
       if (gl && !gl.isContextLost()) {
@@ -1337,6 +1383,7 @@ export const CubeCanvas = memo(function CubeCanvas({
       lineMat.dispose();
       outlineMat.dispose();
       liveOutlineMat.dispose();
+      liveGlowMat.dispose();
       composer?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
