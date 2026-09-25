@@ -27,6 +27,7 @@ export type CubeView = {
   maze: boolean;
   tunnel: boolean;
   path: boolean;
+  lights: number;
 };
 
 export type NestCube = {
@@ -276,7 +277,7 @@ function categoryHex(node: PathNode): string {
 }
 
 function viewKey(view: CubeView): string {
-  return `${view.explode}|${view.floor}|${view.shell ? 1 : 0}|${view.maze ? 1 : 0}|${view.tunnel ? 1 : 0}|${view.path ? 1 : 0}`;
+  return `${view.explode}|${view.floor}|${view.shell ? 1 : 0}|${view.maze ? 1 : 0}|${view.tunnel ? 1 : 0}|${view.path ? 1 : 0}|${view.lights}`;
 }
 
 function disposeTree(root: THREE.Object3D) {
@@ -403,7 +404,6 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const lampPos = Array.from({ length: 8 }, () => new THREE.Vector2());
     const lampGain = new Float32Array(8);
-    const spots: THREE.SpotLight[] = [];
     const floorMat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
@@ -428,10 +428,10 @@ export const CubeCanvas = memo(function CubeCanvas({
         varying vec3 vWorld;
         vec3 lamp(vec3 col, vec2 at, float g) {
           vec2 d = vWorld.xz - at;
-          float e = exp(-dot(d, d) / 420.0) * g;
-          col += vec3(0.16, 0.55, 0.44) * e;
-          col += vec3(0.72, 0.40, 0.12) * e * e;
-          return col;
+          float e = exp(-dot(d, d) / 480.0) * g;
+          col += vec3(0.09, 0.28, 0.22) * e;
+          col += vec3(0.28, 0.14, 0.05) * e * e;
+          return min(col, vec3(0.34, 0.46, 0.42));
         }
         void main() {
           vec2 p = vUv * 2.0 - 1.0;
@@ -463,6 +463,17 @@ export const CubeCanvas = memo(function CubeCanvas({
     if (Array.isArray(gridMat)) gridMat.forEach(fadeGrid);
     else fadeGrid(gridMat);
     scene.add(grid);
+
+    const spots: THREE.SpotLight[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      const spot = new THREE.SpotLight("#d7fff4", 0, 64, Math.PI / 7, 0.72, 1.6);
+      const target = new THREE.Object3D();
+      spot.target = target;
+      spot.castShadow = false;
+      spot.visible = false;
+      scene.add(spot, target);
+      spots.push(spot);
+    }
 
     const outlineFillMat = new THREE.MeshBasicMaterial({
       color: PALETTE.brass,
@@ -523,6 +534,15 @@ export const CubeCanvas = memo(function CubeCanvas({
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
     composer.addPass(new ShaderPass(VignetteShader));
+    const onRestore = () => {
+      const w = Math.max(1, el.clientWidth);
+      const h = Math.max(1, el.clientHeight);
+      renderer.setSize(w, h, false);
+      composer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    renderer.domElement.addEventListener("webglcontextrestored", onRestore);
 
     let rigs: Rig[] = [];
     let rosterKey = "";
@@ -774,7 +794,9 @@ export const CubeCanvas = memo(function CubeCanvas({
         const attr = rig.pathLine.geometry.getAttribute("position") as THREE.BufferAttribute;
         const colors = rig.pathLine.geometry.getAttribute("color") as THREE.BufferAttribute;
         const total = Math.max(1, rig.model.path.length - 1);
+        const pathMax = attr.count;
         rig.model.path.forEach((node, i) => {
+          if (i >= pathMax) return;
           const [x, y, z] = gridToWorld(node.x, node.y, node.z, next.explode, rig.model);
           attr.setXYZ(i, x, y, z);
           tint.copy(turnA).lerp(turnB, total <= 1 ? 0 : i / (total - 1));
@@ -791,7 +813,7 @@ export const CubeCanvas = memo(function CubeCanvas({
           rig.quiet.visible = next.maze && rig.model.walls.quiet.length > 0;
           rig.shell.visible = next.shell && rig.model.walls.shell.length > 0;
           rig.tunnel.visible = next.tunnel && rig.model.walls.corridor.length > 0;
-          const count = rig.model.path.length - 1;
+          const count = Math.min(rig.model.path.length - 1, rig.pathMesh.count);
           for (let i = 0; i < count; i += 1) {
             const from = rig.model.path[i];
             const to = rig.model.path[i + 1];
@@ -857,32 +879,25 @@ export const CubeCanvas = memo(function CubeCanvas({
       }
       const ranked = [...bins.values()]
         .sort((a, b) => b.n - a.n || a.x * a.x + a.z * a.z - (b.x * b.x + b.z * b.z))
-        .slice(0, 8);
-      while (spots.length < ranked.length) {
-        const spot = new THREE.SpotLight("#e7fff6", 0, 72, Math.PI / 5, 0.55, 1.15);
-        const target = new THREE.Object3D();
-        spot.target = target;
-        spot.castShadow = false;
-        scene.add(spot, target);
-        spots.push(spot);
-      }
-      for (let i = 0; i < 8; i += 1) {
+        .slice(0, spots.length);
+      const master = Math.min(1, Math.max(0, next.lights || 0));
+      const share = ranked.length > 1 ? 1 / Math.sqrt(ranked.length) : 1;
+      const power = master * 6.5 * share;
+      for (let i = 0; i < spots.length; i += 1) {
         const bin = ranked[i];
         const spot = spots[i];
-        if (!bin || !spot) {
-          if (spot) {
-            spot.intensity = 0;
-            spot.visible = false;
-          }
+        if (!bin || master <= 0.001) {
+          spot.intensity = 0;
+          spot.visible = false;
           lampGain[i] = 0;
           continue;
         }
         spot.visible = true;
-        spot.intensity = i === 0 ? 26 : 22;
-        spot.position.set(bin.x, 26, bin.z);
+        spot.intensity = power;
+        spot.position.set(bin.x, 24, bin.z);
         spot.target.position.set(bin.x, -8.5, bin.z);
         lampPos[i].set(bin.x, bin.z);
-        lampGain[i] = 1;
+        lampGain[i] = master * share;
       }
       floorMat.uniforms.gain.value = lampGain;
       const reach = cell * Math.hypot(cols, rows) * 0.62 + 10;
@@ -1105,9 +1120,10 @@ export const CubeCanvas = memo(function CubeCanvas({
       outlineFillMat.opacity = 0.12 + Math.sin(clock * 2.4) * 0.05;
       controls.update();
       try {
+        if (renderer.getContext().isContextLost()) return;
         composer.render(delta);
       } catch {
-        renderer.render(scene, camera);
+        if (!renderer.getContext().isContextLost()) renderer.render(scene, camera);
       }
       if (!announced) {
         announced = true;
@@ -1126,6 +1142,7 @@ export const CubeCanvas = memo(function CubeCanvas({
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      renderer.domElement.removeEventListener("webglcontextrestored", onRestore);
       controls.removeEventListener("start", onStart);
       controls.dispose();
       renderer.domElement.removeEventListener("pointerdown", onDown);

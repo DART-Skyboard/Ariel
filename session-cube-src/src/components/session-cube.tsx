@@ -57,6 +57,7 @@ const INITIAL_VIEW: CubeView = {
   maze: true,
   tunnel: true,
   path: true,
+  lights: 0.4,
 };
 
 function exampleCube(): LoadedCube {
@@ -697,6 +698,20 @@ export function SessionCube() {
                   onChange={(event) => patch({ floor: Number(event.target.value) })}
                 />
                 <span className="w-8 font-mono text-bone">{view.floor < 0 ? "All" : view.floor}</span>
+              </label>
+              <label className="flex items-center gap-3 text-xs text-mist">
+                <span className="w-14 font-mono tracking-widest uppercase">Lights</span>
+                <input
+                  className="scrub"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(view.lights * 100)}
+                  aria-label="Spotlight brightness"
+                  suppressHydrationWarning
+                  onChange={(event) => patch({ lights: Number(event.target.value) / 100 })}
+                />
+                <span className="w-8 font-mono text-bone">{view.lights <= 0.01 ? "Off" : Math.round(view.lights * 100)}</span>
               </label>
               </div>
               <EyeButton label="Play all" open onClick={() => toggleHud("master")} />
