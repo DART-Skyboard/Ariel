@@ -166,6 +166,15 @@ export function SessionCube() {
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [hud, setHud] = useState({ session: true, master: true, events: true, walk: true });
   const [gpuEpoch, setGpuEpoch] = useState(0);
+  // TF163: live feed state — off by default, per direct instruction.
+  // Polls the same shared config the iOS admin console writes
+  // (ashtree/analytics-live/config.json in leatr-ash) so starting/stopping
+  // from either side reflects on both, and fetches the ready-to-load
+  // export iOS already writes rather than reimplementing any nesting here.
+  const [liveOn, setLiveOn] = useState(false);
+  const [liveActive, setLiveActive] = useState(false);
+  const [liveCubeId, setLiveCubeId] = useState<string | null>(null);
+  const [liveStatus, setLiveStatus] = useState("");
   const gpuStamp = useRef(0);
   const remounting = useRef(false);
   const onGpuLost = useCallback(() => {
@@ -206,6 +215,60 @@ export function SessionCube() {
   useEffect(() => {
     setShowScene(true);
   }, []);
+
+  // TF163: polls the shared config (same file iOS writes) — when
+  // liveOn is true here AND the remote flag says enabled, fetches iOS's
+  // ready-to-load export and swaps it into the scene as its own cube,
+  // replacing the previous live cube each cycle rather than
+  // accumulating duplicates. liveOn/off here is purely this viewer's own
+  // display preference, independent of whether the feed is actually
+  // running server-side — matching "toggle off by default... independent
+  // of the actual sentient journal collecting that data."
+  useEffect(() => {
+    if (!liveOn) {
+      setLiveActive(false);
+      return;
+    }
+    let cancelled = false;
+    const CONFIG_URL = "https://raw.githubusercontent.com/DART-Skyboard/leatr-ash/main/ashtree/analytics-live/config.json";
+    const poll = async () => {
+      try {
+        const configRes = await fetch(`${CONFIG_URL}?t=${Date.now()}`, { cache: "no-store" });
+        if (!configRes.ok) throw new Error("config unavailable");
+        const config = await configRes.json();
+        if (cancelled) return;
+        if (!config.enabled || !config.mazeId) {
+          setLiveActive(false);
+          setLiveStatus("Off — no active session right now.");
+          return;
+        }
+        const exportUrl = `https://raw.githubusercontent.com/DART-Skyboard/leatr-ash/main/ashtree/analytics-live/${config.mazeId}/latest-export.json?t=${Date.now()}`;
+        const exportRes = await fetch(exportUrl, { cache: "no-store" });
+        if (!exportRes.ok) throw new Error("no export yet");
+        const raw = await exportRes.json();
+        if (cancelled) return;
+        const liveCube = cubeFromRaw(raw, "Live Feed", false, `live-${config.mazeId}`);
+        setCubes((prev) => {
+          const withoutOldLive = prev.filter((cube) => !cube.id.startsWith("live-"));
+          return [...withoutOldLive, liveCube];
+        });
+        setLiveCubeId(liveCube.id);
+        setLiveActive(true);
+        setLiveStatus(`Live — ${raw.totalEvents ?? 0} events, updated ${new Date().toLocaleTimeString()}.`);
+      } catch {
+        if (!cancelled) {
+          setLiveActive(false);
+          setLiveStatus("Live feed unreachable — will keep retrying.");
+        }
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [liveOn]);
 
   const events = useMemo(
     () =>
@@ -491,6 +554,7 @@ export function SessionCube() {
                 resetToken={resetToken}
                 onReady={onReady}
                 onGpuLost={onGpuLost}
+                liveCubeId={liveCubeId}
               />
             </Suspense>
           ) : null}
@@ -534,13 +598,12 @@ export function SessionCube() {
                 <button
                   type="button"
                   onClick={() => {
-                    const sample = exampleCube();
-                    setCubes([sample]);
-                    selectedIdsRef.current = [sample.id];
-                    setSelectedIds([sample.id]);
+                    setCubes([]);
+                    selectedIdsRef.current = [];
+                    setSelectedIds([]);
                     setFollowAll(true);
                     setNotice("");
-                    stepsRef.current = { example: 0 };
+                    stepsRef.current = {};
                     setStep(0);
                   }}
                   className="rounded-full bg-panel-2 px-3 py-2 text-xs text-mist"
@@ -560,6 +623,18 @@ export function SessionCube() {
                 </button>
                 <button type="button" onClick={() => selectCube("")} className="rounded-full bg-panel-2 px-3 py-2 text-xs text-mist">
                   None
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={liveOn}
+                  onClick={() => setLiveOn((value) => !value)}
+                  title={liveStatus || "Show the live analytics feed from the sentient journal, if one is running"}
+                  className={cn(
+                    "rounded-full px-3 py-2 text-xs font-medium",
+                    liveActive ? "bg-verdigris text-ink" : liveOn ? "bg-panel-2 text-verdigris" : "bg-panel-2 text-mist",
+                  )}
+                >
+                  {liveActive ? "● Live Feed" : "Live Feed"}
                 </button>
                 <button
                   type="button"
