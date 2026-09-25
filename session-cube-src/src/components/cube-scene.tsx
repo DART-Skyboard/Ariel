@@ -475,6 +475,9 @@ export const CubeCanvas = memo(function CubeCanvas({
     let lastCell = 18;
     let lastCols = 1;
     let lastRows = 1;
+    let aimX = 0;
+    let aimY = 0;
+    let aimZ = 0;
 
     const clearDetail = (rig: Rig) => {
       if (!rig.detail) return;
@@ -638,15 +641,19 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const frameHome = () => {
       const dist = Math.max(16, lastCell * Math.max(lastCols, lastRows) * 0.9);
-      camera.position.set(dist * 0.62, Math.max(6, dist * 0.42), dist * 0.78);
-      controls.target.set(0, -0.3, 0);
-      controls.maxDistance = Math.max(80, dist * 4);
+      camera.position.set(aimX + dist * 0.62, aimY + Math.max(6, dist * 0.42), aimZ + dist * 0.78);
+      controls.target.set(aimX, aimY, aimZ);
+      controls.maxDistance = Math.max(80, dist * 6);
+      camera.far = Math.max(900, dist * 14);
+      camera.near = Math.min(0.1, Math.max(0.05, dist / 5000));
+      camera.updateProjectionMatrix();
       fog.density = 1.15 / Math.max(28, dist);
     };
 
     const syncLayout = (next: CubeView) => {
       const spans = rigs.map((rig) => cubeSpan(rig.model.width, rig.model.height, rig.model.depth, next.explode));
-      const fit = spans.length ? Math.max(...spans) : 8;
+      let fit = 8;
+      for (const span of spans) if (span > fit) fit = span;
       const pitch = fit + 0.65;
       const aisle = fit * 0.9;
       const fallback = { stack: 0, x: 0, y: 0, z: 0, nx: 1, ny: 1, nz: 1 };
@@ -664,14 +671,13 @@ export const CubeCanvas = memo(function CubeCanvas({
       }
       stackIds.sort((a, b) => a - b);
       const widths = stackIds.map((id) => footprints.get(id)!.nx * pitch);
-      const totalWidth = widths.reduce((sum, width) => sum + width, 0) + aisle * Math.max(0, stackIds.length - 1);
-      let cursor = -totalWidth / 2;
+      let cursor = 0;
       const originX = new Map<number, number>();
       stackIds.forEach((id, index) => {
-        const width = widths[index];
-        originX.set(id, cursor + width / 2);
-        cursor += width + aisle;
+        originX.set(id, cursor);
+        cursor += widths[index] + aisle;
       });
+      const shift = stackIds.length ? -(cursor - aisle) / 2 : 0;
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
@@ -680,12 +686,10 @@ export const CubeCanvas = memo(function CubeCanvas({
       let maxZ = -Infinity;
       rigs.forEach((rig) => {
         const slot = rig.slot ?? fallback;
-        const nx = Math.max(1, slot.nx || 1);
-        const nz = Math.max(1, slot.nz || 1);
         const ox = originX.get(slot.stack) ?? 0;
-        const x = ox + (slot.x - (nx - 1) / 2) * pitch;
+        const x = shift + ox + slot.x * pitch;
         const y = slot.y * pitch;
-        const z = (slot.z - (nz - 1) / 2) * pitch;
+        const z = slot.z * pitch;
         rig.group.position.set(x, y, z);
         minX = Math.min(minX, x);
         maxX = Math.max(maxX, x);
@@ -755,20 +759,15 @@ export const CubeCanvas = memo(function CubeCanvas({
           rig.leave.position.set(lx, ly, lz + 0.78);
         }
       });
-      for (const id of stackIds) {
-        const fp = footprints.get(id)!;
-        const ox = originX.get(id) ?? 0;
-        minX = Math.min(minX, ox - (fp.nx * pitch) / 2);
-        maxX = Math.max(maxX, ox + (fp.nx * pitch) / 2);
-        minZ = Math.min(minZ, -(fp.nz * pitch) / 2);
-        maxZ = Math.max(maxZ, (fp.nz * pitch) / 2);
-        minY = Math.min(minY, 0);
-        maxY = Math.max(maxY, fp.ny * pitch);
+      const finite = Number.isFinite(minX) && Number.isFinite(maxX);
+      const extentX = finite ? maxX - minX + fit : pitch;
+      const extentY = finite ? maxY - minY + fit : pitch;
+      const extentZ = finite ? maxZ - minZ + fit : pitch;
+      if (finite) {
+        aimX = (minX + maxX) / 2;
+        aimY = (minY + maxY) / 2;
+        aimZ = (minZ + maxZ) / 2;
       }
-      const finite = stackIds.length > 0 && Number.isFinite(minX);
-      const extentX = finite ? maxX - minX : pitch;
-      const extentY = finite ? maxY - minY : pitch;
-      const extentZ = finite ? maxZ - minZ : pitch;
       const cell = pitch;
       const cols = Math.max(1, extentX / cell);
       const rows = Math.max(1, extentY / cell, extentZ / cell);
@@ -899,8 +898,10 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     let raf = 0;
     let announced = false;
+    let reported = false;
     const loop = (now?: number) => {
       raf = requestAnimationFrame(loop);
+      try {
       timer.update(now);
       const delta = Math.min(timer.getDelta(), 0.05);
       clock += delta;
@@ -976,6 +977,12 @@ export const CubeCanvas = memo(function CubeCanvas({
         announced = true;
         renderer.domElement.style.opacity = "1";
         live.current.onReady?.();
+      }
+      } catch (error) {
+        if (!reported) {
+          reported = true;
+          console.error(error);
+        }
       }
     };
     raf = requestAnimationFrame(loop);
