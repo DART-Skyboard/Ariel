@@ -1,4 +1,4 @@
-import { strFromU8, unzipSync } from "fflate";
+import { gunzipSync, unzipSync, Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import { buildModel, type CubeModel, type RawExport } from "@/lib/cube-model";
 
 export type LoadedCube = {
@@ -12,8 +12,7 @@ export type LoadedCube = {
 let seq = 0;
 
 function nextId(prefix: string): string {
-  seq += 1;
-  return `${prefix}-${seq}`;
+  return `${prefix}-${++seq}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -53,25 +52,96 @@ export function shellCube(cube: LoadedCube): LoadedCube {
 }
 
 function baseName(path: string): string {
-  const file = path.split("/").pop() ?? path;
-  return file.replace(/\.json$/i, "") || "cube";
+  const file = path.split(/[/\\]/).pop() ?? path;
+  return file.replace(/\.(json|zip|gz)$/gi, "") || "cube";
+}
+
+function isZip(bytes: Uint8Array): boolean {
+  return bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 3 || bytes[2] === 5 || bytes[2] === 7);
+}
+
+function isGzip(bytes: Uint8Array): boolean {
+  return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+function isJunk(path: string): boolean {
+  const leaf = path.split(/[/\\]/).pop() ?? path;
+  return !leaf || path.endsWith("/") || path.includes("__MACOSX") || leaf.startsWith(".");
+}
+
+function decodeText(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes).replace(/^\uFEFF/, "");
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes).replace(/^\uFEFF/, "");
+  }
+  return new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "");
+}
+
+function unzipReliable(bytes: Uint8Array): { name: string; bytes: Uint8Array }[] {
+  try {
+    return Object.entries(unzipSync(bytes))
+      .filter(([path]) => !isJunk(path))
+      .map(([name, data]) => ({ name, bytes: data }));
+  } catch {
+    const out: { name: string; bytes: Uint8Array }[] = [];
+    const unzipper = new Unzip((file) => {
+      if (isJunk(file.name)) return;
+      if (file.compression !== 0 && file.compression !== 8) return;
+      const chunks: Uint8Array[] = [];
+      file.ondata = (err, data, final) => {
+        if (err || !data) return;
+        chunks.push(data);
+        if (!final) return;
+        const size = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const merged = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        out.push({ name: file.name, bytes: merged });
+      };
+      try {
+        file.start();
+      } catch {
+        /* skip entries this browser cannot inflate */
+      }
+    });
+    unzipper.register(UnzipPassThrough);
+    unzipper.register(UnzipInflate);
+    unzipper.push(bytes, true);
+    return out;
+  }
+}
+
+function harvest(name: string, bytes: Uint8Array, into: { name: string; text: string }[], depth: number): void {
+  if (depth > 8 || bytes.length === 0) return;
+  if (isZip(bytes)) {
+    const entries = unzipReliable(bytes);
+    if (!entries.length) throw new Error("could not read that zip");
+    for (const entry of entries) {
+      const leaf = entry.name.split(/[/\\]/).pop() ?? entry.name;
+      harvest(baseName(leaf), entry.bytes, into, depth + 1);
+    }
+    return;
+  }
+  if (isGzip(bytes)) {
+    harvest(name, gunzipSync(bytes), into, depth + 1);
+    return;
+  }
+  const text = decodeText(bytes).trim();
+  if (text.startsWith("{") || text.startsWith("[")) into.push({ name: name || "cube", text });
 }
 
 async function textsFromFile(file: File): Promise<{ name: string; text: string }[]> {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".zip")) {
-    const entries = unzipSync(new Uint8Array(await file.arrayBuffer()));
-    const found: { name: string; text: string }[] = [];
-    for (const [path, bytes] of Object.entries(entries)) {
-      const leaf = path.split("/").pop() ?? "";
-      if (!leaf.toLowerCase().endsWith(".json")) continue;
-      if (path.includes("__MACOSX") || leaf.startsWith(".")) continue;
-      found.push({ name: baseName(leaf), text: strFromU8(bytes) });
-    }
-    if (!found.length) throw new Error("no JSON in the zip");
-    return found;
-  }
-  return [{ name: baseName(file.name), text: await file.text() }];
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!bytes.length) throw new Error("file was empty");
+  const found: { name: string; text: string }[] = [];
+  harvest(baseName(file.name), bytes, found, 0);
+  if (!found.length) throw new Error("no cube JSON inside");
+  return found;
 }
 
 export async function loadCubeFiles(files: File[]): Promise<{ cubes: LoadedCube[]; errors: string[] }> {

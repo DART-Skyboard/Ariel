@@ -326,7 +326,7 @@ export function SessionCube() {
     if (fileRef.current) fileRef.current.value = "";
     if (!incoming.length) {
       setBusy(false);
-      setNotice(errors[0] ?? "Nothing to import");
+      setNotice(errors.join(" · ") || "Nothing to import");
       return;
     }
     const first = incoming[0];
@@ -456,7 +456,7 @@ export function SessionCube() {
                   ref={fileRef}
                   type="file"
                   multiple
-                  accept=".json,.zip,application/json,application/zip"
+                  accept=".json,.zip,.gz,application/json,application/zip,application/x-zip-compressed,application/gzip,application/octet-stream"
                   className="hidden"
                   suppressHydrationWarning
                   onChange={(event) => void onFiles(event.target.files)}
