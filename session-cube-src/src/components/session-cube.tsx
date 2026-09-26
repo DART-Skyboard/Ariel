@@ -25,10 +25,31 @@ import {
   stepToEvent,
   type CubeModel,
   type PathNode,
+  type RawExport,
 } from "@/lib/cube-model";
 import type { CubeView, FocusRequest } from "@/components/cube-scene";
 import type { Bar } from "@/components/nest-charts";
 import { cn } from "@/lib/utils";
+
+const LIVE_ID = "live-feed";
+
+function waitingLiveRaw(): RawExport {
+  const walls = { left: true, right: true, front: true, back: true, top: true, bottom: true };
+  return {
+    exportedAt: new Date().toISOString(),
+    mode: "LIVE FEED",
+    totalEvents: 0,
+    cube: {
+      width: 10,
+      height: 10,
+      depth: 10,
+      entrance: { face: "front", x: 0, y: 0, z: 0 },
+      exit: { face: "back", x: 9, y: 9, z: 9 },
+      cells: [{ x: 0, y: 0, z: 0, walls }],
+    },
+    pathIndex: [{ layer: 0, path: [{ order: 0, x: 0, y: 0, z: 0, events: [] }] }],
+  };
+}
 
 const scenePromise = typeof window === "undefined" ? null : import("@/components/cube-scene");
 const CubeCanvas = lazy(() =>
@@ -219,10 +240,11 @@ export function SessionCube() {
     setShowScene(true);
   }, []);
 
-  // Live feed is off until the viewer turns it on. The journal repo is
-  // private, so the poll goes through the public Apps Script proxy and
-  // only the analytics-live folder. The cube stays an empty green edge
-  // box (no wall faces) and keeps its stack slot across polls.
+  // Live feed stays off until this viewer turns it on. Turning it on
+  // puts one green edge-box into the scene and into the current
+  // selection immediately, then keeps replacing that same cube's path
+  // as the journal publishes new events. The slot and the walk step
+  // stay put across polls.
   useEffect(() => {
     if (!liveOn) {
       setLiveActive(false);
@@ -245,54 +267,69 @@ export function SessionCube() {
     const readLive = async (path: string) => {
       const res = await fetch(`${gas}?action=ashread&path=${encodeURIComponent(path)}&t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) throw new Error("proxy");
-      const body = (await res.json()) as { ok?: boolean; error?: string; content?: unknown };
-      if (!body || body.ok === false) throw new Error(body?.error || "unread");
+      const body = (await res.json()) as { ok?: boolean; error?: string; content?: unknown } | null;
+      if (body == null) return null;
+      if (body.ok === false) throw new Error(body.error || "unread");
       if (body.ok === true && "content" in body) return body.content;
       return body;
     };
-    const poll = async () => {
-      try {
-        const config = (await readLive("ashtree/analytics-live/config.json")) as { enabled?: boolean; mazeId?: string };
-        if (cancelled) return;
-        if (!config?.enabled || !config.mazeId) {
-          setLiveActive(false);
-          setLiveStatus("Off — no active session right now.");
-          return;
-        }
-        const raw = await readLive(`ashtree/analytics-live/${config.mazeId}/latest-export.json`);
-        if (cancelled || !raw || typeof raw !== "object") return;
-        const id = `live-${config.mazeId}`;
-        const base = cubeFromRaw(raw as Parameters<typeof cubeFromRaw>[0], "Live Feed", false, id);
-        if (!liveSlotRef.current || liveMazeRef.current !== config.mazeId) {
-          const placed = assignStacks(
-            cubesRef.current.filter((cube) => !cube.id.startsWith("live-")),
-            [base],
-            { x: 1, y: 1, z: 1 },
-            true,
-          )[0];
-          liveSlotRef.current = placed.slot;
-          liveMazeRef.current = config.mazeId;
-        }
-        const liveCube = { ...base, slot: liveSlotRef.current };
-        setCubes((prev) => [...prev.filter((cube) => !cube.id.startsWith("live-")), liveCube]);
-        setLiveCubeId(id);
-        setLiveActive(true);
-        const total = (raw as { totalEvents?: number }).totalEvents ?? liveCube.model.eventCount;
-        setLiveStatus(`Live — ${total} events, updated ${new Date().toLocaleTimeString()}.`);
-        if (liveSeenRef.current !== id) {
-          liveSeenRef.current = id;
-          selectedIdsRef.current = [id];
-          setSelectedIds([id]);
-        }
-      } catch {
-        if (!cancelled) {
-          setLiveActive(false);
-          setLiveStatus("Live feed unreachable — will keep retrying.");
-        }
+    const placeLive = (raw: RawExport, status: string, active: boolean) => {
+      const base = cubeFromRaw(raw, "Live Feed", false, LIVE_ID);
+      if (!liveSlotRef.current) {
+        const placed = assignStacks(
+          cubesRef.current.filter((cube) => !cube.id.startsWith("live-")),
+          [base],
+          { x: 1, y: 1, z: 1 },
+          true,
+        )[0];
+        liveSlotRef.current = placed.slot;
+      }
+      const liveCube = { ...base, slot: liveSlotRef.current };
+      setCubes((prev) => [...prev.filter((cube) => !cube.id.startsWith("live-")), liveCube]);
+      setLiveCubeId(LIVE_ID);
+      setLiveActive(active);
+      setLiveStatus(status);
+      if (liveSeenRef.current !== LIVE_ID) {
+        liveSeenRef.current = LIVE_ID;
+        setSelectedIds((prev) => {
+          const next = prev.includes(LIVE_ID) ? prev : [...prev, LIVE_ID];
+          selectedIdsRef.current = next;
+          return next;
+        });
       }
     };
-    poll();
-    const interval = setInterval(poll, 10000);
+    placeLive(waitingLiveRaw(), "Waiting for the live table…", false);
+    const poll = async () => {
+      try {
+        const config = (await readLive("ashtree/analytics-live/config.json")) as { enabled?: boolean; mazeId?: string } | null;
+        if (cancelled) return;
+        if (!config || !config.enabled || !config.mazeId) {
+          setLiveActive(false);
+          setLiveStatus(config ? "Off — no active session right now." : "Waiting for Autumn to publish the live table.");
+          return;
+        }
+        const raw = (await readLive(`ashtree/analytics-live/${config.mazeId}/latest-export.json`)) as RawExport | null;
+        if (cancelled) return;
+        if (!raw || typeof raw !== "object" || !("cube" in raw)) {
+          setLiveActive(false);
+          setLiveStatus("Table is on. Waiting for the first events along the path.");
+          return;
+        }
+        const total = raw.totalEvents ?? 0;
+        placeLive(raw, `Live — ${total} events along the path, updated ${new Date().toLocaleTimeString()}.`, true);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "";
+        setLiveActive(false);
+        setLiveStatus(
+          message.includes("Unknown")
+            ? "The journal script isn't serving the live read yet — retrying."
+            : "Live feed unreachable — will keep retrying.",
+        );
+      }
+    };
+    void poll();
+    const interval = setInterval(() => void poll(), 5000);
     return () => {
       cancelled = true;
       clearInterval(interval);

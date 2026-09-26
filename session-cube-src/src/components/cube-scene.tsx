@@ -957,6 +957,41 @@ export const CubeCanvas = memo(function CubeCanvas({
       }
     };
 
+    const placeLiveMarkers = (rig: Rig, explode: number) => {
+      const previous = rig.group.getObjectByName("live-markers");
+      if (previous) {
+        rig.group.remove(previous);
+        const mesh = previous as THREE.Mesh;
+        if (mesh.geometry && !mesh.geometry.userData.shared) mesh.geometry.dispose();
+        const material = mesh.material;
+        const list = Array.isArray(material) ? material : material ? [material] : [];
+        for (const item of list) {
+          if (!item.userData.shared) item.dispose();
+        }
+      }
+      const spots = rig.model.path
+        .map((node, index) => ({ node, index }))
+        .filter((item) => item.node.events.length > 0);
+      if (!spots.length) return;
+      const mesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), glowMaterial(2.7, tightGpu), spots.length);
+      mesh.name = "live-markers";
+      mesh.frustumCulled = false;
+      mesh.raycast = () => undefined;
+      spots.forEach((item, i) => {
+        const [x, y, z] = gridToWorld(item.node.x, item.node.y, item.node.z, explode, rig.model);
+        dummy.position.set(x, y, z);
+        dummy.quaternion.identity();
+        dummy.scale.setScalar(0.22);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        tint.set(categoryHex(item.node));
+        mesh.setColorAt(i, tint);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      rig.group.add(mesh);
+    };
+
     const syncLayout = (next: CubeView) => {
       let spanX = 1;
       let spanY = 1;
@@ -1042,6 +1077,7 @@ export const CubeCanvas = memo(function CubeCanvas({
         attr.needsUpdate = true;
         colors.needsUpdate = true;
         rig.pathLine.visible = next.path;
+        if (isLiveId(rig.id)) placeLiveMarkers(rig, next.explode);
         if (rig.quiet && rig.shell && rig.tunnel && rig.pathMesh && rig.enter && rig.leave) {
           const floor = next.floor >= 0 && next.floor >= rig.model.height ? -1 : next.floor;
           placeWalls(rig.quiet, rig.model.walls.quiet, rig.model, next.explode, floor);
