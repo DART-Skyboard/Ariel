@@ -187,12 +187,13 @@ export function SessionCube() {
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [hud, setHud] = useState({ session: true, master: true, events: true, walk: true });
   const [gpuEpoch, setGpuEpoch] = useState(0);
-  // TF163: live feed state — off by default, per direct instruction.
+  // TF164: live feed state — on by default so first-time visitors see it
+  // alongside the example cube immediately; they can toggle it off.
   // Polls the same shared config the iOS admin console writes
   // (ashtree/analytics-live/config.json in leatr-ash) so starting/stopping
   // from either side reflects on both, and fetches the ready-to-load
   // export iOS already writes rather than reimplementing any nesting here.
-  const [liveOn, setLiveOn] = useState(false);
+  const [liveOn, setLiveOn] = useState(true);
   const [liveActive, setLiveActive] = useState(false);
   const [liveCubeId, setLiveCubeId] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState("");
