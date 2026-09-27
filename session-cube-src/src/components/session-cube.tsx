@@ -275,7 +275,11 @@ export function SessionCube() {
       return body;
     };
     const placeLive = (raw: RawExport, status: string, active: boolean) => {
-      const base = cubeFromRaw(raw, "Live Feed", false, LIVE_ID);
+      // withWalls must be true here — false skips wall/shell/maze/tunnel
+      // geometry entirely in buildModel(), leaving only the path visible
+      // no matter which toggle is on. Every other cube (example, imported
+      // files) is built with withWalls:true; the live cube should match.
+      const base = cubeFromRaw(raw, "Live Feed", true, LIVE_ID);
       if (!liveSlotRef.current) {
         const placed = assignStacks(
           cubesRef.current.filter((cube) => !cube.id.startsWith("live-")),
@@ -434,10 +438,11 @@ export function SessionCube() {
       if (!node) return;
       const [x, y, z] = gridToWorld(node.x, node.y, node.z, view.explode, cube.model);
       focusRef.current = { id, x, y, z, age: 0 };
-      playingRef.current = false;
-      masterRef.current = false;
-      setPlaying(false);
-      setMaster(false);
+      // Jumping to an event or selecting a different cube/step no longer
+      // pauses playback — play/pause (togglePlay) and master
+      // (toggleMaster) are the only things that should change whether
+      // it's running, so interacting with the scene while it plays
+      // doesn't interrupt it.
       publish(id, index, cube.model.path.length);
       setAutoRotate(false);
     },
@@ -449,8 +454,6 @@ export function SessionCube() {
       if (!id) {
         selectedIdsRef.current = [];
         setSelectedIds([]);
-        playingRef.current = false;
-        setPlaying(false);
         return;
       }
       const prevIds = selectedIdsRef.current;
@@ -466,14 +469,8 @@ export function SessionCube() {
         if (prev.length <= 1 && primary) return prev.map((cube) => realizeCube(cube));
         return prev.map((cube) => (primary && cube.id === primary ? realizeCube(cube) : shellCube(cube)));
       });
-      if (!primary) {
-        playingRef.current = false;
-        setPlaying(false);
-        return;
-      }
+      if (!primary) return;
       if (index == null || id !== primary) {
-        playingRef.current = false;
-        setPlaying(false);
         setStep(stepsRef.current[primary] ?? 0);
         return;
       }
@@ -489,8 +486,6 @@ export function SessionCube() {
     const primary = ids[ids.length - 1] ?? "";
     setCubes((prev) => prev.map((cube) => (cube.id === primary ? realizeCube(cube) : shellCube(cube))));
     if (!primary) return;
-    playingRef.current = false;
-    setPlaying(false);
     setStep(stepsRef.current[primary] ?? 0);
   }, []);
 
@@ -976,10 +971,6 @@ export function SessionCube() {
                 suppressHydrationWarning
                 onChange={(event) => {
                   if (!selected) return;
-                  playingRef.current = false;
-                  masterRef.current = false;
-                  setPlaying(false);
-                  setMaster(false);
                   publish(selected.id, Number(event.target.value), selected.model.path.length, true);
                 }}
               />
