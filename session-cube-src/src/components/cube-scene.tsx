@@ -735,6 +735,11 @@ export const CubeCanvas = memo(function CubeCanvas({
     let layoutDirty = true;
     let needsFrame = false;
     let framePick = false;
+    // TF165: once the user manually orbits/pans/zooms, stop auto-framing
+    // on roster changes (e.g. the live feed's own periodic cube refresh) —
+    // only the explicit reset button (resetToken, below) should move the
+    // camera after that point. Hitting reset re-arms auto-framing.
+    let userTouchedCamera = false;
     let lastCell = 18;
     let lastCols = 1;
     let lastRows = 1;
@@ -1147,12 +1152,15 @@ export const CubeCanvas = memo(function CubeCanvas({
       placeLiveOutline(rigs.find((rig) => rig.id === live.current.liveCubeId));
       if (needsFrame) {
         needsFrame = false;
+        const doFrame = !userTouchedCamera;
         if (framePick) {
           framePick = false;
-          const picked = rigs.find((rig) => rig.id === live.current.selectedId) ?? rigs[rigs.length - 1];
-          if (picked) frameRig(picked);
-          else frameHome();
-        } else frameHome();
+          if (doFrame) {
+            const picked = rigs.find((rig) => rig.id === live.current.selectedId) ?? rigs[rigs.length - 1];
+            if (picked) frameRig(picked);
+            else frameHome();
+          }
+        } else if (doFrame) frameHome();
       }
     };
 
@@ -1192,15 +1200,23 @@ export const CubeCanvas = memo(function CubeCanvas({
         layoutDirty = true;
       }
       const showAll = cubesNow.length <= 1;
+      const selectedSet = new Set(live.current.selectedIds);
       const stamp = cubesNow
         .map((cube) => {
-          const walls = !isLiveId(cube.id) && (showAll || cube.id === live.current.selectedId) ? wallCount(cube.model) : 0;
+          // The live cube used to be excluded here because it never had
+          // real wall data (withWalls was false). Now it does, so it
+          // should be counted/detailed the same as any other cube.
+          // Detail is shown for every cube in the multi-select set
+          // (selectedIds), not just the single last-active one
+          // (selectedId) — so "select all" / multi-select actually
+          // shows walls on every picked cube, not only the latest pick.
+          const walls = showAll || selectedSet.has(cube.id) ? wallCount(cube.model) : 0;
           return `${cube.id}:${walls}`;
         })
         .join("|");
       if (stamp !== detailStamp) {
         for (const rig of rigs) {
-          const want = !isLiveId(rig.id) && (showAll || rig.id === live.current.selectedId);
+          const want = showAll || selectedSet.has(rig.id);
           if (want && wallCount(rig.model) > 0) {
             if (!rig.detail) addDetail(rig);
           } else clearDetail(rig);
@@ -1224,6 +1240,7 @@ export const CubeCanvas = memo(function CubeCanvas({
 
     const onStart = () => {
       focusRef.current = null;
+      userTouchedCamera = true;
       live.current.onInteract();
     };
     controls.addEventListener("start", onStart);
@@ -1301,7 +1318,10 @@ export const CubeCanvas = memo(function CubeCanvas({
         }
         if (current.resetToken !== seenReset) {
           seenReset = current.resetToken;
-          if (seenReset > 0) frameHome();
+          if (seenReset > 0) {
+            userTouchedCamera = false;
+            frameHome();
+          }
         }
       } catch (error) {
         if (!reported) {
