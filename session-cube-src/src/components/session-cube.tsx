@@ -465,9 +465,16 @@ export function SessionCube() {
       selectedIdsRef.current = nextIds;
       setSelectedIds(nextIds);
       const primary = nextIds[nextIds.length - 1] ?? "";
+      // Every cube in the selection set gets realized (full wall geometry),
+      // not just the single last-active one — so a multi-select or "select
+      // all" shows the same active-table detail across everything picked,
+      // and it stays local to each cube as the set changes (pick a few,
+      // skip some, pick more from another stack: each one only cares
+      // whether it's currently in nextIds).
+      const nextSet = new Set(nextIds);
       setCubes((prev) => {
         if (prev.length <= 1 && primary) return prev.map((cube) => realizeCube(cube));
-        return prev.map((cube) => (primary && cube.id === primary ? realizeCube(cube) : shellCube(cube)));
+        return prev.map((cube) => (nextSet.has(cube.id) ? realizeCube(cube) : shellCube(cube)));
       });
       if (!primary) return;
       if (index == null || id !== primary) {
@@ -484,7 +491,8 @@ export function SessionCube() {
     selectedIdsRef.current = ids;
     setSelectedIds(ids);
     const primary = ids[ids.length - 1] ?? "";
-    setCubes((prev) => prev.map((cube) => (cube.id === primary ? realizeCube(cube) : shellCube(cube))));
+    // "Select all" realizes every cube it selects, same reasoning as above.
+    setCubes((prev) => prev.map((cube) => realizeCube(cube)));
     if (!primary) return;
     setStep(stepsRef.current[primary] ?? 0);
   }, []);
