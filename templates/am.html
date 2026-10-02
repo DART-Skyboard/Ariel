@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arc Meadow — LEATR Game Engine</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0a0f14;
+            --panel-bg: rgba(20, 30, 40, 0.95);
+            --accent: #00e5ff;
+            --poly-color: #ff3d5a;
+            --net-color: #39ff82;
+            --text-main: #e8f8ff;
+            --glass-border: rgba(0, 229, 255, 0.2);
+        }
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: var(--bg-dark); 
+            color: var(--text-main); 
+            font-family: monospace; 
+            display: flex; 
+            height: 100vh; 
+        }
+        
+        /* Sidebar UI */
+        #sidebar { 
+            width: 360px; 
+            background: var(--panel-bg); 
+            padding: 20px; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 15px; 
+            border-right: 1px solid var(--glass-border); 
+            z-index: 10; 
+            box-shadow: 2px 0 15px rgba(0,0,0,0.5); 
+            height: 100vh; 
+            box-sizing: border-box;
+            overflow-y: auto; 
+        }
+        h2 { margin: 0; color: var(--accent); font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1.5px; flex-shrink: 0; }
+        h3 { margin: 5px 0 0 0; color: #8899aa; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0; }
+        
+        .input-group { display: flex; flex-direction: column; gap: 5px; flex-shrink: 0; }
+        .row { display: flex; gap: 5px; }
+        .row input { flex: 1; min-width: 0; }
+        
+        input, textarea, button { background: #1a1a1b; color: #fff; border: 1px solid var(--glass-border); padding: 8px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; }
+        textarea { resize: vertical; min-height: 80px; }
+        
+        button { cursor: pointer; background: rgba(0, 229, 255, 0.1); transition: 0.2s; font-weight: bold; }
+        button:hover { background: var(--accent); color: #000; }
+        button.btn-example { background: rgba(255, 204, 0, 0.15); border-color: #ffcc00; color: #ffcc00; }
+        button.btn-example:hover { background: #ffcc00; color: #000; }
+        button.btn-danger { border-color: var(--poly-color); color: var(--poly-color); background: transparent; }
+        button.btn-danger:hover { background: var(--poly-color); color: #000; }
+
+        /* Terminal - Fixed to prevent collapsing */
+        #terminal { 
+            background: #000; 
+            color: #39ff82; 
+            padding: 12px; 
+            border-radius: 4px; 
+            flex-grow: 1; 
+            flex-shrink: 0;
+            min-height: 120px; 
+            overflow-y: auto; 
+            font-size: 0.8rem; 
+            border: 1px solid #333; 
+            line-height: 1.4; 
+        }
+        .tag-poly { color: var(--poly-color); font-weight: bold; }
+        .tag-net { color: var(--net-color); font-weight: bold; }
+        .sys-msg { color: #8899aa; }
+
+        /* Viewport */
+        #viewport-container { flex-grow: 1; position: relative; }
+        #arc-meadow-viewport { width: 100%; height: 100%; display: block; touch-action: none; }
+        
+        /* Top Overlay */
+        #top-bar { position: absolute; top: 15px; left: 15px; pointer-events: none; display: flex; gap: 10px; }
+        .badge { font-size: 0.75rem; color: #8899aa; background: rgba(0,229,255,0.07); border: 1px solid rgba(0,229,255,0.15); padding: 4px 8px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <aside id="sidebar">
+        <h2>Arc Meadow Engine</h2>
+        
+        <div class="input-group">
+            <button class="btn-example" onclick="loadExampleProject()">🧪 Load BRPN Core Asset</button>
+            <button class="btn-danger" onclick="clearScene()">🗑 Clear Scene</button>
+        </div>
+
+        <hr style="border-color: rgba(255,255,255,0.05); width: 100%; margin: 5px 0;">
+        
+        <h3>Arc Edge Draft (AE=3)</h3>
+        <div class="input-group">
+            <label>Deviation Vector (X, Y, Z)</label>
+            <div class="row">
+                <input type="number" id="devX" value="10" step="0.1">
+                <input type="number" id="devY" value="5" step="0.1">
+                <input type="number" id="devZ" value="0" step="0.1">
+            </div>
+        </div>
+        <div class="input-group">
+            <label>Curve Induction</label>
+            <input type="number" id="curveInd" value="1.5" step="0.1">
+        </div>
+        <button onclick="addArcGeometryFromUI()">Generate [poly:] Object</button>
+
+        <hr style="border-color: rgba(255,255,255,0.05); width: 100%; margin: 5px 0;">
+
+        <h3>.ash Extension Script</h3>
+        <div class="input-group">
+            <textarea id="ashScript" placeholder="{{outer}}\n[[inner:custom_tool]]\n[poly: arc_render]\n[net: multiplayer_sync]"></textarea>
+            <button onclick="compileAshScript()">Compile & Magnetize</button>
+        </div>
+
+        <div id="terminal">
+            <span class="sys-msg">LEATR CBS v2.0 Ready.<br>Hardware Environment: EMPTY.</span><br>
+        </div>
+    </aside>
+
+    <div id="viewport-container">
+        <div id="top-bar">
+            <span class="badge">Standalone Build</span>
+            <span class="badge">Arc Edge Real-time GPU Environment</span>
+        </div>
+        <div id="arc-meadow-viewport"></div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, controls;
+        let arcMeshes = [];
+        const AE = 3; 
+
+        function initViewport() {
+            const container = document.getElementById('arc-meadow-viewport');
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 10000);
+            camera.position.set(20, 25, 30);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setClearColor(0x0a0f14, 1.0);
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            container.appendChild(renderer.domElement);
+
+            // OrbitControls initialized WITHOUT damping for instant 1:1 hardware feel
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = false;
+
+            const gridHelper = new THREE.GridHelper(50, 50, 0x47c4f1, 0x222222);
+            gridHelper.position.y = 0;
+            scene.add(gridHelper);
+            
+            const axesHelper = new THREE.AxesHelper(10);
+            scene.add(axesHelper);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+            const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+            dl.position.set(15, 25, 10);
+            scene.add(dl);
+            
+            const dl2 = new THREE.DirectionalLight(0x00e5ff, 0.5);
+            dl2.position.set(-15, -10, -10);
+            scene.add(dl2);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = container.clientWidth / container.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            });
+
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Necessary for continuous panning logic
+            renderer.render(scene, camera);
+        }
+
+        function calculateArcPoints(x, y, z, curveInd) {
+            const pts = [];
+            const res = 64;
+            
+            for (let i = 0; i <= res; i++) {
+                let t = i / res;
+                let px = t * x; let py = t * y; let pz = t * z;
+                
+                px += Math.sin(t * 3 * AE) * curveInd;
+                py += Math.sin(t * 5 * AE) * curveInd;
+                pz += Math.sin(t * 7 * AE) * curveInd;
+                
+                const dir = new THREE.Vector3(x, y, z).normalize();
+                const up = Math.abs(dir.y) > 0.95 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);
+                const perp = new THREE.Vector3().crossVectors(dir, up).normalize();
+                const dev = perp.clone().multiplyScalar(Math.sin(t * AE) * 2.5); 
+                
+                pts.push(new THREE.Vector3(px + dev.x, py + dev.y, pz + dev.z));
+            }
+            return pts;
+        }
+
+        function createArcMesh(x, y, z, curveInd, colorHex) {
+            const points = calculateArcPoints(x, y, z, curveInd);
+            const curve = new THREE.CatmullRomCurve3(points);
+            const geometry = new THREE.TubeGeometry(curve, 64, 0.25, 8, false);
+            
+            const material = new THREE.MeshStandardMaterial({ 
+                color: colorHex, metalness: 0.7, roughness: 0.2, emissive: colorHex, emissiveIntensity: 0.2
+            });
+            
+            const mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+            arcMeshes.push(mesh);
+            return mesh;
+        }
+
+        function addArcGeometryFromUI() {
+            const x = parseFloat(document.getElementById('devX').value) || 0;
+            const y = parseFloat(document.getElementById('devY').value) || 0;
+            const z = parseFloat(document.getElementById('devZ').value) || 0;
+            const ind = parseFloat(document.getElementById('curveInd').value) || 0;
+
+            createArcMesh(x, y, z, ind, 0xff3d5a);
+            logTerminal(`[poly:] Object instantiated at X:${x} Y:${y} Z:${z}. (AE=3 applied)`);
+        }
+
+        function clearScene() {
+            arcMeshes.forEach(m => { scene.remove(m); if(m.geometry) m.geometry.dispose(); if(m.material) m.material.dispose(); });
+            arcMeshes = [];
+            logTerminal("<span class='sys-msg'>Scene memory purged. Hardware state zeroed.</span>");
+        }
+
+        function loadExampleProject() {
+            clearScene();
+            logTerminal("<span class='sys-msg'>Loading Example Asset: BRPN Cognitive Core...</span>");
+            createArcMesh(12, 8, 5, 2.5, 0x00e5ff); 
+            createArcMesh(-10, 15, -8, 3.0, 0x39ff82);
+            createArcMesh(5, 2, -15, 1.5, 0xffcc80); 
+            
+            const coreGeo = new THREE.IcosahedronGeometry(2, 1);
+            const coreMat = new THREE.MeshStandardMaterial({ color: 0xff4500, wireframe: true, emissive: 0xff4500, emissiveIntensity: 0.5 });
+            const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+            coreMesh.position.set(0, 5, 0);
+            scene.add(coreMesh);
+            arcMeshes.push(coreMesh);
+
+            controls.target.set(0, 5, 0);
+            camera.position.set(25, 20, 25);
+            controls.update();
+            logTerminal("Example loaded successfully. Ready for physics simulation.");
+        }
+
+        function compileAshScript() {
+            const script = document.getElementById('ashScript').value;
+            if (!script.trim()) return logTerminal("Error: Empty syntax buffer.");
+
+            logTerminal(`> Executing Open Gate: (xa²√xa) - 1`);
+            
+            setTimeout(() => {
+                let log = "";
+                if (script.includes("{{outer}}")) log += " - Hardware environment shell authenticated.<br>";
+                if (script.includes("[[inner")) log += " - User script identity authenticated.<br>";
+                if (script.includes("[poly:")) { log += " - <span class='tag-poly'>[poly:]</span> container detected. Routing math to rendering core.<br>"; addArcGeometryFromUI(); }
+                if (script.includes("[net:")) { log += " - <span class='tag-net'>[net:]</span> container detected. Setting iterative log handler.<br>"; }
+
+                logTerminal(log + `> Executing Close Gate: (xa²√xa) + 1<br><span class='sys-msg'>Syntax successfully magnetized to memory blocks.</span>`);
+            }, 800);
+        }
+
+        function logTerminal(msg) {
+            const term = document.getElementById('terminal');
+            term.innerHTML += `<br>${msg}`;
+            term.scrollTop = term.scrollHeight;
+        }
+
+        window.onload = initViewport;
+    </script>
+</body>
+</html>
