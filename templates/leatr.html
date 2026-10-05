@@ -564,6 +564,7 @@
         }
         .brpn-viz-cell {
             position: relative;
+            overflow: hidden;
             min-height: 280px;
             height: min(42vh, 380px);
             background: radial-gradient(ellipse at 50% 45%, #0b1520 0%, #05080c 72%);
@@ -573,9 +574,13 @@
         .brpn-viz-cell:last-child { border-right: none; }
         .brpn-viz-cell:active { cursor: grabbing; }
         .brpn-viz-cell canvas { display:block; width:100%!important; height:100%!important; }
+        .brpn-viz-cell [data-session-cube-demo] {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            background: radial-gradient(ellipse at 50% 40%, rgba(20,40,50,.55), rgba(2,6,10,.92) 70%);
+        }
         .brpn-viz-cell-label {
             position: absolute; top: 8px; left: 8px; right: 8px;
-            z-index: 2; pointer-events: none;
+            z-index: 5; pointer-events: none;
             font-family: 'Orbitron', monospace;
             font-size: 9px; letter-spacing: 1.6px;
             color: rgba(0,230,255,.8);
@@ -862,11 +867,12 @@
                 </div>
                 <div class="brpn-viz-cell" id="brpn-cell-cube">
                     <div class="brpn-viz-cell-label"><span class="red">3 · Session Cube · Demo</span></div>
+                    <div data-session-cube-demo data-size="7" data-log="4" data-href="https://cube.leatr.xyz" style="width:100%;height:100%"></div>
                 </div>
             </div>
             <div class="brpn-viz-panel">
                 <h3>Example Prompt · Pipes Through All Three</h3>
-                <p class="brpn-viz-note">None of these are connected to live data. One pre-filled algebraic / logic prompt drives a visual reflex across the buoyancy shells, the Ash Tree node web, and the Session Cube maze table together.</p>
+                <p class="brpn-viz-note">None of these are connected to live data or the node bus. One pre-filled algebraic / logic prompt drives a visual reflex across the buoyancy shells, the Ash Tree node web, and a real Session Cube maze (same generation as Autumn-iOS / cube.leatr.xyz) together.</p>
                 <textarea class="brpn-viz-prompt" id="brpn-viz-prompt" readonly>Reflex the BRPN buoyancy shells against (xa²√xa) as a 3D scientific lattice: map parentheses → exponents → sensory orders onto the maze table, then allocate verification nodes across the Session Cube grid for a self-analysis of the operation path.</textarea>
                 <div class="brpn-viz-actions">
                     <button type="button" class="brpn-viz-btn" id="brpn-viz-send">Send Example Prompt</button>
@@ -1680,6 +1686,7 @@ P<sub>build</sub> =
 
 
 
+<script src="session-cube-demo.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
@@ -1790,61 +1797,7 @@ P<sub>build</sub> =
     S.camera.position.set(0, 0.4, 3.2);
   }
 
-  // 3) Session Cube — red wireframe cage + internal node lattice (demo)
-  function buildSessionCube(S){
-    // Red outer cage (slightly rectangular like the DART Meadow cube)
-    const cageGeom=new THREE.BoxGeometry(1.9, 2.15, 1.5);
-    const cage=wire(cageGeom, 0xff3b3b, 0.95);
-    S.scene.add(cage); S.groups.cage=cage;
-    // Edge accent thicker feel via second slightly larger faint cage
-    const cage2=wire(new THREE.BoxGeometry(1.95, 2.2, 1.55), 0xff6666, 0.25);
-    S.scene.add(cage2);
-
-    // Internal 10x10x10-ish sparse neural cloud (demo events)
-    const g=10, half=0.78;
-    const step=(half*2)/(g-1);
-    const pts=[];
-    const nodeCols=[0xffffff,0x9ad8ff,0xff9ec8];
-    for(let ix=0;ix<g;ix++) for(let iy=0;iy<g;iy++) for(let iz=0;iz<g;iz++){
-      // keep a denser core, sparse toward edges
-      const cx=(ix/(g-1))-0.5, cy=(iy/(g-1))-0.5, cz=(iz/(g-1))-0.5;
-      const dens=1 - Math.min(1, Math.sqrt(cx*cx+cy*cy+cz*cz)*1.6);
-      if(Math.random() > 0.18 + dens*0.55) continue;
-      const x=-half+ix*step, y=-half*1.05+iy*step*1.1, z=-half*0.85+iz*step*0.9;
-      pts.push(new THREE.Vector3(x,y,z));
-      const ball=new THREE.Mesh(
-        new THREE.SphereGeometry(0.022, 6, 6),
-        new THREE.MeshBasicMaterial({color: nodeCols[(ix+iy+iz)%3], transparent:true, opacity:0.9})
-      );
-      ball.position.set(x,y,z);
-      S.scene.add(ball); S.nodes.push(ball);
-    }
-    // connect nearest
-    const linePos=[];
-    for(let i=0;i<pts.length;i++){
-      const d=[];
-      for(let j=0;j<pts.length;j++){ if(i===j) continue; d.push([j, pts[i].distanceToSquared(pts[j])]); }
-      d.sort((a,b)=>a[1]-b[1]);
-      for(let k=0;k<2;k++){
-        const j=d[k][0]; if(j<i) continue;
-        if(d[k][1] > step*step*3.2) continue;
-        linePos.push(pts[i].x,pts[i].y,pts[i].z, pts[j].x,pts[j].y,pts[j].z);
-      }
-    }
-    const lg=new THREE.BufferGeometry();
-    lg.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
-    const net=new THREE.LineSegments(lg, new THREE.LineBasicMaterial({color:0xb8dcff, transparent:true, opacity:0.55}));
-    S.scene.add(net); S.groups.net=net;
-
-    // floor grid hint inside cube
-    const grid=new THREE.GridHelper(1.7, 10, 0xff5555, 0x442222);
-    grid.position.y=-1.0;
-    grid.material.transparent=true; grid.material.opacity=0.35;
-    S.scene.add(grid); S.groups.grid=grid;
-
-    S.camera.position.set(2.4, 1.6, 3.2);
-    S.controls.autoRotateSpeed=0.65;
-  }
+  // 3) Session Cube — real maze cube via session-cube-demo.js (data-session-cube-demo)
 
   function setStatus(label, text){
     const el=document.getElementById('brpn-viz-status');
@@ -1894,22 +1847,6 @@ P<sub>build</sub> =
           if(S.groups.web) S.groups.web.material.opacity=0.35+0.5*Math.abs(Math.sin(u*Math.PI*5));
         }
       }
-      if(id==='brpn-cell-cube'){
-        if(S.groups.cage) S.groups.cage.rotation.y=t*0.15;
-        if(S.groups.net) S.groups.net.rotation.y=t*0.15;
-        // keep grid axis-aligned under cage — parent-like: rotate net+nodes with cage
-        if(mode==='reflex'){
-          const spin=t*0.15 + u*2.2;
-          if(S.groups.cage) S.groups.cage.rotation.y=spin;
-          if(S.groups.net) S.groups.net.rotation.y=spin;
-          // flash nodes along "table" path
-          const flash=Math.floor(u*S.nodes.length);
-          for(let i=0;i<S.nodes.length;i++){
-            S.nodes[i].material.opacity = (i===flash%S.nodes.length)?1:0.55+0.35*Math.sin(u*40+i);
-          }
-          S.controls.autoRotateSpeed=1.4+2.4*(1-u);
-        }
-      }
       S.renderer.render(S.scene, S.camera);
     }
 
@@ -1944,6 +1881,11 @@ P<sub>build</sub> =
     document.getElementById('brpn-viz-send').disabled=true;
     setStatus('REFLEXING', 'Prompt entering buoyancy shells, branching the Ash Tree map, and filling the Session Cube table…');
     showOps(0);
+    // Rebuild the real Session Cube maze from the example-prompt ops (demo only — no live data).
+    if(window.SessionCubeDemo){
+      var cubeEl=document.querySelector('#brpn-cell-cube [data-session-cube-demo]');
+      SessionCubeDemo.regenerate(cubeEl, OPS.map(function(o){ return o.replace(/^\d+\s+/,'').toLowerCase().replace(/\s+/g,'_'); }));
+    }
   }
   function resetReflex(){
     mode='idle';
@@ -1959,6 +1901,10 @@ P<sub>build</sub> =
     if(box){ box.hidden=true; box.innerHTML=''; }
     document.getElementById('brpn-viz-send').disabled=false;
     setStatus('IDLE', 'orbit / drag any panel. Send the example to animate all three together.');
+    if(window.SessionCubeDemo){
+      var cubeEl=document.querySelector('#brpn-cell-cube [data-session-cube-demo]');
+      SessionCubeDemo.regenerate(cubeEl, null);
+    }
   }
 
   function init(){
@@ -1968,7 +1914,7 @@ P<sub>build</sub> =
     if(!b||!a||!c) return;
     makePanel(b, buildBuoyancy);
     makePanel(a, buildAshTree);
-    makePanel(c, buildSessionCube);
+    // Session Cube panel: real maze via session-cube-demo.js (auto-mounts on [data-session-cube-demo])
     window.addEventListener('resize', onResize);
     document.getElementById('brpn-viz-send').addEventListener('click', runReflex);
     document.getElementById('brpn-viz-reset').addEventListener('click', resetReflex);
