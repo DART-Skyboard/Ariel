@@ -783,7 +783,215 @@
     });
   }
 
+
+  // Embeddable maze cube for hosting inside another Three.js scene
+  // (e.g. Buoyancy Node core). Same buildModel / demoRaw as the panel demo.
+  // Demo-only — never polls live data.
+  function buildEmbeddedGroup(THREE, opts) {
+    opts = opts || {};
+    var n = Math.max(4, Math.min(7, opts.size || 5));
+    var worldScale = opts.scale != null ? opts.scale : 0.17;
+    var group = new THREE.Group();
+    var content = new THREE.Group();
+    group.add(content);
+
+    var dither = ditherTexture(THREE);
+    function paneMat(color, opacity) {
+      return new THREE.MeshBasicMaterial({
+        color: color,
+        map: dither,
+        transparent: true,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+    }
+    var wallMats = {
+      corridor: paneMat(COLORS.corridor, 0.55),
+      shell: paneMat(COLORS.shell, 0.3),
+      quiet: paneMat(COLORS.quiet, 0.18),
+    };
+    var pathMat = new THREE.MeshBasicMaterial({ color: COLORS.path });
+    var eventMat = new THREE.MeshBasicMaterial({ color: COLORS.event });
+    var headMat = new THREE.MeshBasicMaterial({ color: COLORS.head });
+    var linkMat = new THREE.LineBasicMaterial({ color: COLORS.path, transparent: true, opacity: 0.4 });
+    var trailMat = new THREE.LineBasicMaterial({ color: COLORS.event, transparent: true, opacity: 0.95 });
+    var travelerMat = new THREE.MeshBasicMaterial({ color: COLORS.head, depthTest: false });
+    var haloMat = new THREE.MeshBasicMaterial({
+      color: COLORS.path,
+      transparent: true,
+      opacity: 0.45,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+    });
+    var wallGeo = new THREE.PlaneGeometry(0.92, 0.92);
+    var nodeGeo = new THREE.BoxGeometry(0.26, 0.26, 0.26);
+    var eventGeo = new THREE.BoxGeometry(0.44, 0.44, 0.44);
+    var headGeo = new THREE.BoxGeometry(0.56, 0.56, 0.56);
+    var travelerGeo = new THREE.SphereGeometry(0.3, 12, 10);
+    var haloGeo = new THREE.SphereGeometry(0.62, 12, 10);
+    var traveler = new THREE.Mesh(travelerGeo, travelerMat);
+    var halo = new THREE.Mesh(haloGeo, haloMat);
+    traveler.renderOrder = 10;
+    halo.renderOrder = 11;
+    var walk = { pts: [], events: [], step: 0, flare: 0, trail: null, index: -1 };
+    var head = null;
+
+    function clear() {
+      while (content.children.length) {
+        var ch = content.children.pop();
+        if (ch.geometry && ch.geometry !== wallGeo && ch.geometry !== nodeGeo &&
+            ch.geometry !== eventGeo && ch.geometry !== headGeo &&
+            ch.geometry !== travelerGeo && ch.geometry !== haloGeo) {
+          ch.geometry.dispose();
+        }
+      }
+      walk.pts = [];
+      walk.events = [];
+      walk.trail = null;
+      walk.index = -1;
+      walk.step = 0;
+      head = null;
+    }
+
+    function rebuild(labels) {
+      var raw = demoRaw(n, labels);
+      var model = buildModel(raw);
+      var cx = (model.width - 1) / 2;
+      var cy = (model.height - 1) / 2;
+      var cz = (model.depth - 1) / 2;
+      clear();
+      var span = Math.max(model.width, model.height, model.depth);
+      // Fit maze ~1.05 world units across so it reads as the buoyancy core.
+      var target = opts.targetSize != null ? opts.targetSize : 1.05;
+      content.scale.setScalar(target / span);
+      content.position.set(0, 0, 0);
+
+      var m = new THREE.Object3D();
+      ["quiet", "shell", "corridor"].forEach(function (kind) {
+        var list = model.walls[kind];
+        if (!list.length) return;
+        var mesh = new THREE.InstancedMesh(wallGeo, wallMats[kind], list.length);
+        list.forEach(function (f, i) {
+          var s = f[3];
+          m.position.set(f[0] - cx + s[0] * 0.5, f[1] - cy + s[1] * 0.5, f[2] - cz + s[2] * 0.5);
+          m.rotation.set(0, 0, 0);
+          if (s[0]) m.rotation.y = Math.PI / 2;
+          else if (s[1]) m.rotation.x = Math.PI / 2;
+          m.updateMatrix();
+          mesh.setMatrixAt(i, m.matrix);
+        });
+        content.add(mesh);
+      });
+
+      var path = model.path;
+      if (path.length) {
+        var plain = [];
+        var marked = [];
+        path.forEach(function (node) {
+          (node.events && node.events.length ? marked : plain).push(node);
+        });
+        [
+          [plain, nodeGeo, pathMat],
+          [marked, eventGeo, eventMat],
+        ].forEach(function (set) {
+          if (!set[0].length) return;
+          var mesh = new THREE.InstancedMesh(set[1], set[2], set[0].length);
+          set[0].forEach(function (node, i) {
+            m.position.set(node.x - cx, node.y - cy, node.z - cz);
+            m.rotation.set(0, 0, 0);
+            m.updateMatrix();
+            mesh.setMatrixAt(i, m.matrix);
+          });
+          content.add(mesh);
+        });
+        var pts = [];
+        for (var i = 1; i < path.length; i++) {
+          var a = path[i - 1];
+          var b = path[i];
+          if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) !== 1) continue;
+          pts.push(
+            new THREE.Vector3(a.x - cx, a.y - cy, a.z - cz),
+            new THREE.Vector3(b.x - cx, b.y - cy, b.z - cz)
+          );
+        }
+        if (pts.length) content.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), linkMat));
+        walk.pts = path.map(function (node) {
+          return new THREE.Vector3(node.x - cx, node.y - cy, node.z - cz);
+        });
+        walk.events = path.map(function (node) {
+          return node.events || [];
+        });
+        walk.trail = new THREE.Line(new THREE.BufferGeometry().setFromPoints(walk.pts), trailMat);
+        walk.trail.geometry.setDrawRange(0, 0);
+        content.add(walk.trail);
+        walk.step = 0;
+        walk.index = -1;
+        content.add(halo);
+        content.add(traveler);
+        var last = path[path.length - 1];
+        head = new THREE.Mesh(headGeo, headMat);
+        head.position.set(last.x - cx, last.y - cy, last.z - cz);
+        content.add(head);
+        if (walk.pts.length) {
+          traveler.position.copy(walk.pts[0]);
+          halo.position.copy(walk.pts[0]);
+        }
+      }
+      return raw;
+    }
+
+    rebuild(opts.labels || null);
+
+    function tick(dt) {
+      if (walk.pts.length < 2) return;
+      walk.flare = Math.max(0, walk.flare - dt * 2.2);
+      walk.step += WALK_SPEED * dt * 0.35; // a bit slower in the core
+      if (walk.step >= walk.pts.length - 1) {
+        walk.step = 0;
+        walk.index = -1;
+        if (walk.trail) walk.trail.geometry.setDrawRange(0, 0);
+      }
+      var i = Math.floor(walk.step);
+      var f = walk.step - i;
+      var a = walk.pts[i];
+      var b = walk.pts[Math.min(i + 1, walk.pts.length - 1)];
+      traveler.position.lerpVectors(a, b, f);
+      halo.position.copy(traveler.position);
+      if (walk.trail) walk.trail.geometry.setDrawRange(0, i + 2);
+      if (i !== walk.index) {
+        walk.index = i;
+        if ((walk.events[i] || []).length) walk.flare = 1;
+      }
+      var pulse = 1 + walk.flare * 0.9 + Math.sin(performance.now() / 310) * 0.1;
+      halo.scale.setScalar(pulse);
+      if (head) {
+        var s = 1 + Math.sin(performance.now() / 320) * 0.14;
+        head.scale.set(s, s, s);
+      }
+    }
+
+    return {
+      group: group,
+      regenerate: function (labels) {
+        rebuild(labels || null);
+      },
+      pulse: function () {
+        walk.step = 0;
+        walk.index = -1;
+        if (walk.trail) walk.trail.geometry.setDrawRange(0, 0);
+        if (walk.pts.length) {
+          traveler.position.copy(walk.pts[0]);
+          halo.position.copy(walk.pts[0]);
+        }
+      },
+      tick: tick,
+    };
+  }
+
   window.SessionCubeDemo = {
+    buildEmbeddedGroup: buildEmbeddedGroup,
     regenerate: function (el, labels) {
       var targets = el ? [el] : Array.prototype.slice.call(document.querySelectorAll("[data-session-cube-demo]"));
       targets.forEach(function (t) {
