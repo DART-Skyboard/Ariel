@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="A draft governance proposal describing three paths to building a neuron network: cascade, reflexive build and open design.">
+<title>Neuron Design Standard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+html{color-scheme:light}body{margin:0}[hidden]{display:none!important}
+
+/* Layout: one reading column. Header, tier tree, shared order of operations, a rotatable neuron beside a stage table, conformance rules and checker, scaling table, references. */
+:root{
+  --bg:#f4f6f9; --surface:#ffffff; --fg:#121c27; --muted:#52606e; --line:#d3dae3; --soft:#e9eef4;
+  --t1:#2b5aa0; --t2:#0c7f70; --t3:#a35f00;
+  --t1-bg:#e4edf8; --t2-bg:#dcf1ed; --t3-bg:#f8ead2;
+  --good:#17703a; --bad:#a63030;
+  --display:"Schibsted Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --body:"Schibsted Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0c131a; --surface:#131c25; --fg:#e7edf3; --muted:#9aa8b6; --line:#273542; --soft:#1a2531;
+  --t1:#7fb0f2; --t2:#4fd1bd; --t3:#f0b255;
+  --t1-bg:#16263a; --t2-bg:#12302c; --t3-bg:#33270f;
+  --good:#5fd08a; --bad:#f08080; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c131a; --surface:#131c25; --fg:#e7edf3; --muted:#9aa8b6; --line:#273542; --soft:#1a2531;
+  --t1:#7fb0f2; --t2:#4fd1bd; --t3:#f0b255;
+  --t1-bg:#16263a; --t2-bg:#12302c; --t3-bg:#33270f;
+  --good:#5fd08a; --bad:#f08080; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;padding-inline:16px;padding-block:0 64px}
+*{box-sizing:border-box}
+.wrap{max-width:1080px;margin-inline:auto}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(1.9rem,4.6vw,3rem);font-weight:700;letter-spacing:-.02em}
+h2{font-size:clamp(1.35rem,2.8vw,1.8rem);font-weight:650;letter-spacing:-.01em}
+h3{font-size:1.1rem;font-weight:650}
+p{margin:0}
+.eyebrow{font-family:var(--mono);font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.mono{font-family:var(--mono)}
+a{color:var(--t1)}
+:focus-visible{outline:3px solid var(--t1);outline-offset:2px;border-radius:4px}
+
+.notice{margin-top:20px;padding:10px 14px;border:1px solid var(--line);border-left:4px solid var(--t3);background:var(--surface);font-size:.88rem;color:var(--muted)}
+.notice strong{color:var(--fg)}
+header.top{padding-block:40px 8px;display:grid;gap:14px}
+header.top p.lede{max-width:62ch;font-size:1.12rem;color:var(--muted)}
+nav.jump{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:.9rem;padding-block:14px;border-bottom:1px solid var(--line)}
+nav.jump a{color:var(--fg);text-decoration:none;border-bottom:1px solid var(--line)}
+nav.jump a:hover{border-color:var(--fg)}
+section{padding-block:44px 0;display:grid;gap:20px}
+section>p.intro{max-width:68ch;color:var(--muted)}
+
+/* Path tree */
+.tree{display:grid;gap:0;justify-items:center}
+.rootnode{background:var(--fg);color:var(--bg);padding:10px 20px;border-radius:6px;font-weight:650;text-align:center}
+.rootnode small{display:block;font-weight:400;opacity:.8;font-size:.8rem}
+.stem{width:2px;height:24px;background:var(--line)}
+.branches{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;width:100%;position:relative;padding-top:24px}
+.branches::before{content:"";position:absolute;top:0;left:calc((100% - 36px)/6 + 0px);right:calc((100% - 36px)/6 + 0px);border-top:2px solid var(--line)}
+.branch{position:relative;background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:8px;padding:16px;display:grid;gap:12px;align-content:start;min-width:0}
+.branch::before{content:"";position:absolute;top:-28px;left:50%;height:24px;border-left:2px solid var(--line)}
+.branch[data-t="1"]{--c:var(--t1);--cb:var(--t1-bg)}
+.branch[data-t="2"]{--c:var(--t2);--cb:var(--t2-bg)}
+.branch[data-t="3"]{--c:var(--t3);--cb:var(--t3-bg)}
+.tag{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--c);font-weight:600}
+.badge{display:inline-block;justify-self:start;font-size:.78rem;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--cb);color:var(--fg);border:1px solid var(--c)}
+.leaves{list-style:none;margin:0;padding:0 0 0 14px;border-left:2px solid var(--c);display:grid;gap:8px;font-size:.9rem}
+.leaves li{position:relative;padding-left:12px}
+.leaves li::before{content:"";position:absolute;left:-14px;top:.7em;width:12px;border-top:2px solid var(--c)}
+.leaves b{font-weight:600}
+.small{font-size:.9rem;color:var(--muted)}
+@media (max-width:820px){
+  .branches{grid-template-columns:1fr;padding-top:0;padding-left:20px;border-left:2px solid var(--line);margin-left:6px;gap:24px}
+  .branches::before{display:none}
+  .branch::before{top:50%;left:-22px;height:0;width:20px;border-left:0;border-top:2px solid var(--line)}
+  .tree{justify-items:stretch}
+  .rootnode{justify-self:start}
+  .stem{margin-left:6px;height:16px}
+}
+
+/* Order, one track per tier */
+.tracks{display:grid;gap:14px}
+.track{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) minmax(0,190px);background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--c);border-radius:8px;overflow:hidden}
+.track[data-t="1"]{--c:var(--t1);--cb:var(--t1-bg)}.track[data-t="2"]{--c:var(--t2);--cb:var(--t2-bg)}.track[data-t="3"]{--c:var(--t3);--cb:var(--t3-bg)}
+.track .th{padding:14px;display:grid;gap:6px;align-content:start;border-right:1px solid var(--line)}
+.track .th small{font-size:.84rem;color:var(--muted)}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}
+.steps li{padding:14px 12px;border-right:1px solid var(--line);display:grid;gap:4px;align-content:start;min-width:0}
+.steps .n{font-family:var(--mono);font-size:.72rem;color:var(--c);font-weight:600}
+.steps b{font-size:.93rem}
+.steps span.d{font-size:.82rem;color:var(--muted)}
+.track .res{padding:14px;background:var(--cb);display:grid;gap:4px;align-content:start}
+.track .res .n{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.track .res span.d{font-size:.84rem}
+.sapa{background:var(--fg);color:var(--bg);border-radius:8px;padding:16px 18px;display:grid;gap:6px}
+.sapa b{font-size:1.02rem}
+.sapa span{font-size:.92rem;opacity:.88;max-width:78ch}
+@media (max-width:1000px){
+  .track{grid-template-columns:minmax(0,1fr)}
+  .track .th{border-right:0;border-bottom:1px solid var(--line)}
+  .steps{grid-template-columns:minmax(0,1fr)}
+  .steps li{border-right:0;border-bottom:1px solid var(--line)}
+}
+
+/* Neuron lab */
+.lab{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:900px){.lab{grid-template-columns:minmax(0,1fr)}}
+.stage-box{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg{display:flex;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--line)}
+.seg button{flex:1 1 0;min-width:0;font:inherit;font-weight:600;font-size:.9rem;padding:12px 8px;background:transparent;color:var(--muted);border:0;border-right:1px solid var(--line);cursor:pointer}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--soft);color:var(--fg);box-shadow:inset 0 -3px 0 var(--c)}
+.seg button[data-t="1"]{--c:var(--t1)}.seg button[data-t="2"]{--c:var(--t2)}.seg button[data-t="3"]{--c:var(--t3)}
+canvas#neuron{display:block;width:100%;touch-action:pan-y;cursor:grab}
+canvas#neuron:active{cursor:grabbing}
+.cap{padding:10px 14px;border-top:1px solid var(--line);font-size:.82rem;color:var(--muted)}
+.stages{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.stages .head{padding:14px 16px;border-bottom:1px solid var(--line);display:grid;gap:6px}
+.stages ol{list-style:none;margin:0;padding:0}
+.stages li{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:default}
+.stages li:last-child{border-bottom:0}
+.stages li.on,.stages li:hover{background:var(--soft)}
+.stages .num{width:26px;height:26px;border-radius:50%;border:2px solid var(--c);display:grid;place-items:center;font-family:var(--mono);font-size:.78rem;font-weight:600}
+.stages b{display:block;font-size:.95rem}
+.stages span{font-size:.88rem;color:var(--muted)}
+
+/* Rules + checker */
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:900px){.two{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;display:grid;gap:12px}
+.rules{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.rules li{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;font-size:.93rem}
+.rules .kw{font-family:var(--mono);font-size:.74rem;font-weight:600;letter-spacing:.04em;padding-top:2px}
+.rules .must{color:var(--bad)}.rules .should{color:var(--t3)}
+.checks{display:grid;gap:8px}
+.checks label{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;font-size:.92rem;align-items:start;cursor:pointer}
+.checks input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--t3)}
+.result{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:6px;background:var(--soft);font-weight:600}
+.pill{font-family:var(--mono);font-size:.78rem;padding:3px 9px;border-radius:999px;border:1px solid currentColor}
+.pill.ok{color:var(--good)}.pill.no{color:var(--bad)}
+
+
+/* Governance goals */
+.pcmp-note{border-left:3px solid var(--t2);background:var(--soft);padding:14px 16px;border-radius:0 8px 8px 0;margin-top:16px;display:grid;gap:6px}
+.pcmp-note b{font-size:.95rem}
+.goals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:820px){.goals{grid-template-columns:minmax(0,1fr)}}
+.goal{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;display:grid;gap:10px;align-content:start}
+.goal ul{margin:0;padding-left:18px;display:grid;gap:6px;font-size:.92rem}
+.goal .diff{font-size:.86rem;color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
+.asks{counter-reset:a;list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.asks li{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;font-size:.95rem}
+.asks li::before{counter-increment:a;content:counter(a);font-family:var(--mono);font-weight:600;width:24px;height:24px;border:2px solid var(--fg);border-radius:50%;display:grid;place-items:center;font-size:.78rem}
+
+/* Table */
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+thead th{font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--soft)}
+tbody th{font-weight:650;white-space:nowrap}
+td.t1,th.t1{border-left:4px solid var(--t1)}td.t2,th.t2{border-left:4px solid var(--t2)}td.t3,th.t3{border-left:4px solid var(--t3)}
+.refs{display:grid;gap:8px;font-size:.9rem;color:var(--muted);padding-left:18px;margin:0}
+.refs li{padding-left:4px}
+footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);font-size:.84rem;color:var(--muted);display:grid;gap:6px}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">Governance proposal · Draft 0.1 for public comment</div>
+  <h1>Neuron Design Standard</h1>
+  <p class="lede">A proposal for organizing AI governance around how neurons are designed. It describes three different paths one can take to build a neuron network. They set out the foundational methods and conditions a design must meet to be established as artificial intelligence, and why one path may suit a goal better than another. Each path is held to the same task, and each design discloses what a reviewer needs to assess security, ethics, reliability and prediction in one place.</p>
+  <p class="notice"><strong>Status.</strong> This is a draft reference prepared as a template that an agency or standards body could review and adopt. It is not an official publication of the United States Government or any agency, and it carries no government endorsement.</p>
+</header>
+<nav class="jump" aria-label="Sections">
+  <a href="#tiers">The three paths</a><a href="#order">Order by path</a><a href="#lab3d">3D neuron</a><a href="#rules">Conformance</a><a href="#goals">Governance goals</a><a href="#choose">Why one path</a><a href="#scaling">Scaling</a><a href="#refs">Sources</a>
+</nav>
+
+<section id="tiers">
+  <h2>Three paths to a neuron network</h2>
+  <p class="intro">These are the foundational methods and conditions proposed for establishing an artificial intelligence: a design starts from one of these three paths and must meet the shared conditions below. They are different paths, not ranks. Each answers the same question: how does one unit turn what it receives into one state? The paths differ in how they weight, combine and check what comes in, and in whether a neuron only relays information or also builds the network. Path 3 may differ most in structure, but it has to achieve the same task, sequence pattern analysis, and keep the order of Paths 1 and 2.</p>
+  <div class="tree">
+    <div class="rootnode">Neuron design<small>how one unit turns input into one state</small></div>
+    <div class="stem"></div>
+    <div class="branches">
+      <article class="branch" data-t="1">
+        <div class="tag">Path 1 · Cascade</div>
+        <h3>Weighted layers</h3>
+        <p class="small">Inputs are scaled by learned weights, summed with a bias and passed through an activation function. Units are stacked in layers that cascade forward. Weights are set by gradient descent and backpropagation.</p>
+        <span class="badge">Established, peer reviewed</span>
+        <ul class="leaves" aria-label="Path 1 scaling methods">
+          <li><b>Width and depth.</b> More units per layer, more layers.</li>
+          <li><b>Data.</b> More training examples.</li>
+          <li><b>Compute.</b> Loss follows measured power laws in parameters, data and compute.</li>
+        </ul>
+      </article>
+      <article class="branch" data-t="2">
+        <div class="tag">Path 2 · Reflexive build</div>
+        <h3>LEATR reflex shells</h3>
+        <p class="small">Each data point carries one integer angle state, 45.0° at most. It is checked against 7 natural tools, 3 shells and 3 FRP stages, and context from emotion, grammar and reflex position moves the one angle.</p>
+        <span class="badge">Proposed by its developer</span>
+        <ul class="leaves" aria-label="Path 2 scaling methods">
+          <li><b>Fixed 63 checks.</b> 7 tools × 3 shells × 3 stages for every data point.</li>
+          <li><b>Angle precision.</b> One to six decimal places, added only to tell states apart.</li>
+          <li><b>Integer arithmetic.</b> Cost grows linearly with data points.</li>
+        </ul>
+      </article>
+      <article class="branch" data-t="3">
+        <div class="tag">Path 3 · Open design</div>
+        <h3>Declared structure</h3>
+        <p class="small">Any other method that achieves the same task, sequence pattern analysis. It can use any structure, but it must weigh before it combines, bring context before its checks, and publish how it scales.</p>
+        <span class="badge">Conformance based</span>
+        <ul class="leaves" aria-label="Path 3 scaling methods">
+          <li><b>Declared axes.</b> The design names what it scales and in what unit.</li>
+          <li><b>Declared cost.</b> Cost per stage is stated for each axis.</li>
+          <li><b>Declared evidence.</b> Performance claims come with their source.</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="order">
+  <h2>The order each path follows</h2>
+  <p class="intro">Every path does the same job: sequence pattern analysis. Each one gets there in its own order. Cascading belongs to weighting, because every layer compares what it receives against its weights and hands the result on. Reflexive shells follow their own order of angle, context, checks and shells. Any other method is welcome if it achieves the same task and keeps the order of these two.</p>
+  <div class="tracks">
+    <div class="track" data-t="1">
+      <div class="th"><span class="tag">Path 1 · Cascade</span><b>Weighting, then cascade</b><small>Specific to weighted layers.</small></div>
+      <ol class="steps">
+        <li><span class="n">1</span><b>Inputs</b><span class="d">The sequence arrives as x₁ to xₙ.</span></li>
+        <li><span class="n">2</span><b>Weight</b><span class="d">Each input is compared against its weight.</span></li>
+        <li><span class="n">3</span><b>Sum</b><span class="d">Products add up with a bias.</span></li>
+        <li><span class="n">4</span><b>Activate</b><span class="d">An activation function sets the output.</span></li>
+        <li><span class="n">5</span><b>Cascade</b><span class="d">The result feeds the next layer, which weights it again.</span></li>
+      </ol>
+      <div class="res"><span class="n">Pattern result</span><span class="d">The last layer's output over the whole sequence.</span></div>
+    </div>
+    <div class="track" data-t="2">
+      <div class="th"><span class="tag">Path 2 · Reflexive build</span><b>Angle, context, checks, shells</b><small>Specific to reflexive shells.</small></div>
+      <ol class="steps">
+        <li><span class="n">1</span><b>Angle</b><span class="d">Each data point gets one integer angle state.</span></li>
+        <li><span class="n">2</span><b>Context</b><span class="d">Emotion, grammar, math order and reflex position refine the angle.</span></li>
+        <li><span class="n">3</span><b>63 checks</b><span class="d">7 tools × 3 shells × 3 stages collapse to one angle.</span></li>
+        <li><span class="n">4</span><b>Shells</b><span class="d">Foundation, Reflex, Performance across outer, middle, inner.</span></li>
+        <li><span class="n">5</span><b>Field</b><span class="d">The sequence leaves as one field state.</span></li>
+      </ol>
+      <div class="res"><span class="n">Pattern result</span><span class="d">A field over N variable states, such as mfdb0.0 for 1+1=, and what it completes to.</span></div>
+    </div>
+    <div class="track" data-t="3">
+      <div class="th"><span class="tag">Path 3 · Open design</span><b>Any method with the same result</b><small>Must keep the order of both paths.</small></div>
+      <ol class="steps">
+        <li><span class="n">1</span><b>Intake</b><span class="d">States what a data point is and keeps sequence order.</span></li>
+        <li><span class="n">2</span><b>Compare</b><span class="d">States what each point is weighed or compared against, before anything combines.</span></li>
+        <li><span class="n">3</span><b>Combine</b><span class="d">States how compared values merge.</span></li>
+        <li><span class="n">4</span><b>Check</b><span class="d">States its threshold, activation or reflex check. Context comes before it.</span></li>
+        <li><span class="n">5</span><b>Result</b><span class="d">States the one result for the sequence.</span></li>
+      </ol>
+      <div class="res"><span class="n">Pattern result</span><span class="d">Declared, and published with how it scales.</span></div>
+    </div>
+  </div>
+  <div class="sapa">
+    <b>Sequence pattern analysis, the task all three achieve</b>
+    <span>Keep the data points in order. Give each one a state. Return one result for the whole sequence. A design that cannot do all three does not qualify as any path.</span>
+  </div>
+</section>
+
+<section id="lab3d">
+  <h2>One neuron, three breakdowns</h2>
+  <p class="intro">The same neuron body is shown under each path. Drag sideways to turn it. The five rings along the neuron are that path's five steps, in order. Pick a path to see what happens at each one.</p>
+  <div class="lab">
+    <div class="stage-box">
+      <div class="seg" role="group" aria-label="Choose a path">
+        <button type="button" data-t="1" aria-pressed="true">Path 1 · Cascade</button>
+        <button type="button" data-t="2" aria-pressed="false">Path 2 · Reflexive</button>
+        <button type="button" data-t="3" aria-pressed="false">Path 3 · Open</button>
+      </div>
+      <canvas id="neuron" role="img" aria-label="Rotatable 3D neuron with dendrites on the left, a soma in the middle and an axon on the right. Five numbered rings mark the five steps of the chosen path. The stage table beside it gives the same information as text."></canvas>
+      <div class="cap" id="cap">Example values only. Weights are illustrative.</div>
+    </div>
+    <div class="stages">
+      <div class="head"><div class="eyebrow" id="stg-eyebrow">Path 1 · Cascade</div><h3 id="stg-title">Weighted sum and activation</h3><span class="small" id="stg-ev"></span></div>
+      <ol id="stg-list"></ol>
+    </div>
+  </div>
+</section>
+
+<section id="rules">
+  <h2>Conformance</h2>
+  <p class="intro">A design may call itself Path 3 when it achieves sequence pattern analysis and meets every MUST below. Path 1 and Path 2 names are reserved for designs that implement those paths as described here.</p>
+  <div class="two">
+    <div class="panel">
+      <h3>Rules</h3>
+      <ul class="rules">
+        <li><span class="kw must">MUST</span><span>Achieve sequence pattern analysis: keep data points in order, give each a state, return one result for the sequence.</span></li>
+        <li><span class="kw must">MUST</span><span>Declare what happens at each of the five steps, weigh or compare before combining, and bring context before its checks.</span></li>
+        <li><span class="kw must">MUST</span><span>Publish each scaling axis, its unit, and the cost per stage as that axis grows.</span></li>
+        <li><span class="kw must">MUST</span><span>State an evidence level: Established (peer reviewed and replicated), Proposed (published by the designer, not independently validated) or Declared (conformance only).</span></li>
+        <li><span class="kw must">MUST NOT</span><span>Use the name Path 1 or Path 2 unless the design implements that path as described.</span></li>
+        <li><span class="kw should">SHOULD</span><span>Publish a Neuron Disclosure Record with these answers in one place.</span></li>
+        <li><span class="kw should">SHOULD</span><span>State numeric precision and whether results are reproducible.</span></li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Check a design</h3>
+      <p class="small">Example state for a hypothetical design. Tick each item the design meets.</p>
+      <div class="checks" id="checks">
+        <label><input type="checkbox" id="c1" checked><span>Declares the intake step: what a data point is</span></label>
+        <label><input type="checkbox" id="c2" checked><span>Declares how each point is weighed or compared</span></label>
+        <label><input type="checkbox" id="c3" checked><span>Declares how compared values combine</span></label>
+        <label><input type="checkbox" id="c4" checked><span>Declares the check: activation, threshold or reflex check</span></label>
+        <label><input type="checkbox" id="c5" checked><span>Declares the one result for the sequence</span></label>
+        <label><input type="checkbox" id="c6"><span>Keeps sequence order and returns one result for the whole sequence</span></label>
+        <label><input type="checkbox" id="c7"><span>Publishes scaling axes, units and cost per stage</span></label>
+        <label><input type="checkbox" id="c8"><span>States an evidence level</span></label>
+      </div>
+      <div class="result" aria-live="polite"><span id="res-count" class="mono"></span><span id="res-pill" class="pill"></span><span id="res-note" class="small" style="font-weight:400"></span></div>
+    </div>
+  </div>
+</section>
+
+<section id="goals">
+  <h2>What this gives AI governance</h2>
+  <p class="intro">Meeting the foundational conditions is the starting point for governance, not proof that a design is secure, ethical, reliable or predictable. The standard requires each design to put the facts a reviewer needs in one record, in the same shape for every path, so claims can be checked and compared.</p>
+  <div class="goals">
+    <article class="goal">
+      <h3>Security</h3>
+      <ul>
+        <li>What a data point is, what enters the unit and what leaves it.</li>
+        <li>What leaves the device or the system, and whether the user chose to share it.</li>
+        <li>Whether any step runs outside code or evaluates user text as code.</li>
+      </ul>
+      <p class="diff">Path 2 is built on integer arithmetic with no outside evaluation. Path 1 and Path 3 designs state their own boundaries.</p>
+    </article>
+    <article class="goal">
+      <h3>Ethics</h3>
+      <ul>
+        <li>Which context shapes the result: emotion, grammar, history, location, anything else.</li>
+        <li>What is stored or learned from a person's input, and what is not.</li>
+        <li>Where a person can see, limit or switch off that context.</li>
+      </ul>
+      <p class="diff">Path 2 names its emotional context openly, since emotion moves the angle. Path 1 states its training data sources.</p>
+    </article>
+    <article class="goal">
+      <h3>Reliability</h3>
+      <ul>
+        <li>Sequence pattern analysis results on a published set of test sequences.</li>
+        <li>Numeric precision and the known limits of the design.</li>
+        <li>What happens when an input falls outside what the design handles.</li>
+      </ul>
+      <p class="diff">Every path is measured on the same task, so results can be set side by side.</p>
+    </article>
+    <article class="goal">
+      <h3>Prediction</h3>
+      <ul>
+        <li>Whether the same sequence always gives the same result, and if not, why.</li>
+        <li>How the result changes as the design scales along each declared axis.</li>
+        <li>How far past tested conditions the stated results are expected to hold.</li>
+      </ul>
+      <p class="diff">Path 1 reports random seeds and measured scaling laws. Path 2 states that its fixed 63 checks make results repeatable for a given input and context.</p>
+    </article>
+  </div>
+  <div class="panel">
+    <h3>What this proposal asks of a reviewing body</h3>
+    <ol class="asks">
+      <li><span>Review the three paths, the sequence task and the evidence levels, and publish comments.</span></li>
+      <li><span>Adopt the Neuron Disclosure Record as a common format for describing a design.</span></li>
+      <li><span>Run a pilot in which designs from each path are tested on the same published sequences and reported side by side.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section id="choose">
+  <h2>Why one path may suit a goal better</h2>
+  <p class="intro">The paths are different ways to build a network of neurons. A neuron can relay information, passing a value on, and it can also build, adding to the network itself. How much each path does of either is what makes one more suitable than another for a given goal.</p>
+  <div class="tablewrap" tabindex="0" role="region" aria-label="Comparison of the three paths, scrolls sideways on small screens">
+    <table>
+      <thead><tr><th></th><th class="t1">Path 1 · Cascade</th><th class="t2">Path 2 · Reflexive build</th><th class="t3">Path 3 · Open design</th></tr></thead>
+      <tbody>
+        <tr><th>What the neuron does</th><td class="t1">Relays: weighs its inputs and passes one value forward</td><td class="t2">Relays and builds: besides passing its state on, it builds the network onward</td><td class="t3">Whatever the designer declares: relay, build, or both</td></tr>
+        <tr><th>Where the structure comes from</th><td class="t1">Set by the designer before training. Learning changes the weights</td><td class="t2">Grown from the neurons themselves, in the order of angle, context, checks and shells</td><td class="t3">Declared by the designer, and it must keep the order of Paths 1 and 2</td></tr>
+        <tr><th>Suits best when</th><td class="t1">Patterns are learned from large amounts of data, with mature tools and benchmarks</td><td class="t2">The network must grow itself and every step must be traceable and repeatable</td><td class="t3">A new method needs room, while staying comparable on the same task</td></tr>
+        <tr><th>Limits</th><td class="t1">Needs large data and compute. The reasons for an output are hard to trace</td><td class="t2">Not yet independently validated. Few outside tools or published benchmarks</td><td class="t3">Claims rest on the designer's disclosure until tested</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pcmp-note">
+    <b>The developer's assessment</b>
+    <span>The developer of Path 2 considers it the most optimal and most advanced of the three paths, because its neurons build as well as relay. This is the developer's assessment. It has not been independently tested. The pilot in this proposal, with every path run on the same published sequences, is how the claim would be checked.</span>
+  </div>
+</section>
+
+<section id="scaling">
+  <h2>How each path scales</h2>
+  <p class="intro">Scaling means growing a design while keeping its steps and its sequence result intact. The table states the axes, the cost behavior and the status of the evidence for each path.</p>
+  <div class="tablewrap" tabindex="0" role="region" aria-label="Scaling comparison, scrolls sideways on small screens">
+    <table>
+      <thead><tr><th></th><th class="t1">Path 1 · Cascade</th><th class="t2">Path 2 · Reflexive build</th><th class="t3">Path 3 · Open design</th></tr></thead>
+      <tbody>
+        <tr><th>Unit of weighting</th><td class="t1">Learned weight per connection, plus a bias per unit</td><td class="t2">One angle per data point, 45.0° at most, refined by context angles</td><td class="t3">Declared by the design</td></tr>
+        <tr><th>Gate</th><td class="t1">Activation function such as ReLU or sigmoid</td><td class="t2">Foundation, Reflex, Performance checked in order across outer, middle and inner shells</td><td class="t3">Declared by the design</td></tr>
+        <tr><th>Scaling axes</th><td class="t1">Parameters (width and depth), training data, compute</td><td class="t2">Angle precision (1 to 6 decimals); sequence length. Tools, shells and stages are fixed at 7, 3 and 3</td><td class="t3">Each axis the design names, with a unit</td></tr>
+        <tr><th>Cost behavior</th><td class="t1">Grows with parameters and with training tokens</td><td class="t2">63 checks per data point, integers only, so cost grows linearly with data points</td><td class="t3">Stated per stage for each axis</td></tr>
+        <tr><th>Evidence status</th><td class="t1">Established. Scaling laws measured in 2020 and 2022</td><td class="t2">Proposed by its developer. Independent validation not yet published</td><td class="t3">Declared by the designer</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="refs">
+  <h2>Sources for Path 1</h2>
+  <ol class="refs">
+    <li>McCulloch, W. S. and Pitts, W. (1943). A logical calculus of the ideas immanent in nervous activity. <i>Bulletin of Mathematical Biophysics</i> 5.</li>
+    <li>Rosenblatt, F. (1958). The perceptron: a probabilistic model for information storage and organization in the brain. <i>Psychological Review</i> 65.</li>
+    <li>Rumelhart, D. E., Hinton, G. E. and Williams, R. J. (1986). Learning representations by back-propagating errors. <i>Nature</i> 323.</li>
+    <li>Kaplan, J. et al. (2020). Scaling laws for neural language models. arXiv:2001.08361.</li>
+    <li>Hoffmann, J. et al. (2022). Training compute-optimal large language models. arXiv:2203.15556.</li>
+  </ol>
+  <p class="small">Path 2 describes the LEATR (Lead Edge Ash Tree Reflex) and BRPN (Buoyancy Reflex Pendulum Node) framework by DART Meadow and Radical Deepscale LLC. It is included as a proposed design and has no independent source list yet. A companion risk-management guide, such as the NIST AI Risk Management Framework 1.0, can sit alongside this standard for governance of how a design is used.</p>
+</section>
+
+<footer>
+  <div>Neuron Design Standard · Draft 0.1 · Open for public comment</div>
+  <div>Not an official publication of the United States Government or any agency.</div>
+  <div>Published by Radical Deepscale LLC · <a href="/">radicaldeepscale.com</a> · <a href="/executive-board">Executive Leadership</a></div>
+</footer>
+</div>
+
+<script>
+(function(){
+  var DATA = {
+    1:{key:'--t1',eyebrow:'Path 1 · Cascade',title:'Weighted sum and activation',
+       ev:'Evidence: established, peer reviewed.',
+       cap:'Example weights shown on the inputs. Line thickness follows weight size. Dashed means a negative weight.',
+       rows:[['Intake','Inputs x₁ to xₙ arrive from the previous layer.'],
+             ['Weight','Each input is compared against its weight w. Weights are learned by gradient descent.'],
+             ['Aggregation','The products are summed with a bias b: z = Σ wᵢxᵢ + b.'],
+             ['Gate','An activation function φ, such as ReLU or sigmoid, sets what the neuron emits.'],
+             ['Output','y = φ(z) is passed forward to the next layer in the cascade.']]},
+    2:{key:'--t2',eyebrow:'Path 2 · Reflexive build',title:'One angle, 63 checks, three shells',
+       ev:'Evidence: proposed by its developer, not independently validated.',
+       cap:'Inside the soma is the reflex mind map (246 nodes, 7 depth shells). Signals run in order: input prompt, order-of-operations ladder, the 7 nature tools with their BRPN nodes firing together, the three shells in turn (green Geological, blue Maritime, red Aerospace), then the output prompt and the axon. The active step is highlighted on the right.',
+       rows:[['Angle','Each character becomes a data point with one state. The prompt 1+1= gives md-0.1, mdb0.1, md-0.1, md0.0.'],
+             ['Context','The seed angle is refined by context angles from emotion, grammar, math order, shell and reflex position. A neutral baseline adds nothing.'],
+             ['63 checks','Where context exists, 63 weighted checks (7 tools × 3 shells × 3 FRP stages) become one signed angle. A sequence takes the truncated mean: field mfdb0.0.'],
+             ['Shells','Foundation, then Reflex, then Performance, across the outer, middle and inner shells.'],
+             ['Output','A state (tool, kind, angle up to 45.0°) leaves. A sequence leaves as a field.']]},
+    3:{key:'--t3',eyebrow:'Path 3 · Open design',title:'Any structure, same five stages',
+       ev:'Evidence: declared by the designer.',
+       cap:'Open lattice. Every internal structure is allowed, but the five steps stay in this order.',
+       rows:[['Intake','The design states what a data point is and keeps the sequence in order.'],
+             ['Compare','The design states what each point is weighed or compared against. Must come before anything combines.'],
+             ['Combine','The design states how compared values merge into one value.'],
+             ['Check','The design states its threshold, activation or reflex check. Context comes before it.'],
+             ['Result','The design states the one result for the sequence, and publishes how it scales.']]}
+  };
+  var tier=1, hl=-1, hov=-1, W=0, H=0, dpr=1, rotY=-0.6, rotX=0.26, drag=null, phase=0, last=0, raf=0;
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var cv=document.getElementById('neuron'), ctx=cv.getContext('2d');
+  var list=document.getElementById('stg-list');
+
+  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  // ---------- geometry (world units; axis along x) ----------
+  var GX=[-1.9,-1.15,0,0.85,2.05], GR=[0.80,0.52,0.70,0.18,0.24];
+  var NDEN=4, dens=[];
+  for(var k=0;k<NDEN;k++){
+    var a=k*Math.PI/2+Math.PI/4, c=Math.cos(a), s=Math.sin(a);
+    dens.push({a:a, pts:[[-2.3,0.95*c,0.95*s],[-1.3,0.62*c+0.1*s,0.62*s-0.1*c],[-0.42,0.25*c,0.25*s]],
+      twigs:[[[-2.3,0.95*c,0.95*s],[-2.62,0.95*c+0.28*s,0.95*s-0.28*c]],[[-2.3,0.95*c,0.95*s],[-2.62,0.95*c-0.28*s,0.95*s+0.28*c]]]});
+  }
+  var W1=[0.8,-0.3,0.5,0.1], ST2=['md-0.1','mdb0.1','md-0.1','md0.0'];
+  var axon=[[0.5,0,0],[2.05,0,0]];
+  var terms=[[2.55,0.34,0.1],[2.55,-0.2,0.3],[2.55,-0.1,-0.34],[2.6,0.12,-0.05]];
+  function sphereAxis(r,ax,n){ var o=[]; for(var i=0;i<=n;i++){ var t=i/n*Math.PI*2, c=Math.cos(t)*r, s=Math.sin(t)*r;
+    o.push(ax==='x'?[0,c,s]:ax==='y'?[c,0,s]:[c,s,0]); } return o; }
+  function ringX(x,r,n){ var o=[]; for(var i=0;i<=n;i++){ var t=i/n*Math.PI*2; o.push([x,Math.cos(t)*r,Math.sin(t)*r]); } return o; }
+  function fib(n,r){ var o=[],g=Math.PI*(3-Math.sqrt(5)); for(var i=0;i<n;i++){ var y=1-(i/(n-1))*2, rr=Math.sqrt(1-y*y), th=g*i; o.push([Math.cos(th)*rr*r,y*r,Math.sin(th)*rr*r]); } return o; }
+  var lattice=fib(14,0.56), latEdges=[];
+  for(var i=0;i<lattice.length;i++) for(var j=i+1;j<lattice.length;j++){
+    var d=Math.hypot(lattice[i][0]-lattice[j][0],lattice[i][1]-lattice[j][1],lattice[i][2]-lattice[j][2]); if(d<0.62) latEdges.push([i,j]); }
+  var tools=fib(7,0.46), TL=['m','p','e','h','s','k','r'];
+
+var MM={d:[0,1,1,2,2,1,2,2,3,2,1,2,3,3,3,4,4,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,2,3,3,3,4,4,4,4,4,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,1,2,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,5,5,1,2,2,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,2,2,2,2,2,2,2],p:[-1,0,0,2,2,0,5,5,7,5,0,10,11,11,11,14,14,14,14,14,14,14,21,22,22,22,22,22,22,22,22,22,22,22,22,22,22,22,22,10,39,39,39,42,42,42,42,42,47,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,10,65,65,65,68,68,68,68,68,73,74,74,74,74,74,74,74,74,74,74,74,74,74,74,74,74,10,91,91,91,94,94,94,94,94,99,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,10,117,117,117,120,120,120,120,120,125,126,126,126,126,126,126,126,126,126,126,126,126,126,126,126,126,10,143,143,143,146,146,146,146,146,151,152,152,152,152,152,152,152,152,152,152,152,152,152,152,152,152,10,169,169,169,172,172,172,172,172,177,178,178,178,178,178,178,178,178,178,178,178,178,178,178,178,178,0,195,196,197,197,197,197,197,197,197,197,197,197,197,197,197,197,197,197,213,213,0,216,216,0,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,0,238,238,238,238,238,238,238]};
+  var mmPos=[], mmKids=[], MMN=MM.d.length, EV=[], nodeH=new Float32Array(MMN), nodeK=new Uint8Array(MMN);
+  (function(){
+    var by={}, i; for(i=0;i<MMN;i++){ (by[MM.d[i]]=by[MM.d[i]]||[]).push(i); mmKids[i]=[]; }
+    for(i=1;i<MMN;i++) mmKids[MM.p[i]].push(i);
+    Object.keys(by).forEach(function(k){ var g=by[k], dd=+k; if(dd===0){ mmPos[g[0]]=[0,0,0]; return; }
+      var pts=fib(Math.max(2,g.length),0.14+dd*0.125); g.forEach(function(id,j){ mmPos[id]=pts[j]; }); });
+  })();
+  function pathTo(id){ var o=[]; while(id>=0){ o.unshift(id); id=MM.p[id]; } return o; }
+  function descAt(id,dp){ while(MM.d[id]<dp && mmKids[id].length) id=mmKids[id][0]; return id; }
+  function ev(at,id,kind){ EV.push({at:at,path:pathTo(id),kind:kind}); }
+  (function(){
+    var BR=[11,39,65,91,117,143,169], i, s, j;
+    ev(0.09,218,0);                                         // 1 Angle: user input prompt
+    ev(0.11,219,0); for(j=0;j<6;j++) ev(0.12+j*0.015,220+j,0); // 2 Context: order of operations ladder
+    for(i=0;i<7;i++){ var b=0.22+i*0.04;                    // 3 Checks: 7 tools, each with its BRPN node, three shells each
+      ev(b,239+i,0); ev(b+0.01,BR[i],0);
+      for(s=0;s<3;s++) ev(b+0.03+s*0.03,descAt(BR[i],3+s),s+1); }
+    ev(0.60,195,1); ev(0.64,196,1); ev(0.66,6,2); ev(0.68,7,2); ev(0.70,9,2); // 4 Shells
+    ev(0.73,2,3); ev(0.75,3,3); ev(0.77,4,3);
+    ev(0.82,1,0); ev(0.85,217,0);                           // 5 Field: AI output prompt
+  })();
+  var MMT=0.05, STG=[0.10,0.22,0.58,0.80,1.01];
+  function stageAt(p){ for(var i=0;i<5;i++) if(p<STG[i]) return i; return 4; }
+  function dark(){ var t=document.documentElement.getAttribute('data-theme'); return t?t==='dark':(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches); }
+  function kcol(k,base){ if(!k) return base; return (dark()?['#00ffcc','#4aa8ff','#ff5c7a']:['#00826a','#0062c4','#c81e45'])[k-1]; }
+  function heat(p){
+    nodeH.fill(0);
+    for(var e=0;e<EV.length;e++){ var E=EV[e], n=E.path.length-1;
+      for(var k=0;k<=n;k++){ var age=p-(E.at+MMT*k/n); if(age<0) break; var h=Math.exp(-age/0.09), id=E.path[k]; if(h>nodeH[id]){ nodeH[id]=h; nodeK[id]=E.kind; } } }
+  }
+
+  // ---------- projection ----------
+  var scale=100;
+  function P(p){
+    var cy=Math.cos(rotY), sy=Math.sin(rotY), x=p[0]-0.25, y=p[1], z=p[2];
+    var x1=x*cy+z*sy, z1=-x*sy+z*cy, cx=Math.cos(rotX), sx=Math.sin(rotX);
+    var y1=y*cx-z1*sx, z2=y*sx+z1*cx, f=7/(7-z2);
+    return {x:W/2+x1*scale*f, y:H/2-y1*scale*f, z:z2, f:f};
+  }
+  function poly(pts,close){ ctx.beginPath(); for(var i=0;i<pts.length;i++){ var q=P(pts[i]); if(i)ctx.lineTo(q.x,q.y); else ctx.moveTo(q.x,q.y);} if(close)ctx.closePath(); }
+  function along(pts,u){ var tot=0,seg=[],i; for(i=0;i<pts.length-1;i++){ var d=Math.hypot(pts[i+1][0]-pts[i][0],pts[i+1][1]-pts[i][1],pts[i+1][2]-pts[i][2]); seg.push(d); tot+=d; }
+    var m=u*tot; for(i=0;i<seg.length;i++){ if(m<=seg[i]||i===seg.length-1){ var t=seg[i]?Math.min(1,m/seg[i]):0; return [pts[i][0]+(pts[i+1][0]-pts[i][0])*t,pts[i][1]+(pts[i+1][1]-pts[i][1])*t,pts[i][2]+(pts[i+1][2]-pts[i][2])*t]; } m-=seg[i]; } return pts[pts.length-1]; }
+  function text(str,p,col,size,dx,dy,align){ var q=P(p); ctx.font='600 '+size+'px '+css('--mono'); ctx.fillStyle=col; ctx.textAlign=align||'center'; ctx.textBaseline='middle'; ctx.fillText(str,q.x+(dx||0),q.y+(dy||0)); }
+
+  // ---------- draw ----------
+  function draw(){
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+    var col=css(DATA[tier].key), fg=css('--fg'), mut=css('--muted'), line=css('--line'), bg=css('--surface');
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    var body=P([0,0,0]);
+    // dendrites + twigs
+    dens.forEach(function(d,k){
+      ctx.strokeStyle=col; ctx.globalAlpha=0.9;
+      var w=tier===1?1.2+Math.abs(W1[k])*5.5:2.2;
+      ctx.lineWidth=w*Math.min(1.2,0.8+scale/260); ctx.setLineDash(tier===1&&W1[k]<0?[7,5]:[]);
+      poly(d.pts); ctx.stroke(); ctx.setLineDash([]);
+      ctx.lineWidth=1.3; ctx.globalAlpha=0.55; d.twigs.forEach(function(t){ poly(t); ctx.stroke(); });
+      ctx.globalAlpha=1;
+      var lab = tier===1?('w'+(k+1)+' '+(W1[k]>0?'':'−')+Math.abs(W1[k]).toFixed(1)) : tier===2?ST2[k] : 'in '+(k+1);
+      text(lab,[-2.62,d.pts[0][1]*1.18,d.pts[0][2]*1.18],mut,Math.max(9,Math.min(12,scale*0.1)),0,0,'center');
+    });
+    // axon
+    ctx.strokeStyle=col; ctx.lineWidth=3.2; poly(axon); ctx.stroke();
+    ctx.lineWidth=7; ctx.globalAlpha=0.35; [0.85,1.2,1.55,1.85].forEach(function(x){ poly([[x-0.12,0,0],[x+0.12,0,0]]); ctx.stroke(); }); ctx.globalAlpha=1;
+    ctx.lineWidth=1.6; terms.forEach(function(t){ poly([[2.05,0,0],t]); ctx.stroke(); var q=P(t); ctx.beginPath(); ctx.arc(q.x,q.y,3,0,7); ctx.fillStyle=col; ctx.fill(); });
+    // soma
+    if(tier===1){
+      ctx.beginPath(); ctx.arc(body.x,body.y,0.5*scale*body.f,0,7); ctx.fillStyle=col; ctx.globalAlpha=0.18; ctx.fill(); ctx.globalAlpha=1;
+      ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke();
+      ctx.lineWidth=1; ctx.globalAlpha=0.6; ['x','y','z'].forEach(function(ax){ poly(sphereAxis(0.5,ax,48)); ctx.stroke(); }); ctx.globalAlpha=1;
+      ctx.font='700 '+Math.max(14,scale*0.2)+'px '+css('--mono'); ctx.fillStyle=fg; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('Σ+b',body.x,body.y);
+    } else if(tier===2){
+      [0.93,0.67,0.41].forEach(function(r,i){ ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.globalAlpha=0.3;
+        ['x','y','z'].forEach(function(ax){ poly(sphereAxis(r,ax,56)); ctx.stroke(); }); ctx.globalAlpha=1; });
+      var live=!reduce, i2, id2, q1, q2;
+      if(live) heat(phase);
+      ctx.lineWidth=0.8; ctx.strokeStyle=col; ctx.globalAlpha=0.2; ctx.beginPath();
+      for(id2=1;id2<MMN;id2++){ q1=P(mmPos[MM.p[id2]]); q2=P(mmPos[id2]); ctx.moveTo(q1.x,q1.y); ctx.lineTo(q2.x,q2.y); }
+      ctx.stroke(); ctx.globalAlpha=1;
+      if(live){
+        for(id2=1;id2<MMN;id2++){ var h=nodeH[id2]; if(h<0.04) continue;
+          ctx.strokeStyle=kcol(nodeK[id2],col); ctx.globalAlpha=Math.min(1,h*1.1); ctx.lineWidth=1+2*h;
+          q1=P(mmPos[MM.p[id2]]); q2=P(mmPos[id2]); ctx.beginPath(); ctx.moveTo(q1.x,q1.y); ctx.lineTo(q2.x,q2.y); ctx.stroke(); }
+        ctx.globalAlpha=1;
+      }
+      for(id2=0;id2<MMN;id2++){ q2=P(mmPos[id2]); var hh=live?nodeH[id2]:0;
+        if(hh>0.04){ var kc=kcol(nodeK[id2],col); ctx.globalAlpha=0.25*hh; ctx.fillStyle=kc; ctx.beginPath(); ctx.arc(q2.x,q2.y,3+7*hh,0,7); ctx.fill();
+          ctx.globalAlpha=0.4+0.6*hh; ctx.beginPath(); ctx.arc(q2.x,q2.y,1.8+2.4*hh,0,7); ctx.fill(); }
+        else { ctx.globalAlpha=0.7; ctx.fillStyle=mut; ctx.beginPath(); ctx.arc(q2.x,q2.y,id2===0?3:1.2,0,7); ctx.fill(); } }
+      ctx.globalAlpha=1;
+      if(live) for(var e2=0;e2<EV.length;e2++){ var E=EV[e2], a=phase-E.at; if(a<0||a>MMT) continue; var n2=E.path.length-1, m=a/MMT*n2, k2=Math.min(n2-1,Math.floor(m)), t=m-k2;
+        var A=mmPos[E.path[k2]], B=mmPos[E.path[k2+1]], hp=P([A[0]+(B[0]-A[0])*t,A[1]+(B[1]-A[1])*t,A[2]+(B[2]-A[2])*t]);
+        ctx.fillStyle=fg; ctx.beginPath(); ctx.arc(hp.x,hp.y,3,0,7); ctx.fill(); }
+      var fs=Math.max(8,Math.min(10,scale*0.085));
+      [[218,'in'],[217,'out'],[219,'order'],[238,'tools'],[10,'BRPN']].forEach(function(l){ text(l[1],mmPos[l[0]],fg,fs,0,-fs*0.9); });
+      text('F',[0,0.93,0],fg,fs,0,-fs*0.9); text('R',[0,0.67,0],fg,fs,fs*1.6,0); text('P',[0,0.41,0],fg,fs,fs*1.6,0);
+    } else {
+      ctx.strokeStyle=col; ctx.lineWidth=1.3; ctx.setLineDash([5,4]); ctx.globalAlpha=0.9;
+      latEdges.forEach(function(e){ poly([lattice[e[0]],lattice[e[1]]]); ctx.stroke(); }); ctx.setLineDash([]);
+      lattice.forEach(function(p){ var q=P(p); ctx.beginPath(); ctx.arc(q.x,q.y,4,0,7); ctx.fillStyle=bg; ctx.fill(); ctx.strokeStyle=col; ctx.lineWidth=1.6; ctx.stroke(); });
+      ctx.globalAlpha=1;
+    }
+    // stage rings
+    for(var g=0;g<5;g++){
+      ctx.strokeStyle=(g===hl)?fg:col; ctx.lineWidth=(g===hl)?3:1.4; ctx.globalAlpha=(g===hl)?1:0.8;
+      poly(ringX(GX[g],GR[g],48)); ctx.stroke(); ctx.globalAlpha=1;
+    }
+    for(g=0;g<5;g++){
+      var q=P([GX[g],GR[g]+0.0,0]); var yy=q.y-(g===2?10:12);
+      ctx.beginPath(); ctx.arc(q.x,yy-6,10,0,7); ctx.fillStyle=(g===hl)?fg:bg; ctx.fill(); ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke();
+      ctx.font='700 11px '+css('--mono'); ctx.fillStyle=(g===hl)?bg:fg; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(String(g+1),q.x,yy-5.5);
+    }
+    // signal pulses
+    if(!reduce){
+      var p=phase; ctx.fillStyle=fg;
+      var d1=tier===2?0.10:0.45, a0=tier===2?0.86:0.55;
+      if(p<d1){ var u=p/d1; dens.forEach(function(d){ var pt=along(d.pts,u), q2=P(pt); ctx.beginPath(); ctx.arc(q2.x,q2.y,3.6,0,7); ctx.fill(); }); }
+      else if(p>a0){ var u2=(p-a0)/(1-a0), pt2=along(axon,u2), q3=P(pt2); ctx.beginPath(); ctx.arc(q3.x,q3.y,4,0,7); ctx.fill(); }
+    }
+    // output label
+    var ol = tier===1?'y = φ(z)': tier===2?'field mfdb0.0':'declared output';
+    text(ol,[2.6,0,-0.0],mut,Math.max(9,Math.min(12,scale*0.1)),0,Math.max(22,scale*0.3),'center');
+    if(tier===1){ text('φ',[0.85,0.18,0],fg,Math.max(11,scale*0.14),0,-16); }
+  }
+
+  // ---------- layout, loop ----------
+  function size(){
+    dpr=Math.min(2,window.devicePixelRatio||1);
+    var w=cv.clientWidth||600; W=w; H=Math.round(Math.max(230,Math.min(380,w*0.5)));
+    cv.style.height=H+'px'; cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+    scale=Math.min(W/6.9,H/2.6);
+    draw();
+  }
+  function frame(ts){
+    raf=requestAnimationFrame(frame);
+    var dt=Math.min(50,ts-(last||ts)); last=ts;
+    if(!drag) rotY+=dt*0.00012;
+    phase=(phase+dt/(tier===2?11000:4200))%1;
+    var want=hov>=0?hov:(tier===2?stageAt(phase):-1);
+    if(want!==hl){ hl=want; Array.prototype.forEach.call(list.children,function(li,i){ li.classList.toggle('on',i===hl); }); }
+    draw();
+  }
+  function renderStages(){
+    var d=DATA[tier];
+    document.getElementById('stg-eyebrow').textContent=d.eyebrow;
+    document.getElementById('stg-title').textContent=d.title;
+    document.getElementById('stg-ev').textContent=d.ev;
+    document.getElementById('cap').textContent=d.cap;
+    list.style.setProperty('--c','var('+d.key+')');
+    list.innerHTML=d.rows.map(function(r,i){ return '<li data-i="'+i+'"><span class="num">'+(i+1)+'</span><div><b>'+r[0]+'</b><span>'+r[1]+'</span></div></li>'; }).join('');
+    Array.prototype.forEach.call(list.children,function(li){
+      li.addEventListener('mouseenter',function(){ hov=+li.dataset.i; hl=hov; if(reduce)draw(); });
+      li.addEventListener('mouseleave',function(){ hov=-1; hl=-1; if(reduce)draw(); });
+    });
+    draw();
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.seg button'),function(b){
+    b.addEventListener('click',function(){
+      tier=+b.dataset.t; hov=-1; hl=-1;
+      Array.prototype.forEach.call(document.querySelectorAll('.seg button'),function(x){ x.setAttribute('aria-pressed',x===b?'true':'false'); });
+      renderStages();
+    });
+  });
+  cv.addEventListener('pointerdown',function(e){ drag={x:e.clientX}; try{cv.setPointerCapture(e.pointerId);}catch(_){} });
+  cv.addEventListener('pointermove',function(e){ if(!drag)return; rotY+=(e.clientX-drag.x)*0.01; drag.x=e.clientX; if(reduce)draw(); });
+  function end(){ drag=null; }
+  cv.addEventListener('pointerup',end); cv.addEventListener('pointercancel',end);
+  window.addEventListener('resize',size);
+  if(window.matchMedia){ try{ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){draw();}); }catch(_){} }
+  new MutationObserver(function(){draw();}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+  renderStages(); size();
+  if(!reduce) raf=requestAnimationFrame(frame);
+
+  // ---------- conformance checker ----------
+  var ids=['c1','c2','c3','c4','c5','c6','c7','c8'];
+  function check(){
+    var n=0; ids.forEach(function(i){ if(document.getElementById(i).checked)n++; });
+    document.getElementById('res-count').textContent=n+' of 8 met';
+    var ok=n===8, p=document.getElementById('res-pill');
+    p.textContent=ok?'Conforms to Path 3':'Does not conform yet'; p.className='pill '+(ok?'ok':'no');
+    document.getElementById('res-note').textContent=ok?'Publish a Neuron Disclosure Record.':'Every item is a MUST. The sixth is the task itself.';
+  }
+  ids.forEach(function(i){ document.getElementById(i).addEventListener('change',check); });
+  check();
+})();
+</script>
+
+</body>
+</html>
