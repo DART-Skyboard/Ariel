@@ -510,7 +510,7 @@ async function handleFiles(list){
   let addClips=[];
   if(chars.length){
     const c=chars[0];
-    await loadCharBuf(c.buf,c.f.name);
+    await loadCharBuf(c.buf,c.f.name,c.g);c.buf=null;
     notes.unshift(c.f.name+': character ('+clips.length+' animation(s))');
     chars.slice(1).forEach(p=>notes.push(p.f.name+': another character, ignored (only one is shown)'));
   }
@@ -529,8 +529,9 @@ async function handleFiles(list){
   if(CHAR)$('hint').textContent='One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.';
 }
 async function loadChar(f){loadCharBuf(await readBuf(f),f.name);}
-function loadCharBuf(buf,name){
-  return new Promise(res=>loader.parse(buf,'',g=>{
+function loadCharBuf(buf,name,pre){
+  const run=(ok,bad)=>pre?ok(pre):loader.parse(buf,'',ok,bad);
+  return new Promise(res=>run(g=>{
     if(CHAR){scene.remove(CHAR);if(rig)rig.remove(CHAR);} if(rig&&board){rig.remove(board);} boardOn=false;$('boardtoggle').textContent='Board: off'; if(hair){hair.dispose();hair=null;hairOn=false;$('hairtoggle').textContent='Strands: off';}
     CHAR=g.scene;CHAR.traverse(o=>{if(o.isMesh)o.frustumCulled=false;});scene.add(CHAR);mixer=new THREE.AnimationMixer(CHAR);clips=g.animations.slice();
     const bones={};CHAR.traverse(o=>{if(o.isBone)bones[o.name]=o;});CHAR.userData.bones=bones;
@@ -637,7 +638,7 @@ $('loadgame').onclick=async()=>{
     status($('status').textContent+note);
   }catch(e){status('Could not fetch the game files: '+e.message+'. Pick the files from your device instead.');}
 };
-$('f-all').onchange=e=>{handleFiles(e.target.files);e.target.value="";};
+$('f-all').onchange=e=>{const inp=e.target;handleFiles(inp.files).catch(err=>status('Load failed: '+(err&&err.message||err)+'\nTry the game button, or reload the page and choose the file again.')).finally(()=>{try{inp.value="";}catch(_){}});};
 $('clip').onchange=e=>play(+e.target.value);
 $('play').onclick=()=>{playing=!playing;if(action)action.paused=!playing;$('play').textContent=playing?'Pause':'Play'};
 $('rest').onclick=()=>{if(action){action.reset().play();action.paused=!playing;}};
