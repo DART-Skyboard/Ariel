@@ -34,9 +34,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <h1>ARIEL RIG VIEWER</h1>
     <a href="/" style="font-size:12px;color:var(--accent)">&larr; radicaldeepscale.com</a>
     <div><button id="loadgame" type="button">Load Ariel from the game files</button></div>
-    <div><label for="f-glb">Character or reel (.glb)</label><input id="f-glb" type="file" accept=".glb,.gltf"></div>
-    <div><label for="f-anim">Extra animation file (.glb, optional)</label><input id="f-anim" type="file" accept=".glb"></div>
-    <div><label for="f-hair">Strand hair data (.bin, optional)</label><input id="f-hair" type="file" accept=".bin"></div>
+    <div><label for="f-all">Choose files (character or reel .glb, plus the strand .bin)</label><input id="f-all" type="file" multiple accept=".glb,.gltf,.bin,.zip"></div>
     <div class="grp">
       <div><label for="clip">Animation</label><select id="clip"><option>(load a file)</option></select></div>
       <div class="row"><button id="play" class="alt">Pause</button><button id="rest" class="alt">Restart</button></div>
@@ -48,6 +46,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="row"><button id="hairtoggle" class="alt">Strands: off</button></div>
       <div><label for="wind">Wind <span id="windv">0</span></label><input id="wind" type="range" min="0" max="12" step="0.5" value="0"></div>
       <div><label for="grav">Gravity <span id="gravv">6</span></label><input id="grav" type="range" min="0" max="14" step="0.5" value="6"></div>
+    <div><label for="fly">Fly speed (simulated) <span id="flyv">0</span></label><input id="fly" type="range" min="0" max="40" step="1" value="0"></div>
     </div>
     <div id="status">No file loaded.</div>
   </div>
@@ -125,11 +124,33 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
                        wa: new THREE.Vector3(), wb: new THREE.Vector3() });
   }
 
+  /* ---------------- auto body colliders (capsules along the skeleton) ----------------
+     Strands stop at the arms, forearms, hands, chest/torso and shoulders instead of
+     sliding through them. [bone, childBone|null, radius] - capsule runs bone -> child. */
+  const BODY = [
+    ['Spine01', 'Spine', 0.125], ['Spine', 'neck', 0.125], ['Spine02', 'Spine01', 0.125],
+    ['LeftShoulder', 'LeftArm', 0.06], ['RightShoulder', 'RightArm', 0.06],
+    ['LeftArm', 'LeftForeArm', 0.052], ['RightArm', 'RightForeArm', 0.052],
+    ['LeftForeArm', 'LeftHand', 0.042], ['RightForeArm', 'RightHand', 0.042],
+    ['LeftHand', null, 0.05], ['RightHand', null, 0.05],
+    ['Hips', 'Spine02', 0.14],
+  ];
+  const autoCols = [];
+  if (opts.params ? opts.params.bodyColliders !== false : true) {
+    for (const [bn, cn, r] of BODY) {
+      const b = findBone(bn); if (!b) continue;
+      const a = new THREE.Vector3(0, 0, 0), e = new THREE.Vector3(0, 0, 0);
+      if (cn) { const c = findBone(cn); if (!c) continue; e.copy(c.position); if (c.parent !== b) continue; }
+      autoCols.push({ bone: b, a, b: e, r, wa: new THREE.Vector3(), wb: new THREE.Vector3() });
+    }
+    cols.push(...autoCols);
+  }
+
   /* ---------------- params ---------------- */
   const P = {
     enabled: true, gravity: 6.0, damping: 0.965, shapeStiffness: 0.9, tipStiffness: 0.03,
     wind: new THREE.Vector3(0, 0, 0), windGust: 0.35, iterations: 3, hairRadius: 0.006,
-    maxRootStep: 0.35, drag: 1.6, interleave: 1, autoQuality: true,
+    maxRootStep: 0.06, drag: 1.6, motionWind: 0.05, maxMotionWind: 14, teleportSpeed: 400, bodyColliders: true, minGravityScale: 0.0, interleave: 1, autoQuality: true,
     widthRoot: 0.0046, widthTip: 0.0022,
     ...(opts.params || {})
   };
@@ -209,7 +230,8 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
   const M = new THREE.Matrix4(), rootInv = new THREE.Matrix4(), tmpM = new THREE.Matrix4();
   const v3 = new THREE.Vector3(), v3b = new THREE.Vector3(), camL = new THREE.Vector3();
   const lastRootW = new THREE.Vector3(); let haveLast = false;
-  const gravL = new THREE.Vector3(), windL = new THREE.Vector3();
+  const gravL = new THREE.Vector3(), windL = new THREE.Vector3(), windW = new THREE.Vector3(), velS = new THREE.Vector3();
+  let gScale = 1;
   const extra = [];   // user colliders
   let time = 0, frame = 0, ema = 2, cool = 0;
   const stats = { ms: 0, strands: N, guides: G };
@@ -315,30 +337,45 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
     }
     if (needInit) { sp.set(restM); sq.set(restM); needInit = false; }
 
-    // root world motion -> clamped inertial shift (hair is left behind when the character moves)
+    // root world motion -> small clamped inertial shift + steady apparent wind.
+    // A flying character drags the hair back through a smooth airflow rather than
+    // whipping it by teleporting particles every frame.
     v3.setFromMatrixPosition(root.matrixWorld);
+    const rs = Math.cbrt(Math.abs(root.matrixWorld.determinant())) || 1;
+    let motionWind = 0;
     if (haveLast && dt < 0.25) {
       v3b.copy(v3).sub(lastRootW);
-      const rs = Math.cbrt(Math.abs(root.matrixWorld.determinant())) || 1;
-      const maxStep = P.maxRootStep * rs;
       const l = v3b.length();
-      if (l > maxStep) v3b.multiplyScalar(maxStep / l);
-      // world delta -> root-local delta (direction transform with rootInv)
-      v3b.transformDirection(rootInv).multiplyScalar(Math.min(l, maxStep) / rs * 1.0);
-      // transformDirection normalised it; length restored above
-      const sx = -v3b.x, sy = -v3b.y, sz = -v3b.z;
-      for (let i = 0; i < G * K; i++) {
-        const o = i * 3;
-        sp[o] += sx; sp[o + 1] += sy; sp[o + 2] += sz;
-        sq[o] += sx; sq[o + 1] += sy; sq[o + 2] += sz;
+      if (l / rs / dt > P.teleportSpeed) { velS.set(0, 0, 0); }   // origin re-centre / teleport: ignore
+      else {
+        velS.lerp(v3b.clone().multiplyScalar(1 / dt), 1 - Math.exp(-dt * 5));
+        const maxStep = P.maxRootStep * rs;
+        let lc = l;
+        if (lc > maxStep) { v3b.multiplyScalar(maxStep / lc); lc = maxStep; }
+        if (lc > 1e-9) {
+          v3b.transformDirection(rootInv).multiplyScalar(lc / rs);
+          const sx = -v3b.x, sy = -v3b.y, sz = -v3b.z;
+          for (let i = 0; i < G * K; i++) {
+            const o = i * 3;
+            sp[o] += sx; sp[o + 1] += sy; sp[o + 2] += sz;
+            sq[o] += sx; sq[o + 1] += sy; sq[o + 2] += sz;
+          }
+        }
       }
-    } else if (dt >= 0.25) { sp.set(restM); sq.set(restM); }
+    } else if (dt >= 0.25) { sp.set(restM); sq.set(restM); velS.set(0, 0, 0); }
     lastRootW.copy(v3); haveLast = true;
+    const spd = velS.length() / rs;                       // body-lengths-ish per second
+    motionWind = Math.min(P.maxMotionWind, spd * P.motionWind);
+    windW.copy(P.wind);
+    if (spd > 1e-3) windW.addScaledVector(velS, -motionWind / (velS.length() || 1));
 
     // gravity / wind into root-local directions
     const up = opts.getDown ? opts.getDown() : null;   // optional: world-space "down" vector
     gravL.set(up ? up.x : 0, up ? up.y : -1, up ? up.z : 0).transformDirection(rootInv);
-    windL.copy(P.wind).transformDirection(rootInv).multiplyScalar(P.wind.length());
+    const gsT = opts.getGravityScale ? opts.getGravityScale() : 1;
+    gScale += (gsT - gScale) * (1 - Math.exp(-dt * 3));
+    gravL.multiplyScalar(Math.max(P.minGravityScale, gScale));
+    windL.copy(windW).transformDirection(rootInv).multiplyScalar(windW.length());
 
     time += dt;
     const n = Math.min(2, Math.max(1, Math.ceil(dt / (1 / 60))));
@@ -445,10 +482,45 @@ function play(i){
   action=mixer.clipAction(clips[i]);action.reset().play();action.paused=!playing;
   $('scrub').max=clips[i].duration;
 }
-async function loadChar(f){
-  status('Loading '+f.name+' ...');
-  loadCharBuf(await readBuf(f),f.name);
+const hasSkin=g=>{let s=false;g.scene.traverse(o=>{if(o.isSkinnedMesh)s=true});return s;};
+async function handleFiles(list){
+  const files=[...list];if(!files.length)return;
+  const notes=[];const parsed=[];
+  status('Reading '+files.length+' file(s) ...');
+  for(const f of files){
+    const n=f.name.toLowerCase();
+    try{
+      if(n.endsWith('.zip')){notes.push(f.name+': this is a zip. Unzip it first, then choose the .glb inside.');continue;}
+      const buf=await readBuf(f);
+      if(n.endsWith('.bin')){hairBuf=buf;notes.push(f.name+': strand hair data');continue;}
+      if(!(n.endsWith('.glb')||n.endsWith('.gltf'))){notes.push(f.name+': not a .glb or .bin, skipped');continue;}
+      const g=await new Promise((res,rej)=>loader.parse(buf,'',res,rej));
+      parsed.push({f,g,buf});
+    }catch(e){notes.push(f.name+': could not be read ('+(e.message||e)+')');}
+  }
+  const chars=parsed.filter(p=>hasSkin(p.g));
+  let addClips=[];
+  if(chars.length){
+    const c=chars[0];
+    await loadCharBuf(c.buf,c.f.name);
+    notes.unshift(c.f.name+': character ('+clips.length+' animation(s))');
+    chars.slice(1).forEach(p=>notes.push(p.f.name+': another character, ignored (only one is shown)'));
+  }
+  for(const p of parsed){
+    if(chars.length&&p===chars[0])continue;
+    if(!CHAR){notes.push(p.f.name+': no skinned character yet, choose a character .glb too');continue;}
+    if(p.g.animations.length){addClips=addClips.concat(p.g.animations);notes.push(p.f.name+': +'+p.g.animations.length+' animation(s)');}
+    else notes.push(p.f.name+': no animations in this file');
+  }
+  if(addClips.length){clips=clips.concat(addClips);fillClips();}
+  if(hairBuf&&CHAR)makeHair();
+  if(CHAR&&!clips.length)notes.push('Tip: the LOD files have no animations. Add Ariel_Showcase_Reel_q.glb (25 clips) or use the game button.');
+  if(CHAR&&!hairBuf)notes.push('Tip: add ariel_hair_strands.bin to get strand hair.');
+  if(CHAR)notes.unshift(Object.keys(CHAR.userData.bones).length+' bones');
+  status(notes.join('\n'));
+  if(CHAR)$('hint').textContent='Drag to orbit, pinch or wheel to zoom.';
 }
+async function loadChar(f){loadCharBuf(await readBuf(f),f.name);}
 function loadCharBuf(buf,name){
   return new Promise(res=>loader.parse(buf,'',g=>{
     if(CHAR){scene.remove(CHAR);} if(hair){hair.dispose();hair=null;hairOn=false;$('hairtoggle').textContent='Strands: off';}
@@ -461,10 +533,9 @@ function loadCharBuf(buf,name){
     res();
   },e=>{status('Could not read file: '+(e.message||e));res();}));
 }
-async function loadAnim(f){ loadAnimBuf(await readBuf(f),f.name); }
 function loadAnimBuf(buf,name){
   if(!CHAR){status('Load the character first.');return;}
-  loader.parse(buf,'',g=>{clips=clips.concat(g.animations);fillClips();status(status.textContent+`\n+ ${g.animations.length} clips from ${name}`)},e=>status('Animation file error'));
+  loader.parse(buf,'',g=>{clips=clips.concat(g.animations);fillClips();status($('status').textContent+`\n+ ${g.animations.length} clips from ${name}`)},e=>status('Animation file error'));
 }
 function makeHair(){
   if(!CHAR||!hairBuf)return;
@@ -472,7 +543,7 @@ function makeHair(){
     if(hair)hair.dispose();
     hair=buildHair({root:CHAR,bones:CHAR.userData.bones,mixer:null},THREE,hairBuf,{manual:true});
     hairOn=true;$('hairtoggle').textContent='Strands: on';
-    status(status.textContent+`\nstrands: ${hair.stats.strands} (${hair.stats.guides} simulated)`);
+    status($('status').textContent+`\nstrands: ${hair.stats.strands} (${hair.stats.guides} simulated)`);
   }catch(e){status('Hair: '+e.message);hairOn=false;hair=null;}
 }
 const GAME='https://raw.githubusercontent.com/dartsolarpunk/dartmeadow-space/main/characterassests/';
@@ -485,9 +556,7 @@ $('loadgame').onclick=async()=>{
     loadAnimBuf(a,'game animations');
   }catch(e){status('Could not fetch the game files: '+e.message+'. Pick the files from your device instead.');}
 };
-$('f-glb').onchange=e=>e.target.files[0]&&loadChar(e.target.files[0]);
-$('f-anim').onchange=e=>e.target.files[0]&&loadAnim(e.target.files[0]);
-$('f-hair').onchange=async e=>{const f=e.target.files[0];if(!f)return;hairBuf=await readBuf(f);makeHair();};
+$('f-all').onchange=e=>{handleFiles(e.target.files);e.target.value="";};
 $('clip').onchange=e=>play(+e.target.value);
 $('play').onclick=()=>{playing=!playing;if(action)action.paused=!playing;$('play').textContent=playing?'Pause':'Play'};
 $('rest').onclick=()=>{if(action){action.reset().play();action.paused=!playing;}};
@@ -496,11 +565,13 @@ $('scrub').oninput=e=>{if(action){action.time=+e.target.value;mixer.update(0);}}
 $('hairtoggle').onclick=()=>{if(!hair){status('Pick the strand .bin file first.');return;}hairOn=!hairOn;hair.setEnabled(hairOn);$('hairtoggle').textContent='Strands: '+(hairOn?'on':'off');};
 $('wind').oninput=e=>{const v=+e.target.value;$('windv').textContent=v;if(hair)hair.params.wind.set(v,0,v*0.3)};
 $('grav').oninput=e=>{const v=+e.target.value;$('gravv').textContent=v;if(hair)hair.params.gravity=v};
+let flyZ=0;$('fly').oninput=e=>{$('flyv').textContent=e.target.value;if(!+e.target.value&&CHAR)CHAR.position.z=0};
 const clock=new THREE.Clock();
 function tick(){
   requestAnimationFrame(tick);
   const dt=Math.min(clock.getDelta(),0.1);
   if(mixer){mixer.update(playing?dt*(+$('speed').value):0);if(action)$('timev').textContent=action.time.toFixed(1)+' s',playing&&($('scrub').value=action.time);}
+  { const fs=+$('fly').value; if(CHAR&&fs){ const z0=CHAR.position.z; flyZ+=fs*dt; const z1=((flyZ%40)-20); CHAR.position.z=z1; const dz=z1-z0; cam.position.z+=dz; ctl.target.z=z1; } }
   scene.updateMatrixWorld(true);
   if(hair&&hairOn)hair.update(dt);
   ctl.update();renderer.render(scene,cam);
