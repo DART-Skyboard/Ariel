@@ -150,7 +150,7 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
   const P = {
     enabled: true, gravity: 6.0, damping: 0.965, shapeStiffness: 0.9, tipStiffness: 0.03,
     wind: new THREE.Vector3(0, 0, 0), windGust: 0.35, iterations: 3, hairRadius: 0.006,
-    maxRootStep: 0.06, drag: 1.6, motionWind: 0.05, maxMotionWind: 14, teleportSpeed: 400, bodyColliders: true, minGravityScale: 0.0, interleave: 1, autoQuality: true,
+    maxRootStep: 0.06, drag: 1.6, motionWind: 0.05, maxMotionWind: 14, teleportSpeed: 400, popSpeed: 22, bodyColliders: true, minGravityScale: 0.0, interleave: 1, autoQuality: true,
     widthRoot: 0.0046, widthTip: 0.0022,
     ...(opts.params || {})
   };
@@ -230,6 +230,7 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
   const M = new THREE.Matrix4(), rootInv = new THREE.Matrix4(), tmpM = new THREE.Matrix4();
   const v3 = new THREE.Vector3(), v3b = new THREE.Vector3(), camL = new THREE.Vector3();
   const lastRootW = new THREE.Vector3(); let haveLast = false;
+  let lhx = 0, lhy = 0, lhz = 0, haveHL = false;
   const gravL = new THREE.Vector3(), windL = new THREE.Vector3(), windW = new THREE.Vector3(), velS = new THREE.Vector3();
   let gScale = 1;
   const extra = [];   // user colliders
@@ -315,6 +316,10 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
     rootInv.copy(root.matrixWorld).invert();
     M.multiplyMatrices(rootInv, head.matrixWorld);   // head bone in root-local space
     const me = M.elements;
+    // animation pop (clip loop / teleport of the head relative to the body): re-seed instead of whipping
+    let popped = false;
+    if (haveHL && dt > 0 && dt < 0.25 && Math.hypot(me[12] - lhx, me[13] - lhy, me[14] - lhz) / dt > P.popSpeed) popped = true;
+    lhx = me[12]; lhy = me[13]; lhz = me[14]; haveHL = true;
 
     // colliders -> root-local capsules
     for (const C of cols) {
@@ -336,6 +341,7 @@ function buildHair(CHAR, THREE, buf, opts = {}) {
       }
     }
     if (needInit) { sp.set(restM); sq.set(restM); needInit = false; }
+    if (popped) { sp.set(restM); sq.set(restM); velS.set(0, 0, 0); haveLast = false; }
 
     // root world motion -> small clamped inertial shift + steady apparent wind.
     // A flying character drags the hair back through a smooth airflow rather than
