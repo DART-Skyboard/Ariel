@@ -33,7 +33,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <div class="side">
     <h1>ARIEL RIG VIEWER</h1>
     <a href="/" style="font-size:12px;color:var(--accent)">&larr; radicaldeepscale.com</a>
-    <div><button id="loadgame" type="button">Load Ariel from the game files</button></div>
+    <div class="grp" style="border-top:0;padding-top:0"><button id="loadgame" type="button" style="padding:11px 9px;font-size:15px">Load the game character group</button><div style="font-size:12px;color:var(--mute)">Loads exactly what the game loads: Ariel, her 25 animations, the strand hair, and the skyboard with her standing on it. Or use the manual chooser below.</div><div class="row"><select id="bsel" aria-label="Skyboard model"><option value="skyboard_B.glb">Skyboard B (game default)</option><option value="skyboard_A.glb">Skyboard A</option><option value="skyboard_C.glb">Skyboard C (21 parts)</option></select><button id="boardtoggle" class="alt" type="button">Board: off</button></div></div>
     <div><label for="f-all">Choose files (character or reel .glb, plus the strand .bin)</label><input id="f-all" type="file" multiple accept=".glb,.gltf,.bin,.zip"></div>
     <div class="grp">
       <div><label for="clip">Animation</label><select id="clip"><option>(load a file)</option></select></div>
@@ -523,7 +523,7 @@ async function handleFiles(list){
 async function loadChar(f){loadCharBuf(await readBuf(f),f.name);}
 function loadCharBuf(buf,name){
   return new Promise(res=>loader.parse(buf,'',g=>{
-    if(CHAR){scene.remove(CHAR);} if(hair){hair.dispose();hair=null;hairOn=false;$('hairtoggle').textContent='Strands: off';}
+    if(CHAR){scene.remove(CHAR);if(rig)rig.remove(CHAR);} if(rig&&board){rig.remove(board);} boardOn=false;$('boardtoggle').textContent='Board: off'; if(hair){hair.dispose();hair=null;hairOn=false;$('hairtoggle').textContent='Strands: off';}
     CHAR=g.scene;CHAR.traverse(o=>{if(o.isMesh)o.frustumCulled=false;});scene.add(CHAR);mixer=new THREE.AnimationMixer(CHAR);clips=g.animations.slice();
     const bones={};CHAR.traverse(o=>{if(o.isBone)bones[o.name]=o;});CHAR.userData.bones=bones;
     fillClips();
@@ -534,8 +534,8 @@ function loadCharBuf(buf,name){
   },e=>{status('Could not read file: '+(e.message||e));res();}));
 }
 function loadAnimBuf(buf,name){
-  if(!CHAR){status('Load the character first.');return;}
-  loader.parse(buf,'',g=>{clips=clips.concat(g.animations);fillClips();status($('status').textContent+`\n+ ${g.animations.length} clips from ${name}`)},e=>status('Animation file error'));
+  if(!CHAR){status('Load the character first.');return Promise.resolve();}
+  return new Promise(res=>loader.parse(buf,'',g=>{clips=clips.concat(g.animations);fillClips();status($('status').textContent+`\n+ ${g.animations.length} clips from ${name}`);res()},e=>{status('Animation file error');res();}));
 }
 function makeHair(){
   if(!CHAR||!hairBuf)return;
@@ -546,14 +546,87 @@ function makeHair(){
     status($('status').textContent+`\nstrands: ${hair.stats.strands} (${hair.stats.guides} simulated)`);
   }catch(e){status('Hair: '+e.message);hairOn=false;hair=null;}
 }
-const GAME='https://raw.githubusercontent.com/dartsolarpunk/dartmeadow-space/main/characterassests/';
+const GAMEROOT='https://raw.githubusercontent.com/dartsolarpunk/dartmeadow-space/main/';
+const GAME=GAMEROOT+'characterassests/';
+let rig=null,board=null,boardOn=false,rawH=1,feetOff=0;
+/* same normalisation the game applies to a skyboard GLB (preloadSkyboardTemplates):
+   bake transforms, long axis -> +X (nose forward), centre, scale to 3.0 units (C: 3.69) */
+function normBoard(root,k){
+  root.traverse(o=>{if(o.isLight||o.isCamera)o.visible=false;});
+  root.updateMatrixWorld(true);
+  root.traverse(o=>{if(o.isMesh&&o.geometry){o.geometry=o.geometry.clone();o.geometry.applyMatrix4(o.matrixWorld);}});
+  root.traverse(o=>{o.position.set(0,0,0);o.rotation.set(0,0,0);o.scale.set(1,1,1);});
+  root.updateMatrixWorld(true);
+  const box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3()),ctr=box.getCenter(new THREE.Vector3());
+  const rot=new THREE.Matrix4();
+  if(size.y>=size.x&&size.y>=size.z)rot.makeRotationZ(Math.PI/2);else if(size.z>=size.x)rot.makeRotationY(-Math.PI/2);
+  const full=rot.clone().multiply(new THREE.Matrix4().makeTranslation(-ctr.x,-ctr.y,-ctr.z));
+  root.traverse(o=>{if(o.isMesh&&o.geometry){o.geometry.applyMatrix4(full);}});
+  root.updateMatrixWorld(true);
+  const s2=new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
+  root.scale.setScalar((k==='C'?3.69:3.0)/Math.max(s2.x,s2.y,s2.z,0.001));
+  root.updateMatrixWorld(true);
+  return root;
+}
+function boardFile(){return $('bsel').value;}
+async function loadBoard(){
+  const file=boardFile();
+  const g=await new Promise((res,rej)=>loader.load(GAMEROOT+file,res,undefined,rej));
+  const k=/_([ABC])\./.exec(file)[1];
+  if(board&&board.parent)board.parent.remove(board);
+  board=normBoard(g.scene,k);board.traverse(o=>{if(o.isMesh)o.frustumCulled=false;});
+  return board;
+}
+function measureChar(){
+  if(!CHAR)return;
+  if(CHAR.parent===rig&&rig)return;
+  const b=new THREE.Box3();CHAR.updateMatrixWorld(true);CHAR.traverse(o=>{if(o.isSkinnedMesh){o.geometry.computeBoundingBox();b.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld));}});rawH=Math.max(b.max.y-b.min.y,0.001);feetOff=-b.min.y;
+}
+function mountOnBoard(){
+  if(!CHAR||!board){return false;}
+  if(!rig){rig=new THREE.Group();scene.add(rig);}
+  measureChar();
+  scene.remove(CHAR);rig.add(board);rig.add(CHAR);
+  const tgt=6/(37/3.0), s=tgt/rawH;                    // CHAR_BOARD_TARGET_UNITS / rawHeight
+  board.updateMatrixWorld(true);
+  const bx=new THREE.Box3().setFromObject(board);
+  CHAR.rotation.set(0,Math.PI/2,0);                    // CHAR_MOUNT_YAW_OFFSET
+  CHAR.scale.set(s,s,-s);                              // mirrored Z, exactly as the game
+  CHAR.position.set((bx.min.x+bx.max.x)/2,bx.max.y+feetOff*s,(bx.min.z+bx.max.z)/2);
+  CHAR.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.side=THREE.DoubleSide);}});
+  boardOn=true;$('boardtoggle').textContent='Board: on';
+  // the game holds the cropped Step_Right_for_Exercise window (1.25 s - 1.5 s) as the ride stance
+  const i=clips.findIndex(c=>/Step_Right/i.test(c.name));
+  if(i>=0){$('clip').value=i;play(i);if(action){action.time=1.25;action.paused=true;playing=false;$('play').textContent='Play';mixer.update(0);}}
+  ctl.target.set(0,0.7,0);cam.position.set(2.2,1.6,4.6);ctl.update();
+  return true;
+}
+function unmountBoard(){
+  if(!rig||!CHAR)return;
+  rig.remove(board);rig.remove(CHAR);scene.add(CHAR);
+  CHAR.position.set(0,0,0);CHAR.rotation.set(0,0,0);CHAR.scale.set(1,1,1);
+  boardOn=false;$('boardtoggle').textContent='Board: off';
+}
+$('boardtoggle').onclick=async()=>{
+  if(!CHAR){status('Load the character first (use the big button).');return;}
+  try{
+    if(boardOn){unmountBoard();return;}
+    status($('status').textContent+'\nloading '+boardFile()+' ...');
+    await loadBoard();mountOnBoard();
+  }catch(e){status('Board failed: '+(e.message||e));}
+};
+$('bsel').onchange=async()=>{if(boardOn){unmountBoard();try{await loadBoard();mountOnBoard();}catch(e){status('Board failed: '+e.message);}}};
 $('loadgame').onclick=async()=>{
   try{
-    status('Fetching the game character, animations and strands ...');
-    const get=async n=>{const r=await fetch(GAME+n);if(!r.ok)throw new Error(n+' '+r.status);return r.arrayBuffer();};
-    const [c,a,h]=await Promise.all([get('Meshy_AI_Autumn_biped_Character_output.glb'),get('Meshy_AI_Autumn_biped_Meshy_AI_Meshy_Merged_Animations.glb'),get('ariel_hair_strands.bin')]);
+    status('Fetching the game character group: Ariel, animations, strands, skyboard ...');
+    const get=async(u)=>{const r=await fetch(u);if(!r.ok)throw new Error(u.split('/').pop()+' '+r.status);return r.arrayBuffer();};
+    const [c,a,h]=await Promise.all([get(GAME+'Meshy_AI_Autumn_biped_Character_output.glb'),get(GAME+'Meshy_AI_Autumn_biped_Meshy_AI_Meshy_Merged_Animations.glb'),get(GAME+'ariel_hair_strands.bin')]);
+    if(boardOn)unmountBoard();
     hairBuf=h; await loadCharBuf(c,'Ariel (game)');
-    loadAnimBuf(a,'game animations');
+    await loadAnimBuf(a,'game animations');
+    let note='';
+    try{await loadBoard();mountOnBoard();note='\nskyboard: '+boardFile()+' (mounted like the game)';}catch(e){note='\nskyboard could not load: '+(e.message||e);}
+    status($('status').textContent+note);
   }catch(e){status('Could not fetch the game files: '+e.message+'. Pick the files from your device instead.');}
 };
 $('f-all').onchange=e=>{handleFiles(e.target.files);e.target.value="";};
@@ -565,13 +638,13 @@ $('scrub').oninput=e=>{if(action){action.time=+e.target.value;mixer.update(0);}}
 $('hairtoggle').onclick=()=>{if(!hair){status('Pick the strand .bin file first.');return;}hairOn=!hairOn;hair.setEnabled(hairOn);$('hairtoggle').textContent='Strands: '+(hairOn?'on':'off');};
 $('wind').oninput=e=>{const v=+e.target.value;$('windv').textContent=v;if(hair)hair.params.wind.set(v,0,v*0.3)};
 $('grav').oninput=e=>{const v=+e.target.value;$('gravv').textContent=v;if(hair)hair.params.gravity=v};
-let flyZ=0;$('fly').oninput=e=>{$('flyv').textContent=e.target.value;if(!+e.target.value&&CHAR)CHAR.position.z=0};
+let flyZ=0;$('fly').oninput=e=>{$('flyv').textContent=e.target.value;if(!+e.target.value){const m=rig||CHAR;if(m)m.position.z=0;}};
 const clock=new THREE.Clock();
 function tick(){
   requestAnimationFrame(tick);
   const dt=Math.min(clock.getDelta(),0.1);
   if(mixer){mixer.update(playing?dt*(+$('speed').value):0);if(action)$('timev').textContent=action.time.toFixed(1)+' s',playing&&($('scrub').value=action.time);}
-  { const fs=+$('fly').value; if(CHAR&&fs){ const z0=CHAR.position.z; flyZ+=fs*dt; const z1=((flyZ%40)-20); CHAR.position.z=z1; const dz=z1-z0; cam.position.z+=dz; ctl.target.z=z1; } }
+  { const fs=+$('fly').value; const mv=rig||CHAR; if(mv&&fs){ const z0=mv.position.z; flyZ+=fs*dt; const z1=((flyZ%40)-20); mv.position.z=z1; const dz=z1-z0; cam.position.z+=dz; ctl.target.z=z1; } }
   scene.updateMatrixWorld(true);
   if(hair&&hairOn)hair.update(dt);
   ctl.update();renderer.render(scene,cam);
