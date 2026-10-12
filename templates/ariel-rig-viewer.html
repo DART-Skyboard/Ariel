@@ -28,637 +28,318 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <style>html{color-scheme:light dark}body{margin:0}</style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
 </head><body>
+<style>html{color-scheme:light dark}body{margin:0} optgroup{font-weight:600} #build{font:12px "IBM Plex Mono",monospace;color:var(--mute);word-break:break-all} #build a{color:var(--accent)} .note{font-size:12px;color:var(--mute)}</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+</head><body>
 <div class="app">
-  <div id="stage"><div id="hint">One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop. Load a character file to begin.</div></div>
+  <div id="stage"><div id="hint">Loading the live game build ... One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.</div></div>
   <div class="side">
     <h1>ARIEL RIG VIEWER</h1>
     <a href="/" style="font-size:12px;color:var(--accent)">&larr; radicaldeepscale.com</a>
-    <div class="grp" style="border-top:0;padding-top:0"><button id="loadgame" type="button" style="padding:11px 9px;font-size:15px">Load the game character group</button><div style="font-size:12px;color:var(--mute)">Loads exactly what the game loads: Ariel, her 25 animations, the strand hair, and the skyboard with her standing on it. Or use the manual chooser below.</div><div class="row"><select id="bsel" aria-label="Skyboard model"><option value="skyboard_B.glb">Skyboard B (game default)</option><option value="skyboard_A.glb">Skyboard A</option><option value="skyboard_C.glb">Skyboard C (21 parts)</option></select><button id="boardtoggle" class="alt" type="button">Board: off</button></div></div>
-    <div><label for="f-all">Choose files (character or reel .glb, plus the strand .bin)</label><input id="f-all" type="file" multiple accept=".glb,.gltf,.bin,.zip"></div>
+    <div id="build">Resolving the live game build ...</div>
+    <div id="status">Starting ...</div>
+    <div class="grp" style="border-top:0;padding-top:0">
+      <button id="loadgame" type="button" style="padding:11px 9px;font-size:15px">Reload from the live game</button>
+      <div class="note">Everything here comes from the game's current main commit: Ariel, her animations, the strand hair solver (hair_strands.js), the skyboard models, and the game's own board materials, character setup, ride stance and pose layers, run from the game's index.html at that commit.</div>
+      <div class="row"><select id="bsel" aria-label="Skyboard template"><option value="B">Skyboard B (game default)</option><option value="A">Skyboard A</option><option value="C">Skyboard C (21 parts)</option><option value="R">Ariel's board</option></select><button id="boardtoggle" class="alt" type="button">Board: on</button></div>
+      <div><label for="f-prof">Your board: profile save (.json)</label><input id="f-prof" type="file" accept=".json,application/json"><div class="note">The game keeps your board on dartmeadow.space; this page can't read it. Export a profile in the game and choose it here to see your colours.</div></div>
+    </div>
     <div class="grp">
-      <div><label for="clip">Animation</label><select id="clip"><option>(load a file)</option></select></div>
+      <div><label for="clip">Animation</label><select id="clip"><option>(loading)</option></select></div>
+      <div class="note" id="clipnote"></div>
       <div class="row"><button id="play" class="alt">Pause</button><button id="rest" class="alt">Restart</button></div>
       <div><label for="speed">Speed <span id="speedv">1.0x</span></label><input id="speed" type="range" min="0.1" max="2" step="0.1" value="1"></div>
       <div><label for="scrub">Time <span id="timev">0.0 s</span></label><input id="scrub" type="range" min="0" max="1" step="0.001" value="0"></div>
     </div>
     <div class="grp">
-      <label>Hair physics (needs the strand .bin)</label>
-      <div class="row"><button id="hairtoggle" class="alt">Strands: off</button></div>
+      <label>Hair (the game's solver)</label>
+      <div class="row"><button id="hairtoggle" class="alt">Strands: on</button></div>
+      <div><label for="gfx">Graphics</label><select id="gfx"><option value="high">High / Ultra (all strands)</option><option value="auto-medium">Auto on a mid phone (75% strands)</option><option value="auto-low">Auto on a low-end phone (50% strands)</option></select></div>
+      <div><label for="ctx">Where she is</label><select id="ctx"><option value="space">Flying in space (hair gravity x0.08)</option><option value="atmo">Flying in an atmosphere (x0.3)</option><option value="ground">On the ground (x1)</option></select></div>
       <div><label for="wind">Wind <span id="windv">0</span></label><input id="wind" type="range" min="0" max="12" step="0.5" value="0"></div>
       <div><label for="grav">Gravity <span id="gravv">6</span></label><input id="grav" type="range" min="0" max="14" step="0.5" value="6"></div>
-    <div><label for="fly">Fly speed (simulated) <span id="flyv">0</span></label><input id="fly" type="range" min="0" max="40" step="1" value="0"></div>
+      <div><label for="fly">Fly speed (simulated) <span id="flyv">0</span></label><input id="fly" type="range" min="0" max="40" step="1" value="0"></div>
+      <div id="hairstats" class="note"></div>
     </div>
-    <div id="status">No file loaded.</div>
+    <div class="grp">
+      <div><label for="f-all">Or test your own files (character or animation .glb, strand .bin)</label><input id="f-all" type="file" multiple accept=".glb,.gltf,.bin"></div>
+    </div>
   </div>
 </div>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
-<script type="module">
-import * as THREE from 'three';
-import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+<script>
+/* Bootstrap: pin the viewer to the game's current main commit, then load the game's own
+   three.js build (its importmap) and start the viewer module. ?sha=<commit> pins another
+   commit; ?base=<url ending in /> points at another copy of the game (local testing). */
+(async function(){
+  const qs=new URLSearchParams(location.search), REPO='dartsolarpunk/dartmeadow-space';
+  const G=window.__GAME={repo:REPO,sha:qs.get('sha'),base:qs.get('base'),bust:'',pinned:false};
+  const el=document.getElementById('build');
+  try{
+    if(!G.base){
+      if(!G.sha){
+        try{ const r=await fetch('https://api.github.com/repos/'+REPO+'/commits/main',{cache:'no-store'});
+             if(r.ok){ const j=await r.json(); if(/^[0-9a-f]{40}$/.test(j.sha)){ G.sha=j.sha; G.date=j.commit&&j.commit.committer&&j.commit.committer.date; G.msg=j.commit&&j.commit.message; } } }catch(e){}
+      }
+      G.pinned=!!G.sha;
+      G.base='https://raw.githubusercontent.com/'+REPO+'/'+(G.sha||'main')+'/';
+      if(!G.sha) G.bust='?t='+Date.now();   // GitHub API unavailable: newest main, past the CDN cache
+    }
+    if(G.sha) el.innerHTML='Game build: <a target="_blank" rel="noopener" href="https://github.com/'+REPO+'/commit/'+G.sha+'">'+G.sha.slice(0,7)+'</a>'+(G.date?' ('+new Date(G.date).toLocaleString()+')':'')+(G.msg?'<br>'+G.msg.split('\n')[0].replace(/[<&]/g,c=>c==='<'?'&lt;':'&amp;'):'');
+    else el.textContent='Game build: '+(qs.get('base')?G.base:'main (latest; the GitHub API was unavailable, so the commit could not be pinned)');
+    const r=await fetch(G.base+'index.html'+G.bust); if(!r.ok) throw new Error('index.html '+r.status);
+    G.html=await r.text();
+    let im=null; try{ im=JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(G.html)[1]); }catch(e){}
+    if(!im||!im.imports||!im.imports['three/webgpu']) im={imports:{'three':'https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js','three/webgpu':'https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js','three/tsl':'https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.tsl.js','three/addons/':'https://cdn.jsdelivr.net/npm/three@0.185.0/examples/jsm/'}};
+    G.three=im.imports['three/webgpu'];
+    const m=document.createElement('script'); m.type='importmap'; m.textContent=JSON.stringify(im); document.head.appendChild(m);
+    const v=document.createElement('script'); v.type='module'; v.textContent=document.getElementById('viewer-src').textContent; document.body.appendChild(v);
+  }catch(e){ document.getElementById('status').textContent='Could not load the game build: '+(e.message||e); }
+})();
+</script>
+<script type="text/plain" id="viewer-src">
+import * as THREE_NS from 'three/webgpu';
+import {GLTFLoader as GLTFLoaderBase} from 'three/addons/loaders/GLTFLoader.js';
+import * as TSL from 'three/tsl';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
-/* ============================================================================
-   hair_strands.js  —  real-time individual-strand hair for the DART Meadow
-   character (Ariel).  Self-contained ES module; the game loads it with ONE
-   dynamic import after the character GLB finishes loading:
+const GAME=window.__GAME;
+const $=id=>document.getElementById(id);
+const status=m=>{$('status').textContent=m;};
+const note=m=>{$('status').textContent+='\n'+m;};
+const abs=u=>/^(https?:|blob:|data:)/.test(u)?u:GAME.base+String(u).replace(/^\.\//,'')+GAME.bust;
+// The game's THREE: the r185 WebGPU namespace copied into a plain object, GLTFLoader and TSL attached, TSL on window.
+class GLTFLoader extends GLTFLoaderBase{ load(url,a,b,c){ return super.load(abs(url),a,b,c); } }
+const THREE=Object.assign({},THREE_NS);
+THREE.GLTFLoader=GLTFLoader; THREE.TSL=TSL; Object.assign(window,TSL);
+if(typeof window.atan2!=='function'&&typeof TSL.atan==='function') window.atan2=(y,x)=>TSL.atan(y,x);
+window.THREE=THREE; window.__THREE_READY__=true; window.__whenThreeReady=fn=>fn();
 
-       import('./hair_strands.js').then(m=>m.attachHairStrands(CHAR,THREE,{url:...}))
-
-   WHAT IT DOES (the same pipeline Unreal's groom framework uses, scaled to
-   a web/WebGPU budget):
-     1. ariel_hair_strands.bin holds the 5,665 evaluated strands exported from
-        the Blender hair curves (Interpolate Hair Curves result), 10 control
-        points each, stored in HEAD-BONE-LOCAL space.
-     2. ~25 % of the strands are GUIDES that are physically simulated
-        (position-based dynamics: verlet integration + distance constraints +
-        a global shape-matching spring toward the groomed rest shape + capsule
-        collision against head / neck / torso / shoulders + gravity + wind).
-        The other ~75 % are CHILD strands that follow their nearest guide's
-        deflection (this is exactly how Unreal/Blender-style guide-interpolated
-        grooms run in real time).
-     3. All strands are rendered as one camera-facing ribbon mesh whose
-        positions are rewritten each frame.  The skinned hair-card mesh baked
-        into the GLB (the "Ariel Hair" mesh) is hidden once strands are live;
-        if this module or its data fails to load the cards simply stay visible.
-
-   RUNTIME API (window.DART_HAIR after attach):
-       HAIR.params   {gravity, damping, shapeStiffness, tipStiffness, wind:Vector3,
-                      windGust, enabled, iterations}
-       HAIR.addCollider({center:Vector3 (WORLD), radius, end?:Vector3}) -> handle
-       HAIR.removeCollider(handle)
-       HAIR.setEnabled(bool)       // false => cards come back
-       HAIR.stats                  // {ms, strands, guides}
-   Simulation is done in the character root's LOCAL (model-space) frame so it is
-   precision-safe at planetary world coordinates; root motion is fed in as a
-   clamped inertial shift so hair trails behind a moving / flying character.
-   ========================================================================== */
-
-
-function buildHair(CHAR, THREE, buf, opts = {}) {
-  /* ---------------- parse ---------------- */
-  const dv = new DataView(buf);
-  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-  if (magic !== 'DHS1') throw new Error('[hair] bad magic ' + magic);
-  const jl = dv.getUint32(4, true);
-  const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 12, jl)));
-  let off = 12 + jl;
-  const N = meta.count, K = meta.points, G = meta.guides;
-  const rest = new Float32Array(buf, off, N * K * 3); off += N * K * 12;
-  const group = new Uint8Array(buf, off, N); off += (N + 3) & ~3;
-  const guideOf = new Uint32Array(buf, off, N); off += N * 4;
-  const guideStrand = new Uint32Array(buf, off, G);
-
-  /* ---------------- guard: only attach to the matching character (has the hair-card mesh) ---------------- */
-  const cardMeshes = [];
-  CHAR.root.traverse((o) => { if ((o.isMesh || o.isSkinnedMesh) && /Ariel.?Hair(?!Strands)/i.test(o.name)) cardMeshes.push(o); });
-  if (!cardMeshes.length) throw new Error('[hair] character has no Ariel hair-card mesh (different character file) - strands not attached');
-
-  /* ---------------- bones ---------------- */
-  const root = CHAR.root;
-  const findBone = (n) => (CHAR.bones && CHAR.bones[n]) || root.getObjectByName(n);
-  const head = findBone(meta.headBone || 'Head');
-  if (!head) throw new Error('[hair] Head bone not found');
-  const cols = [];
-  for (const c of meta.colliders || []) {
-    const b = findBone(c.bone);
-    if (b) cols.push({ bone: b, a: new THREE.Vector3(...c.a), b: new THREE.Vector3(...c.b), r: c.r,
-                       wa: new THREE.Vector3(), wb: new THREE.Vector3() });
-  }
-
-  /* ---------------- auto body colliders (capsules along the skeleton) ----------------
-     Strands stop at the arms, forearms, hands, chest/torso and shoulders instead of
-     sliding through them. [bone, childBone|null, radius] - capsule runs bone -> child. */
-  const BODY = [
-    ['Spine01', 'Spine', 0.125], ['Spine', 'neck', 0.125], ['Spine02', 'Spine01', 0.125],
-    ['LeftShoulder', 'LeftArm', 0.06], ['RightShoulder', 'RightArm', 0.06],
-    ['LeftArm', 'LeftForeArm', 0.052], ['RightArm', 'RightForeArm', 0.052],
-    ['LeftForeArm', 'LeftHand', 0.042], ['RightForeArm', 'RightHand', 0.042],
-    ['LeftHand', null, 0.05], ['RightHand', null, 0.05],
-    ['Hips', 'Spine02', 0.14],
-  ];
-  const autoCols = [];
-  if (opts.params ? opts.params.bodyColliders !== false : true) {
-    for (const [bn, cn, r] of BODY) {
-      const b = findBone(bn); if (!b) continue;
-      const a = new THREE.Vector3(0, 0, 0), e = new THREE.Vector3(0, 0, 0);
-      if (cn) { const c = findBone(cn); if (!c) continue; e.copy(c.position); if (c.parent !== b) continue; }
-      autoCols.push({ bone: b, a, b: e, r, wa: new THREE.Vector3(), wb: new THREE.Vector3() });
-    }
-    cols.push(...autoCols);
-  }
-
-  /* ---------------- params ---------------- */
-  const P = {
-    enabled: true, gravity: 6.0, damping: 0.965, shapeStiffness: 0.9, tipStiffness: 0.03,
-    wind: new THREE.Vector3(0, 0, 0), windGust: 0.35, iterations: 3, hairRadius: 0.006,
-    maxRootStep: 0.06, drag: 1.6, motionWind: 0.05, maxMotionWind: 14, teleportSpeed: 400, popSpeed: 22, bodyColliders: true, minGravityScale: 0.0, interleave: 1, autoQuality: true,
-    widthRoot: 0.0046, widthTip: 0.0022,
-    ...(opts.params || {})
-  };
-
-  /* ---------------- guide rest data + segment lengths ---------------- */
-  const gRest = new Float32Array(G * K * 3);
-  const segLen = new Float32Array(G * (K - 1));
-  const gStiff = new Float32Array(G * K);
-  for (let g = 0; g < G; g++) {
-    const s = guideStrand[g];
-    for (let k = 0; k < K * 3; k++) gRest[g * K * 3 + k] = rest[s * K * 3 + k];
-    for (let k = 1; k < K; k++) {
-      const a = (g * K + k - 1) * 3, b = (g * K + k) * 3;
-      segLen[g * (K - 1) + k - 1] = Math.hypot(gRest[b] - gRest[a], gRest[b + 1] - gRest[a + 1], gRest[b + 2] - gRest[a + 2]);
-    }
-    // bangs (group 1) & sideburns (2) are short: hold their shape harder
-    const gr = group[s], boost = gr === 1 ? 1.6 : gr === 2 ? 1.8 : 1.0;
-    for (let k = 0; k < K; k++) {
-      const t = k / (K - 1);
-      gStiff[g * K + k] = Math.min(0.95, (P.tipStiffness + (P.shapeStiffness - P.tipStiffness) * Math.pow(1 - t, 4)) * boost);
-    }
-  }
-  const sp = new Float32Array(G * K * 3);      // sim position (root-local)
-  const sq = new Float32Array(G * K * 3);      // previous position
-  const restM = new Float32Array(G * K * 3);   // guide rest in root-local (current head pose)
-  let needInit = true;
-
-  const SP = new Float32Array(K * 3);
-  // static rest-pose radial direction (head-local) per point -> volumetric normals without per-frame sqrt
-  const radial = new Float32Array(N * K * 3);
-  { const hcL = cols.length && cols[0].bone === head ? cols[0].a : new THREE.Vector3(0, 0.11, -0.01);
-    for (let i = 0; i < N * K; i++) { const o = i * 3; let x = rest[o] - hcL.x, y = rest[o + 1] - hcL.y, z = rest[o + 2] - hcL.z; const l = Math.hypot(x, y, z) || 1; radial[o] = x / l; radial[o + 1] = y / l; radial[o + 2] = z / l; } }
-
-  /* ---------------- render mesh ---------------- */
-  const VERTS = N * K * 2;
-  const pos = new Float32Array(VERTS * 3);
-  const nrm = new Float32Array(VERTS * 3);
-  const idx = new Uint32Array(N * (K - 1) * 6);
-  let ii = 0;
-  for (let s = 0; s < N; s++) {
-    for (let k = 0; k < K - 1; k++) {
-      const a = (s * K + k) * 2, b = a + 1, c = a + 2, d = a + 3;
-      idx[ii++] = a; idx[ii++] = b; idx[ii++] = c; idx[ii++] = b; idx[ii++] = d; idx[ii++] = c;
-    }
-  }
-  const col = new Float32Array(VERTS * 3);
-  const base = meta.color || [0.005, 0.005, 0.006];
-  let seed = 12345; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
-  for (let s = 0; s < N; s++) {
-    const v = 0.75 + rnd() * 0.9;
-    for (let k = 0; k < K * 2; k++) { const o = (s * K * 2 + k) * 3; col[o] = base[0] * v; col[o + 1] = base[1] * v; col[o + 2] = base[2] * v; }
-  }
-  const geo = new THREE.BufferGeometry();
-  const aPos = new THREE.BufferAttribute(pos, 3); aPos.setUsage(THREE.DynamicDrawUsage);
-  const aNrm = new THREE.BufferAttribute(nrm, 3); aNrm.setUsage(THREE.DynamicDrawUsage);
-  geo.setAttribute('position', aPos);
-  geo.setAttribute('normal', aNrm);
-  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  const mat = new THREE.MeshStandardMaterial({
-    vertexColors: true, color: 0xffffff, roughness: meta.roughness ?? 0.5, metalness: 0.15,
-    side: THREE.DoubleSide
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = 'ArielHairStrands';
-  mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = false;
-  const camPos = new THREE.Vector3();
-  let haveCam = false;
-  mesh.onBeforeRender = function (renderer, scene, camera) { camera.getWorldPosition(camPos); haveCam = true; };
-  root.add(mesh);
-
-  /* ---------------- hide skinned cards while strands are live ---------------- */
-  const setCards = (v) => cardMeshes.forEach((m) => { m.visible = v; });
-  setCards(false);
-
-  /* ---------------- scratch ---------------- */
-  const M = new THREE.Matrix4(), rootInv = new THREE.Matrix4(), tmpM = new THREE.Matrix4();
-  const v3 = new THREE.Vector3(), v3b = new THREE.Vector3(), camL = new THREE.Vector3();
-  const lastRootW = new THREE.Vector3(); let haveLast = false;
-  let lhx = 0, lhy = 0, lhz = 0, haveHL = false;
-  const gravL = new THREE.Vector3(), windL = new THREE.Vector3(), windW = new THREE.Vector3(), velS = new THREE.Vector3();
-  let gScale = 1;
-  const extra = [];   // user colliders
-  let time = 0, frame = 0, ema = 2, cool = 0;
-  const stats = { ms: 0, strands: N, guides: G };
-
-  function capsuleCollide(i, ax, ay, az, bx, by, bz, r) {
-    // push particle i (sp) out of capsule (a,b,r)
-    const o = i * 3;
-    const px = sp[o], py = sp[o + 1], pz = sp[o + 2];
-    const abx = bx - ax, aby = by - ay, abz = bz - az;
-    const ab2 = abx * abx + aby * aby + abz * abz;
-    let t = ab2 > 1e-12 ? ((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / ab2 : 0;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    const cx = ax + abx * t, cy = ay + aby * t, cz = az + abz * t;
-    let dx = px - cx, dy = py - cy, dz = pz - cz;
-    const d2 = dx * dx + dy * dy + dz * dz, rr = r + P.hairRadius;
-    if (d2 < rr * rr) {
-      const d = Math.sqrt(d2) || 1e-6;
-      const k = rr / d;
-      sp[o] = cx + dx * k; sp[o + 1] = cy + dy * k; sp[o + 2] = cz + dz * k;
-    }
-  }
-
-  function step(h, simTime) {
-    const hh = h * h;
-    const damp = Math.pow(P.damping, h * 60);
-    const gx = gravL.x * P.gravity * hh, gy = gravL.y * P.gravity * hh, gz = gravL.z * P.gravity * hh;
-    // wind + gust (low frequency pseudo noise, per guide phase)
-    for (let g = 0; g < G; g++) {
-      const gb = g * K * 3;
-      // pin root
-      sp[gb] = restM[gb]; sp[gb + 1] = restM[gb + 1]; sp[gb + 2] = restM[gb + 2];
-      sq[gb] = sp[gb]; sq[gb + 1] = sp[gb + 1]; sq[gb + 2] = sp[gb + 2];
-      const ph = g * 0.37;
-      const gust = 1 + P.windGust * Math.sin(simTime * 2.1 + ph) * Math.sin(simTime * 0.7 + ph * 1.7);
-      const wx = windL.x * P.drag * gust * hh, wy = windL.y * P.drag * gust * hh, wz = windL.z * P.drag * gust * hh;
-      for (let k = 1; k < K; k++) {
-        const o = gb + k * 3;
-        const vx = (sp[o] - sq[o]) * damp, vy = (sp[o + 1] - sq[o + 1]) * damp, vz = (sp[o + 2] - sq[o + 2]) * damp;
-        sq[o] = sp[o]; sq[o + 1] = sp[o + 1]; sq[o + 2] = sp[o + 2];
-        let x = sp[o] + vx + gx + wx, y = sp[o + 1] + vy + gy + wy, z = sp[o + 2] + vz + gz + wz;
-        const st = gStiff[g * K + k];
-        x += (restM[o] - x) * st; y += (restM[o + 1] - y) * st; z += (restM[o + 2] - z) * st;
-        sp[o] = x; sp[o + 1] = y; sp[o + 2] = z;
-      }
-    }
-    for (let it = 0; it < P.iterations; it++) {
-      for (let g = 0; g < G; g++) {
-        const gb = g * K * 3, lb = g * (K - 1);
-        for (let k = 1; k < K; k++) {
-          const a = gb + (k - 1) * 3, b = gb + k * 3;
-          const dx = sp[b] - sp[a], dy = sp[b + 1] - sp[a + 1], dz = sp[b + 2] - sp[a + 2];
-          const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-9;
-          const diff = (len - segLen[lb + k - 1]) / len;
-          if (k === 1) { sp[b] -= dx * diff; sp[b + 1] -= dy * diff; sp[b + 2] -= dz * diff; }
-          else {
-            const f = 0.5 * diff;
-            sp[a] += dx * f; sp[a + 1] += dy * f; sp[a + 2] += dz * f;
-            sp[b] -= dx * f; sp[b + 1] -= dy * f; sp[b + 2] -= dz * f;
-          }
-        }
-        if (it === P.iterations - 1) for (let k = 1; k < K; k++) {
-          const i = g * K + k;
-          for (let c = 0; c < cols.length; c++) {
-            const C = cols[c];
-            capsuleCollide(i, C.wa.x, C.wa.y, C.wa.z, C.wb.x, C.wb.y, C.wb.z, C.r);
-          }
-          for (let c = 0; c < extra.length; c++) {
-            const C = extra[c];
-            capsuleCollide(i, C.la.x, C.la.y, C.la.z, C.lb.x, C.lb.y, C.lb.z, C.lr);
-          }
-        }
-      }
-    }
-  }
-
-  function update(dt) {
-    if (!P.enabled || !(dt > 0) || !root.visible) return;
-    const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    root.updateWorldMatrix(true, false);
-    head.updateWorldMatrix(true, false);
-    rootInv.copy(root.matrixWorld).invert();
-    M.multiplyMatrices(rootInv, head.matrixWorld);   // head bone in root-local space
-    const me = M.elements;
-    // animation pop (clip loop / teleport of the head relative to the body): re-seed instead of whipping
-    let popped = false;
-    if (haveHL && dt > 0 && dt < 0.25 && Math.hypot(me[12] - lhx, me[13] - lhy, me[14] - lhz) / dt > P.popSpeed) popped = true;
-    lhx = me[12]; lhy = me[13]; lhz = me[14]; haveHL = true;
-
-    // colliders -> root-local capsules
-    for (const C of cols) {
-      tmpM.multiplyMatrices(rootInv, C.bone.matrixWorld);
-      C.wa.copy(C.a).applyMatrix4(tmpM); C.wb.copy(C.b).applyMatrix4(tmpM);
-    }
-    for (const C of extra) {
-      C.la = (C.la || new THREE.Vector3()).copy(C.center).applyMatrix4(rootInv);
-      C.lb = (C.lb || new THREE.Vector3()).copy(C.end || C.center).applyMatrix4(rootInv);
-      C.lr = C.radius * Math.cbrt(Math.abs(rootInv.determinant()));
-    }
-    // guide rest pose in root-local
-    for (let g = 0; g < G; g++) {
-      for (let k = 0; k < K; k++) {
-        const o = (g * K + k) * 3, x = gRest[o], y = gRest[o + 1], z = gRest[o + 2];
-        restM[o] = me[0] * x + me[4] * y + me[8] * z + me[12];
-        restM[o + 1] = me[1] * x + me[5] * y + me[9] * z + me[13];
-        restM[o + 2] = me[2] * x + me[6] * y + me[10] * z + me[14];
-      }
-    }
-    if (needInit) { sp.set(restM); sq.set(restM); needInit = false; }
-    if (popped) { sp.set(restM); sq.set(restM); velS.set(0, 0, 0); haveLast = false; }
-
-    // root world motion -> small clamped inertial shift + steady apparent wind.
-    // A flying character drags the hair back through a smooth airflow rather than
-    // whipping it by teleporting particles every frame.
-    // track the HEAD bone (not just the root): jumps/steps move the head through the clip's
-    // own hip motion, and the hair has to feel that or it snaps with the head.
-    v3.setFromMatrixPosition((head && head.matrixWorld) ? head.matrixWorld : root.matrixWorld);
-    const rs = Math.cbrt(Math.abs(root.matrixWorld.determinant())) || 1;
-    let motionWind = 0;
-    if (haveLast && dt < 0.25) {
-      v3b.copy(v3).sub(lastRootW);
-      const l = v3b.length();
-      if (l / rs / dt > P.teleportSpeed) { velS.set(0, 0, 0); }   // origin re-centre / teleport: ignore
-      else {
-        velS.lerp(v3b.clone().multiplyScalar(1 / dt), 1 - Math.exp(-dt * 5));
-        const maxStep = P.maxRootStep * rs;
-        let lc = l;
-        if (lc > maxStep) { v3b.multiplyScalar(maxStep / lc); lc = maxStep; }
-        if (lc > 1e-9) {
-          v3b.transformDirection(rootInv).multiplyScalar(lc / rs);
-          const sx = -v3b.x, sy = -v3b.y, sz = -v3b.z;
-          for (let i = 0; i < G * K; i++) {
-            const o = i * 3;
-            sp[o] += sx; sp[o + 1] += sy; sp[o + 2] += sz;
-            sq[o] += sx; sq[o + 1] += sy; sq[o + 2] += sz;
-          }
-        }
-      }
-    } else if (dt >= 0.25) { sp.set(restM); sq.set(restM); velS.set(0, 0, 0); }
-    lastRootW.copy(v3); haveLast = true;
-    const spd = velS.length() / rs;                       // body-lengths-ish per second
-    motionWind = Math.min(P.maxMotionWind, spd * P.motionWind);
-    windW.copy(P.wind);
-    if (spd > 1e-3) windW.addScaledVector(velS, -motionWind / (velS.length() || 1));
-
-    // gravity / wind into root-local directions
-    const up = opts.getDown ? opts.getDown() : null;   // optional: world-space "down" vector
-    gravL.set(up ? up.x : 0, up ? up.y : -1, up ? up.z : 0).transformDirection(rootInv);
-    const gsT = opts.getGravityScale ? opts.getGravityScale() : 1;
-    gScale += (gsT - gScale) * (1 - Math.exp(-dt * 3));
-    gravL.multiplyScalar(Math.max(P.minGravityScale, gScale));
-    windL.copy(windW).transformDirection(rootInv).multiplyScalar(windW.length());
-
-    time += dt;
-    const n = Math.min(2, Math.max(1, Math.ceil(dt / (1 / 60))));
-    const h = Math.min(dt, 1 / 30) / n;
-    for (let s = 0; s < n; s++) step(h, time);
-    const tSim = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    stats.simMs = tSim - t0;
-
-    /* ---- write render ribbons ---- */
-    if (haveCam) camL.copy(camPos).applyMatrix4(rootInv); else camL.set(0, 1.6, 3);
-    // head sphere center (for volumetric normals) in root-local
-    const wR = P.widthRoot, wT = P.widthTip;
-    frame++;
-    const il = P.interleave | 0 || 1;
-    for (let s = frame % il; s < N; s += il) {
-      const g = guideOf[s];
-      const rb = s * K * 3, gb = g * K * 3;
-      // compute all K points for this strand first (cache in small local arrays)
-      for (let k = 0; k < K; k++) {
-        const o = rb + k * 3, x = rest[o], y = rest[o + 1], z = rest[o + 2];
-        const go = gb + k * 3;
-        SP[k * 3] = me[0] * x + me[4] * y + me[8] * z + me[12] + (sp[go] - restM[go]);
-        SP[k * 3 + 1] = me[1] * x + me[5] * y + me[9] * z + me[13] + (sp[go + 1] - restM[go + 1]);
-        SP[k * 3 + 2] = me[2] * x + me[6] * y + me[10] * z + me[14] + (sp[go + 2] - restM[go + 2]);
-      }
-      // per-strand view vector (normalised once) for the volumetric normal
-      let sx0 = camL.x - SP[0], sy0 = camL.y - SP[1], sz0 = camL.z - SP[2];
-      const sl = Math.sqrt(sx0 * sx0 + sy0 * sy0 + sz0 * sz0) || 1e-9; sx0 /= sl; sy0 /= sl; sz0 /= sl;
-      for (let k = 0; k < K; k++) {
-        const k0 = k > 0 ? k - 1 : 0, k1 = k < K - 1 ? k + 1 : K - 1;
-        const tx = SP[k1 * 3] - SP[k0 * 3], ty = SP[k1 * 3 + 1] - SP[k0 * 3 + 1], tz = SP[k1 * 3 + 2] - SP[k0 * 3 + 2];
-        const px = SP[k * 3], py = SP[k * 3 + 1], pz = SP[k * 3 + 2];
-        const vx = camL.x - px, vy = camL.y - py, vz = camL.z - pz;
-        let wx = ty * vz - tz * vy, wy = tz * vx - tx * vz, wz = tx * vy - ty * vx;
-        const wd = (wR + (wT - wR) * (k / (K - 1))) * 0.5 / (Math.sqrt(wx * wx + wy * wy + wz * wz) || 1e-9);
-        wx *= wd; wy *= wd; wz *= wd;
-        const ro = rb + k * 3, rx0 = radial[ro], ry0 = radial[ro + 1], rz0 = radial[ro + 2];
-        const nx = sx0 * 0.55 + (me[0] * rx0 + me[4] * ry0 + me[8] * rz0) * 0.45;
-        const ny = sy0 * 0.55 + (me[1] * rx0 + me[5] * ry0 + me[9] * rz0) * 0.45;
-        const nz = sz0 * 0.55 + (me[2] * rx0 + me[6] * ry0 + me[10] * rz0) * 0.45;
-        const vo = (s * K + k) * 6;
-        pos[vo] = px - wx; pos[vo + 1] = py - wy; pos[vo + 2] = pz - wz;
-        pos[vo + 3] = px + wx; pos[vo + 4] = py + wy; pos[vo + 5] = pz + wz;
-        nrm[vo] = nx; nrm[vo + 1] = ny; nrm[vo + 2] = nz; nrm[vo + 3] = nx; nrm[vo + 4] = ny; nrm[vo + 5] = nz;
-      }
-    }
-    aPos.needsUpdate = true; aNrm.needsUpdate = true;
-    stats.ms = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
-    // adaptive governor: trade ribbon refresh rate (interleave) for CPU time on slow devices
-    ema += (stats.ms - ema) * 0.05;
-    if (P.autoQuality && --cool <= 0) {
-      if (ema > 3.5 && (P.interleave | 0 || 1) < 3) { P.interleave = (P.interleave | 0 || 1) + 1; cool = 90; }
-      else if (ema < 1.4 && (P.interleave | 0 || 1) > 1) { P.interleave = (P.interleave | 0 || 1) - 1; cool = 240; }
-    }
-    stats.interleave = P.interleave | 0 || 1;
-  }
-
-  /* ---------------- hook: run after the character's mixer each frame ---------------- */
-  let origUpdate = null;
-  const hook = () => {
-    if (!CHAR.mixer || CHAR.mixer.__hairHooked) return;
-    origUpdate = CHAR.mixer.update.bind(CHAR.mixer);
-    CHAR.mixer.update = function (dt) { const r = origUpdate(dt); try { update(dt); } catch (e) { if (!H._warned) { H._warned = 1; console.warn('[hair] update', e); } } return r; };
-    CHAR.mixer.__hairHooked = true;
-  };
-
-  const H = {
-    params: P, stats, mesh, update, meta,
-    setEnabled(v) { P.enabled = !!v; mesh.visible = !!v; setCards(!v); if (v) needInit = true; },
-    addCollider(c) { extra.push(c); return c; },
-    removeCollider(c) { const i = extra.indexOf(c); if (i >= 0) extra.splice(i, 1); },
-    reset() { needInit = true; haveLast = false; },
-    dispose() { root.remove(mesh); geo.dispose(); mat.dispose(); setCards(true); if (CHAR.mixer && origUpdate) { CHAR.mixer.update = origUpdate; CHAR.mixer.__hairHooked = false; } }
-  };
-  if (!opts.manual) hook();
-  H.hook = hook;
-  return H;
+/* ---------- the game's own code, from index.html at the pinned commit ---------- */
+function gameKernelSource(SRC){
+  const at=(s,from)=>{ const i=SRC.indexOf(s,from||0); if(i<0) throw new Error('game source: "'+s.trim().slice(0,40)+'" not found'); return i; };
+  // a top-level declaration that starts at column 0 and ends at the next line that starts with "}"
+  const decl=(sig)=>{ const i=at('\n'+sig)+1; { const l=SRC.slice(i,SRC.indexOf('\n',i)); const o=(l.match(/\{/g)||[]).length; if(o&&o===(l.match(/\}/g)||[]).length) return l+'\n'; } const re=/\n\}[^\n]*/g; re.lastIndex=i; const m=re.exec(SRC); return SRC.slice(i,m.index+m[0].length)+'\n'; };
+  const span=(startSig,endSig)=>{ const i=at('\n'+startSig)+1; const e=decl(endSig); const j=at('\n'+endSig,i)+1; return SRC.slice(i,j)+e; };
+  const line=(sig)=>{ const i=at('\n'+sig)+1; return SRC.slice(i,SRC.indexOf('\n',i))+'\n'; };
+  const inner=(startStr,endStr)=>{ const i=at(startStr); return SRC.slice(i,at(endStr,i)); };
+  const board=span('const SKYBOARD_TEMPLATES','function _computeDeckAnchor(');
+  const clipNames=decl('const CHAR_CLIP_NAMES');
+  const charObj=decl('const CHAR = {');
+  const pose=span('function _optimizeCharClipTracks(','function _charWrapMixer(');
+  const misc=decl('function setCharState(')+decl('function _forceCharVisible(')+decl('function _clamp(')
+    +['BOARD_REAL_LEN_FT','CHAR_REAL_HEIGHT_FT','BOARD_FALLBACK_GAME_LEN','CHAR_BOARD_TARGET_UNITS','CHAR_MOUNT_YAW_OFFSET'].map(n=>line('const '+n+' ')).join('')
+    +decl('function _deriveBoardScale(')+decl('function _syncBoardScale(')+decl('function mountSkyboard(');
+  const charSetup=inner('  CHAR.root = gltf.scene;','  CHAR.mixer = new THREE.AnimationMixer(CHAR.root);');
+  const actions=inner('  const findClip = n =>','  const _loadedKeys');
+  const boardCfg=(()=>{ const i=at('\n  boardConfig:{')+3; const j=at('\n  },',i); return SRC.slice(i+'boardConfig:'.length,j+4).replace(/,\s*$/,''); })();
+  const body='"use strict";\n'+board+clipNames+charObj+pose+misc
+    +'\nreturn { CHAR, preloadSkyboardTemplates, buildBoardMesh, SKYBOARD_TEMPLATES, _glbCache, setCharState, applySkyboardStance, applySkyboardHeadOverride,'
+    +' _charWrapMixer, mountSkyboard, CHAR_CLIP_NAMES, SKYBOARD_ANIM_SPEED, CHAR_BOARD_TARGET_UNITS, _clamp,\n'
+    +'  charSetup(gltf){\n'+charSetup+'\n  },\n'
+    +'  buildActions(animGltf){\n'+actions+'\n  return mappedKeys; } };\n';
+  return {body, boardCfg, params:['THREE','STATE','GFX','$','toast','_loadStep','_envMap','_rebuildBoard','builderInited','rb','renderTrailUI','_fbxBoneMap']};
 }
 
-const $=id=>document.getElementById(id);
+const KS=gameKernelSource(GAME.html);
+const isMobile=/iPhone|iPad|Android/i.test(navigator.userAgent);
+const GFX={preset:'high',isMobile,shadows:false,envReflections:false};
+window.GFX=GFX;
+const freshBoardConfig=()=>new Function('return '+KS.boardCfg)();
+const STATE={boardConfig:freshBoardConfig()};
+const quiet=()=>{};
+let K=null;
+function newKernel(){
+  K=new Function(...KS.params,KS.body)(THREE,STATE,GFX,()=>null,(m)=>console.log('[game toast]',m),quiet,null,undefined,false,quiet,quiet,()=>[]);
+  return K;
+}
+
+/* ---------- renderer / scene ---------- */
 const stage=$('stage');
-const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));stage.appendChild(renderer.domElement);
+const qs=new URLSearchParams(location.search);
+const renderer=new THREE.WebGPURenderer({antialias:true,forceWebGL:qs.get('webgl')==='1'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0; renderer.outputColorSpace=THREE.SRGBColorSpace;
+stage.appendChild(renderer.domElement);
+await renderer.init();
 const scene=new THREE.Scene();
 scene.add(new THREE.HemisphereLight(0xffffff,0x556070,1.6));
 const key=new THREE.DirectionalLight(0xffffff,2.2);key.position.set(-2,3,4);scene.add(key);
 const rim=new THREE.DirectionalLight(0x9fd2ff,1.2);rim.position.set(3,2,-3);scene.add(rim);
 const grid=new THREE.GridHelper(4,16,0x7a8791,0x9aa5ad);grid.material.opacity=.35;grid.material.transparent=true;scene.add(grid);
 const cam=new THREE.PerspectiveCamera(35,1,0.01,200);cam.position.set(0,1.3,4);
-const ctl=new OrbitControls(cam,renderer.domElement);ctl.minDistance=0.08;ctl.maxDistance=60;ctl.enableDamping=true;ctl.dampingFactor=0.12;ctl.screenSpacePanning=true;ctl.zoomToCursor=true;ctl.touches={ONE:THREE.TOUCH.ROTATE,TWO:THREE.TOUCH.DOLLY_PAN};ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};ctl.target.set(0,0.95,0);ctl.update();
+const ctl=new OrbitControls(cam,renderer.domElement);ctl.minDistance=0.05;ctl.maxDistance=60;ctl.enableDamping=true;ctl.dampingFactor=0.12;ctl.screenSpacePanning=true;ctl.zoomToCursor=true;ctl.touches={ONE:THREE.TOUCH.ROTATE,TWO:THREE.TOUCH.DOLLY_PAN};ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};ctl.target.set(0,0.95,0);ctl.update();
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();}
 new ResizeObserver(resize).observe(stage);resize();
-let CHAR=null,mixer=null,clips=[],action=null,playing=true,hair=null,hairBuf=null,hairOn=false;
-const status=m=>$('status').textContent=m;
-const loader=new GLTFLoader();
-const readBuf=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsArrayBuffer(f)});
-function fillClips(){
-  const sel=$('clip');sel.innerHTML='';
-  clips.forEach((c,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${c.name}  (${c.duration.toFixed(1)}s)`;sel.appendChild(o)});
-  if(clips.length){play(0)}else sel.innerHTML='<option>(no animations in file)</option>';
-}
-function play(i){
-  if(!mixer||!clips[i])return;
-  if(action)action.stop();
-  action=mixer.clipAction(clips[i]);action.reset().play();action.paused=!playing;
-  $('scrub').max=clips[i].duration;
-}
-const hasSkin=g=>{let s=false;g.scene.traverse(o=>{if(o.isSkinnedMesh)s=true});return s;};
-async function handleFiles(list){
-  const files=[...list];if(!files.length)return;
-  const notes=[];const parsed=[];
-  status('Reading '+files.length+' file(s) ...');
-  for(const f of files){
-    const n=f.name.toLowerCase();
-    try{
-      if(n.endsWith('.zip')){notes.push(f.name+': this is a zip. Unzip it first, then choose the .glb inside.');continue;}
-      const buf=await readBuf(f);
-      if(n.endsWith('.bin')){hairBuf=buf;notes.push(f.name+': strand hair data');continue;}
-      if(!(n.endsWith('.glb')||n.endsWith('.gltf'))){notes.push(f.name+': not a .glb or .bin, skipped');continue;}
-      const g=await new Promise((res,rej)=>loader.parse(buf,'',res,rej));
-      parsed.push({f,g,buf});
-    }catch(e){notes.push(f.name+': could not be read ('+(e.message||e)+')');}
-  }
-  const chars=parsed.filter(p=>hasSkin(p.g));
-  let addClips=[];
-  if(chars.length){
-    const c=chars[0];
-    await loadCharBuf(c.buf,c.f.name,c.g);c.buf=null;
-    notes.unshift(c.f.name+': character ('+clips.length+' animation(s))');
-    chars.slice(1).forEach(p=>notes.push(p.f.name+': another character, ignored (only one is shown)'));
-  }
-  for(const p of parsed){
-    if(chars.length&&p===chars[0])continue;
-    if(!CHAR){notes.push(p.f.name+': no skinned character yet, choose a character .glb too');continue;}
-    if(p.g.animations.length){addClips=addClips.concat(p.g.animations);notes.push(p.f.name+': +'+p.g.animations.length+' animation(s)');}
-    else notes.push(p.f.name+': no animations in this file');
-  }
-  if(addClips.length){clips=clips.concat(addClips);fillClips();}
-  if(hairBuf&&CHAR)makeHair();
-  if(CHAR&&!clips.length)notes.push('Tip: the LOD files have no animations. Add Ariel_Showcase_Reel_q.glb (25 clips) or use the game button.');
-  if(CHAR&&!hairBuf)notes.push('Tip: add ariel_hair_strands.bin to get strand hair.');
-  if(CHAR)notes.unshift(Object.keys(CHAR.userData.bones).length+' bones');
-  status(notes.join('\n'));
-  if(CHAR)$('hint').textContent='One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.';
-}
-async function loadChar(f){loadCharBuf(await readBuf(f),f.name);}
-function loadCharBuf(buf,name,pre){
-  const run=(ok,bad)=>pre?ok(pre):loader.parse(buf,'',ok,bad);
-  return new Promise(res=>run(g=>{
-    if(CHAR){scene.remove(CHAR);if(rig)rig.remove(CHAR);} if(rig&&board){rig.remove(board);} boardOn=false;$('boardtoggle').textContent='Board: off'; if(hair){hair.dispose();hair=null;hairOn=false;$('hairtoggle').textContent='Strands: off';}
-    CHAR=g.scene;CHAR.traverse(o=>{if(o.isMesh)o.frustumCulled=false;});scene.add(CHAR);mixer=new THREE.AnimationMixer(CHAR);clips=g.animations.slice();
-    const bones={};CHAR.traverse(o=>{if(o.isBone)bones[o.name]=o;});CHAR.userData.bones=bones;
-    fillClips();
-    status(`${name}\n${Object.keys(bones).length} bones, ${clips.length} animation(s)`);
-    $('hint').textContent='One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.';
-    if(hairBuf)makeHair();
-    res();
-  },e=>{status('Could not read file: '+(e.message||e));res();}));
-}
-function loadAnimBuf(buf,name){
-  if(!CHAR){status('Load the character first.');return Promise.resolve();}
-  return new Promise(res=>loader.parse(buf,'',g=>{clips=clips.concat(g.animations);fillClips();status($('status').textContent+`\n+ ${g.animations.length} clips from ${name}`);res()},e=>{status('Animation file error');res();}));
-}
-function makeHair(){
-  if(!CHAR||!hairBuf)return;
-  try{
-    if(hair)hair.dispose();
-    hair=buildHair({root:CHAR,bones:CHAR.userData.bones,mixer:null},THREE,hairBuf,{manual:true});
-    hairOn=true;$('hairtoggle').textContent='Strands: on';
-    status($('status').textContent+`\nstrands: ${hair.stats.strands} (${hair.stats.guides} simulated)`);
-  }catch(e){status('Hair: '+e.message);hairOn=false;hair=null;}
-}
-const GAMEROOT='https://raw.githubusercontent.com/dartsolarpunk/dartmeadow-space/main/';
-const GAME=GAMEROOT+'characterassests/';
-let rig=null,board=null,boardOn=false,rawH=1,feetOff=0;
-/* same normalisation the game applies to a skyboard GLB (preloadSkyboardTemplates):
-   bake transforms, long axis -> +X (nose forward), centre, scale to 3.0 units (C: 3.69) */
-function normBoard(root,k){
-  root.traverse(o=>{if(o.isLight||o.isCamera)o.visible=false;});
-  root.updateMatrixWorld(true);
-  root.traverse(o=>{if(o.isMesh&&o.geometry){o.geometry=o.geometry.clone();o.geometry.applyMatrix4(o.matrixWorld);}});
-  root.traverse(o=>{o.position.set(0,0,0);o.rotation.set(0,0,0);o.scale.set(1,1,1);});
-  root.updateMatrixWorld(true);
-  const box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3()),ctr=box.getCenter(new THREE.Vector3());
-  const rot=new THREE.Matrix4();
-  if(size.y>=size.x&&size.y>=size.z)rot.makeRotationZ(Math.PI/2);else if(size.z>=size.x)rot.makeRotationY(-Math.PI/2);
-  const full=rot.clone().multiply(new THREE.Matrix4().makeTranslation(-ctr.x,-ctr.y,-ctr.z));
-  root.traverse(o=>{if(o.isMesh&&o.geometry){o.geometry.applyMatrix4(full);}});
-  root.updateMatrixWorld(true);
-  const s2=new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
-  root.scale.setScalar((k==='C'?3.69:3.0)/Math.max(s2.x,s2.y,s2.z,0.001));
-  root.updateMatrixWorld(true);
-  return root;
-}
-function boardFile(){return $('bsel').value;}
-async function loadBoard(){
-  const file=boardFile();
-  const g=await new Promise((res,rej)=>loader.load(GAMEROOT+file,res,undefined,rej));
-  const k=/_([ABC])\./.exec(file)[1];
-  if(board&&board.parent)board.parent.remove(board);
-  board=normBoard(g.scene,k);board.traverse(o=>{if(o.isMesh)o.frustumCulled=false;});
-  return board;
-}
-function measureChar(){
-  if(!CHAR)return;
-  if(CHAR.parent===rig&&rig)return;
-  const b=new THREE.Box3();CHAR.updateMatrixWorld(true);CHAR.traverse(o=>{if(o.isSkinnedMesh){o.geometry.computeBoundingBox();b.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld));}});rawH=Math.max(b.max.y-b.min.y,0.001);feetOff=-b.min.y;
-}
-function mountOnBoard(){
-  if(!CHAR||!board){return false;}
-  if(!rig){rig=new THREE.Group();scene.add(rig);}
-  measureChar();
-  scene.remove(CHAR);rig.add(board);rig.add(CHAR);
-  const tgt=6/(37/3.0), s=tgt/rawH;                    // CHAR_BOARD_TARGET_UNITS / rawHeight
-  board.updateMatrixWorld(true);
-  const bx=new THREE.Box3().setFromObject(board);
-  CHAR.rotation.set(0,Math.PI/2,0);                    // CHAR_MOUNT_YAW_OFFSET
-  CHAR.scale.set(s,s,-s);                              // mirrored Z, exactly as the game
-  CHAR.position.set((bx.min.x+bx.max.x)/2,bx.max.y+feetOff*s,(bx.min.z+bx.max.z)/2);
-  CHAR.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.side=THREE.DoubleSide);}});
-  boardOn=true;$('boardtoggle').textContent='Board: on';
-  // the game holds the cropped Step_Right_for_Exercise window (1.25 s - 1.5 s) as the ride stance
-  const i=clips.findIndex(c=>/Step_Right/i.test(c.name));
-  if(i>=0){$('clip').value=i;play(i);if(action){action.time=1.25;action.paused=true;playing=false;$('play').textContent='Play';mixer.update(0);}}
-  ctl.target.set(0,0.7,0);cam.position.set(2.2,1.6,4.6);ctl.update();
-  return true;
-}
-function unmountBoard(){
-  if(!rig||!CHAR)return;
-  rig.remove(board);rig.remove(CHAR);scene.add(CHAR);
-  CHAR.position.set(0,0,0);CHAR.rotation.set(0,0,0);CHAR.scale.set(1,1,1);
-  boardOn=false;$('boardtoggle').textContent='Board: off';
-}
-$('boardtoggle').onclick=async()=>{
-  if(!CHAR){status('Load the character first (use the big button).');return;}
-  try{
-    if(boardOn){unmountBoard();return;}
-    status($('status').textContent+'\nloading '+boardFile()+' ...');
-    await loadBoard();mountOnBoard();
-  }catch(e){status('Board failed: '+(e.message||e));}
-};
-$('bsel').onchange=async()=>{if(boardOn){unmountBoard();try{await loadBoard();mountOnBoard();}catch(e){status('Board failed: '+e.message);}}};
-$('loadgame').onclick=async()=>{
-  try{
-    status('Fetching the game character group: Ariel, animations, strands, skyboard ...');
-    const get=async(u)=>{const r=await fetch(u);if(!r.ok)throw new Error(u.split('/').pop()+' '+r.status);return r.arrayBuffer();};
-    const [c,a,h]=await Promise.all([get(GAME+'Meshy_AI_Autumn_biped_Character_output.glb'),get(GAME+'Meshy_AI_Autumn_biped_Meshy_AI_Meshy_Merged_Animations.glb'),get(GAME+'ariel_hair_strands.bin')]);
-    if(boardOn)unmountBoard();
-    hairBuf=h; await loadCharBuf(c,'Ariel (game)');
-    await loadAnimBuf(a,'game animations');
-    let note='';
-    try{await loadBoard();mountOnBoard();note='\nskyboard: '+boardFile()+' (mounted like the game)';}catch(e){note='\nskyboard could not load: '+(e.message||e);}
-    status($('status').textContent+note);
-  }catch(e){status('Could not fetch the game files: '+e.message+'. Pick the files from your device instead.');}
-};
-$('f-all').onchange=e=>{const inp=e.target;handleFiles(inp.files).catch(err=>status('Load failed: '+(err&&err.message||err)+'\nTry the game button, or reload the page and choose the file again.')).finally(()=>{try{inp.value="";}catch(_){}});};
-$('clip').onchange=e=>play(+e.target.value);
-$('play').onclick=()=>{playing=!playing;if(action)action.paused=!playing;$('play').textContent=playing?'Pause':'Play'};
-$('rest').onclick=()=>{if(action){action.reset().play();action.paused=!playing;}};
-$('speed').oninput=e=>{$('speedv').textContent=(+e.target.value).toFixed(1)+'x'};
-$('scrub').oninput=e=>{if(action){action.time=+e.target.value;mixer.update(0);}};
-$('hairtoggle').onclick=()=>{if(!hair){status('Pick the strand .bin file first.');return;}hairOn=!hairOn;hair.setEnabled(hairOn);$('hairtoggle').textContent='Strands: '+(hairOn?'on':'off');};
-$('wind').oninput=e=>{const v=+e.target.value;$('windv').textContent=v;if(hair)hair.params.wind.set(v,0,v*0.3)};
-$('grav').oninput=e=>{const v=+e.target.value;$('gravv').textContent=v;if(hair)hair.params.gravity=v};
-let flyZ=0;$('fly').oninput=e=>{$('flyv').textContent=e.target.value;if(!+e.target.value){const m=rig||CHAR;if(m)m.position.z=0;}};
-const clock=new THREE.Clock();
-function tick(){
-  requestAnimationFrame(tick);
-  const dt=Math.min(clock.getDelta(),0.1);
-  if(mixer){mixer.update(playing?dt*(+$('speed').value):0);if(action)$('timev').textContent=action.time.toFixed(1)+' s',playing&&($('scrub').value=action.time);}
-  { const fs=+$('fly').value; const mv=rig||CHAR; if(mv&&fs){ const z0=mv.position.z; flyZ+=fs*dt; const z1=((flyZ%40)-20); mv.position.z=z1; const dz=z1-z0; cam.position.z+=dz; ctl.target.z=z1; } }
-  scene.updateMatrixWorld(true);
-  if(hair&&hairOn)hair.update(dt);
-  ctl.update();renderer.render(scene,cam);
-}
-tick();
-</script>
 
+/* ---------- state ---------- */
+const loader=new GLTFLoader();
+const parseGLB=buf=>new Promise((res,rej)=>loader.parse(buf,'',res,rej));
+const fetchBuf=async u=>{const r=await fetch(abs(u));if(!r.ok)throw new Error(u.split('/').pop()+' '+r.status);return r.arrayBuffer();};
+const readBuf=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsArrayBuffer(f)});
+let CHAR=null, board=null, wantBoard=true, hair=null, hairMod=null, rawClips=[], rawAction=null, playing=true, mode='game', gameKey='skyboard';
+let charBuf=null, animBuf=null, hairBuf=null;
+const CHAR_DIR='characterassests/';
+async function hairModule(){
+  if(hairMod) return hairMod;
+  const r=await fetch(abs('hair_strands.js')); if(!r.ok) throw new Error('hair_strands.js '+r.status);
+  const url=URL.createObjectURL(new Blob([await r.text()],{type:'text/javascript'}));
+  hairMod=await import(url); return hairMod;
+}
+// the game's _hairStrandFraction / getGravityScale, driven by the selects
+function strandFraction(){ const v=$('gfx').value; return v==='auto-low'?0.5:v==='auto-medium'?0.75:1; }
+function gravityScale(){ if(!CHAR||!CHAR.mounted) return 1; const c=$('ctx').value; return c==='ground'?1:c==='atmo'?0.3:0.08; }
+
+async function waitBoardTemplate(){
+  const t=STATE.boardConfig.template; if(!t||t==='R'||t==='procedural') return;
+  const url=K.SKYBOARD_TEMPLATES[t]; const t0=performance.now();
+  while(!K._glbCache[url]){ if(performance.now()-t0>90000) throw new Error('skyboard '+url+' did not load'); await new Promise(r=>setTimeout(r,100)); }
+}
+function dropBoard(){ if(board){ if(CHAR&&CHAR.root&&CHAR.root.parent===board){ board.remove(CHAR.root); } if(board.parent) board.parent.remove(board); board=null; } }
+function unmount(){
+  if(!CHAR||!CHAR.root) return;
+  if(CHAR.root.parent) CHAR.root.parent.remove(CHAR.root);
+  scene.add(CHAR.root); CHAR.mounted=false;
+  CHAR.root.position.set(0,0,0); CHAR.root.rotation.set(0,0,0); CHAR.root.scale.set(1,1,1);
+}
+async function buildBoard(){
+  await waitBoardTemplate();
+  const wasOn=CHAR&&CHAR.mounted;
+  if(wasOn) unmount();
+  dropBoard();
+  board=K.buildBoardMesh(); board.traverse(o=>{ if(o.isMesh) o.frustumCulled=false; });
+  scene.add(board); board.visible=wantBoard;
+  if(wasOn||wantBoard) mount();
+}
+function frameCam(){
+  // frame her real world-space bounds (mounted she is ~0.49 units tall on a 3-unit board)
+  if(!CHAR||!CHAR.root){ ctl.update(); return; }
+  scene.updateMatrixWorld(true);
+  const bb=new THREE.Box3().setFromObject(CHAR.root), c=bb.getCenter(new THREE.Vector3()), hgt=Math.max(bb.max.y-bb.min.y,0.05);
+  ctl.target.copy(c); cam.position.set(c.x+hgt*0.9,c.y+hgt*0.25,c.z+hgt*2.3);
+  ctl.update();
+}
+function mount(){
+  if(!CHAR||!CHAR.root||!board) return;
+  board.visible=true; K.mountSkyboard(board); mode='game'; gameKey='skyboard'; $('clip').value='g:skyboard'; syncClipUI(); frameCam();
+  $('boardtoggle').textContent='Board: on';
+}
+function dismount(){ unmount(); if(board) board.visible=false; $('boardtoggle').textContent='Board: off'; playGame(gameKey==='skyboard'?'idle':gameKey); frameCam(); }
+
+/* ---------- animations: the game's 11 states + every clip in the file ---------- */
+function fillClips(){
+  const sel=$('clip'); sel.innerHTML='';
+  const g1=document.createElement('optgroup'); g1.label='Game states ('+Object.keys(CHAR.actions).filter(k=>CHAR.actions[k]).length+', as the game plays them)';
+  Object.keys(CHAR.actions).forEach(k=>{ if(!CHAR.actions[k]) return; const c=CHAR.actions[k].getClip(); const o=document.createElement('option'); o.value='g:'+k;
+    o.textContent=k+(k==='skyboard'?' (ride stance, on the board)':'')+'  ['+c.name+', '+c.duration.toFixed(2)+'s]'; g1.appendChild(o); });
+  const g2=document.createElement('optgroup'); g2.label='All clips in the animation file ('+rawClips.length+', raw)';
+  rawClips.forEach((c,i)=>{ const o=document.createElement('option'); o.value='r:'+i; o.textContent=c.name+'  ('+c.duration.toFixed(1)+'s)'; g2.appendChild(o); });
+  sel.appendChild(g1); if(rawClips.length) sel.appendChild(g2);
+  const mapped=Object.values(K.CHAR_CLIP_NAMES);
+  $('clipnote').textContent='The animation file has '+rawClips.length+' clips. The game maps '+mapped.length+' of them to states, adds idle (Walking held at frame 0) and plays skyboard as Step_Right_for_Exercise cropped to 1.25-1.5 s, ping-pong at '+K.SKYBOARD_ANIM_SPEED+'x. The other '+Math.max(0,rawClips.length-mapped.length)+' clips are never played in the game.';
+}
+function stopAll(){ CHAR.mixer.stopAllAction(); if(rawAction){ rawAction.stop(); rawAction=null; } }
+function playGame(k){
+  mode='game'; gameKey=k;
+  if(rawAction){ rawAction.stop(); rawAction=null; }
+  if(k==='skyboard'){ if(!CHAR.mounted){ if(board){ wantBoard=true; mount(); } } return; }
+  if(CHAR.mounted){ unmount(); if(board) board.visible=false; $('boardtoggle').textContent='Board: off'; frameCam(); }
+  K.setCharState(k,{fade:0.2,force:true});
+}
+function playRaw(i){
+  const c=rawClips[i]; if(!c) return;
+  if(CHAR.mounted){ unmount(); if(board) board.visible=false; $('boardtoggle').textContent='Board: off'; frameCam(); }
+  stopAll(); CHAR.state=null; mode='raw';
+  rawAction=CHAR.mixer.clipAction(c); rawAction.reset().play(); rawAction.paused=!playing; $('scrub').max=c.duration;
+}
+function curAction(){ return mode==='raw'?rawAction:(CHAR&&CHAR.actions[CHAR.state])||null; }
+function syncClipUI(){ const a=curAction(); if(a) $('scrub').max=a.getClip().duration; }
+
+/* ---------- load ---------- */
+async function loadAll(src){
+  status('Loading the game character group: Ariel, animations, strand hair, skyboards ...');
+  if(CHAR&&CHAR._hair){ try{CHAR._hair.dispose();}catch(e){} }
+  if(CHAR&&CHAR.root&&CHAR.root.parent) CHAR.root.parent.remove(CHAR.root);
+  dropBoard(); hair=null; rawClips=[]; rawAction=null;
+  newKernel(); CHAR=K.CHAR; window.CHAR=CHAR;
+  K.preloadSkyboardTemplates();
+  const [c,a,h]=await Promise.all([src&&src.char||fetchBuf(CHAR_DIR+'Meshy_AI_Autumn_biped_Character_output.glb'),
+    src&&src.anim||fetchBuf(CHAR_DIR+'Meshy_AI_Autumn_biped_Meshy_AI_Meshy_Merged_Animations.glb').catch(()=>null),
+    src&&src.hair||fetchBuf(CHAR_DIR+'ariel_hair_strands.bin').catch(()=>null)]);
+  charBuf=c; animBuf=a; hairBuf=h;
+  const gltf=await parseGLB(c);
+  K.charSetup(gltf);                                  // the game's bone map, shadows, material fix
+  CHAR.mixer=new THREE.AnimationMixer(CHAR.root); K._charWrapMixer();   // thumbs, palms, gaze after every clip update
+  const box=new THREE.Box3().setFromObject(CHAR.root); const rh=box.max.y-box.min.y;
+  CHAR.rawHeight=rh>0.001?rh:1; CHAR.scaleForBoard=K._clamp(K.CHAR_BOARD_TARGET_UNITS/CHAR.rawHeight,0.02,5); CHAR.feetOffset=-box.min.y;
+  CHAR.loaded=true; CHAR.root.visible=true; scene.add(CHAR.root);
+  CHAR.root.traverse(o=>{ if(o.isMesh) o.frustumCulled=false; });
+  const notes=[Object.keys(CHAR.bones).length+' bones'];
+  if(a){ const ag=await parseGLB(a); rawClips=ag.animations.slice(); K.buildActions(ag); notes.push(rawClips.length+' clips in the animation file, '+Object.keys(CHAR.actions).filter(k=>CHAR.actions[k]).length+' game states'); }
+  else notes.push('no animation file');
+  fillClips();
+  if(h){
+    try{
+      const mod=await hairModule();
+      // exactly how the game attaches it (hooked into the mixer, not manual)
+      hair=mod.buildHair(CHAR,THREE,h,{getStrandFraction:strandFraction,getGravityScale:gravityScale});
+      CHAR._hair=hair; window.DART_HAIR=hair; if(hair.setStrandFraction) hair.setStrandFraction(strandFraction());
+      $('hairtoggle').textContent='Strands: on';
+      notes.push('strands: '+hair.stats.strands+' ('+hair.stats.guides+' simulated)'+(hair.stats.sdf?', head SDF collision':''));
+    }catch(e){ hair=null; notes.push('hair: '+(e.message||e)); }
+  } else notes.push('no strand file');
+  try{ await buildBoard(); notes.push('skyboard '+STATE.boardConfig.template+(wantBoard?', mounted like the game':'')); }
+  catch(e){ notes.push('skyboard: '+(e.message||e)); }
+  if(!CHAR.mounted){ playGame('idle'); }
+  $('clip').value=CHAR.mounted?'g:skyboard':'g:idle'; syncClipUI(); frameCam();
+  status(notes.join('\n'));
+  $('hint').textContent='One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.';
+  window.__viewerReady=true;
+}
+
+/* ---------- UI ---------- */
+$('loadgame').onclick=()=>loadAll().catch(e=>status('Load failed: '+(e.message||e)));
+$('bsel').value=STATE.boardConfig.template||'B';
+$('bsel').onchange=async e=>{ STATE.boardConfig.template=e.target.value; try{ K.preloadSkyboardTemplates(); await buildBoard(); }catch(err){ status('Board failed: '+(err.message||err)); } };
+$('boardtoggle').onclick=async()=>{ if(!CHAR) return; if(CHAR.mounted){ wantBoard=false; dismount(); } else { wantBoard=true; if(!board) await buildBoard(); else mount(); } };
+$('f-prof').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; try{ const d=JSON.parse(await f.text()); if(!d||!d.board) throw new Error('no board in this file');
+  STATE.boardConfig=Object.assign(freshBoardConfig(),d.board); if(!STATE.boardConfig.template||STATE.boardConfig.template==='procedural') STATE.boardConfig.template='B';
+  $('bsel').value=STATE.boardConfig.template; K.preloadSkyboardTemplates(); await buildBoard(); note('board from '+f.name+': '+(STATE.boardConfig.name||'')); }catch(err){ status('Profile: '+(err.message||err)); } };
+$('gfx').onchange=async e=>{ const v=e.target.value; GFX.preset=v==='high'?'high':'auto'; GFX.isMobile=v==='high'?isMobile:true; GFX._resolved=v.replace('auto-',''); if(hair&&hair.setStrandFraction) hair.setStrandFraction(strandFraction()); try{ if(board) await buildBoard(); }catch(err){} };
+$('clip').onchange=e=>{ const v=e.target.value; if(v.startsWith('g:')) playGame(v.slice(2)); else playRaw(+v.slice(2)); syncClipUI(); };
+$('play').onclick=()=>{ playing=!playing; $('play').textContent=playing?'Pause':'Play'; if(rawAction) rawAction.paused=!playing; };
+$('rest').onclick=()=>{ const a=curAction(); if(a){ a.reset().play(); if(mode==='raw') a.paused=!playing; } };
+$('speed').oninput=e=>{ $('speedv').textContent=(+e.target.value).toFixed(1)+'x'; };
+$('scrub').oninput=e=>{ const a=curAction(); if(a){ a.time=+e.target.value; CHAR.mixer.update(0); } };
+$('hairtoggle').onclick=()=>{ if(!hair){ status('No strand hair loaded.'); return; } const on=!hair.params.enabled; hair.setEnabled(on); $('hairtoggle').textContent='Strands: '+(on?'on':'off'); };
+$('wind').oninput=e=>{ const v=+e.target.value; $('windv').textContent=v; if(hair) hair.params.wind.set(v,0,v*0.3); };
+$('grav').oninput=e=>{ const v=+e.target.value; $('gravv').textContent=v; if(hair) hair.params.gravity=v; };
+$('fly').oninput=e=>{ $('flyv').textContent=e.target.value; if(!+e.target.value){ const m=(CHAR&&CHAR.mounted)?board:CHAR&&CHAR.root; if(m) m.position.z=0; } };
+$('f-all').onchange=async e=>{ const inp=e.target; const files=[...inp.files]; const src={};
+  try{ for(const f of files){ const n=f.name.toLowerCase(), b=await readBuf(f);
+      if(n.endsWith('.bin')) src.hair=b; else if(n.endsWith('.glb')||n.endsWith('.gltf')){ const g=await parseGLB(b); let skin=false; g.scene.traverse(o=>{ if(o.isSkinnedMesh) skin=true; }); if(skin&&!src.char) src.char=b; else if(g.animations.length) src.anim=b; } }
+    if(!src.char&&!src.anim&&!src.hair){ status('Nothing usable in those files.'); return; }
+    await loadAll({char:src.char||charBuf, anim:src.anim||animBuf, hair:src.hair||hairBuf}); note('using your '+Object.keys(src).join(', ')+' file(s)');
+  }catch(err){ status('Load failed: '+(err.message||err)); } finally{ try{inp.value='';}catch(_){} } };
+
+/* ---------- frame loop: the same order as the game's flight loop ---------- */
+let lastT=performance.now(); let flyZ=0, simT=0, statT=0;
+function tick(){
+  const now=performance.now(), dt=Math.min((now-lastT)/1000,0.1); lastT=now; simT+=dt;
+  if(CHAR&&CHAR.loaded&&CHAR.mixer){
+    const sdt=playing?dt*(+$('speed').value):0;
+    try{ if(CHAR.mounted&&mode==='game') K.applySkyboardStance(simT); }catch(e){}
+    CHAR.mixer.update(sdt);                                                  // + thumbs/palms/gaze + hair (hooked, like the game)
+    try{ if(CHAR.mounted) K.applySkyboardHeadOverride(); }catch(e){}
+    const a=curAction(); if(a){ $('timev').textContent=a.time.toFixed(2)+' s'; if(playing) $('scrub').value=a.time; }
+    const fs=+$('fly').value, mv=CHAR.mounted?board:CHAR.root;
+    if(mv&&fs){ const z0=mv.position.z; flyZ+=fs*dt*(CHAR.mounted?1:0.3); const z1=((flyZ%40)-20); mv.position.z=z1; const dz=z1-z0; cam.position.z+=dz; ctl.target.z+=dz; }
+  }
+  ctl.update();
+  renderer.render(scene,cam);
+  if(hair&&(simT-statT)>0.5){ statT=simT; const s=hair.stats; $('hairstats').textContent=(s.drawn||s.strands)+' strands drawn, '+s.guides+' simulated, '+(s.ms||0).toFixed(1)+' ms/frame'+(s.contacts!=null?', '+s.contacts+' contacts':''); }
+  requestAnimationFrame(tick);
+}
+window.__viewer={get CHAR(){return CHAR;},get board(){return board;},get hair(){return hair;},K:()=>K,STATE,GFX,THREE,scene,cam,ctl,renderer,frameCam,playGame,playRaw};
+requestAnimationFrame(tick);
+loadAll().catch(e=>{ console.error(e); status('Could not load the game files: '+(e.message||e)+'\nPick the files from your device below instead.'); });
+</script>
 </body></html>
