@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Hand Lab</title>
+<style>
+:root{--bg:#07090f;--panel:#0e131d;--line:#1f2a3c;--fg:#d7e2f2;--dim:#7f8da5;--cy:#00e5ff;--or:#ff8a3d;--mg:#ff3d7f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.35 system-ui,-apple-system,sans-serif;overflow:hidden}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;background:linear-gradient(#07090fee,#07090f00);z-index:5;flex-wrap:wrap}
+#bar b{letter-spacing:.14em;color:var(--cy);font-size:12px}
+button{font:inherit;color:var(--fg);background:#121a29;border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+button.on{border-color:var(--cy);color:var(--cy)}
+button.or{border-color:var(--or);color:var(--or)}
+#panel{position:fixed;left:0;top:0;bottom:0;width:min(320px,86vw);padding:calc(54px + env(safe-area-inset-top)) 12px 16px;overflow:auto;background:var(--panel)ee;background:#0e131dee;border-right:1px solid var(--line);z-index:4;transform:translateX(-100%);transition:transform .2s}
+#panel.open{transform:none}
+h4{margin:14px 0 6px;font-size:11px;letter-spacing:.14em;color:var(--or);text-transform:uppercase}
+.row{display:grid;grid-template-columns:74px 1fr 38px;gap:6px;align-items:center;margin:2px 0}
+.row span{color:var(--dim)} .row i{font-style:normal;text-align:right;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--cy)}
+.presets{display:flex;flex-wrap:wrap;gap:6px}
+#out{width:100%;height:110px;background:#070b13;color:#9fe;border:1px solid var(--line);border-radius:6px;font:11px monospace;padding:6px}
+#msg{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));color:var(--dim);z-index:3;pointer-events:none;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="bar">
+  <button id="tgl">☰ JOINTS</button><b>HAND LAB</b>
+  <button id="b-skin" class="on">SKIN</button>
+  <button id="b-bones" class="on">BONES</button>
+  <button id="b-palm" class="on">PALM ARROW</button>
+  <button id="b-flip">FLIP PALM SIDE</button>
+  <button id="b-play" class="or">▶ PLAY LOOP</button>
+  <a href="/toonforge.html" style="margin-left:auto;color:var(--dim)">← Toon Forge</a>
+</div>
+<div id="panel"></div>
+<div id="msg">Loading the rig…</div>
+
+<script src="https://unpkg.com/three@0.134.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+'use strict';
+/* ───────────────────────────────────────────────────────────────────────────
+   HAND LAB — the left forearm, wrist and every finger bone of the Ariel rig on
+   its own, so the relaxed "curl toward the palm" can be tuned and watched in real
+   time before it goes into the game's menu scene.
+   Curl model: each finger joint rotates about  d × palm  (d = that bone's own rest
+   direction, palm = the palm normal), so a positive angle always bends the
+   fingertip toward the palm — never the back of the hand.  The palm side is found
+   from the hand itself (the thumb sits on the palm side of the finger plane) and
+   can be flipped by eye if this rig disagrees.
+   ─────────────────────────────────────────────────────────────────────────── */
+const RIG_URL = '/static/ariel-rig.glb';
+const FING = ['Index','Middle','Ring','Pinky'];
+const $ = id => document.getElementById(id);
+
+// pose state (degrees)
+const P = { wristFlex:0, wristDev:0, roll:0, thumbOpp:0 };
+FING.forEach(f => { P[f+'1']=0; P[f+'2']=0; P[f+'3']=0; P[f+'S']=0; });
+['Thumb1','Thumb2','Thumb3'].forEach(k => P[k]=0);
+
+// presets read from the reference video (back of hand toward camera, fingers roll in toward the palm)
+const cascade = (m,p,d,step) => { const o={}; FING.forEach((f,i)=>{ o[f+'1']=m+i*step; o[f+'2']=p+i*step*1.2; o[f+'3']=d+i*step*0.8; }); return o; };
+const PRESETS = {
+  'Open':           { ...cascade(0,0,0,0), Thumb1:0,Thumb2:0,Thumb3:0, thumbOpp:0, wristFlex:0 },
+  'Relaxed C-curl': { ...cascade(24,34,18,4), Thumb1:10,Thumb2:18,Thumb3:14, thumbOpp:22, wristFlex:-6 },
+  'Loose fist':     { ...cascade(58,72,38,5), Thumb1:20,Thumb2:30,Thumb3:26, thumbOpp:34, wristFlex:-4 },
+  'Resting on knee':{ ...cascade(18,26,14,3), Thumb1:6, Thumb2:12,Thumb3:10, thumbOpp:16, wristFlex:-14, roll:0 },
+};
+// the video loop: open → relaxed C → loose fist → relaxed C → open
+const LOOP = [['Open',0],['Relaxed C-curl',1.4],['Loose fist',3.2],['Relaxed C-curl',5.0],['Open',6.6]];
+const LOOP_T = 6.6;
+
+let renderer, scene, camera, controls, root, skinMeshes = [], mixer;
+let B = {}, REST = {}, palmLocal = null, palmSign = 1, clipPlane = new THREE.Plane();
+let bonePts, boneLines, palmArrow, playing = false, playT = 0;
+const V = (x=0,y=0,z=0) => new THREE.Vector3(x,y,z), Q = () => new THREE.Quaternion();
+
+function setStatus(t){ $('msg').textContent = t; }
+
+/* ───────── build the sliders ───────── */
+function buildPanel(){
+  const pn = $('panel'); let h = '<div class="presets">' + Object.keys(PRESETS).map(k=>`<button data-pre="${k}">${k}</button>`).join('') + '</div>';
+  const row = (k,label,min,max) => `<div class="row"><span>${label}</span><input type="range" data-k="${k}" min="${min}" max="${max}" step="1" value="0"><i id="v-${k}">0</i></div>`;
+  h += '<h4>Wrist</h4>' + row('wristFlex','flex / ext',-60,60) + row('wristDev','radial / ulnar',-25,25) + row('roll','forearm roll',-90,90);
+  FING.forEach(f => { h += `<h4>${f}</h4>` + row(f+'1','knuckle',-20,90) + row(f+'2','middle',0,110) + row(f+'3','tip',0,80) + row(f+'S','spread',-15,15); });
+  h += '<h4>Thumb</h4>' + row('Thumb1','base',-10,60) + row('Thumb2','middle',0,70) + row('Thumb3','tip',0,70) + row('thumbOpp','opposition',-10,60);
+  h += '<h4>Values</h4><textarea id="out" readonly></textarea><div style="margin-top:6px"><button id="b-copy" class="or">COPY VALUES</button></div>';
+  pn.innerHTML = h;
+  pn.querySelectorAll('input[type=range]').forEach(el => el.addEventListener('input', () => { playing=false; $('b-play').textContent='▶ PLAY LOOP'; P[el.dataset.k] = +el.value; syncUI(false); }));
+  pn.querySelectorAll('[data-pre]').forEach(b => b.addEventListener('click', () => { playing=false; $('b-play').textContent='▶ PLAY LOOP'; applyPreset(PRESETS[b.dataset.pre]); }));
+  $('b-copy').onclick = () => { const t = $('out').value; (navigator.clipboard && navigator.clipboard.writeText(t).catch(()=>{})); $('out').select(); };
+}
+function syncUI(setSliders){
+  document.querySelectorAll('#panel input[type=range]').forEach(el => { if(setSliders) el.value = P[el.dataset.k]; const v=$('v-'+el.dataset.k); if(v) v.textContent = Math.round(P[el.dataset.k]); });
+  const o = {}; Object.keys(P).forEach(k => { if(Math.abs(P[k])>0.4) o[k] = Math.round(P[k]); });
+  $('out').value = JSON.stringify({ palmSign, pose:o });
+}
+function applyPreset(p){ Object.keys(P).forEach(k => P[k] = p[k]===undefined ? 0 : p[k]); syncUI(true); }
+
+/* ───────── scene ───────── */
+function init(){
+  const cv = $('gl');
+  renderer = new THREE.WebGLRenderer({ canvas:cv, antialias:true, alpha:false });
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.localClippingEnabled = true;
+  renderer.setClearColor(0x07090f);
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(35, 1, 0.01, 50);
+  controls = new THREE.OrbitControls(camera, cv); controls.enableDamping = true;
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x402018, 0.9));
+  const key = new THREE.DirectionalLight(0xffe2c8, 1.4); key.position.set(1,2,2); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x6a8cff, 0.9); rim.position.set(-2,1,-2); scene.add(rim);
+  const grid = new THREE.GridHelper(1.2, 24, 0x1f2a3c, 0x131b29); grid.position.y = -0.0; scene.add(grid); scene.userData.grid = grid;
+  addEventListener('resize', fit); fit();
+  new THREE.GLTFLoader().load(RIG_URL, g => { root = g.scene; scene.add(root); setup(); }, undefined, e => setStatus('Could not load the rig: ' + (e && e.message || e)));
+}
+function fit(){ const w=innerWidth,h=innerHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+
+function setup(){
+  root.traverse(o => { if(o.isBone) B[o.name] = o; if(o.isSkinnedMesh){ skinMeshes.push(o); o.frustumCulled = false; (Array.isArray(o.material)?o.material:[o.material]).forEach(m => { m.clippingPlanes=[clipPlane]; m.side=THREE.DoubleSide; m.needsUpdate=true; }); } });
+  if(!B.LeftHand || !B.LeftForeArm){ setStatus('This rig has no left-hand bones.'); return; }
+  root.updateMatrixWorld(true);
+  Object.keys(B).forEach(n => { const b=B[n], wq=Q(); b.getWorldQuaternion(wq); REST[n] = { q:b.quaternion.clone(), wq }; });
+  // palm normal from the rest hand: thumb sits on the palm side of the finger plane
+  const wp = n => B[n].getWorldPosition(V());
+  const h = wp('LeftHand'), ax = wp('LeftHandMiddle1').sub(h).normalize(), lat = wp('LeftHandIndex1').sub(wp('LeftHandPinky1')).normalize();
+  let np = V().crossVectors(ax, lat).normalize();
+  if (wp('LeftHandThumb2').sub(h).dot(np) < 0) np.negate();
+  REST.palmWorld = np; REST.axisWorld = ax; REST.latWorld = lat;
+  palmLocal = np.clone().applyQuaternion(REST.LeftHand.wq.clone().invert());
+  // overlays
+  const chain = chainNames();
+  bonePts = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(chain.length*3),3)), new THREE.PointsMaterial({ color:0x00e5ff, size:0.006, depthTest:false, sizeAttenuation:true }));
+  boneLines = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(chain.length*6),3)), new THREE.LineBasicMaterial({ color:0xff8a3d, depthTest:false, transparent:true, opacity:.9 }));
+  bonePts.renderOrder = boneLines.renderOrder = 10; bonePts.frustumCulled = boneLines.frustumCulled = false; scene.add(bonePts, boneLines);
+  palmArrow = new THREE.ArrowHelper(V(0,1,0), V(), 0.07, 0xff3d7f, 0.02, 0.014); palmArrow.line.material.depthTest = palmArrow.cone.material.depthTest = false; palmArrow.renderOrder = 11; scene.add(palmArrow);
+  // frame the hand
+  const c = h.clone(); controls.target.copy(c); const mid0 = wp('LeftHandMiddle2'); controls.target.copy(mid0); camera.position.copy(mid0).addScaledVector(np, 0.36).addScaledVector(ax, -0.06); controls.update();
+  buildPanel(); applyPreset(PRESETS['Relaxed C-curl']); if(innerWidth>760) $('panel').classList.add('open');
+  setStatus('Drag to orbit · pinch/scroll to zoom · pink arrow = palm side — curls bend toward it. If it points at the back of the hand, tap FLIP PALM SIDE.');
+}
+function chainNames(){ const n=['LeftForeArm','LeftHand']; FING.forEach(f=>{ for(let k=1;k<=4;k++) n.push('LeftHand'+f+k); }); for(let k=1;k<=4;k++) n.push('LeftHandThumb'+k); return n.filter(x=>B[x]); }
+
+/* ───────── pose ───────── */
+function worldRot(name, axisW, deg){ // delta about a world axis, expressed in the bone's rest frame, applied on top of its rest rotation
+  const b=B[name], r=REST[name]; if(!b||!r) return;
+  const qd = Q().setFromAxisAngle(axisW, deg*Math.PI/180);
+  const loc = r.wq.clone().invert().multiply(qd).multiply(r.wq);
+  b.quaternion.multiply(loc);
+}
+function pose(){
+  Object.keys(B).forEach(n => { if(REST[n]) B[n].quaternion.copy(REST[n].q); });
+  const palm = REST.palmWorld.clone().multiplyScalar(palmSign), ax = REST.axisWorld, lat = REST.latWorld;
+  // forearm roll + wrist
+  worldRot('LeftForeArm', ax.clone(), P.roll);
+  worldRot('LeftHand', V().crossVectors(ax, palm).normalize(), P.wristFlex);   // positive = hand folds toward the palm
+  worldRot('LeftHand', palm.clone(), P.wristDev);
+  FING.forEach(f => {
+    for(let k=1;k<=3;k++){
+      const bn='LeftHand'+f+k, nxt=B['LeftHand'+f+(k+1)]; if(!B[bn]) continue;
+      const d = nxt ? nxt.getWorldPosition(V()).sub(B[bn].getWorldPosition(V())) : ax.clone();
+      // direction of this bone at REST (so the axis doesn't drift as the chain bends)
+      const rd = restDir(bn, 'LeftHand'+f+(k+1)) || ax;
+      worldRot(bn, V().crossVectors(rd, palm).normalize(), P[f+k]);
+      if(k===1) worldRot(bn, palm.clone(), P[f+'S']);
+    }
+  });
+  for(let k=1;k<=3;k++){
+    const bn='LeftHandThumb'+k; if(!B[bn]) continue;
+    const rd = restDir(bn,'LeftHandThumb'+(k+1)) || ax;
+    worldRot(bn, V().crossVectors(rd, palm).normalize(), P['Thumb'+k]);
+    if(k===1) worldRot(bn, lat.clone(), -P.thumbOpp * palmSign);
+  }
+}
+function restDir(a, bName){ const A=REST[a], C=REST[bName]; if(!A||!C) return null; return C.wp.clone().sub(A.wp).normalize(); }
+
+/* ───────── loop + render ───────── */
+function sample(t){
+  t = t % LOOP_T; let i=0; while(i<LOOP.length-2 && t>=LOOP[i+1][1]) i++;
+  const [na,ta]=LOOP[i], [nb,tb]=LOOP[i+1], a=PRESETS[na], b=PRESETS[nb];
+  let k=Math.max(0,Math.min(1,(t-ta)/(tb-ta))); k=k*k*(3-2*k);
+  Object.keys(P).forEach(key => { const x=a[key]||0, y=b[key]||0; P[key]=x+(y-x)*k; });
+}
+let last = performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05,(now-last)/1000); last = now;
+  if(!B.LeftHand || !REST.palmWorld) return;
+  if(playing){ playT += dt; sample(playT); syncUI(true); }
+  pose(); root.updateMatrixWorld(true);
+  // clip everything above the forearm so only forearm → fingertips remain
+  const e = B.LeftForeArm.getWorldPosition(V()), w = B.LeftHand.getWorldPosition(V()), dir = w.clone().sub(e), len = dir.length(); dir.normalize();
+  clipPlane.setFromNormalAndCoplanarPoint(dir, e.clone().addScaledVector(dir, len*0.12));
+  skinMeshes.forEach(m => m.visible = skinOn);
+  // bone overlay
+  const chain = chainNames(), pa = bonePts.geometry.attributes.position, la = boneLines.geometry.attributes.position; let li = 0;
+  chain.forEach((n,i) => { const p = B[n].getWorldPosition(V()); pa.setXYZ(i,p.x,p.y,p.z);
+    const par = B[n].parent; if(par && chain.includes(par.name)){ const q = par.getWorldPosition(V()); la.setXYZ(li++,q.x,q.y,q.z); la.setXYZ(li++,p.x,p.y,p.z); } });
+  for(; li<la.count; li++) la.setXYZ(li,0,0,0);
+  pa.needsUpdate = la.needsUpdate = true; bonePts.visible = boneLines.visible = bonesOn;
+  // palm arrow
+  const hq = B.LeftHand.getWorldQuaternion(Q()), pn = palmLocal.clone().multiplyScalar(palmSign).applyQuaternion(hq).normalize();
+  const mid = B.LeftHandMiddle1.getWorldPosition(V()).add(w).multiplyScalar(0.5);
+  palmArrow.position.copy(mid); palmArrow.setDirection(pn); palmArrow.visible = palmOn;
+  controls.update(); renderer.render(scene, camera);
+}
+let skinOn=true, bonesOn=true, palmOn=true;
+function wire(){
+  $('tgl').onclick = () => $('panel').classList.toggle('open');
+  const tog = (id, get, set) => { $(id).onclick = () => { set(!get()); $(id).classList.toggle('on', get()); }; };
+  tog('b-skin', () => skinOn, v => skinOn = v); tog('b-bones', () => bonesOn, v => bonesOn = v); tog('b-palm', () => palmOn, v => palmOn = v);
+  $('b-flip').onclick = () => { palmSign *= -1; $('b-flip').classList.toggle('on', palmSign<0); syncUI(false); };
+  $('b-play').onclick = () => { playing = !playing; playT = 0; $('b-play').textContent = playing ? '■ STOP' : '▶ PLAY LOOP'; };
+}
+// cache rest world positions as soon as the rig is set up (wrapped so setup() stays one place)
+const _setup0 = setup;
+setup = function(){ _setup0(); Object.keys(B).forEach(n => { REST[n].wp = B[n].getWorldPosition(V()); }); };
+init(); wire(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
