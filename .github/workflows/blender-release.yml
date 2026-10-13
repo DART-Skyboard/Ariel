@@ -1,0 +1,47 @@
+name: Release Blender Tablet Updater
+on:
+  push:
+    branches: [main]
+    paths: ["blender-android/**", "templates/blender/BlenderTabletUpdater.apk"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - name: Build from source if a signing key secret exists, else use the signed APK in the repo
+        env:
+          KEYSTORE_B64: ${{ secrets.BLENDER_KEYSTORE_B64 }}
+          KSPASS: ${{ secrets.BLENDER_KEYSTORE_PASS }}
+        run: |
+          set -e
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KSPASS" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ks.jks"
+            export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;35.0.0" >/dev/null || true
+            KEYSTORE="$RUNNER_TEMP/ks.jks" bash blender-android/build.sh
+            echo "SOURCE=built from source in this run" >> "$GITHUB_ENV"
+          else
+            echo "SOURCE=signed APK committed to the repo" >> "$GITHUB_ENV"
+          fi
+          cp templates/blender/BlenderTabletUpdater.apk BlenderTabletUpdater.apk
+          sha256sum BlenderTabletUpdater.apk | tee sha.txt
+      - name: Publish the release (tag "latest")
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST=$(python3 -c "import json;j=json.load(open('templates/blender/latest.json'));x=j['latest'];print(x['name'],'-',round(x['size']/1073741824,2),'GB -',x['modified'])" 2>/dev/null || echo "see mirror.blender.org/demo/tablet/")
+          gh release delete latest --cleanup-tag -y 2>/dev/null || true
+          gh release create latest BlenderTabletUpdater.apk \
+            --title "Blender Tablet Updater (latest)" --latest \
+            --notes "Tiny Android helper that downloads and installs the newest Blender tablet demo from Blender's own mirror.
+
+          Newest demo on the mirror right now: ${LATEST}
+          Source: ${SOURCE}
+          SHA-256: $(cut -d' ' -f1 sha.txt)
+
+          Install: allow 'Install unknown apps' for your browser, open the APK, then tap DOWNLOAD & INSTALL LATEST inside the app. Needs about 5 GB free."
