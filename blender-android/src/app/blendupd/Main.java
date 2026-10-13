@@ -38,6 +38,7 @@ import java.util.regex.Pattern;
 
 /** Blender Tablet Updater: finds the newest tablet demo APK on mirror.blender.org, downloads it, installs it. */
 public class Main extends Activity {
+    static final String UA = "BlenderTabletUpdater/1.0 (Android)";
     static final String DIR = "https://mirror.blender.org/demo/tablet/";
     static final int BG = Color.parseColor("#06101A"), FG = Color.parseColor("#A9C9D9"), HI = Color.parseColor("#E8FBFF"),
             CY = Color.parseColor("#00E5FF"), GRN = Color.parseColor("#39FF7A"), AMB = Color.parseColor("#FFB300");
@@ -107,12 +108,12 @@ public class Main extends Activity {
         latestTv.setText("Checking mirror...");
         new Thread(() -> {
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(DIR).openConnection(); c.setConnectTimeout(15000); c.setReadTimeout(20000);
+                HttpURLConnection c = (HttpURLConnection) new URL(DIR).openConnection(); c.setRequestProperty("User-Agent", UA); c.setConnectTimeout(15000); c.setReadTimeout(20000);
                 BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream())); StringBuilder sb = new StringBuilder(); String ln; while ((ln = r.readLine()) != null) sb.append(ln);
                 Matcher m = Pattern.compile("href=\"\\./([^\"?]+\\.apk)\"").matcher(sb); List<String> names = new ArrayList<>(); while (m.find()) if (!names.contains(m.group(1))) names.add(m.group(1));
                 String best = null, bestStamp = null; long bestT = -1, bestSize = 0;
                 for (String n : names) {
-                    HttpURLConnection h = (HttpURLConnection) new URL(DIR + n).openConnection(); h.setRequestMethod("HEAD"); h.setConnectTimeout(15000); h.setReadTimeout(20000); h.setInstanceFollowRedirects(true);
+                    HttpURLConnection h = (HttpURLConnection) new URL(DIR + n).openConnection(); h.setRequestMethod("HEAD"); h.setRequestProperty("User-Agent", UA); h.setConnectTimeout(15000); h.setReadTimeout(20000); h.setInstanceFollowRedirects(true);
                     long t = h.getLastModified(); long len = h.getContentLengthLong(); h.disconnect();
                     if (best == null || t > bestT || (t == bestT && n.compareTo(best) > 0)) { best = n; bestT = t; bestSize = len; bestStamp = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(t)); }
                 }
@@ -145,6 +146,7 @@ public class Main extends Activity {
         if (free < latestSize * 2) { status.setText("Low storage: " + String.format("%.1f", free / 1073741824.0) + " GB free. Free up about " + String.format("%.1f", latestSize * 2 / 1073741824.0) + " GB, then try again."); return; }
         DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
         DownloadManager.Request rq = new DownloadManager.Request(Uri.parse(DIR + latestName));
+        rq.addRequestHeader("User-Agent", UA);
         rq.setTitle("Blender tablet demo").setDescription(latestName).setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
           .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, latestName).setAllowedOverMetered(true).setAllowedOverRoaming(false)
           .setMimeType("application/vnd.android.package-archive");
