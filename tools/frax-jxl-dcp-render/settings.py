@@ -37,6 +37,11 @@ class FRAXJXL_FocusArea(bpy.types.PropertyGroup):
 
 
 class FRAXJXL_Settings(bpy.types.PropertyGroup):
+    engine: EnumProperty(name="Encoder", default="PYTHON", items=[
+        ("PYTHON", "Frax JXL · pure Python", "JPEG XL written by the extension's own Python encoder (Modular coding: "
+         "lossless, lossy Squeeze, animation, focus areas). No external libraries"),
+        ("LIBJXL", "libjxl · WebAssembly", "The reference libjxl encoder run in WebAssembly (VarDCT, patches, noise, "
+         "JPEG recompression). Needs the bundled wasmtime runtime")])
     # ── compression ─────────────────────────────────────────────
     mode: EnumProperty(name="Mode", default="LOSSY", items=[
         ("LOSSY", "Lossy · VarDCT", "Best for rendered images and photos"),

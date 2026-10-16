@@ -9,7 +9,7 @@ import time
 import bpy
 import numpy as np
 
-from . import engine
+from . import engine, pyengine
 from .settings import depth_params, frame_options
 
 LINEAR_EXTS = {".exr", ".hdr"}
@@ -152,6 +152,8 @@ class Plan:
             parts.append(arr[..., 3:4])
         out = np.concatenate(parts, axis=2) if len(parts) > 1 else rgb
         if self.float_out:
+            if self.bits == 16:                                             # half floats: round once, here
+                out = out.astype(np.float16)
             return np.ascontiguousarray(out, dtype=np.float32)
         top = 255.0 if self.dtype == np.uint8 else 65535.0
         return np.ascontiguousarray(np.clip(out, 0, 1) * top + 0.5).astype(self.dtype)
@@ -159,12 +161,13 @@ class Plan:
     def encoder(self, width, height, animated=False, fps=(24, 1), boxes=(), cache_dir=None):
         s = self.s
         lossless = s.mode == "LOSSLESS"
-        return engine.Encoder(width, height, bits=self.bits, exp_bits=self.exp, channels=self.channels,
+        cls = engine.Encoder if use_libjxl(s) else pyengine.Encoder
+        return cls(width, height, bits=self.bits, exp_bits=self.exp, channels=self.channels,
                               alpha_bits=self.alpha_bits, alpha_exp=self.alpha_exp, premultiplied=s.premultiplied,
                               animated=animated, tps_num=fps[0], tps_den=fps[1], loops=s.loops,
                               original_profile=lossless or s.color_transform == "1", intensity_target=s.intensity,
                               color=self.color, intent=int(s.intent), container=int(s.container), level=int(s.level),
-                              boxes=boxes, cache_dir=cache_dir)
+                              boxes=boxes, cache_dir=cache_dir, lossy_float=not lossless)
 
 
 def xmp_box(s, scene, frame=None, extra=None):
@@ -245,12 +248,21 @@ def scene_focus_rects(scene, s, depsgraph=None):
     return out
 
 
+def use_libjxl(s):
+    return getattr(s, "engine", "PYTHON") == "LIBJXL" and engine.available()
+
+
 def add_with_focus(enc, plan, arr, rects_px, duration):
-    """One displayed frame: base image, then sharper focus layers on top (JPEG XL crop + replace blending)."""
+    """One displayed frame.  Pure-Python engine: focus tiles are coded at the focus quality inside the same frame
+    (and stored first).  libjxl engine: base image, then sharper focus layers on top (crop + replace blending)."""
     s = plan.s
     base = frame_options(s)
     if not rects_px or s.mode == "LOSSLESS":
         enc.add_frame(plan.convert(arr), base, duration=duration)
+        return
+    if isinstance(enc, pyengine.Encoder):
+        enc.add_frame(plan.convert(arr), base, duration=duration, focus=rects_px, focus_quality=s.focus_quality,
+                      focus_first=s.focus_first and int(s.group_order) == -1)
         return
     if s.focus_first and int(s.group_order) == -1:
         x, y, w, h = rects_px[0]

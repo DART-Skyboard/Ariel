@@ -4,14 +4,17 @@
 #   · Render animations straight into one animated .jxl, or pack every Ctrl F12 frame sequence into one too
 #   · Focus areas (regions of interest) from the camera's view of selected objects, tracked per frame
 #   · Digital Cinema: DCI presets, ISDCF naming, festival checks, 48 kHz/24-bit audio, DCP via DCP-o-matic
-# Works with EEVEE, Cycles and Workbench. libjxl (BSD-3-Clause) runs as WebAssembly through wasmtime (Apache-2.0).
+#   · Frax JXL: a JPEG XL encoder written in pure Python + numpy (jxl/), the default encoder of the render line
+# Works with EEVEE, Cycles and Workbench.  JPEG XL is ISO/IEC 18181; the Python encoder follows the reference
+# implementation libjxl (© the JPEG XL Project Authors, BSD-3-Clause).  libjxl itself is also bundled as an optional
+# WebAssembly engine run through wasmtime (Apache-2.0), and opens .jxl files.
 bl_info = {
     "name": "Frax JXL DCP Render",
     "blender": (5, 2, 0),
     "category": "Render",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "maintainer": "Radical Deepscale <justin@dartmeadow.com>",
-    "description": "Render JPEG XL stills & animations with every libjxl option, and build festival-ready DCPs (EEVEE / Cycles)"
+    "description": "Render JPEG XL stills & animations (pure-Python JPEG XL encoder, or libjxl), and build festival-ready DCPs (EEVEE / Cycles)"
 }
 
 import bpy

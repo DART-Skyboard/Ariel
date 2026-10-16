@@ -125,6 +125,9 @@ class FRAXJXL_OT_open_image(bpy.types.Operator, ImportHelper):
     filter_glob: StringProperty(default="*.jxl", options={"HIDDEN"})
 
     def execute(self, ctx):
+        if not engine.available():
+            self.report({"ERROR"}, "Opening JPEG XL files uses the libjxl runtime (wasmtime), which is not installed")
+            return {"CANCELLED"}
         try:
             with open(self.filepath, "rb") as f:
                 d = engine.decode(f.read(), want16=True, max_frames=1, cache_dir=animation.cache_dir())

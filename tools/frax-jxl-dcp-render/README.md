@@ -1,6 +1,28 @@
 # Frax JPEG XL + DCP Render (Blender 5.2 LTS and later)
 
-Radical Deepscale LLC / DART Meadow · GPL-3.0-or-later · libjxl 0.13 (BSD-3-Clause) via WebAssembly + wasmtime (Apache-2.0)
+Radical Deepscale LLC / DART Meadow · GPL-3.0-or-later
+
+## Frax JXL — JPEG XL in pure Python
+The default encoder (**Encoder ▸ Frax JXL · pure Python**) is a JPEG XL encoder written in Python + numpy, in `jxl/`.
+JPEG XL works exactly as standardised (ISO/IEC 18181) — this is the same format, written from Blender's own Python,
+so the render line needs no external library. Every file it writes is a standard JPEG XL that any viewer opens.
+
+* Modular coding: YCoCg colour transform, all non-weighted predictors, learned MA context trees, LZ77 run coding,
+  per-context hybrid-integer tokens and Huffman (prefix) codes
+* Lossless 1–16-bit integer and 16/32-bit float, greyscale, alpha (own depth, premultiplied), extra channels
+  (depth, selection masks, spot colours, thermal…)
+* Lossy with a quality slider: the Squeeze transform + quantised detail bands — always progressive
+* Animation: many frames in one file with exact frame timing and loops; crop layers, blend modes, reference frames
+* Focus areas: tiles under a focus area are coded at the focus quality and stored first (TOC permutation)
+* Tile size 128–1024, effort 1–9, centre-first tile order, 2/4/8× downsampling, XMP / container boxes, level 10
+
+Credit: the JPEG XL format and its reference implementation **libjxl** are by the JPEG XL Project Authors
+(Google, Cloudinary and contributors), BSD-3-Clause — see `LICENSE-libjxl.txt`. Header layouts, predictors, the
+Squeeze transform and entropy-coding conventions follow libjxl's source; the fast-lossless ideas come from
+Luca Versari's `enc_fast_lossless`. Frax JXL is an independent re-implementation, not a port of their code.
+
+**Encoder ▸ libjxl · WebAssembly** is still there: libjxl 0.13 itself, run through wasmtime (Apache-2.0), for VarDCT,
+patches, photon noise and JPEG recompression. It also powers **Open JPEG XL…**.
 
 ## Install
 Edit ▸ Preferences ▸ Get Extensions ▸ ⌄ ▸ **Install from Disk…** → pick the zip for your system

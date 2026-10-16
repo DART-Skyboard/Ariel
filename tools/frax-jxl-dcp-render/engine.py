@@ -23,6 +23,15 @@ ID = dict(EFFORT=0, DECODING_SPEED=1, RESAMPLING=2, EC_RESAMPLING=3, PHOTON_NOIS
 FLOAT_IDS = {ID["PHOTON_NOISE"], ID["CH_COLORS_GLOBAL"], ID["CH_COLORS_GROUP"], ID["MA_TREE_PCT"]}
 
 
+def available():
+    """True when the optional libjxl (WebAssembly) engine can run: wasmtime installed and the module present."""
+    try:
+        import wasmtime  # noqa: F401
+    except Exception:                                    # noqa: BLE001
+        return False
+    return os.path.exists(WASM_PATH)
+
+
 def quality_to_distance(q):
     """libjxl's JxlEncoderDistanceFromQuality."""
     q = float(q)
@@ -148,7 +157,8 @@ class Encoder:
 
     def __init__(self, width, height, bits=8, exp_bits=0, channels=3, alpha_bits=0, alpha_exp=0, premultiplied=False,
                  animated=False, tps_num=1000, tps_den=1, loops=0, original_profile=False, intensity_target=0.0,
-                 orientation=1, color=0, intent=0, container=-1, level=0, boxes=(), cache_dir=None, jpeg_mode=False):
+                 orientation=1, color=0, intent=0, container=-1, level=0, boxes=(), cache_dir=None, jpeg_mode=False,
+                 **_ignored):
         self.rt = rt = _Runtime(cache_dir)
         self.h = rt.jxw_new()
         if not self.h:

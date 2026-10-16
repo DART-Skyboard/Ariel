@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import bpy
 
-from . import animation, dcp
+from . import animation, dcp, engine
 
 
 class _Out:
@@ -54,12 +54,22 @@ class FRAXJXL_PT_compression(_Sub, bpy.types.Panel):
     def draw(self, ctx):
         s, l = ctx.scene.frax_jxl, self.layout
         l.use_property_split = True
+        row = l.row()
+        row.prop(s, "engine")
+        if s.engine == "LIBJXL" and not engine.available():
+            l.label(text="libjxl runtime not installed — the pure-Python encoder is used", icon="ERROR")
         l.prop(s, "mode")
         if s.mode != "LOSSLESS":
             l.prop(s, "quality", slider=True)
             l.prop(s, "distance")
         l.prop(s, "effort", slider=True)
-        l.prop(s, "decoding_speed", slider=True)
+        if s.engine == "PYTHON" or not engine.available():
+            col = l.column(align=True)
+            if s.mode != "LOSSLESS":
+                col.label(text="Lossy uses Modular Squeeze coding (progressive)", icon="INFO")
+            col.label(text="Pure-Python JPEG XL · format by the JPEG XL Project (libjxl)")
+        else:
+            l.prop(s, "decoding_speed", slider=True)
 
 
 class FRAXJXL_PT_color(_Sub, bpy.types.Panel):
