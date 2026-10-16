@@ -5,6 +5,15 @@
 #   · Focus areas (regions of interest) from the camera's view of selected objects, tracked per frame
 #   · Digital Cinema: DCI presets, ISDCF naming, festival checks, 48 kHz/24-bit audio, DCP via DCP-o-matic
 # Works with EEVEE, Cycles and Workbench. libjxl (BSD-3-Clause) runs as WebAssembly through wasmtime (Apache-2.0).
+bl_info = {
+    "name": "Frax JXL DCP Render",
+    "blender": (5, 2, 0),
+    "category": "Render",
+    "version": (1, 0, 0),
+    "maintainer": "Radical Deepscale <justin@dartmeadow.com>",
+    "description": "Render JPEG XL stills & animations with every libjxl option, and build festival-ready DCPs (EEVEE / Cycles)"
+}
+
 import bpy
 
 from . import animation, dcp, operators, settings, ui
