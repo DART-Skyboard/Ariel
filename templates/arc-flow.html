@@ -231,7 +231,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 
     <div class="sec-h">◈ Particles</div>
     <label class="field">Particles per Container</label>
-    <input type="number" id="particlesPerContainer" value="300" min="10" max="4000" step="10">
+    <input type="number" id="particlesPerContainer" value="2000" min="10" max="4000" step="10">
 
     <label class="field">Thermal Resolution</label>
     <select id="thermalResolution">
@@ -666,10 +666,59 @@ const DEFAULT_DEMO_CONFIG = {
   'CombustionChamber':{ type: 'chamber',                                          openingCount: 3 },
 };
 
+// Exact mating ports for the demo assembly, in the model's own coordinates (the same frame the file is authored in).
+// Boundary-loop detection finds dozens of tiny "openings" on this file's separately-modelled, non-watertight parts and
+// none at the real tank necks, pipe ends or the nozzle, so the flow never reached the chamber. Each joint is given ONE
+// shared port that both parts use (an exit on one side, the matching entrance on the other), so every joint reads as
+// sealed (gap 0) and the stream can run pressurant → tank → feed pipe → chamber → out of the open nozzle.
+//   [role, [x, y, z], radius, [flow-direction x, y, z]]
+const DEMO_PORTS = {
+  'OxidizerPressure': [['exit',     [0, 13.5, 0],        0.5,  [0, -1, 0]]],
+  'Oxidizer':         [['entrance', [0, 13.5, 0],        0.5,  [0, -1, 0]],
+                       ['exit',     [-1.95, 7.75, -0.3], 0.15, [-1, 0, 0]]],
+  'OxidizerChannel':  [['entrance', [-1.95, 7.75, -0.3], 0.15, [1, -0.5, 0]],
+                       ['exit',     [-0.75, 4.85, -0.45],0.2,  [1, -0.3, 0]]],
+  'FuelPressure':     [['exit',     [0, 28.2, 0],        0.5,  [0, -1, 0]]],
+  'Fuel':             [['entrance', [0, 28.2, 0],        0.5,  [0, -1, 0]],
+                       ['exit',     [1.8, 21.3, 0.12],   0.15, [1, 0, 0]]],
+  'FuelChannel':      [['entrance', [1.8, 21.3, 0.12],   0.15, [-0.2, -1, 0]],
+                       ['exit',     [0.92, 5.24, -0.02], 0.2,  [0, -1, 0]]],
+  'CombustionChamber':[['entrance', [-0.75, 4.85, -0.45],0.2,  [1, -0.3, 0]],
+                       ['entrance', [0.92, 5.24, -0.02], 0.2,  [0, -1, 0]],
+                       ['nozzle',   [0, -0.5, 0],        2.2,  [0, -1, 0]]],
+};
+function normalizeDemoName(n) { return n.replace(/\s*\(\d+\)$/, '').replace(/[\s_]+$/, ''); }
+
+function applyDemoPorts(part, baseName) {
+  const ports = DEMO_PORTS[baseName];
+  if (!ports || !state.root || !state.root.children[0]) return false;
+  state.root.updateMatrixWorld(true);
+  const M = state.root.children[0].matrixWorld;      // model frame → world
+  for (const old of (part.openings || [])) { try { if (old.marker && old.marker.parent) old.marker.parent.remove(old.marker); } catch (e) {} }
+  part.openings = [];
+  ports.forEach(([role, p, r, n], k) => {
+    const centroid = new THREE.Vector3(p[0], p[1], p[2]).applyMatrix4(M);
+    const normal = new THREE.Vector3(n[0], n[1], n[2]).transformDirection(M).normalize();
+    const o = { id: 'paint-demo-' + baseName + '-' + k, points: [], centroid, normal, perimeter: 2 * Math.PI * r, radius: r, role };
+    attachOpeningMarker(part, o);                    // follows the part if it is moved with the gimbal
+    part.openings.push(o);
+  });
+  // The nozzle must be OPEN: the model carries a thin flat disc across the bell's exit, which is the plate the
+  // exhaust was piling up against in mid-air. Hide any flat disc sitting at the nozzle plane.
+  if (part.type === 'chamber') {
+    const noz = part.openings.find(o => o.role === 'nozzle');
+    if (noz) for (const m of part.meshes) {
+      const b = new THREE.Box3().setFromObject(m), sz = new THREE.Vector3(); b.getSize(sz);
+      if (sz.y < 0.1 && Math.max(sz.x, sz.z) > noz.radius * 1.5 && Math.abs(b.max.y - noz.centroid.y) < 0.2) { m.visible = false; m.userData.nozzleCover = true; }
+    }
+  }
+  return true;
+}
+
 function applyDefaultDemoConfiguration() {
   let applied = 0;
   for (const part of state.parts) {
-    const baseName = part.name.replace(/\s*\(\d+\)$/, ''); // strip a " (2)" disambiguation suffix, if any
+    const baseName = normalizeDemoName(part.name);
     const cfg = DEFAULT_DEMO_CONFIG[baseName];
     if (!cfg) continue;
 
@@ -684,6 +733,7 @@ function applyDefaultDemoConfiguration() {
     // whatever's below) — matching the physically-verified stacking order
     // of this specific file (pressurant tanks on top, feeding down through
     // propellant tanks and channels into the chamber at the bottom).
+    if (applyDemoPorts(part, baseName)) { applied++; continue; }
     const candidates = detectOpenings(part);
     const top = candidates.slice(0, cfg.openingCount);
     if (cfg.openingCount === 1) {
@@ -1497,7 +1547,7 @@ function runSealCheck() {
   const exits = [], entrances = [];
   for (const part of state.parts) {
     for (const o of part.openings) {
-      if (o.role === 'exit' || o.role === 'nozzle') exits.push({ part, o });
+      if (o.role === 'exit') exits.push({ part, o });      // the nozzle opens to the air by design: nothing to seal it against
       if (o.role === 'entrance') entrances.push({ part, o });
     }
   }
@@ -1543,6 +1593,7 @@ function runSealCheck() {
 // propellant tanks never actually reached the nozzle, only ones that
 // started directly inside the chamber did.
 const MAX_WAYPOINTS = 10;
+const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture short: 16384 particles = 1024 lines)
 // particleSystem / particleSplatMaterial are declared near the floor-heat
 // system above (they're referenced during initial setup).
 
@@ -1724,8 +1775,10 @@ const PARTICLE_SHADER_CORE = `
   varying float vProgress;
 
   vec4 sampleWaypoint(float row, float w) {
-    float u = (w + 0.5) / ${MAX_WAYPOINTS}.0;
-    float v = (row + 0.5) / uTexHeight;
+    // particles are packed ${TEX_COLS} per texture line, so thousands of them never exceed a phone's max texture height
+    float col = mod(row, ${TEX_COLS}.0), line = floor(row / ${TEX_COLS}.0);
+    float u = (col * ${MAX_WAYPOINTS}.0 + w + 0.5) / (${MAX_WAYPOINTS}.0 * ${TEX_COLS}.0);
+    float v = (line + 0.5) / uTexHeight;
     return texture2D(uWaypoints, vec2(u, v)); // xyz = position, w = containment radius
   }
   vec3 computeParticlePosition() {
@@ -1746,7 +1799,10 @@ const PARTICLE_SHADER_CORE = `
     vec3 refUp = abs(tangent.y) > 0.98 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     vec3 right = normalize(cross(tangent, refUp));
     vec3 up2 = normalize(cross(right, tangent));
-    return centerPos + (aLatU * right + aLatV * up2) * rad;
+    // Fluid turbulence: swirling eddies that grow as the stream travels, so it billows instead of marching in lanes.
+    float ph = aPhase * 6.2831;
+    vec3 eddy = vec3(sin(progress * 41.0 + ph * 3.0), cos(progress * 33.0 + ph * 5.0), sin(progress * 27.0 + ph * 2.0));
+    return centerPos + (aLatU * right + aLatV * up2) * rad + eddy * rad * 0.10 * progress;
   }
 `;
 
@@ -1797,7 +1853,7 @@ function buildParticleSystem() {
 
   const links = buildFlowGraph();
   state.currentLinks = links; // kept for the per-frame thermal tint update
-  const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 300;
+  const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
   const containers = state.parts.filter(p => p.type === 'container' || p.type === 'chamber');
 
   const waypointData = []; // MAX_WAYPOINTS * 3 floats per particle (xyz)
@@ -1843,12 +1899,13 @@ function buildParticleSystem() {
   // traveling as a bare line through empty space — a cylindrical collision-
   // proxy approximation rather than true per-triangle mesh collision, which
   // would be far too costly for real-time particle counts in a browser.
-  const texWidth = MAX_WAYPOINTS, texHeight = count;
+  const texWidth = MAX_WAYPOINTS * TEX_COLS, texHeight = Math.ceil(count / TEX_COLS);
   const data = new Float32Array(texWidth * texHeight * 4);
   for (let p = 0; p < count; p++) {
+    const line = Math.floor(p / TEX_COLS), colOff = (p % TEX_COLS) * MAX_WAYPOINTS;
     for (let w = 0; w < MAX_WAYPOINTS; w++) {
       const srcIdx = (p * MAX_WAYPOINTS + w) * 3;
-      const dstIdx = (p * texWidth + w) * 4;
+      const dstIdx = (line * texWidth + colOff + w) * 4;
       data[dstIdx]   = waypointData[srcIdx];
       data[dstIdx+1] = waypointData[srcIdx+1];
       data[dstIdx+2] = waypointData[srcIdx+2];
@@ -1876,7 +1933,7 @@ function buildParticleSystem() {
       uTime: { value: 0 },
       uWaypoints: { value: waypointTex },
       uTexHeight: { value: texHeight },
-      uSize: { value: 6.0 },
+      uSize: { value: 1.5 },
     },
     vertexShader: PARTICLE_VERTEX_SHADER,
     fragmentShader: THERMAL_RAMP_GLSL + `
@@ -1884,10 +1941,12 @@ function buildParticleSystem() {
       varying float vProgress;
       void main() {
         vec2 c = gl_PointCoord - vec2(0.5);
-        if (length(c) > 0.5) discard;
+        float d = length(c) * 2.0;
+        if (d > 1.0) discard;
         vec3 col = thermalRamp(vThermal);
-        float edge = smoothstep(0.5, 0.35, length(c));
-        gl_FragColor = vec4(col, edge);
+        // soft, fine droplet: bright core, feathered edge (reads as spray/mist rather than hard dots)
+        float a = pow(1.0 - d, 1.6);
+        gl_FragColor = vec4(col * (1.0 + 0.5 * (1.0 - d)), a * 0.85);
       }
     `,
     transparent: true, depthWrite: false,
@@ -1964,6 +2023,25 @@ atmoPsiEl.oninput = () => {
   atmoPresetEl.value = 'custom';
 };
 
+// While the simulation runs the vessels turn glass-clear so the fluid filling them is visible; restored on Stop.
+function setPartsGlass(on) {
+  for (const part of state.parts) {
+    if (!part.type) continue;
+    for (const m of part.meshes) {
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mt of mats) {
+        if (!mt) continue;
+        if (on) {
+          if (!mt.userData._glass) mt.userData._glass = { t: mt.transparent, o: mt.opacity, w: mt.depthWrite };
+          mt.transparent = true; mt.opacity = Math.min(mt.opacity, 0.32); mt.depthWrite = false; mt.needsUpdate = true;
+        } else if (mt.userData._glass) {
+          mt.transparent = mt.userData._glass.t; mt.opacity = mt.userData._glass.o; mt.depthWrite = mt.userData._glass.w; mt.userData._glass = null; mt.needsUpdate = true;
+        }
+      }
+    }
+  }
+}
+
 // Play / Simulate
 const playBtn = document.getElementById('playBtn');
 playBtn.onclick = () => {
@@ -1984,10 +2062,12 @@ playBtn.onclick = () => {
     exitFlowMode();
     buildParticleSystem();
     state.simRunning = true;
+    setPartsGlass(true);
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
   } else {
     state.simRunning = false;
+    setPartsGlass(false);
     playBtn.textContent = '▶ Simulate';
     playBtn.classList.remove('playing');
   }
