@@ -382,11 +382,20 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
       </div>
       <div class="card-body"><div class="card-inner">
         <div class="info-text" style="margin-bottom:10px">
-          Free upscaling via <b>image-upscaling.net</b>. Upload any image, pick a scale &amp; model, and download the enhanced result. Daily free quota applies — no account needed, just a random client ID.
+          AI super-resolution. <b>On-device</b> runs ESRGAN on your own GPU: free, unlimited, private, no key. <b>Cloud</b> uses image-upscaling.net (daily free quota) and falls back to on-device if it fails or the result is too large.
         </div>
 
-        <!-- Client ID -->
+        <!-- Engine -->
         <div class="field-row">
+          <div class="field"><div class="field-label">Engine</div>
+            <select id="usc-engine" onchange="uscEngineUI()"><option value="local" selected>On-device AI (unlimited)</option><option value="cloud">Cloud · image-upscaling.net</option></select>
+          </div>
+          <div class="field usc-local"><div class="field-label">AI model</div>
+            <select id="usc-size"><option value="slim">Fast (slim)</option><option value="medium" selected>Balanced (medium)</option><option value="thick">Best detail (thick · 28 MB)</option></select>
+          </div>
+        </div>
+        <!-- Client ID -->
+        <div class="field-row usc-cloud">
           <div class="field" style="flex:1">
             <div class="field-label">Client ID <span style="color:var(--text3);font-size:7px">(32-char random)</span></div>
             <input type="text" id="usc-client-id" maxlength="48" placeholder="auto-generated…" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:9px;padding:6px 8px;border-radius:var(--radius-sm);outline:none">
@@ -402,10 +411,12 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
             <div class="field-label">Scale</div>
             <select id="usc-scale">
               <option value="2">2×</option>
+              <option value="3" class="usc-local-opt">3×</option>
               <option value="4" selected>4×</option>
+              <option value="8" class="usc-local-opt">8×</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field usc-cloud">
             <div class="field-label">Model</div>
             <select id="usc-model">
               <option value="diffuser">diffuser (small)</option>
@@ -416,7 +427,7 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
         </div>
 
         <!-- Face enhance toggle -->
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div class="usc-cloud" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="checkbox" id="usc-face" style="accent-color:var(--pink)">
           <label for="usc-face" style="font-size:9px;color:var(--text2);letter-spacing:1px;cursor:pointer">FACE ENHANCE (plus/general only)</label>
         </div>
@@ -437,6 +448,7 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
 
         <!-- Download button (shown when ready) -->
         <button class="btn btn-pink btn-full" id="usc-dl-btn" onclick="uscDownload()" style="display:none;margin-top:8px">⬇ Download Upscaled Image</button>
+        <button class="btn btn-ghost btn-full" id="usc-use-btn" onclick="uscUseAsCanvas()" style="display:none;margin-top:6px">↺ Use result as the canvas image</button>
 
         <!-- Canvas image is used automatically -->
       </div></div>
@@ -474,7 +486,7 @@ select:focus,input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,21
   <div class="drop-zone" id="img-drop">
     <div class="drop-icon"><img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/fraxlogo.png" style="width:48px;height:48px;border-radius:50%;opacity:.5"></div>
     <div class="drop-label">Drop <b>image</b> or <b>.frax</b> file</div>
-    <input type="file" accept=".png,.jpg,.jpeg,.bmp,.tga,.webp,.frax" id="img-input">
+    <input type="file" accept=".png,.jpg,.jpeg,.bmp,.tga,.webp,.gif,.avif,.jxl,.frax" id="img-input">
   </div>
   <div id="img-preview-wrap">
     <div class="meta-grid" id="img-info"></div>
@@ -590,8 +602,9 @@ function exportViewAs(fmt){if(!vpInited)return;const id=captureViewport(renderSi
 // Image Converter
 function loadImageFile(file){
   const ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='jxl'){if(window.FraxJXLStudio)FraxJXLStudio.importToFrax(file);else setStatus('img-status','JPEG XL engine still loading — try again in a moment');return}
   if(ext==='frax'){const r=new FileReader();r.onload=e=>{try{const f=decodeFrax(e.target.result);currentImageData=f.imageData;currentFraxMeta=f;showImagePreview(f.imageData,{name:file.name,size:file.size,format:'FRAX v'+f.version,width:f.width,height:f.height,channels:f.channels.map(c=>CH_NAMES[c]).join(', '),compression:['Raw','RLE','Deflate'][f.compression],bitDepth:f.bitDepth+'-bit'});setStatus('img-status',`Decoded FRAX: ${f.width}×${f.height}`)}catch(e){setStatus('img-status','Error: '+e.message)}};r.readAsArrayBuffer(file);return}
-  const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);currentImageData=ctx.getImageData(0,0,img.width,img.height);currentFraxMeta=null;showImagePreview(currentImageData,{name:file.name,size:file.size,format:ext.toUpperCase(),width:img.width,height:img.height,channels:checkAlpha(currentImageData.data)?'R, G, B, A':'R, G, B',compression:'N/A',bitDepth:'8-bit'});setStatus('img-status',`Loaded ${ext.toUpperCase()}: ${img.width}×${img.height}`);URL.revokeObjectURL(img.src)};img.src=URL.createObjectURL(file);
+  const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);currentImageData=ctx.getImageData(0,0,img.width,img.height);currentFraxMeta=null;file.arrayBuffer().then(b=>{if(window.FraxJXLStudio)FraxJXLStudio.rememberSource(file,new Uint8Array(b),img.width,img.height)}).catch(()=>{});showImagePreview(currentImageData,{name:file.name,size:file.size,format:ext.toUpperCase(),width:img.width,height:img.height,channels:checkAlpha(currentImageData.data)?'R, G, B, A':'R, G, B',compression:'N/A',bitDepth:'8-bit'});setStatus('img-status',`Loaded ${ext.toUpperCase()}: ${img.width}×${img.height}`);URL.revokeObjectURL(img.src)};img.src=URL.createObjectURL(file);
 }
 function showImagePreview(imgData,info){
   document.getElementById('img-preview-wrap').style.display='block';document.getElementById('img-drop').style.display='none';
@@ -660,11 +673,11 @@ function loadGLBDirect(file,additive){
 // Image management
 function triggerImgUpload(){
   clearImage();
-  const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.bmp,.tga,.webp,.frax';
+  const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.bmp,.tga,.webp,.gif,.avif,.jxl,.frax';
   inp.onchange=e=>{if(e.target.files[0])loadImageFile(e.target.files[0])};inp.click();
 }
 function clearImage(){
-  currentImageData=null;currentFraxMeta=null;
+  currentImageData=null;currentFraxMeta=null;window._fraxSrcMeta=null;
   document.getElementById('img-preview-wrap').style.display='none';
   document.getElementById('img-drop').style.display='';
   document.getElementById('channel-row').innerHTML='';
@@ -749,7 +762,53 @@ function uscSyncCanvas() {
   }
 }
 
-async function uscUpload() {
+function uscEngineUI(){
+  const cloud=document.getElementById('usc-engine').value==='cloud';
+  document.querySelectorAll('.usc-cloud').forEach(e=>e.style.display=cloud?'':'none');
+  document.querySelectorAll('.usc-local').forEach(e=>e.style.display=cloud?'none':'');
+  document.querySelectorAll('.usc-local-opt').forEach(o=>{o.disabled=cloud;});
+  const sc=document.getElementById('usc-scale'); if(cloud&&(sc.value==='3'||sc.value==='8'))sc.value='4';
+}
+setTimeout(uscEngineUI,0);
+let uscResultBlob=null;
+function uscShowResult(blob,name,note){
+  if(uscResultUrl&&String(uscResultUrl).startsWith('blob:'))URL.revokeObjectURL(uscResultUrl);
+  uscResultBlob=blob; uscResultUrl=URL.createObjectURL(blob); uscResultName=name;
+  uscProgress(100); uscStatus('✓ Upscaling complete'+(note?' — '+note:''),'var(--green)');
+  const dl=document.getElementById('usc-dl-btn'); dl.style.display=''; dl.textContent='⬇ Download '+name+' ('+(blob.size/1048576).toFixed(1)+' MB)';
+  document.getElementById('usc-use-btn').style.display='';
+  document.getElementById('usc-upload-btn').disabled=false; setTimeout(()=>uscProgress(null),1200);
+}
+async function uscUseAsCanvas(){
+  if(!uscResultBlob)return;
+  try{const bmp=await createImageBitmap(uscResultBlob);const c=document.createElement('canvas');c.width=bmp.width;c.height=bmp.height;c.getContext('2d').drawImage(bmp,0,0);
+    currentImageData=c.getContext('2d').getImageData(0,0,c.width,c.height);currentFraxMeta=null;window._fraxSrcMeta=null;
+    showImagePreview(currentImageData,{name:uscResultName||'upscaled.png',size:uscResultBlob.size,format:'PNG (upscaled)',width:c.width,height:c.height,channels:checkAlpha(currentImageData.data)?'R, G, B, A':'R, G, B',compression:'N/A',bitDepth:'8-bit'});
+    uscSyncCanvas(); uscStatus('Result is now the canvas image — export it in any format, including .jxl','var(--green)');
+  }catch(e){uscStatus('Could not load the result: '+e.message,'#ff6b6b');}
+}
+async function uscUploadLocal(reason){
+  const scale=+document.getElementById('usc-scale').value, size=document.getElementById('usc-size').value;
+  document.getElementById('usc-upload-btn').disabled=true; document.getElementById('usc-dl-btn').style.display='none'; document.getElementById('usc-use-btn').style.display='none';
+  uscProgress(3); uscStatus((reason?reason+' ':'')+'Loading the AI model (first time only)…','var(--gold)');
+  try{
+    if(!window.FraxUpscale)throw new Error('upscaler script did not load');
+    const t0=performance.now();
+    const r=await FraxUpscale.upscaleLocal(currentImageData,scale,size,p=>{uscProgress(5+p*93);uscStatus('Upscaling on your device… '+Math.round(p*100)+'%','var(--pink)');});
+    const name='canvas_'+r.width+'x'+r.height+'_x'+scale+'.png';
+    uscShowResult(r.blob,name,r.width+'×'+r.height+' in '+((performance.now()-t0)/1000).toFixed(1)+' s'+(r.shrunk?' (input reduced so the result stays under 16 MP, the largest image phones can show)':''));
+  }catch(err){uscProgress(null);uscStatus('Error: '+err.message,'#ff6b6b');document.getElementById('usc-upload-btn').disabled=false;}
+}
+async function uscUpload(){
+  if(!currentImageData){uscStatus('No image on canvas — load one in the Converter first');return;}
+  const engine=document.getElementById('usc-engine').value, scale=+document.getElementById('usc-scale').value;
+  if(engine!=='cloud')return uscUploadLocal();
+  // the proxy returns the result inside one Apps Script response, which fails for big outputs: go on-device instead
+  if(currentImageData.width*currentImageData.height*scale*scale>8e6)
+    return uscUploadLocal('That result ('+currentImageData.width*scale+'×'+currentImageData.height*scale+') is too large for the cloud proxy —');
+  return uscUploadCloud();
+}
+async function uscUploadCloud() {
   const clientId = uscGetId();
   if (!currentImageData) { uscStatus('No image on canvas — load one in the Converter first'); return; }
 
@@ -797,7 +856,7 @@ async function uscUpload() {
     });
 
     if (!uploadResp.ok) throw new Error('Proxy upload failed: HTTP ' + uploadResp.status);
-    const result = await uploadResp.json();
+    const result = await uscJson(uploadResp);
     if (result.error) throw new Error(result.error);
     if (result.status !== 200) throw new Error('Upload rejected: HTTP ' + result.status);
 
@@ -811,10 +870,10 @@ async function uscUpload() {
 
   } catch (err) {
     uscProgress(null);
-    uscStatus('Error: ' + err.message, '#ff6b6b');
-    document.getElementById('usc-upload-btn').disabled = false;
+    uscUploadLocal('Cloud failed (' + err.message + ') — switching to on-device:');
   }
 }
+async function uscJson(resp){ const t=await resp.text(); try{ return JSON.parse(t); }catch(e){ throw new Error(/<html/i.test(t)?'the proxy timed out or the image was too large':'unexpected reply from the proxy'); } }
 
 async function uscPoll(clientId, originalFilename) {
   const maxWait = 180; // seconds
@@ -849,8 +908,7 @@ async function uscPoll(clientId, originalFilename) {
   }
 
   uscProgress(null);
-  uscStatus('Timed out — server may still be processing. Try again.', '#ffc93c');
-  document.getElementById('usc-upload-btn').disabled = false;
+  uscUploadLocal('Cloud timed out — switching to on-device:');
 }
 
 async function uscFetchResult(clientId) {
@@ -864,7 +922,7 @@ async function uscFetchResult(clientId) {
     const resp = await fetch(USC_PROXY, { method: 'POST', body: params });
     if (!resp.ok) throw new Error('Proxy download failed: ' + resp.status);
 
-    const data = await resp.json();
+    const data = await uscJson(resp);
     if (data.error) throw new Error(data.error);
 
     // Decode base64 image returned by proxy
@@ -874,19 +932,11 @@ async function uscFetchResult(clientId) {
     for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
     const blob = new Blob([byteArr], { type: contentType });
 
-    uscResultUrl = URL.createObjectURL(blob);
-    uscProgress(100);
-    uscStatus('✓ Upscaling complete!', 'var(--green)');
-    const dlBtn = document.getElementById('usc-dl-btn');
-    dlBtn.style.display = '';
-    dlBtn.textContent = '⬇ Download ' + (uscResultName || 'upscaled_image.png');
-    document.getElementById('usc-upload-btn').disabled = false;
-    setTimeout(() => uscProgress(null), 1200);
+    uscShowResult(blob, uscResultName || 'upscaled_image.png');
 
   } catch (e) {
     uscProgress(null);
-    uscStatus('Error downloading result: ' + e.message, '#ff6b6b');
-    document.getElementById('usc-upload-btn').disabled = false;
+    uscUploadLocal('Cloud download failed (' + e.message + ') — switching to on-device:');
   }
 }
 
@@ -1001,6 +1051,8 @@ function exportImageAsIco(){
 }
 // ── End ICO Export ────────────────────────────────────────────────────────────
 </script>
+<script src="frax-upscale.js" defer></script>
+<script src="jxl/frax-jxl-studio.js" defer></script>
 </body>
 </html>
 
