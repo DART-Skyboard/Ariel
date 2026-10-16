@@ -3,7 +3,8 @@
 #   · Save any render, Viewer or image as JPEG XL with every libjxl option (Image ▸ Save as JPEG XL…, Render menu)
 #   · Render animations straight into one animated .jxl, or pack every Ctrl F12 frame sequence into one too
 #   · Focus areas (regions of interest) from the camera's view of selected objects, tracked per frame
-#   · Digital Cinema: DCI presets, ISDCF naming, festival checks, 48 kHz/24-bit audio, DCP via DCP-o-matic
+#   · Digital Cinema: DCI presets, ISDCF naming, festival checks, built-in SMPTE 2K DCP writer (JPEG 2000 + MXF +
+#     CPL/PKL), or DCP-o-matic for 4K / Interop
 #   · Frax JXL: a JPEG XL encoder written in pure Python + numpy (jxl/), the default encoder of the render line
 # Works with EEVEE, Cycles and Workbench.  JPEG XL is ISO/IEC 18181; the Python encoder follows the reference
 # implementation libjxl (© the JPEG XL Project Authors, BSD-3-Clause).  libjxl itself is also bundled as an optional
@@ -12,7 +13,7 @@ bl_info = {
     "name": "Frax JXL DCP Render",
     "blender": (5, 2, 0),
     "category": "Render",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "maintainer": "Radical Deepscale <justin@dartmeadow.com>",
     "description": "Render JPEG XL stills & animations (pure-Python JPEG XL encoder, or libjxl), and build festival-ready DCPs (EEVEE / Cycles)"
 }

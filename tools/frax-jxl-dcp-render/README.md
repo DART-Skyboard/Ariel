@@ -43,9 +43,15 @@ Edit ▸ Preferences ▸ Get Extensions ▸ ⌄ ▸ **Install from Disk…** →
 ## Digital Cinema (DCP)
 Output Properties ▸ **Digital Cinema (DCP)**: 2K / 4K, Flat 1.85 / Scope 2.39 / Full 1.90, 24–60 fps, SMPTE or Interop,
 stereo / 5.1 / no audio, ISDCF name builder, festival checks, **Apply DCP Format**, **Render DCP**.
-A DCP is JPEG 2000 in MXF (that is what cinema servers and festival QC accept) — the extension renders a 16-bit TIFF
-master and 48 kHz / 24-bit audio, then builds the DCP with the free **DCP-o-matic** (install from dcpomatic.com).
-A lossless 16-bit .jxl master can be written alongside. A built-in JPEG 2000 / MXF writer is planned.
+
+**Builder ▸ Built-in** (default) — nothing to install. Blender renders a 16-bit TIFF master and a 48 kHz / 24-bit
+mixdown; each frame is fitted into the DCI container, converted to X'Y'Z' (12-bit, gamma 2.6) and written as a DCI
+cinema-profile JPEG 2000 codestream by Blender's own OpenJPEG; the extension then writes the SMPTE MXF track files
+(ST 429-4 picture, ST 382 sound with ST 377-4 MCA 5.1 labels), the CPL with ISDCF composition metadata (Bv2.1),
+PKL, ASSETMAP and VOLINDEX. Output: unencrypted SMPTE 2K at ≈125 Mbit/s, verified with asdcplib and ClairMeta
+(78/78 checks). The MXF layout follows CineCert's asdcplib.
+
+**Builder ▸ DCP-o-matic** — for 4K, Interop or encryption: drives the free DCP-o-matic (dcpomatic.com) command line.
 
 ## Rebuild
 `build.sh` downloads the wasmtime wheels and builds the per-platform zips with Blender's extension builder.

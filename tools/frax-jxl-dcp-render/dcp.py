@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Digital Cinema Package (DCP) — festival / cinema delivery.
 # A DCP is JPEG 2000 picture + PCM audio in MXF files with CPL/PKL/ASSETMAP XML (SMPTE ST 429 / DCI spec).
-# Engine 1 (now): renders a DCI-correct 16-bit TIFF master + 48 kHz/24-bit WAV, then drives DCP-o-matic's
-# command-line tools (free, GPL, https://dcpomatic.com) to build an ISDCF-named SMPTE or Interop DCP.
-# Engine 2 (planned): built-in JPEG 2000 + MXF writer, no other install.
+# Both builders start from a 16-bit TIFF master + 48 kHz/24-bit WAV rendered by Blender:
+#   · Built-in (default): Blender's own JPEG 2000 writer (OpenJPEG, DCI cinema profile) + the Frax MXF / CPL / PKL
+#     writer in dcpwriter.py → SMPTE 2K DCP, nothing else to install.
+#   · DCP-o-matic (free, GPL, https://dcpomatic.com) through its command-line tools: also 4K and Interop.
 import datetime
 import os
 import shutil
 import subprocess
 import sys
 import threading
+
+import numpy as np
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
@@ -25,6 +28,9 @@ CONTENT_TYPES = [("SHR", "Short", ""), ("FTR", "Feature", ""), ("TLR", "Trailer"
 
 
 class FRAXDCP_Settings(bpy.types.PropertyGroup):
+    builder: EnumProperty(name="DCP builder", default="BUILTIN", items=[
+        ("BUILTIN", "Built-in", "Blender's JPEG 2000 (DCI cinema profile) + Frax MXF/CPL writer: SMPTE 2K, no install"),
+        ("DCPOMATIC", "DCP-o-matic", "The free DCP-o-matic command-line tools: also 4K and Interop")])
     container: EnumProperty(name="Aspect", default="FLAT", items=[
         ("FLAT", "Flat 1.85", "1998×1080 / 3996×2160 — most films and shorts"),
         ("SCOPE", "Scope 2.39", "2048×858 / 4096×1716 — widescreen"),
@@ -100,9 +106,38 @@ def checks(scene):
         out.append((False, "Bit rate above the DCI 250 Mbit/s limit"))
     secs = (scene.frame_end - scene.frame_start + 1) / max(fps, 1)
     out.append((True, "Length %d:%02d (%d frames)" % (secs // 60, secs % 60, scene.frame_end - scene.frame_start + 1)))
-    out.append((dcpomatic_tool("dcpomatic2_create") is not None, "DCP-o-matic found" if dcpomatic_tool("dcpomatic2_create") else
-                "DCP-o-matic not found — install it (free) from dcpomatic.com or set its folder"))
+    if d.builder == "BUILTIN":
+        out.append(builtin_ok(d))
+        if int(d.fps) > 48:
+            out.append((False, "%s fps pushes JPEG 2000 above the DCI 250 Mbit/s limit — 24/25/30/48 are safe" % d.fps))
+    else:
+        out.append((dcpomatic_tool("dcpomatic2_create") is not None, "DCP-o-matic found" if dcpomatic_tool("dcpomatic2_create") else
+                    "DCP-o-matic not found — install it (free) from dcpomatic.com or set its folder"))
     return out
+
+
+def wait_for_file(path, timeout=300):
+    """The audio mixdown runs as a Blender job: wait until the WAV exists and has stopped growing."""
+    import time
+    t0, last = time.time(), -1
+    while time.time() - t0 < timeout:
+        if os.path.exists(path):
+            n = os.path.getsize(path)
+            if n == last and n > 44:
+                return True
+            last = n
+        time.sleep(0.5)
+    return os.path.exists(path)
+
+
+def builtin_ok(d):
+    if d.resolution != "2K":
+        return False, "Built-in builder makes 2K DCPs — choose 2K, or the DCP-o-matic builder for 4K"
+    if d.standard != "SMPTE":
+        return False, "Built-in builder makes SMPTE DCPs — choose SMPTE, or DCP-o-matic for Interop"
+    if d.encrypt:
+        return False, "Built-in builder writes unencrypted DCPs (what festivals ask for)"
+    return True, "Built-in builder: SMPTE 2K, JPEG 2000 ≈125 Mbit/s, nothing to install"
 
 
 # ── locating DCP-o-matic ───────────────────────────────────────────────────────────────────────────────────────
@@ -151,6 +186,7 @@ class DCPJob:
         if wav:
             self.cmd_create += [wav]
         self.cmd_cli = [dcpomatic_tool("dcpomatic2_cli"), film_dir]
+        self.wav_path = wav
         self.film_dir = film_dir
         self.master_dir = master_dir if not d.keep_master else None
         self.log = []
@@ -163,6 +199,8 @@ class DCPJob:
 
     def _run(self):
         try:
+            if self.wav_path:
+                wait_for_file(self.wav_path)
             for cmd, label in ((self.cmd_create, "Setting up the DCP project"), (self.cmd_cli, "Encoding JPEG 2000 / writing MXF")):
                 if not cmd[0]:
                     raise RuntimeError("DCP-o-matic is not installed (dcpomatic.com) or its folder is not set")
@@ -193,7 +231,7 @@ class DCPJob:
         finally:
             self.done = True
             try:
-                with open(os.path.join(self.film_dir, "frax-dcp-log.txt"), "w", encoding="utf-8") as f:
+                with open(self.film_dir.rstrip("/\\") + "_log.txt", "w", encoding="utf-8") as f:
                     f.write("\n".join(self.log))
             except Exception:
                 pass
@@ -201,6 +239,199 @@ class DCPJob:
     def cancel(self):
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
+
+
+# ── built-in builder: TIFF master → JPEG 2000 (Blender) → MXF + CPL/PKL/ASSETMAP (dcpwriter) ─────────────────────
+IMAGE_EXTS = (".tif", ".tiff", ".exr", ".png", ".jpg", ".jpeg", ".dpx", ".bmp", ".tga")
+
+
+class BuiltinDCPJob:
+    """Runs on Blender's main thread, a few frames per timer tick (the JPEG 2000 writer is Blender's), so the UI
+    stays responsive; MXF hashing and the XML are finished on a worker thread."""
+
+    def __init__(self, scene, master_dir, wav, film_dir, delete_master=False):
+        from . import dcpwriter
+        self.W = dcpwriter
+        d = scene.frax_dcp
+        self.scene_name = scene.name
+        self.files = sorted(os.path.join(master_dir, f) for f in os.listdir(master_dir)
+                            if f.lower().endswith(IMAGE_EXTS) and not f.startswith("."))
+        self.master_dir = master_dir if delete_master else None
+        self.wav, self.film_dir = wav, film_dir
+        self.name = os.path.basename(film_dir.rstrip("/\\"))
+        self.w, self.h, _ = CONTAINERS[(d.container, "2K")]
+        self.fps = int(d.fps)
+        self.meta = dict(kind=d.content_type, territory=d.territory.upper()[:3] or "US", facility=d.facility,
+                         audio=d.audio, title=d.title or self.name, issuer=d.studio or "Radical Deepscale",
+                         lang=(d.audio_lang or "en").lower()[:3])
+        self.status, self.progress, self.done, self.ok, self.cancelled = "Preparing…", 0.0, False, False, False
+        self.i = 0
+        self.pic = None
+        self.thread = None
+        self.error = None
+        if not self.files:
+            self._fail("no frames found in " + master_dir)
+            return
+        os.makedirs(film_dir, exist_ok=True)
+        self.tmp = os.path.join(film_dir, ".frax_frame.j2c")
+        self._setup(scene)
+        self.pic = self.W.TrackFile(os.path.join(film_dir, self.name + "_pic.mxf"), "picture", self.fps)
+        if bpy.app.background:                               # no event loop: run to the end right here
+            import time
+            while True:
+                r = self._tick()
+                if r is None:
+                    break
+                time.sleep(min(r, 0.05))
+        else:
+            bpy.app.timers.register(self._tick, first_interval=0.05)
+
+    def _setup(self, scene):
+        st, vs = scene.render.image_settings, scene.view_settings
+        self.keep = {"st": {k: getattr(st, k) for k in ("file_format", "color_mode", "color_depth", "quality")},
+                     "vs": {k: getattr(vs, k) for k in ("view_transform", "look", "exposure", "gamma", "use_curve_mapping")}}
+        for k in ("jpeg2k_codec", "use_jpeg2k_cinema_preset", "use_jpeg2k_cinema_48", "use_jpeg2k_ycc"):
+            self.keep["st"][k] = getattr(st, k)
+        st.file_format = "JPEG2000"
+        st.jpeg2k_codec = "J2K"
+        st.color_mode = "RGB"
+        st.color_depth = "12"
+        st.use_jpeg2k_cinema_preset = True
+        st.use_jpeg2k_cinema_48 = True             # half the 24 fps budget: ≈125 Mbit/s, inside DCI's safe limit
+        st.use_jpeg2k_ycc = False
+        vs.view_transform, vs.look, vs.exposure, vs.gamma, vs.use_curve_mapping = "Standard", "None", 0.0, 1.0, False
+        self.img = bpy.data.images.new(".frax_dcp_frame", self.w, self.h, alpha=False, float_buffer=True)
+        self.img.colorspace_settings.name = "Non-Color"     # X'Y'Z' code values go straight to the codestream
+
+    def _restore(self):
+        scene = bpy.data.scenes.get(self.scene_name)
+        if scene and getattr(self, "keep", None):
+            st, vs = scene.render.image_settings, scene.view_settings
+            try:
+                st.file_format = self.keep["st"]["file_format"]
+            except Exception:
+                pass
+            for obj, kv in ((st, self.keep["st"]), (vs, self.keep["vs"])):
+                for k, v in kv.items():
+                    try:
+                        setattr(obj, k, v)
+                    except Exception:
+                        pass
+        if getattr(self, "img", None):
+            try:
+                bpy.data.images.remove(self.img)
+            except Exception:
+                pass
+            self.img = None
+
+    def _read(self, path):
+        from . import capture, frames
+        try:
+            return frames.read_any(path)
+        except ValueError:
+            return capture.load_file_pixels(path)          # PNG / DPX / JPEG …: Blender reads it (not inside a render)
+
+    def _tick(self):
+        if self.cancelled:
+            self._abort("cancelled")
+            return None
+        if self.thread is not None:
+            if self.thread.is_alive():
+                return 0.2
+            self._finish()
+            return None
+        import time
+        t0 = time.time()
+        scene = bpy.data.scenes.get(self.scene_name)
+        try:
+            while self.i < len(self.files) and time.time() - t0 < 0.25:
+                arr, linear = self._read(self.files[self.i])
+                rgb = self.W.fit_into(arr[..., :3], self.w, self.h)
+                xyz = self.W.srgb_to_xyz12(rgb, linear)
+                px = np.ones((self.h, self.w, 4), np.float32)
+                px[..., :3] = xyz[::-1]
+                self.img.pixels.foreach_set(px.ravel())
+                self.img.save_render(filepath=self.tmp, scene=scene)
+                with open(self.tmp, "rb") as f:
+                    self.pic.write_frame(f.read())
+                self.i += 1
+            self.progress = 0.9 * self.i / len(self.files)
+            self.status = "JPEG 2000 frame %d / %d" % (self.i, len(self.files))
+        except Exception as e:                                       # noqa: BLE001
+            self._abort("frame %d: %s" % (self.i + 1, e))
+            return None
+        if self.i < len(self.files):
+            return 0.01
+        self._restore()
+        self.status = "Writing MXF, CPL, PKL and ASSETMAP…"
+        self.thread = threading.Thread(target=self._wrap, daemon=True)
+        self.thread.start()
+        return 0.2
+
+    def _wrap(self):
+        try:
+            W, n = self.W, self.pic.frames
+            self.pic.close()
+            snd = None
+            if self.wav:
+                wait_for_file(self.wav)
+            if self.wav and os.path.exists(self.wav):
+                snd = W.TrackFile(os.path.join(self.film_dir, self.name + "_snd.mxf"), "sound", self.fps, channels=6,
+                                  language=self.meta["lang"])
+                for blk in W.wav_frames(self.wav, self.fps, n, self.meta["audio"]):
+                    snd.write_frame(blk)
+                snd.close()
+            m = self.meta
+            W.finish_package(self.film_dir, self.name, m["kind"], self.pic, snd, self.fps, self.w, self.h,
+                             issuer=m["issuer"], territory=m["territory"], facility=m["facility"], audio=m["audio"],
+                             title=m["title"])
+        except Exception as e:                                       # noqa: BLE001
+            self.error = str(e)
+
+    def _finish(self):
+        try:
+            os.remove(self.tmp)
+        except OSError:
+            pass
+        if self.error:
+            self._fail(self.error)
+            return
+        if self.master_dir:
+            shutil.rmtree(self.master_dir, ignore_errors=True)
+        self.ok, self.done, self.progress = True, True, 1.0
+        self.status = "DCP ready in " + self.film_dir
+        self._log()
+
+    def _abort(self, why):
+        self._restore()
+        try:
+            if self.pic and not self.pic.f.closed:
+                self.pic.f.close()
+        except Exception:
+            pass
+        self._fail(why)
+
+    def _fail(self, why):
+        self.status = "DCP failed: " + why
+        self.done = True
+        self._log()
+
+    def _log(self):
+        try:
+            with open(self.film_dir.rstrip("/\\") + "_log.txt", "w", encoding="utf-8") as f:
+                f.write("Built-in DCP builder (Frax JXL DCP Render)\n%s\nframes: %d\n" % (self.status, self.i))
+        except Exception:
+            pass
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def make_job(scene, master_dir, wav, film_dir):
+    d = scene.frax_dcp
+    if d.builder == "BUILTIN" and builtin_ok(d)[0]:
+        return BuiltinDCPJob(scene, master_dir, wav, film_dir, delete_master=not d.keep_master)
+    return DCPJob(scene, master_dir, wav, film_dir)
 
 
 classes = (FRAXDCP_Settings,)

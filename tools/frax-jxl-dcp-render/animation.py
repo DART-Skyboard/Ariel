@@ -184,7 +184,7 @@ def _finalise():
             shutil.rmtree(s.temp_dir, ignore_errors=True)
     if s.kind == "dcp" and scene and not s.cancelled:
         info = s.dcp_info
-        job = dcp.DCPJob(scene, info["master"], info.get("wav"), info["film"])
+        job = dcp.make_job(scene, info["master"], info.get("wav"), info["film"])
         dcp.DCPJob.current = job
         bpy.app.timers.register(_dcp_poll, first_interval=0.5)
         msg.append("Master rendered — building the DCP…")

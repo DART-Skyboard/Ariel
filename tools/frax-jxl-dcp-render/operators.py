@@ -279,7 +279,7 @@ class FRAXDCP_OT_apply_format(bpy.types.Operator):
 
 
 class FRAXDCP_OT_render(bpy.types.Operator):
-    """Render a DCI master (16-bit TIFF + 48 kHz/24-bit WAV) and build a festival-ready DCP with DCP-o-matic"""
+    """Render a DCI master (16-bit TIFF + 48 kHz/24-bit WAV) and build a festival-ready DCP (built-in or DCP-o-matic)"""
     bl_idname = "frax_dcp.render"
     bl_label = "Render DCP"
 
@@ -289,8 +289,7 @@ class FRAXDCP_OT_render(bpy.types.Operator):
         if animation.SESSION is not None:
             self.report({"ERROR"}, "A JPEG XL / DCP render is already running")
             return {"CANCELLED"}
-        if not dcp.dcpomatic_tool("dcpomatic2_create"):
-            self.report({"ERROR"}, "DCP-o-matic not found — install it free from dcpomatic.com, or set its folder in the DCP panel")
+        if not _builder_ready(self, d):
             return {"CANCELLED"}
         if abs(scene.render.fps / scene.render.fps_base - int(d.fps)) > 1e-6:
             self.report({"ERROR"}, "Scene frame rate isn't %s fps — press Apply DCP Format first" % d.fps)
@@ -326,6 +325,18 @@ class FRAXDCP_OT_render(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _builder_ready(op, d):
+    if d.builder == "BUILTIN":
+        ok, msg = dcp.builtin_ok(d)
+        if not ok:
+            op.report({"ERROR"}, msg)
+        return ok
+    if not dcp.dcpomatic_tool("dcpomatic2_create"):
+        op.report({"ERROR"}, "DCP-o-matic not found — install it free from dcpomatic.com, or set its folder in the DCP panel")
+        return False
+    return True
+
+
 def _mixdown(ctx, scene, path, layout):
     ff = scene.render.ffmpeg
     keep = (ff.audio_mixrate, ff.audio_channels)
@@ -334,7 +345,7 @@ def _mixdown(ctx, scene, path, layout):
         ff.audio_channels = "SURROUND51" if layout == "51" else "STEREO"
         with ctx.temp_override(scene=scene):
             r = bpy.ops.sound.mixdown(filepath=path, check_existing=False, container="WAV", codec="PCM", format="S24", accuracy=1024)
-        return "FINISHED" in r and os.path.exists(path)
+        return "FINISHED" in r                     # Blender writes the file as a background job; the DCP builders wait for it
     except Exception as e:                                       # noqa: BLE001
         print("[Frax DCP] mixdown:", e)
         return False
@@ -351,8 +362,7 @@ class FRAXDCP_OT_build_from_folder(bpy.types.Operator, ImportHelper):
     def execute(self, ctx):
         scene = ctx.scene
         d = scene.frax_dcp
-        if not dcp.dcpomatic_tool("dcpomatic2_create"):
-            self.report({"ERROR"}, "DCP-o-matic not found — install it free from dcpomatic.com")
+        if not _builder_ready(self, d):
             return {"CANCELLED"}
         folder = os.path.dirname(self.filepath)
         name = dcp.isdcf_name(scene)
@@ -364,7 +374,7 @@ class FRAXDCP_OT_build_from_folder(bpy.types.Operator, ImportHelper):
                 wav = None
         keep = d.keep_master
         d.keep_master = True                                     # never delete frames we didn't make
-        job = dcp.DCPJob(scene, folder, wav, os.path.join(root, name))
+        job = dcp.make_job(scene, folder, wav, os.path.join(root, name))
         d.keep_master = keep
         dcp.DCPJob.current = job
         bpy.app.timers.register(animation._dcp_poll, first_interval=0.5)

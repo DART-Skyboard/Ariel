@@ -219,6 +219,7 @@ class FRAXDCP_PT_main(_Out, bpy.types.Panel):
         col.prop(d, "fit")
         col.prop(d, "standard")
         col.prop(d, "audio")
+        col.prop(d, "builder")
         l.operator("frax_dcp.apply_format", icon="CHECKMARK")
         box = l.box()
         box.label(text="Festival checks", icon="VIEWZOOM")
@@ -255,20 +256,24 @@ class FRAXDCP_PT_naming(_Out, bpy.types.Panel):
 
 
 class FRAXDCP_PT_advanced(_Out, bpy.types.Panel):
-    bl_label = "Encoding & DCP-o-matic"
+    bl_label = "Encoding"
     bl_parent_id = "FRAXDCP_PT_main"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, ctx):
         d, l = ctx.scene.frax_dcp, self.layout
         l.use_property_split = True
-        l.prop(d, "bitrate")
-        l.prop(d, "encrypt")
         l.prop(d, "keep_master")
-        l.prop(d, "dcpomatic_dir")
-        p = dcp.dcpomatic_tool("dcpomatic2_create")
-        l.label(text=("Using " + p) if p else "DCP-o-matic not found — free download: dcpomatic.com", icon="CHECKMARK" if p else "URL")
-        l.label(text="Built-in JPEG 2000 / MXF writer: coming in a later version", icon="INFO")
+        if d.builder == "BUILTIN":
+            col = l.column(align=True)
+            col.label(text="JPEG 2000: Blender's OpenJPEG, DCI 2K cinema profile, X'Y'Z' 12-bit", icon="INFO")
+            col.label(text="MXF (SMPTE 429-4 / 382, MCA 5.1) + CPL with ISDCF metadata, unencrypted")
+        else:
+            l.prop(d, "bitrate")
+            l.prop(d, "encrypt")
+            l.prop(d, "dcpomatic_dir")
+            p = dcp.dcpomatic_tool("dcpomatic2_create")
+            l.label(text=("Using " + p) if p else "DCP-o-matic not found — free download: dcpomatic.com", icon="CHECKMARK" if p else "URL")
 
 
 # ── menus ──────────────────────────────────────────────────────────────────────────────────────────────────────
