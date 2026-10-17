@@ -11,6 +11,10 @@ body{background:var(--bg);color:var(--fg);font:15px/1.45 "IBM Plex Sans",system-
 @media(max-width:760px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}}
 #stage{position:relative;background:var(--stage);border:1px solid var(--line);border-radius:6px;min-height:280px;overflow:hidden}
 #stage canvas{display:block;width:100%;height:100%}
+#bgmedia{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+#bgmedia>*{position:absolute;left:50%;top:50%;width:100%;height:100%;object-fit:cover;transform-origin:50% 50%}
+#stage canvas{position:relative}
+.swatches{display:flex;gap:4px;flex-wrap:wrap}.swatches i{width:22px;height:22px;border-radius:4px;border:1px solid var(--line)}
 #hint{position:absolute;inset:auto 10px 10px 10px;font-size:12px;color:var(--mute);pointer-events:none}
 .side{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:10px;overflow:auto;min-width:0}
 h1{font:600 17px "IBM Plex Mono",monospace;margin:0;letter-spacing:.02em}
@@ -23,6 +27,7 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .row{display:flex;gap:8px}.row>*{min-width:0}
 input[type=range]{width:100%;accent-color:var(--accent)}
 #status{font:12px "IBM Plex Mono",monospace;color:var(--mute);white-space:pre-wrap;word-break:break-word}
+[hidden]{display:none!important}
 .grp{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
 </style>
 <style>html{color-scheme:light dark}body{margin:0}</style>
@@ -32,7 +37,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
 </head><body>
 <div class="app">
-  <div id="stage"><div id="hint">Loading the live game build ... One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.</div></div>
+  <div id="stage"><div id="bgmedia"></div><div id="hint">Loading the live game build ... One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.</div></div>
   <div class="side">
     <h1>ARIEL RIG VIEWER</h1>
     <a href="/" style="font-size:12px;color:var(--accent)">&larr; radicaldeepscale.com</a>
@@ -42,7 +47,25 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <button id="loadgame" type="button" style="padding:11px 9px;font-size:15px">Reload from the live game</button>
       <div class="note">Everything here comes from the game's current main commit: Ariel, her animations, the strand hair solver (hair_strands.js), the skyboard models, and the game's own board materials, character setup, ride stance and pose layers, run from the game's index.html at that commit.</div>
       <div class="row"><select id="bsel" aria-label="Skyboard template"><option value="B">Skyboard B (game default)</option><option value="A">Skyboard A</option><option value="C">Skyboard C (21 parts)</option><option value="R">Ariel's board</option></select><button id="boardtoggle" class="alt" type="button">Board: on</button></div>
+      <div><label>Skyboard colours</label>
+        <div class="row"><button id="shuffle" type="button">New colour scheme</button></div>
+        <div class="row" style="margin-top:6px"><button id="prevscheme" class="alt" type="button">Previous</button><button id="resetscheme" class="alt" type="button">Default colours</button></div>
+        <div id="swatches" class="swatches" style="margin-top:6px" aria-label="Current board colours"></div>
+        <div class="note">Everyone starts on the game's default skyboard. Press for a new combination until you find one you like.</div></div>
       <div><label for="f-prof">Your board: profile save (.json)</label><input id="f-prof" type="file" accept=".json,application/json"><div class="note">The game keeps your board on dartmeadow.space; this page can't read it. Export a profile in the game and choose it here to see your colours.</div></div>
+    </div>
+    <div class="grp">
+      <label>Scene</label>
+      <div class="row"><select id="bgmode" aria-label="Background"><option value="default">Default view</option><option value="media">Image or video</option></select><button id="gridtoggle" class="alt" type="button">Grid: on</button></div>
+      <div id="bgctl" hidden style="display:flex;flex-direction:column;gap:8px">
+        <div><label for="f-bg">Background image or video</label><input id="f-bg" type="file" accept="image/*,video/*,.mp4,.m4v,.mov,.qt,.webm,.mkv,.3gp,.heic,.heif"></div>
+        <div><label for="bgx">Move left / right <span id="bgxv">0%</span></label><input id="bgx" type="range" min="-100" max="100" step="1" value="0"></div>
+        <div><label for="bgy">Move up / down <span id="bgyv">0%</span></label><input id="bgy" type="range" min="-100" max="100" step="1" value="0"></div>
+        <div><label for="bgs">Scale <span id="bgsv">1.00x</span></label><input id="bgs" type="range" min="0.2" max="4" step="0.01" value="1"></div>
+        <div><label for="bgr">Rotate <span id="bgrv">0°</span></label><input id="bgr" type="range" min="-180" max="180" step="1" value="0"></div>
+        <div class="row"><button id="bgreset" class="alt" type="button">Reset position</button><button id="bgplay" class="alt" type="button" hidden>Pause video</button></div>
+        <div class="note">Your file stays on your device; nothing is uploaded.</div>
+      </div>
     </div>
     <div class="grp">
       <div><label for="clip">Animation</label><select id="clip"><option>(loading)</option></select></div>
@@ -134,6 +157,7 @@ function gameKernelSource(SRC){
   const body='"use strict";\n'+board+clipNames+charObj+pose+misc
     +'\nreturn { CHAR, preloadSkyboardTemplates, buildBoardMesh, SKYBOARD_TEMPLATES, _glbCache, setCharState, applySkyboardStance, applySkyboardHeadOverride,'
     +' _charWrapMixer, mountSkyboard, CHAR_CLIP_NAMES, SKYBOARD_ANIM_SPEED, CHAR_BOARD_TARGET_UNITS, _clamp,\n'
+    +'  SKYBOARD_PARTS, _stylesFor, FINISH_DEFAULTS, _partRole, _legacyStyleForPart,\n'
     +'  charSetup(gltf){\n'+charSetup+'\n  },\n'
     +'  buildActions(animGltf){\n'+actions+'\n  return mappedKeys; } };\n';
   return {body, boardCfg, params:['THREE','STATE','GFX','$','toast','_loadStep','_envMap','_rebuildBoard','builderInited','rb','renderTrailUI','_fbxBoneMap']};
@@ -155,18 +179,19 @@ function newKernel(){
 /* ---------- renderer / scene ---------- */
 const stage=$('stage');
 const qs=new URLSearchParams(location.search);
-const renderer=new THREE.WebGPURenderer({antialias:true,forceWebGL:qs.get('webgl')==='1'});
+const renderer=new THREE.WebGPURenderer({antialias:true,alpha:true,forceWebGL:qs.get('webgl')==='1'});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0; renderer.outputColorSpace=THREE.SRGBColorSpace;
 stage.appendChild(renderer.domElement);
 await renderer.init();
+renderer.setClearColor(0x000000,0);                    // transparent: the stage colour or your background shows through
 const scene=new THREE.Scene();
 scene.add(new THREE.HemisphereLight(0xffffff,0x556070,1.6));
 const key=new THREE.DirectionalLight(0xffffff,2.2);key.position.set(-2,3,4);scene.add(key);
 const rim=new THREE.DirectionalLight(0x9fd2ff,1.2);rim.position.set(3,2,-3);scene.add(rim);
 const grid=new THREE.GridHelper(4,16,0x7a8791,0x9aa5ad);grid.material.opacity=.35;grid.material.transparent=true;scene.add(grid);
 const cam=new THREE.PerspectiveCamera(35,1,0.01,200);cam.position.set(0,1.3,4);
-const ctl=new OrbitControls(cam,renderer.domElement);ctl.minDistance=0.05;ctl.maxDistance=60;ctl.enableDamping=true;ctl.dampingFactor=0.12;ctl.screenSpacePanning=true;ctl.zoomToCursor=true;ctl.touches={ONE:THREE.TOUCH.ROTATE,TWO:THREE.TOUCH.DOLLY_PAN};ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};ctl.target.set(0,0.95,0);ctl.update();
+const ctl=new OrbitControls(cam,renderer.domElement);ctl.minDistance=0.05;ctl.maxDistance=60;ctl.enableDamping=false;ctl.screenSpacePanning=true;ctl.zoomToCursor=true;ctl.touches={ONE:THREE.TOUCH.ROTATE,TWO:THREE.TOUCH.DOLLY_PAN};ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};ctl.target.set(0,0.95,0);ctl.update();
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();}
 new ResizeObserver(resize).observe(stage);resize();
 
@@ -286,7 +311,7 @@ async function loadAll(src){
       notes.push('strands: '+hair.stats.strands+' ('+hair.stats.guides+' simulated)'+(hair.stats.sdf?', head SDF collision':''));
     }catch(e){ hair=null; notes.push('hair: '+(e.message||e)); }
   } else notes.push('no strand file');
-  try{ await buildBoard(); notes.push('skyboard '+STATE.boardConfig.template+(wantBoard?', mounted like the game':'')); }
+  try{ await buildBoard(); setTimeout(showSwatches,0); notes.push('skyboard '+STATE.boardConfig.template+(wantBoard?', mounted like the game':'')); }
   catch(e){ notes.push('skyboard: '+(e.message||e)); }
   if(!CHAR.mounted){ playGame('idle'); }
   $('clip').value=CHAR.mounted?'g:skyboard':'g:idle'; syncClipUI(); frameCam();
@@ -298,7 +323,7 @@ async function loadAll(src){
 /* ---------- UI ---------- */
 $('loadgame').onclick=()=>loadAll().catch(e=>status('Load failed: '+(e.message||e)));
 $('bsel').value=STATE.boardConfig.template||'B';
-$('bsel').onchange=async e=>{ STATE.boardConfig.template=e.target.value; try{ K.preloadSkyboardTemplates(); await buildBoard(); }catch(err){ status('Board failed: '+(err.message||err)); } };
+$('bsel').onchange=async e=>{ STATE.boardConfig.template=e.target.value; try{ K.preloadSkyboardTemplates(); await buildBoard(); showSwatches(); }catch(err){ status('Board failed: '+(err.message||err)); } };
 $('boardtoggle').onclick=async()=>{ if(!CHAR) return; if(CHAR.mounted){ wantBoard=false; dismount(); } else { wantBoard=true; if(!board) await buildBoard(); else mount(); } };
 $('f-prof').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; try{ const d=JSON.parse(await f.text()); if(!d||!d.board) throw new Error('no board in this file');
   STATE.boardConfig=Object.assign(freshBoardConfig(),d.board); if(!STATE.boardConfig.template||STATE.boardConfig.template==='procedural') STATE.boardConfig.template='B';
@@ -319,6 +344,62 @@ $('f-all').onchange=async e=>{ const inp=e.target; const files=[...inp.files]; c
     if(!src.char&&!src.anim&&!src.hair){ status('Nothing usable in those files.'); return; }
     await loadAll({char:src.char||charBuf, anim:src.anim||animBuf, hair:src.hair||hairBuf}); note('using your '+Object.keys(src).join(', ')+' file(s)');
   }catch(err){ status('Load failed: '+(err.message||err)); } finally{ try{inp.value='';}catch(_){} } };
+
+/* ---------- scene: background image / video, grid ---------- */
+const bg={x:0,y:0,s:1,r:0,el:null,url:null};
+function bgApply(){
+  $('bgxv').textContent=bg.x+'%'; $('bgyv').textContent=bg.y+'%'; $('bgsv').textContent=bg.s.toFixed(2)+'x'; $('bgrv').textContent=bg.r+'°';
+  if(bg.el) bg.el.style.transform='translate(-50%,-50%) translate('+bg.x+'%,'+bg.y+'%) rotate('+bg.r+'deg) scale('+bg.s+')';
+  if(bg.el) bg.el.hidden=$('bgmode').value!=='media';
+}
+$('bgmode').onchange=e=>{ $('bgctl').hidden=e.target.value!=='media'; if(bg.el&&bg.el.tagName==='VIDEO'){ if(e.target.value==='media') bg.el.play().catch(()=>{}); else bg.el.pause(); } bgApply(); };
+$('f-bg').onchange=e=>{ const f=e.target.files[0]; if(!f) return;
+  if(bg.url) URL.revokeObjectURL(bg.url); if(bg.el) bg.el.remove();
+  bg.url=URL.createObjectURL(f); const vid=/^video\//.test(f.type)||/\.(mp4|m4v|mov|qt|webm|mkv|3gp|ogv)$/i.test(f.name);
+  const el=document.createElement(vid?'video':'img'); el.src=bg.url; el.alt='';
+  if(vid){ el.muted=true; el.loop=true; el.playsInline=true; el.autoplay=true; el.setAttribute('playsinline','');
+    el.onerror=()=>status('This device cannot play '+f.name+'. iPhone recordings saved as HEVC need a browser with HEVC support; re-save it as H.264 MP4 (or use "Most Compatible" in the iPhone camera settings).');
+    el.onloadeddata=()=>note('background video: '+f.name+' ('+el.videoWidth+'x'+el.videoHeight+')');
+    el.play().catch(()=>{}); }
+  else el.onerror=()=>status('This browser cannot show '+f.name+' (HEIC photos need Safari; use JPEG or PNG elsewhere).');
+  $('bgplay').hidden=!vid; $('bgplay').textContent='Pause video';
+  $('bgmedia').appendChild(el); bg.el=el; bgApply(); };
+['x','y','s','r'].forEach(k=>{ $('bg'+k).oninput=e=>{ bg[k]=+e.target.value; bgApply(); }; });
+$('bgreset').onclick=()=>{ Object.assign(bg,{x:0,y:0,s:1,r:0}); $('bgx').value=0; $('bgy').value=0; $('bgs').value=1; $('bgr').value=0; bgApply(); };
+$('bgplay').onclick=()=>{ const v=bg.el; if(!v||v.tagName!=='VIDEO') return; if(v.paused){ v.play().catch(()=>{}); $('bgplay').textContent='Pause video'; } else { v.pause(); $('bgplay').textContent='Play video'; } };
+$('gridtoggle').onclick=()=>{ grid.visible=!grid.visible; $('gridtoggle').textContent='Grid: '+(grid.visible?'on':'off'); };
+
+/* ---------- skyboard colours: a light version of the game's AUTO COLOR ---------- */
+const schemeHist=[];
+function boardParts(){ const t=STATE.boardConfig.template; return (t&&K.SKYBOARD_PARTS[t])||[]; }
+function showSwatches(){
+  const t=STATE.boardConfig.template, out=[];
+  if(t==='R'){ const A=STATE.boardConfig.ariel||{}; out.push(A.hull||'#0b0b11',A.light||'#ff7a1a'); }
+  else { const st=K._stylesFor(t); boardParts().forEach(p=>{ const s=st[p]||K._legacyStyleForPart(p,STATE.boardConfig); (s.stops||[]).forEach(c=>out.push(c)); }); }
+  $('swatches').innerHTML=out.slice(0,24).map(c=>'<i style="background:'+c+'" title="'+c+'"></i>').join('');
+}
+function snapshotScheme(){ return JSON.stringify({p:STATE.boardConfig.partStyles||{},a:STATE.boardConfig.ariel||null}); }
+async function applyScheme(){ try{ await buildBoard(); }catch(err){ status('Board failed: '+(err.message||err)); } showSwatches(); }
+$('shuffle').onclick=async()=>{
+  const t=STATE.boardConfig.template; if(!K) return;
+  schemeHist.push(snapshotScheme()); if(schemeHist.length>30) schemeHist.shift();
+  const col=(h,s,l)=>'#'+new THREE.Color().setHSL(((h%1)+1)%1,s,l).getHexString();
+  const baseH=Math.random();
+  if(t==='R'){ STATE.boardConfig.ariel={hull:col(baseH,0.25+Math.random()*0.3,0.06+Math.random()*0.12),light:col(baseH+0.5,0.8+Math.random()*0.2,0.5+Math.random()*0.12)}; return applyScheme(); }
+  const parts=boardParts(); if(!parts.length){ status('The skyboard is still loading, try again in a moment.'); return; }
+  const styles=K._stylesFor(t);
+  parts.forEach((p,i)=>{                                    // golden-ratio hue walk, 1-3 stops, like the game
+    const h=(baseH+i*0.618034)%1, n=1+Math.floor(Math.random()*3), stops=[];
+    for(let k=0;k<n;k++) stops.push(col(h+(k-(n-1)/2)*0.09,0.55+Math.random()*0.4,0.32+Math.random()*0.36));
+    const D=K.FINISH_DEFAULTS[K._partRole(p)], j=v=>Math.max(0,Math.min(1,v+(Math.random()-0.5)*0.4));
+    const vis=styles[p]?styles[p].visible!==false:true;
+    styles[p]={visible:vis,mode:n===1?'solid':(Math.random()<0.35?'radial':'linear'),axis:['x','y','z'][Math.floor(Math.random()*3)],stops,
+               finish:{type:D.type,shine:j(D.shine),brush:j(D.brush),glow:D.type==='alloy'?0:j(D.glow),clarity:j(D.clarity)}};
+  });
+  return applyScheme();
+};
+$('prevscheme').onclick=()=>{ const s0=schemeHist.pop(); if(!s0) return; const d=JSON.parse(s0); STATE.boardConfig.partStyles=d.p; if(d.a) STATE.boardConfig.ariel=d.a; else delete STATE.boardConfig.ariel; applyScheme(); };
+$('resetscheme').onclick=()=>{ schemeHist.push(snapshotScheme()); STATE.boardConfig.partStyles={}; delete STATE.boardConfig.ariel; applyScheme(); };
 
 /* ---------- frame loop: the same order as the game's flight loop ---------- */
 let lastT=performance.now(); let flyZ=0, simT=0, statT=0;
