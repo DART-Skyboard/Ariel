@@ -1,5 +1,6 @@
 // LEATR bridge: the studio's ONLY connection to the private Shell 64 / LEATR network.
-// It talks to the read-only Shell 64 relay (POST <relay>/team). What crosses the wire:
+// It talks to the read-only Shell 64 door, either the Node relay (POST <relay>/team) or the Apps Script action `shell64team`
+// (POST <script.google.com .../exec>, as Autumn does). What crosses the wire:
 //   out: the prompt text (<= 500 chars) and the client-held team object the relay gave us last time. Never pixels, never references.
 //   in : { text, program, team } — a team plan and Ash program made of record KEYS. Never the private knowledge base itself.
 // The plan then STEERS generation (seed, style, which of your references to use). If the relay is not configured or fails,
@@ -27,11 +28,15 @@
     var f = o.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
     if (!f) { var l0 = localPlan(text); l0.error = 'no fetch available'; return l0; }
     try {
-      var url = String(o.url).replace(/\/+$/, '') + '/team';
+      var gas = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec\/?$/.test(String(o.url).trim());
+      var url = gas ? String(o.url).trim() : String(o.url).trim().replace(/\/+$/, '') + '/team';
       if (!/^https:\/\//.test(url) && !/^http:\/\/localhost(:\d+)?\//.test(url)) throw new Error('relay must be https');
-      var res = await f(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, team: o.team || undefined }) });
+      var res = await f(url, gas
+        ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'shell64team', text: text, team: o.team || null }) }
+        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, team: o.team || undefined }) });
       if (!res.ok) throw new Error('relay answered ' + res.status);
       var j = await res.json();
+      if (gas && j && j.ok === false) throw new Error('Apps Script said: ' + String(j.error || 'unavailable').slice(0, 60));
       if (!validPlan(j)) throw new Error('relay reply was not a valid plan');
       return { source: 'relay', text: j.text, program: j.program, team: j.team || null };
     } catch (e) {

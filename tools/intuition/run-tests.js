@@ -141,6 +141,12 @@ const solid = (w, h, r, g, b, a) => { const d = new Uint8ClampedArray(w * h * 4)
     const p = await B.plan({ url: 'http://evil.example', text: 'x', fetchImpl: async () => { throw new Error('should not be called'); } }); assert.strictEqual(p.source, 'local'); assert.match(p.error, /https/);
     await assert.rejects(() => B.plan({ text: '   ' }), /required/);
   });
+  await t('bridge: Apps Script /exec URL uses the shell64team action as text/plain', async () => {
+    let seen; const u = 'https://script.google.com/macros/s/AKfycbTEST_123-x/exec', f = async (url, init) => { seen = { url, init }; return { ok: true, json: async () => ({ ok: true, text: 'plan', program: 'k1', team: { members: [] } }) }; };
+    const p = await B.plan({ url: u, text: 'hi', team: null, fetchImpl: f }); assert.strictEqual(p.source, 'relay'); assert.strictEqual(seen.url, u);
+    assert.strictEqual(seen.init.headers['Content-Type'], 'text/plain'); assert.deepStrictEqual(JSON.parse(seen.init.body), { action: 'shell64team', text: 'hi', team: null });
+    const bad = await B.plan({ url: u, text: 'hi', fetchImpl: async () => ({ ok: true, json: async () => ({ ok: false, error: 'busy' }) }) }); assert.strictEqual(bad.source, 'local'); assert.match(bad.error, /busy/);
+  });
   await t('bridge: prompt is capped at 500 chars', async () => {
     let n; await B.plan({ url: 'https://r.example', text: 'a'.repeat(900), fetchImpl: async (u, i) => { n = JSON.parse(i.body).text.length; return { ok: true, json: async () => ({ text: '', program: '' }) }; } }); assert.strictEqual(n, 500);
   });
