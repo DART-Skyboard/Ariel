@@ -35,9 +35,26 @@
   }
   function smooth01(x) { x = R.clamp(x, 0, 1); return x * x * (3 - 2 * x); }
 
+  // Smooth noise fields are evaluated on a coarse grid and bilinearly interpolated when the frame is large
+  // (step 1 = exact per-pixel evaluation, identical to the original output for frames up to ~1100 px).
+  function axis(n, st) {
+    var m = Math.floor((n - 1) / st) + 2, i0 = new Int32Array(n), f = new Float64Array(n);
+    for (var x = 0; x < n; x++) { var i = Math.floor(x / st); if (i > m - 2) i = m - 2; var a = i * st, b = Math.min(n - 1, (i + 1) * st); i0[x] = i; f[x] = b > a ? (x - a) / (b - a) : 0; }
+    return { m: m, i0: i0, f: f, st: st, n: n };
+  }
+  function grid(ax, ay, fn) {
+    var g = new Float64Array(ax.m * ay.m);
+    for (var j = 0; j < ay.m; j++) { var y = Math.min(ay.n - 1, j * ay.st); for (var i = 0; i < ax.m; i++) g[j * ax.m + i] = fn(Math.min(ax.n - 1, i * ax.st), y); }
+    return g;
+  }
+  function samp(g, ax, ay, x, y) {
+    var k = ay.i0[y] * ax.m + ax.i0[x], m = ax.m, fx = ax.f[x], a = g[k] + (g[k + 1] - g[k]) * fx, b = g[k + m] + (g[k + m + 1] - g[k + m]) * fx;
+    return a + (b - a) * ay.f[y];
+  }
+
   function normalize(p) {
     p = p || {}; var c = R.clamp;
-    return { w: c(Math.round(p.w || 640), 64, 1920), h: c(Math.round(p.h || 360), 64, 1080), seed: (p.seed | 0),
+    return { w: c(Math.round(p.w || 640), 64, 4096), h: c(Math.round(p.h || 360), 64, 4096), seed: (p.seed | 0),
       style: STYLES.indexOf(p.style) >= 0 ? p.style : 'meadow', refs: Array.isArray(p.refs) ? p.refs.slice(0, 8) : [],
       mix: p.mix == null ? 0.5 : c(+p.mix, 0, 1), speed: p.speed == null ? 0.15 : c(+p.speed, 0, 2),
       particles: p.particles == null ? 260 : c(Math.round(p.particles), 0, 2000), subject: p.subject !== false };
@@ -64,14 +81,15 @@
       var top = cond.refs.slice().sort(function (a, b) { return b.weight - a.weight; })[0], fr = lib.frameAt(top.slot, t || 0);
       if (fr) { var cv = R.cover(fr.data, fr.w, fr.h, w, h); S = new Float32Array(w * h); for (var i = 0; i < w * h; i++) S[i] = R.luma(cv[i * 4], cv[i * 4 + 1], cv[i * 4 + 2]); }
     }
-    var mix = P.mix, N = w * h;
+    var mix = P.mix, N = w * h, st = Math.max(1, Math.ceil(Math.max(w, h) / 1100)), ax = axis(w, st), ay = axis(h, st), u = Math.min(w, h) / 360;
 
     // Sky (opaque)
     var sky = R.createLayer(w, h, { name: 'Sky' }), sd = sky.data;
+    var skyN = grid(ax, ay, function (gx, gy) { return fbm(gx / w * 3, gy / h * 5, T, seed, 4); });
     for (var y = 0; y < h; y++) {
       var v = y / h, base0 = 0.08 + 0.62 * Math.pow(v, 0.85);
       for (var x = 0; x < w; x++) {
-        var n = fbm(x / w * 3, y / h * 5, T, seed, 4), s = base0 + 0.28 * (n - 0.5);
+        var n = samp(skyN, ax, ay, x, y), s = base0 + 0.28 * (n - 0.5);
         if (S) s += (S[y * w + x] - 0.5) * 0.25 * mix;
         var c = ramp(pal, s), i2 = (y * w + x) * 4; sd[i2] = c[0]; sd[i2 + 1] = c[1]; sd[i2 + 2] = c[2]; sd[i2 + 3] = 255;
       }
@@ -80,19 +98,23 @@
 
     if (P.style === 'nebula') {
       var neb = R.createLayer(w, h, { name: 'Clouds', blend: 'screen' }), nd = neb.data;
+      var nebN = grid(ax, ay, function (gx, gy) {
+        var uu = gx / w * 4, vv0 = gy / h * 4, wx0 = fbm(uu + 3.1, vv0, T * 0.7, seed + 5, 3), wy0 = fbm(uu, vv0 + 7.7, T * 0.7, seed + 9, 3);
+        return fbm(uu + wx0 * 2 + (S ? S[gy * w + gx] * mix * 2 : 0), vv0 + wy0 * 2, T, seed + 1, 5);
+      });
       for (var y2 = 0; y2 < h; y2++) for (var x2 = 0; x2 < w; x2++) {
-        var u = x2 / w * 4, vv = y2 / h * 4, wx = fbm(u + 3.1, vv, T * 0.7, seed + 5, 3), wy = fbm(u, vv + 7.7, T * 0.7, seed + 9, 3);
-        var nn = fbm(u + wx * 2 + (S ? S[y2 * w + x2] * mix * 2 : 0), vv + wy * 2, T, seed + 1, 5), a = smooth01((nn - 0.42) * 3.2);
+        var nn = samp(nebN, ax, ay, x2, y2), a = smooth01((nn - 0.42) * 3.2);
         var cc = ramp(pal, 0.35 + 0.65 * nn), j = (y2 * w + x2) * 4; nd[j] = cc[0]; nd[j + 1] = cc[1]; nd[j + 2] = cc[2]; nd[j + 3] = a * 220;
       }
       layers.push(neb);
     } else {
+      var grainN = grid(ax, ay, function (gx, gy) { return fbm(gx / w * 40, gy / h * 40, 0, seed + 3, 3); });
       var ter = R.createLayer(w, h, { name: 'Terrain' }), td = ter.data, hy = h * (P.style === 'ridge' ? 0.42 : 0.55), amp = h * (P.style === 'ridge' ? 0.34 : 0.16);
       for (var x3 = 0; x3 < w; x3++) {
         var surf = hy + (fbm(x3 / w * 3, 0.5, T * 0.2, seed + 40, 5) - 0.5) * 2 * amp;
         for (var y3 = Math.max(0, Math.floor(surf) - 2); y3 < h; y3++) {
           var al = R.clamp(y3 - surf + 0.5, 0, 1); if (al <= 0) continue;
-          var depth = (y3 - surf) / (h - surf + 1), grain = fbm(x3 / w * 40, y3 / h * 40, 0, seed + 3, 3);
+          var depth = (y3 - surf) / (h - surf + 1), grain = samp(grainN, ax, ay, x3, y3);
           var sh = 0.18 + 0.5 * (1 - depth) * 0.6 + 0.25 * grain + (S ? (S[y3 * w + x3] - 0.5) * 0.5 * mix : 0);
           var c3 = ramp(pal, sh), q = (y3 * w + x3) * 4; td[q] = c3[0]; td[q + 1] = c3[1]; td[q + 2] = c3[2]; td[q + 3] = al * 255;
         }
@@ -103,16 +125,17 @@
     // Glow particles (additive, transparent background)
     var glow = R.createLayer(w, h, { name: 'Glow', blend: 'add' }), r0 = rng(seed + 99);
     for (var p = 0; p < P.particles; p++) {
-      var px = r0() * w, py0 = r0() * h, spd = 0.02 + r0() * 0.05, rad = 0.8 + r0() * 2.6, cc2 = ramp(pal, 0.55 + 0.45 * r0()), ph = r0() * 6.28;
-      var py = ((py0 - T * spd * h * 4) % h + h) % h; px += Math.sin(T * 2 + ph) * 6;
+      var px = r0() * w, py0 = r0() * h, spd = 0.02 + r0() * 0.05, rad = (0.8 + r0() * 2.6) * u, cc2 = ramp(pal, 0.55 + 0.45 * r0()), ph = r0() * 6.28;
+      var py = ((py0 - T * spd * h * 4) % h + h) % h; px += Math.sin(T * 2 + ph) * 6 * u;
       plot(glow.data, w, h, px, py, rad, cc2, 0.85);
     }
     layers.push(glow);
 
     // Mist (soft, transparent)
     var mist = R.createLayer(w, h, { name: 'Mist', blend: 'screen', opacity: 0.6 }), md = mist.data, lc = ramp(pal, 0.85);
+    var mistN = grid(ax, ay, function (gx, gy) { return fbm(gx / w * 3, gy / h * 3, T * 0.5, seed + 70, 3); });
     for (var y4 = 0; y4 < h; y4++) for (var x4 = 0; x4 < w; x4++) {
-      var f = smooth01((y4 / h - 0.45) * 2.2), m2 = fbm(x4 / w * 3, y4 / h * 3, T * 0.5, seed + 70, 3), a4 = f * smooth01((m2 - 0.35) * 2.5) * 0.7, k4 = (y4 * w + x4) * 4;
+      var f = smooth01((y4 / h - 0.45) * 2.2), m2 = samp(mistN, ax, ay, x4, y4), a4 = f * smooth01((m2 - 0.35) * 2.5) * 0.7, k4 = (y4 * w + x4) * 4;
       md[k4] = lc[0]; md[k4 + 1] = lc[1]; md[k4 + 2] = lc[2]; md[k4 + 3] = a4 * 255;
     }
     layers.push(mist);
