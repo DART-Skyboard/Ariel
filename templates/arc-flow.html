@@ -241,6 +241,15 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <option value="2048">2048 — max detail</option>
     </select>
     <div class="sec-sub">Texture-space detail for the floor's heat-splash pattern and per-part thermal shading — independent of any object's own mesh density, so a low-poly import still gets crisp thermal detail. 512 is a solid default; raise it if you want finer detail and your device can spare the GPU memory, lower it if the simulation feels sluggish.</div>
+
+    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="volumetricToggle" style="width:auto;margin:0;">
+      Volumetric Render (ray-marched)
+    </label>
+    <div class="sec-sub">
+      Replaces the point-sprite particle display with a continuous ray-marched density field — the same rendering approach ArcLake-iOS uses for its fluid view, reusing Arc Flow's existing real-mesh collision SDF so the fluid is shaped by (and never renders inside) the actual imported geometry. The waypoint/physics simulation itself is unchanged — this only swaps the VISUAL layer.
+      <br>Off by default: this adds a per-frame CPU density-texture rebuild and a full-screen ray-march pass on top of the existing simulation, which costs noticeably more than point sprites on an integrated/mobile GPU. Try it, and fall back to point sprites if it runs choppy on your device.
+    </div>
   </div>
 
   <div id="viewport">
@@ -525,6 +534,13 @@ function animateBase() {
   if (appReady) {
     if (state.simRunning && particleSystem) renderFloorHeatPass();
     if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
+    // Volumetric ray-march pass — see "VOLUMETRIC RAY-MARCH RENDERER"
+    // below buildParticleSystem for the full design. Declared via
+    // `function updateVolumetricRender` (hoisted), so this call is valid
+    // even though that function is defined later in the module — called
+    // every frame like the rest of this loop, but it internally throttles
+    // its own expensive work (CPU density rebuild) to VOL_REBUILD_INTERVAL_MS.
+    if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
   }
   renderer.render(scene, camera);
 }
@@ -2729,6 +2745,7 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
 async function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
+  state.particleCPU = null; // stale until rebuilt below — volumetric renderer checks for this
 
   const links = buildFlowGraph();
   state.currentLinks = links; // kept for the per-frame thermal tint update
@@ -2787,6 +2804,22 @@ async function buildParticleSystem() {
 
   const count = phase.length;
   if (count === 0) return;
+
+  // Retained (not just baked into the GPU textures above) so the
+  // volumetric ray-march renderer (see "VOLUMETRIC RAY-MARCH RENDERER"
+  // below) can recompute each particle's CURRENT world position on the
+  // CPU at a reduced update rate, using the exact same waypoint/lerp/
+  // eddy math as computeParticlePosition() in PARTICLE_SHADER_CORE —
+  // this is the CPU-side mirror of that GLSL function, not a second
+  // simulation: same waypoints, same per-particle constants, just
+  // evaluated in JS instead of on the GPU so it can be splatted into a
+  // density texture instead of drawn as a point sprite. Kept as flat
+  // typed arrays (not re-derived from the DataTexture, which would mean
+  // decoding the tiled packing back out) since they're the same arrays
+  // already built above.
+  state.particleCPU = {
+    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV,
+  };
 
   // Pack waypoints into a DataTexture: width = MAX_WAYPOINTS, height = count,
   // RGB = xyz position, A = containment radius at that waypoint. This radius
@@ -2926,6 +2959,12 @@ async function buildParticleSystem() {
 
   particleSystem = new THREE.Points(geo, mat);
   particleSystem.frustumCulled = false;
+  // Respect whatever renderer mode is currently selected (the volumetric
+  // toggle persists across Simulate presses) rather than always showing
+  // point sprites on a fresh build — otherwise re-pressing Simulate while
+  // the volumetric toggle is checked would briefly flash point sprites
+  // back on until the next updateVolumetricRender() tick hides them again.
+  particleSystem.visible = !(typeof volEnabled !== 'undefined' && volEnabled);
   scene.add(particleSystem);
 
   // Splat material for painting this same particle stream onto the floor's
@@ -2951,6 +2990,488 @@ async function buildParticleSystem() {
     blending: THREE.AdditiveBlending,
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// VOLUMETRIC RAY-MARCH RENDERER — web counterpart to ArcLake-iOS's
+// ArcVolumetricFluidRenderer.swift (ray-marched density field replacing
+// discrete particle geometry). Same architectural principle, ported to
+// this codebase's own infrastructure rather than copied verbatim:
+//
+//   iOS                                    Arc Flow (here)
+//   ─────────────────────────────────────  ─────────────────────────────
+//   ArcSparseVoxelGrid.trilinearSample     per-particle waypoint lerp +
+//     -> per-cell density/color              eddy turbulence (already
+//                                             computed by the existing
+//                                             sim, see computeParticle-
+//                                             Position in PARTICLE_SHADER_
+//                                             CORE) splatted into a 3D
+//                                             density+color grid, CPU-side
+//   ArcSparseVoxelGrid.isFineSolid          this file's OWN existing
+//     -> hard density-zero mask               uSDFCoarse/uSDFFineAtlas
+//                                             SDF (sampleTiledSDF), sd>0
+//                                             => density forced to 0
+//   tiled-2D-atlas RGBA32F texture,         SAME packing convention —
+//     Beer-Lambert ray march, GLSL ES        this file already uses it
+//     shader modifier on a bounding box      for uSDFCoarse/uWaypoints,
+//                                             so this is one MORE tiled
+//                                             atlas, not a new mechanism
+//
+// Per the task's explicit instruction, NO separate density representation
+// is invented beyond what's needed to turn "where are the particles right
+// now" into a volume texture — the collision/occlusion side reads
+// straight from the SDF infrastructure already built by buildCollisionSDF
+// for the point-sprite renderer, exactly mirroring the iOS file's "single
+// source of truth for collision + density" principle (see that file's own
+// header comment for the full rationale).
+//
+// WHY A CPU SPLAT, NOT A GPU COMPUTE PASS: this file never requests a
+// WebGL2 context (checked — see the tiled-SDF-atlas header comment above
+// buildCollisionSDF for the same finding) and the GPUComputationRenderer
+// import already present in this file still round-trips through a
+// render-to-texture + readback-free ping-pong, which is the right tool
+// for an already-GPU-resident field (like the floor heat buffer) but a
+// poor fit here: this density field's SOURCE data (waypoints, phase,
+// speed, per-particle lateral offset) already lives in plain JS arrays
+// (state.particleCPU, captured by buildParticleSystem — see its own
+// comment), so evaluating computeParticlePosition()'s CPU mirror directly
+// into a Float32Array is simpler and cheaper than uploading that same
+// data back into a second GPU pass just to read it out again. The
+// tradeoff (explicitly flagged in the task): this only SAMPLES a subset
+// of particles per rebuild (see VOL_SAMPLE_STRIDE) and only rebuilds a
+// few times a second (see VOL_REBUILD_INTERVAL_MS), not every particle
+// every frame — acceptable because density accumulation deliberately
+// blurs individual particles into a continuous field anyway, so sub-frame
+// jitter in exactly which particles contributed to a given rebuild is
+// invisible in the final ray-marched result, the same way the iOS
+// renderer's 1-bake-per-tick (not per-particle) cadence is invisible
+// there.
+// ═══════════════════════════════════════════════════════════════════════
+
+const VOL_RES = 40;                 // voxels per axis — deliberately modest (mobile/perf budget, see UI toggle's own sec-sub)
+const VOL_REBUILD_INTERVAL_MS = 90; // ~11 Hz CPU density rebuild; the ray march itself still runs every rendered frame
+const VOL_SAMPLE_STRIDE_MIN = 1;    // always visit every particle when the count is small
+const VOL_MAX_SAMPLES = 9000;       // hard cap on how many particles get splatted per rebuild, regardless of total count
+
+let volEnabled = false;             // mirrors the #volumetricToggle checkbox
+let volMesh = null;                 // the single bounding-box mesh the ray-march shader runs on
+let volDensityTex = null;           // THREE.DataTexture, tiled-2D-as-3D atlas (same convention as uSDFCoarse)
+let volDensityData = null;          // the Float32Array backing volDensityTex, reused across rebuilds (no per-rebuild alloc)
+let volLastBuildAt = -Infinity;
+let volTilesPerRow = 1, volTexRes = VOL_RES;
+
+// Ray-march fragment shader: samples the tiled density/color atlas with
+// the SAME manual trilinear scheme as sampleTiledSDF (see that function's
+// own comment for why hardware bilinear filtering can't be used across a
+// tile seam), accumulates with Beer-Lambert extinction (not flat additive
+// blending — mirrors ArcVolumetricFluidRenderer.swift's fragment modifier
+// comment on exactly this point, avoiding the particle renderer's own
+// blowout problem at high particle density), and consults this file's
+// EXISTING coarse mesh-collision SDF so the fluid is never shown occupying
+// space the real imported geometry already occupies.
+const VOLUMETRIC_VERTEX_SHADER = `
+  varying vec3 vLocalPos; // box-local position in [-0.5, 0.5]^3, used to derive the ray direction per-fragment
+  void main() {
+    vLocalPos = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const VOLUMETRIC_FRAGMENT_SHADER = `
+  precision highp float;
+  uniform sampler2D uVolDensity;      // RGBA: r = density, gba = density-weighted color (same channel layout as iOS bakeVolume)
+  uniform float uVolRes;
+  uniform float uVolTilesPerRow;
+  uniform float uVolTexRes;
+  uniform vec3 uVolMin;
+  uniform vec3 uVolSize;
+  // Computed on the CPU each frame (THREE.Matrix4.invert, see
+  // updateVolumetricRender) rather than GLSL inverse() — this file never
+  // requests a WebGL2 context (see the SDF-atlas header comment earlier
+  // in this file), and inverse() is a GLSL ES 3.00-only built-in with no
+  // equivalent in the GLSL ES 1.00 shaders WebGL1 compiles, which is what
+  // actually tripped the "no matching overloaded function" compile error
+  // this comment replaces. modelMatrix itself is only auto-declared by
+  // THREE's shader chunks in material types that request it; a bespoke
+  // ShaderMaterial like this one must also supply it explicitly to use it
+  // at all, so both pieces are passed in as plain uniforms instead.
+  uniform mat4 uInverseModelMatrix;
+
+  // Reuses this file's own real-mesh collision SDF — same uniforms/
+  // function the particle vertex shader already samples (PARTICLE_SHADER_
+  // CORE's sdfAt), so "don't render density inside a solid wall" uses the
+  // identical geometry data as "don't let a particle pass through a solid
+  // wall", per the task's single-source-of-truth requirement. Only the
+  // coarse grid is sampled here (not the per-joint fine atlas): the ray
+  // march's job is to not show fluid INSIDE thick/bulk wall material,
+  // which the coarse whole-scene grid already resolves — the fine grids
+  // exist for precise PARTICLE placement right at tight joints, a finer
+  // distinction than this volume's own ${VOL_RES}³ resolution could
+  // visibly benefit from anyway.
+  uniform sampler2D uSDFCoarse;
+  uniform vec3 uSDFCoarseMin;
+  uniform vec3 uSDFCoarseSize;
+  uniform float uSDFCoarseRes;
+  uniform float uSDFCoarseTilesPerRow;
+  uniform float uSDFCoarseTexRes;
+
+  varying vec3 vLocalPos;
+
+  float sampleTiledVol(sampler2D tex, vec3 localUV01, float res, float tilesPerRow, float texRes, out vec3 colorOut) {
+    vec3 voxel = clamp(localUV01, 0.0, 1.0) * res - 0.5;
+    vec3 v0 = floor(voxel);
+    vec3 f = voxel - v0;
+    float dAcc = 0.0;
+    vec3 cAcc = vec3(0.0);
+    for (int dz = 0; dz < 2; dz++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, res - 1.0);
+          float tileX = mod(c.z, tilesPerRow) * res;
+          float tileY = floor(c.z / tilesPerRow) * res;
+          float px = tileX + c.x;
+          float py = tileY + c.y;
+          vec2 uv = (vec2(px, py) + 0.5) / texRes;
+          vec4 s = texture2D(tex, uv);
+          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
+          dAcc += s.r * w;
+          cAcc += s.gba * w;
+        }
+      }
+    }
+    colorOut = cAcc;
+    return dAcc;
+  }
+
+  // Coarse-grid-only SDF sample, same math as sdfAt()/sampleTiledSDF in
+  // PARTICLE_SHADER_CORE but inlined here (this shader has no fine-region
+  // uniforms — see the comment above on why only the coarse grid is used).
+  float sampleCoarseSDF(vec3 p) {
+    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
+    vec3 voxel = local * uSDFCoarseRes - 0.5;
+    vec3 v0 = floor(voxel);
+    vec3 f = voxel - v0;
+    float acc = 0.0;
+    for (int dz = 0; dz < 2; dz++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, uSDFCoarseRes - 1.0);
+          float tileX = mod(c.z, uSDFCoarseTilesPerRow) * uSDFCoarseRes;
+          float tileY = floor(c.z / uSDFCoarseTilesPerRow) * uSDFCoarseRes;
+          float px = tileX + c.x, py = tileY + c.y;
+          vec2 uv = (vec2(px, py) + 0.5) / uSDFCoarseTexRes;
+          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
+          acc += texture2D(uSDFCoarse, uv).r * w;
+        }
+      }
+    }
+    return acc * length(uSDFCoarseSize);
+  }
+
+  void main() {
+    // Camera position in the box's LOCAL space (mirrors
+    // ArcVolumetricFluidRenderer.swift's fragment modifier, which derives
+    // localCamPos the same way via the inverse model transform) — the
+    // node is scaled/positioned to exactly cover uVolMin..uVolMin+uVolSize,
+    // so its own local space already IS the volume's object space.
+    vec3 localCamPos = (uInverseModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+    vec3 rd = normalize(vLocalPos - localCamPos);
+    vec3 ro = localCamPos;
+
+    vec3 invRd = 1.0 / max(abs(rd), vec3(1e-5)) * sign(rd);
+    vec3 tA = (vec3(-0.5) - ro) * invRd;
+    vec3 tB = (vec3(0.5) - ro) * invRd;
+    vec3 tMinV = min(tA, tB);
+    vec3 tMaxV = max(tA, tB);
+    float tNear = max(max(tMinV.x, tMinV.y), max(tMinV.z, 0.0));
+    float tFar  = min(min(tMaxV.x, tMaxV.y), tMaxV.z);
+
+    if (tFar <= tNear) discard;
+
+    const int STEPS = 40; // kept modest — this runs full-screen every frame, unlike the per-particle SDF taps elsewhere in this file
+    float stepSize = (tFar - tNear) / float(STEPS);
+    float t = tNear;
+    float transmittance = 1.0;
+    vec3 accumColor = vec3(0.0);
+
+    for (int i = 0; i < STEPS; i++) {
+      vec3 pLocal = ro + rd * (t + stepSize * 0.5);
+      vec3 pWorld = pLocal + vec3(0.5); // box-local [-0.5,0.5] -> volume-local [0,1] offset, matches vol01 below
+      vec3 vol01 = pWorld; // the box IS scaled to uVolSize and positioned at uVolMin+uVolSize*0.5, so this local [0,1] cube already maps onto the density grid 1:1
+
+      vec3 worldPos = uVolMin + vol01 * uVolSize;
+      float wallSD = sampleCoarseSDF(worldPos);
+      // wallSD > 0 means outside the fluid-legal interior (see this file's
+      // sign convention comment on signedDistanceToMesh) — i.e. inside/
+      // past a real wall from the ray march's point of view. Skip the
+      // step entirely rather than just zeroing color, so a dense fluid
+      // region never "shows through" a thin wall from extinction alone.
+      if (wallSD <= 0.002) {
+        vec3 col;
+        float dens = sampleTiledVol(uVolDensity, vol01, uVolRes, uVolTilesPerRow, uVolTexRes, col);
+        if (dens > 0.003) {
+          float absorb = 1.0 - exp(-dens * stepSize * uVolRes * 0.9);
+          accumColor += transmittance * absorb * col;
+          transmittance *= (1.0 - absorb);
+          if (transmittance < 0.015) break;
+        }
+      }
+      t += stepSize;
+    }
+
+    float alpha = 1.0 - transmittance;
+    if (alpha < 0.003) discard;
+    gl_FragColor = vec4(accumColor, alpha);
+  }
+`;
+
+// Builds (once) the bounding-box mesh the ray march runs on, sized/
+// positioned to the SDF's own coarse-grid domain (state.sdf.coarse) —
+// reusing that bounds, rather than computing a separate one, keeps the
+// volume's world-space mapping trivially consistent with the SDF it
+// samples for occlusion (same reasoning as reusing isFineSolid's own grid
+// in the iOS renderer instead of a parallel domain box).
+function ensureVolumetricMesh() {
+  if (volMesh) return volMesh;
+  const geo = new THREE.BoxGeometry(1, 1, 1); // unit box; scaled/positioned per-update below
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uVolDensity: { value: null },
+      uVolRes: { value: VOL_RES },
+      uVolTilesPerRow: { value: 1 },
+      uVolTexRes: { value: VOL_RES },
+      uVolMin: { value: new THREE.Vector3() },
+      uVolSize: { value: new THREE.Vector3(1, 1, 1) },
+      uInverseModelMatrix: { value: new THREE.Matrix4() },
+      uSDFCoarse: { value: null },
+      uSDFCoarseMin: { value: new THREE.Vector3() },
+      uSDFCoarseSize: { value: new THREE.Vector3(1, 1, 1) },
+      uSDFCoarseRes: { value: 1 },
+      uSDFCoarseTilesPerRow: { value: 1 },
+      uSDFCoarseTexRes: { value: 1 },
+    },
+    vertexShader: VOLUMETRIC_VERTEX_SHADER,
+    fragmentShader: VOLUMETRIC_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.BackSide, // see camera-inside-the-box note below
+  });
+  volMesh = new THREE.Mesh(geo, mat);
+  volMesh.frustumCulled = false;
+  volMesh.renderOrder = 10; // after the opaque scene/floor, same intent as the particle system's own transparent/depthWrite:false setup
+  volMesh.visible = false;
+  scene.add(volMesh);
+  return volMesh;
+}
+
+// Rebuilds the CPU density+color volume from the current particle state —
+// the direct counterpart to ArcVolumetricFluidRenderer.bakeVolume(), but
+// splatting discrete particle positions into cells (accumulate-and-
+// normalize) instead of resampling a continuous simulation grid, since
+// this file's simulation state IS a set of particles, not a voxel grid
+// with its own density field.
+function rebuildVolumetricDensity() {
+  const sdf = state.sdf;
+  const cpu = state.particleCPU;
+  if (!sdf || !cpu || !cpu.count) return false;
+
+  const res = VOL_RES;
+  if (!volDensityData) {
+    volTilesPerRow = Math.ceil(Math.sqrt(res));
+    volTexRes = res * volTilesPerRow;
+    volDensityData = new Float32Array(volTexRes * volTexRes * 4);
+  }
+  // Decay the previous frame's density rather than clearing to zero: at
+  // an ~11Hz rebuild rate with a sampled subset of particles each time
+  // (see VOL_MAX_SAMPLES), a hard clear would make the field visibly
+  // flicker/strobe between rebuilds as different particle subsets land in
+  // different cells. Exponential decay toward the freshly-splatted values
+  // gives smooth temporal blending instead, at negligible extra cost.
+  for (let i = 0; i < volDensityData.length; i++) volDensityData[i] *= 0.55;
+
+  const dMin = sdf.coarse.boundsMin, dSize = sdf.coarse.boundsSize;
+  const invSizeX = 1 / Math.max(dSize.x, 1e-5);
+  const invSizeY = 1 / Math.max(dSize.y, 1e-5);
+  const invSizeZ = 1 / Math.max(dSize.z, 1e-5);
+
+  const { count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV } = cpu;
+  const MW = MAX_WAYPOINTS;
+  // uTime drives computeParticlePosition() in lockstep on the GPU — mirror
+  // the exact same clock value here so the CPU-splatted density tracks
+  // where the point-sprite particles would actually be this instant, not
+  // a separately-advancing approximation.
+  const uTime = particleSystem ? particleSystem.material.uniforms.uTime.value : 0;
+
+  // Sample a bounded subset of particles per rebuild (see header comment)
+  // rather than every one — a stride walk rather than random picks, so
+  // coverage is even across the whole particle set frame to frame instead
+  // of favoring whichever containers happen to be listed first.
+  const stride = Math.max(VOL_SAMPLE_STRIDE_MIN, Math.ceil(count / VOL_MAX_SAMPLES));
+
+  const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+  for (let p = 0; p < count; p += stride) {
+    const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
+    const segF = progress * (MW - 1);
+    const seg = Math.floor(segF);
+    const segT = segF - seg;
+    const segB = Math.min(seg + 1, MW - 1);
+    const baseA = (p * MW + seg) * 3, baseB = (p * MW + segB) * 3;
+    tmpA.set(waypointData[baseA], waypointData[baseA + 1], waypointData[baseA + 2]);
+    tmpB.set(waypointData[baseB], waypointData[baseB + 1], waypointData[baseB + 2]);
+    const rad = radiusData[p * MW + seg] + (radiusData[p * MW + segB] - radiusData[p * MW + seg]) * segT;
+
+    // Tangent/right/up basis — same construction as computeParticlePosition
+    // in PARTICLE_SHADER_CORE, needed so the CPU-splatted position lands
+    // in the same place the GPU point sprite for this particle would.
+    let tx = tmpB.x - tmpA.x, ty = tmpB.y - tmpA.y, tz = tmpB.z - tmpA.z;
+    const tlen = Math.hypot(tx, ty, tz);
+    if (tlen > 0.0001) { tx /= tlen; ty /= tlen; tz /= tlen; } else { tx = 0; ty = 1; tz = 0; }
+    const upRefIsX = Math.abs(ty) > 0.98;
+    const rux = upRefIsX ? 0 : 1, ruy = upRefIsX ? 1 : 0, ruz = 0; // refUp as in the shader (x=1,y=0,z=0 when |tangent.y|>0.98, else y=1)
+    // right = normalize(cross(tangent, refUp))
+    let rx = ty * ruz - tz * ruy, ry = tz * rux - tx * ruz, rz = tx * ruy - ty * rux;
+    const rlen = Math.hypot(rx, ry, rz) || 1;
+    rx /= rlen; ry /= rlen; rz /= rlen;
+    // up2 = normalize(cross(right, tangent))
+    let ux = ry * tz - rz * ty, uy = rz * tx - rx * tz, uz = rx * ty - ry * tx;
+    const ulen = Math.hypot(ux, uy, uz) || 1;
+    ux /= ulen; uy /= ulen; uz /= ulen;
+
+    const ph = phase[p] * 6.2831;
+    const eddyX = Math.sin(progress * 41.0 + ph * 3.0);
+    const eddyY = Math.cos(progress * 33.0 + ph * 5.0);
+    const eddyZ = Math.sin(progress * 27.0 + ph * 2.0);
+
+    const lu = latU[p], lv = latV[p];
+    const px = tmpA.x + (tmpB.x - tmpA.x) * segT + (lu * rx + lv * ux) * rad + eddyX * rad * 0.10 * progress;
+    const py = tmpA.y + (tmpB.y - tmpA.y) * segT + (lu * ry + lv * uy) * rad + eddyY * rad * 0.10 * progress;
+    const pz = tmpA.z + (tmpB.z - tmpA.z) * segT + (lu * rz + lv * uz) * rad + eddyZ * rad * 0.10 * progress;
+
+    // NOTE: deliberately skips the GPU shader's final SDF-based wall-
+    // collision correction (sdfAt/sdfGradient push-back) — that per-
+    // particle correction matters most right at joints, a precision this
+    // volume's own ${VOL_RES}³ cells can't resolve meaningfully anyway,
+    // and the ray march's own sampleCoarseSDF occlusion check (in the
+    // fragment shader above) independently prevents density from ever
+    // being DRAWN inside a wall even if a splatted position lands just
+    // past one — the visible result (no fluid showing through walls) is
+    // preserved without needing this CPU mirror to replicate that step.
+    const gx = Math.floor((px - dMin.x) * invSizeX * res);
+    const gy = Math.floor((py - dMin.y) * invSizeY * res);
+    const gz = Math.floor((pz - dMin.z) * invSizeZ * res);
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= res || gy >= res || gz >= res) continue;
+
+    const tileX = (gz % volTilesPerRow) * res, tileY = Math.floor(gz / volTilesPerRow) * res;
+    const di = ((tileY + gy) * volTexRes + (tileX + gx)) * 4;
+
+    // Thermal color ramp — same cold/mid/warm/hot breakpoints as
+    // thermalRamp() in THERMAL_RAMP_GLSL, evaluated here in JS so the
+    // splatted color matches what the point-sprite renderer would have
+    // shown for this same particle at this same progress.
+    const t = Math.max(0, Math.min(1, thermalSeed[p] + progress * 0.4));
+    let cr, cg, cb;
+    if (t < 0.33) { const k = t / 0.33; cr = 0.2 + (0.0 - 0.2) * k; cg = 0.55 + (0.9 - 0.55) * k; cb = 1.0 + (0.85 - 1.0) * k; }
+    else if (t < 0.66) { const k = (t - 0.33) / 0.33; cr = 0.0 + (1.0 - 0.0) * k; cg = 0.9 + (0.55 - 0.9) * k; cb = 0.85 + (0.15 - 0.85) * k; }
+    else { const k = (t - 0.66) / 0.34; cr = 1.0; cg = 0.55 + (0.95 - 0.55) * k; cb = 0.15 + (0.85 - 0.15) * k; }
+
+    // Accumulate (not overwrite) so multiple particles landing in the same
+    // cell build up density, same intent as the point-sprite renderer's
+    // additive floor-heat splat.
+    const addDens = 0.9;
+    volDensityData[di] += addDens;
+    volDensityData[di + 1] += cr * addDens;
+    volDensityData[di + 2] += cg * addDens;
+    volDensityData[di + 3] += cb * addDens;
+  }
+
+  // Normalize color channels by accumulated density per-cell (so color
+  // reflects the average contributing particle, not a sum that keeps
+  // growing with particle count) while leaving density itself as the raw
+  // accumulated value the ray march's own Beer-Lambert extinction expects.
+  for (let i = 0; i < volDensityData.length; i += 4) {
+    const d = volDensityData[i];
+    if (d > 1e-5) {
+      volDensityData[i + 1] /= d; volDensityData[i + 2] /= d; volDensityData[i + 3] /= d;
+    }
+  }
+
+  if (!volDensityTex) {
+    volDensityTex = new THREE.DataTexture(volDensityData, volTexRes, volTexRes, THREE.RGBAFormat, THREE.FloatType);
+    // NearestFilter for the same reason as every other FloatType DataTexture
+    // in this file (uSDFCoarse, uSDFFineAtlas, uWaypoints): this shader
+    // does its own manual trilinear interpolation (sampleTiledVol), and a
+    // LinearFilter FloatType texture silently reads as all-zero on mobile
+    // GPUs lacking OES_texture_float_linear — exactly the bug class this
+    // file's existing SDF textures already had to avoid.
+    volDensityTex.magFilter = THREE.NearestFilter; volDensityTex.minFilter = THREE.NearestFilter;
+    volDensityTex.wrapS = THREE.ClampToEdgeWrapping; volDensityTex.wrapT = THREE.ClampToEdgeWrapping;
+  }
+  volDensityTex.needsUpdate = true;
+  return true;
+}
+
+// Called once per rendered frame (from animateBase) while the volumetric
+// toggle is on and a simulation is running — cheap when there's nothing
+// new to do (density rebuild is throttled to VOL_REBUILD_INTERVAL_MS, the
+// mesh transform only needs recomputing when state.sdf actually changes).
+let volLastSDFRef = null;
+function updateVolumetricRender(nowMs) {
+  if (!volEnabled) { if (volMesh) volMesh.visible = false; return; }
+  const sdf = state.sdf;
+  if (!sdf || !state.particleCPU || !state.simRunning) { if (volMesh) volMesh.visible = false; return; }
+
+  const mesh = ensureVolumetricMesh();
+
+  if (sdf !== volLastSDFRef) {
+    // Domain changed (new Simulate press) — resync the box transform and
+    // the SDF-sampling uniforms this material needs for occlusion. Doing
+    // this only on change (not every frame) mirrors the iOS renderer's own
+    // "domain size changes slowly" comment on why it re-scales a cached
+    // box rather than rebuilding geometry every bake.
+    const size = sdf.coarse.boundsSize, min = sdf.coarse.boundsMin;
+    mesh.scale.set(Math.max(size.x, 0.001), Math.max(size.y, 0.001), Math.max(size.z, 0.001));
+    mesh.position.set(min.x + size.x * 0.5, min.y + size.y * 0.5, min.z + size.z * 0.5);
+    mesh.updateMatrixWorld(true); // so matrixWorld below reflects the scale/position just set, not last frame's
+    const u = mesh.material.uniforms;
+    u.uVolMin.value.copy(min);
+    u.uVolSize.value.copy(size);
+    // Only the mesh's OWN transform changes (and only when the domain
+    // changes, i.e. right here) — the camera moving every frame via
+    // OrbitControls doesn't affect this inverse, so it's computed once per
+    // domain change rather than every render.
+    u.uInverseModelMatrix.value.copy(mesh.matrixWorld).invert();
+    u.uSDFCoarse.value = sdf.coarse.texture;
+    u.uSDFCoarseMin.value.copy(sdf.coarse.boundsMin);
+    u.uSDFCoarseSize.value.copy(sdf.coarse.boundsSize);
+    u.uSDFCoarseRes.value = sdf.coarse.res;
+    u.uSDFCoarseTilesPerRow.value = sdf.coarse.tilesPerRow;
+    u.uSDFCoarseTexRes.value = sdf.coarse.texRes;
+    volLastSDFRef = sdf;
+    volLastBuildAt = -Infinity; // force an immediate density rebuild for the new domain
+  }
+
+  if (nowMs - volLastBuildAt >= VOL_REBUILD_INTERVAL_MS) {
+    volLastBuildAt = nowMs;
+    if (rebuildVolumetricDensity()) {
+      mesh.material.uniforms.uVolDensity.value = volDensityTex;
+      mesh.material.uniforms.uVolTilesPerRow.value = volTilesPerRow;
+      mesh.material.uniforms.uVolTexRes.value = volTexRes;
+    }
+  }
+
+  mesh.visible = true;
+}
+
+// Toggle wiring: flips volEnabled, hides/shows the point-sprite system so
+// the two renderers are mutually exclusive (never drawn double), and
+// leaves the underlying simulation (particleSystem's uTime-driven
+// computeParticlePosition, the SDF collision, the floor heat splat — all
+// untouched) running exactly as before either way, per the task's
+// "visual layer only" requirement.
+document.getElementById('volumetricToggle').onchange = (e) => {
+  volEnabled = e.target.checked;
+  if (particleSystem) particleSystem.visible = !volEnabled;
+  if (!volEnabled && volMesh) volMesh.visible = false;
+};
 
 let simClock = new THREE.Clock();
 function animateParticles() {
