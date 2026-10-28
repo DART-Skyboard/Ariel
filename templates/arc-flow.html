@@ -2469,15 +2469,67 @@ const PARTICLE_SHADER_CORE = `
     return sd;
   }
 
+  // Samples ONE specific grid (fine region idx, or coarse if idx < 0) at
+  // world point p, with no re-resolution of which grid to use — the
+  // counterpart to sdfAt() that sdfGradient() needs so all 6 of its taps
+  // stay on the same grid (see sdfGradient's comment for why sdfAt() itself,
+  // which re-resolves fine-vs-coarse independently per call, is unsafe to
+  // use for a gradient).
+  float sdfAtFixedGrid(vec3 p, int idx) {
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) {
+          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
+          vec3 local = clamp((p - mn) / sz, 0.0, 1.0);
+          float sdN = sampleTiledSDF(uSDFFineAtlas, local, uSDFFineRes, uSDFFineTilesPerRow, uSDFAtlasTexRes, uSDFFineBlockOrigin[k]);
+          return sdN * length(sz);
+        }
+      }
+      return 0.0; // unreachable: idx always matches one k in range
+    }
+    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
+    float sdN = sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexRes, vec2(0.0));
+    return sdN * length(uSDFCoarseSize);
+  }
+
   // Estimated inward surface normal at p via a central-difference gradient
   // of the signed distance field — used to push a particle that has
   // crossed (or is about to cross) a wall back toward the legal interior,
   // the standard SDF collision-response technique.
+  //
+  // Resolves which grid covers p ONCE (mirroring sdfAt()'s own fine-vs-
+  // coarse logic), then takes all 6 central-difference taps from that same
+  // grid via sdfAtFixedGrid(), with a step sized to that grid's own voxel
+  // size. sdfAt() itself re-resolves fine-vs-coarse independently on EVERY
+  // tap, so when p sits within a fixed world-space step of a fine box's
+  // face, one tap of a pair reads the fine grid and the other reads the
+  // coarse grid — two fields with different resolutions and different
+  // triangle sets (a fine grid only rasterizes its own region.parts). The
+  // difference then measures the jump between grids, not the true wall
+  // direction — common along a pipe's own axis, since the pipe continues
+  // past the fine box's 2.2×radius padding. A fixed e=0.04 world-space step
+  // also doesn't track grid resolution: the smallest fine box can be ~0.44
+  // units wide (voxel ≈0.031), smaller than a 0.04 step, so the gradient
+  // samples past the feature it's trying to measure.
   vec3 sdfGradient(vec3 p, float fineIdx) {
-    float e = 0.04;
-    float dx = sdfAt(p + vec3(e,0.0,0.0), fineIdx) - sdfAt(p - vec3(e,0.0,0.0), fineIdx);
-    float dy = sdfAt(p + vec3(0.0,e,0.0), fineIdx) - sdfAt(p - vec3(0.0,e,0.0), fineIdx);
-    float dz = sdfAt(p + vec3(0.0,0.0,e), fineIdx) - sdfAt(p - vec3(0.0,0.0,e), fineIdx);
+    int idx = -1;
+    float e = 0.5 * length(uSDFCoarseSize) / uSDFCoarseRes; // coarse-grid default step
+    if (fineIdx >= 0.0) {
+      int fi = int(fineIdx + 0.5);
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == fi) {
+          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
+          vec3 local = (p - mn) / sz;
+          if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) {
+            idx = fi;
+            e = 0.5 * length(sz) / uSDFFineRes;
+          }
+        }
+      }
+    }
+    float dx = sdfAtFixedGrid(p + vec3(e,0.0,0.0), idx) - sdfAtFixedGrid(p - vec3(e,0.0,0.0), idx);
+    float dy = sdfAtFixedGrid(p + vec3(0.0,e,0.0), idx) - sdfAtFixedGrid(p - vec3(0.0,e,0.0), idx);
+    float dz = sdfAtFixedGrid(p + vec3(0.0,0.0,e), idx) - sdfAtFixedGrid(p - vec3(0.0,0.0,e), idx);
     vec3 g = vec3(dx, dy, dz);
     float len = length(g);
     return len > 0.0001 ? g / len : vec3(0.0, 1.0, 0.0);
