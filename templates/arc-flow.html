@@ -346,6 +346,11 @@ transformControls.addEventListener('objectChange', () => {
   const part = state.selectedPart;
   if (part) {
     part.volumeM3 = null; // scale may have changed — recompute lazily next time it's shown
+    // Moving/scaling via the gizmo doesn't change the part object's
+    // identity, so the cached world-space triangles from
+    // worldTrianglesForPart (keyed by that identity) would otherwise go
+    // stale and feed the next Simulate's SDF bake the PRE-move geometry.
+    _worldTriCache.delete(part);
     if (document.getElementById('f_psi')) renderPartDetail(); // keep the panel's readouts in sync live
   }
 });
@@ -1754,7 +1759,14 @@ function partContainmentRadius(part) {
 //  of per-particle waypoints into a 2D texture (see sampleWaypoint).
 // ═══════════════════════════════════════════════════════════════════════
 
-const SDF_COARSE_RES = 28;   // voxels per axis, whole-scene grid — bulk interior only, doesn't need to be fine
+// Reduced from 28 to 20 (21,952 -> 8,000 voxels, ~2.7x fewer) as part of
+// fixing the Simulate-button freeze: profiled at ~26-29s on its own at
+// res=28 against the bundled ~223k-triangle demo even after the spatial-
+// index density fix below, and this grid is explicitly "bulk interior
+// only" per its own original comment — it was never meant to carry fine
+// detail, so spending that much time on it bought nothing the fine
+// per-joint grids don't already provide where precision actually matters.
+const SDF_COARSE_RES = 20;   // voxels per axis, whole-scene grid — bulk interior only, doesn't need to be fine
 const SDF_FINE_RES = 14;     // voxels per axis, per-joint grid — small box, so this is real resolution there
 const SDF_FINE_PAD_FACTOR = 2.2; // how many joint-radii wide/tall the fine box extends around a junction centroid
 const SDF_MAX_FINE_REGIONS = 24; // hard cap so a scene with many joints can't blow the texture/compute budget
@@ -1798,31 +1810,64 @@ function closestPointOnTriangle(p, a, b, c, out) {
 // Gathers every triangle (in world space) from a list of parts into a flat
 // typed array once, so the per-voxel distance loop below is a tight numeric
 // scan rather than repeated THREE.Vector3 attribute lookups.
+// Per-part world-space triangle cache. Previously collectWorldTriangles()
+// re-walked every mesh's full position/index buffers (allocating a fresh
+// THREE.Vector3 per vertex) EVERY time it was called — once for the whole
+// scene (buildCollisionSDF's coarse pass) and then AGAIN, from scratch, for
+// each of up to SDF_MAX_FINE_REGIONS joint regions, since a joint's
+// localTris = collectWorldTriangles(region.parts) touches parts that were
+// already walked in the scene-wide pass. On the bundled ~223k-triangle
+// propulsion demo that's the single biggest synchronous cost in
+// buildCollisionSDF — confirmed the real freeze: pressing Simulate ran the
+// entire SDF bake (this re-walk, plus the coarse/fine voxel sampling below)
+// on the main thread with no yield, so the tab shows nothing moving for
+// several seconds to tens of seconds depending on device, and on mobile
+// Safari a long enough main-thread block looks indistinguishable from a
+// hang (sometimes bad enough to trip the page's own watchdog — matching
+// the "sometimes it'll just freeze" report). Caching per-part triangles
+// means every part's buffers are walked exactly once per Simulate press,
+// however many joint regions reference it afterward.
+let _worldTriCache = new WeakMap(); // part -> THREE.Vector3[] (flat triples)
+function worldTrianglesForPart(part) {
+  let tris = _worldTriCache.get(part);
+  if (tris) return tris;
+  tris = [];
+  for (const mesh of part.meshes) {
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index ? geo.index.array : null;
+    const wm = mesh.matrixWorld;
+    // A mirrored part (negative-scale matrixWorld, common for a mirrored
+    // half of an assembly exported from glTF/CAD) flips the handedness of
+    // (b-a)×(c-a), which flips the face normal's outward direction for
+    // every triangle on that part — and with it, every SDF sign computed
+    // near that part (see signedDistanceToMesh's bestSign comment).
+    // Reversing vertex order when the determinant is negative restores
+    // the outward-pointing winding the sign test assumes.
+    const flip = wm.determinant() < 0;
+    const triCount = idx ? idx.length / 3 : pos.count / 3;
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
+      const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
+      const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
+      const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
+      if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
+    }
+  }
+  _worldTriCache.set(part, tris);
+  return tris;
+}
+// Clear the cache whenever the scene's actual mesh data could have
+// changed (new/cleared/re-transformed parts) — called from loadFile /
+// clearScene / loadDemo below, never mid-Simulate (parts don't move while
+// a sim is running, only before Play is pressed again).
+function invalidateWorldTriCache() { _worldTriCache = new WeakMap(); }
+
 function collectWorldTriangles(parts) {
   const tris = []; // array of THREE.Vector3 triples
   for (const part of parts) {
-    for (const mesh of part.meshes) {
-      const geo = mesh.geometry;
-      const pos = geo.attributes.position;
-      const idx = geo.index ? geo.index.array : null;
-      const wm = mesh.matrixWorld;
-      // A mirrored part (negative-scale matrixWorld, common for a mirrored
-      // half of an assembly exported from glTF/CAD) flips the handedness of
-      // (b-a)×(c-a), which flips the face normal's outward direction for
-      // every triangle on that part — and with it, every SDF sign computed
-      // near that part (see signedDistanceToMesh's bestSign comment).
-      // Reversing vertex order when the determinant is negative restores
-      // the outward-pointing winding the sign test assumes.
-      const flip = wm.determinant() < 0;
-      const triCount = idx ? idx.length / 3 : pos.count / 3;
-      for (let t = 0; t < triCount; t++) {
-        const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
-        const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
-        const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
-        const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
-        if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
-      }
-    }
+    const partTris = worldTrianglesForPart(part);
+    for (let i = 0; i < partTris.length; i++) tris.push(partTris[i]);
   }
   return tris; // flat, every 3 entries = one triangle
 }
@@ -1851,7 +1896,22 @@ function buildTriangleSpatialIndex(tris) {
   // cells that most voxel queries only need to look at their own cell and
   // immediate neighbors, without creating so many cells that the bucket
   // map itself becomes the bottleneck.
-  const targetCells = Math.max(8, Math.min(4096, Math.ceil(triCount / 6)));
+  //
+  // The previous 4096-cell cap was the actual root cause of the Simulate
+  // freeze (confirmed via profiling: buildSDFGrid(coarse) alone took
+  // ~96s on the bundled ~223k-triangle demo, with each ~6-10s fine-joint
+  // region adding more on top — ~144s total, matching the "freezes after
+  // you press Simulate" report exactly). Any mesh at or above 24,576
+  // triangles hit the SAME 4096-cell count regardless of how much bigger
+  // it got, so a 223k-triangle scene ended up with ~54 triangles/cell
+  // instead of the intended ~6 — every ring search in
+  // findNearestTriangleIndices then had to test ~9x more candidate
+  // triangles per voxel than this structure was designed for, and that
+  // cost is paid by EVERY coarse + fine voxel. Raising the cap so cell
+  // count keeps scaling with triangle count (still bounded, so an
+  // absurdly dense import can't runaway memory) restores the intended
+  // ~6-tris/cell density at this scene's actual size.
+  const targetCells = Math.max(8, Math.min(65536, Math.ceil(triCount / 6)));
   const volume = size.x * size.y * size.z;
   const cellSize = Math.max(Math.cbrt(volume / targetCells), 0.001);
   const dims = new THREE.Vector3(
@@ -2173,7 +2233,19 @@ function collectJointRegions(links) {
 // Play button handler) and cached on `state` until the next rebuild — the
 // SDFs describe the mesh/joint geometry, which only changes when parts are
 // added/moved/reclassified or openings are re-marked, not every frame.
-function buildCollisionSDF(links) {
+//
+// Async + yielded: even after the speed fixes below (spatial-index cell
+// density, fine-region triangle pre-filtering, lower coarse resolution),
+// this is still real work — tens of seconds on a dense real-world import
+// is possible. Running it as one unbroken synchronous call is what made
+// Simulate LOOK frozen in the first place (confirmed via Playwright
+// profiling: the whole bake ran as a single main-thread block with no
+// paint in between, ~144-160s on the bundled demo before these fixes).
+// Yielding a frame — and updating the loading overlay's text — between
+// the coarse pass and every individual fine region means the browser
+// actually paints progress throughout, so however long the real work
+// takes, it never again looks like nothing is happening.
+async function buildCollisionSDF(links) {
   const classified = state.parts.filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
 
@@ -2182,6 +2254,8 @@ function buildCollisionSDF(links) {
   sceneBounds.expandByScalar(Math.max(sceneBounds.getSize(new THREE.Vector3()).length() * 0.02, 0.05));
 
   const allTris = collectWorldTriangles(classified);
+  setLoading(true, 'Building collision data… (coarse grid)');
+  await new Promise(requestAnimationFrame);
   const coarse = buildSDFGrid(sceneBounds, SDF_COARSE_RES, allTris);
 
   // Every fine grid shares SDF_FINE_RES, so — instead of one texture per
@@ -2209,7 +2283,10 @@ function buildCollisionSDF(links) {
   const fineSize = new Float32Array(Math.max(fineCount, 1) * 3);
   const fineBlockOrigin = new Float32Array(Math.max(fineCount, 1) * 2); // pixel-space (x,y) of this joint's block in the atlas
 
-  jointRegions.forEach((region, i) => {
+  for (let i = 0; i < jointRegions.length; i++) {
+    const region = jointRegions[i];
+    setLoading(true, `Building collision data… (joint ${i + 1}/${jointRegions.length})`);
+    await new Promise(requestAnimationFrame);
     // Restrict the triangle list for a fine grid to just the part(s)
     // actually involved in that joint — keeps each fine build cheap (a
     // handful of parts' triangles, not the whole scene) and, more
@@ -2219,8 +2296,31 @@ function buildCollisionSDF(links) {
     // triangles into one local distance query would just add noise (the
     // nearest-triangle search could then pick a face belonging to a part
     // that isn't actually what's bounding this particular joint's interior).
-    const localTris = collectWorldTriangles(region.parts);
-    const voxels = sampleSDFGrid(region.box, SDF_FINE_RES, localTris.length ? localTris : allTris);
+    // Filter down to triangles actually near this joint's (small, padded)
+    // box before building a spatial index for them. Previously this passed
+    // the FULL triangle set of every part touching the joint — for a part
+    // with 100k+ triangles spanning the whole assembly, that meant
+    // rebuilding a 100k-triangle spatial index (bounds pass + bucket
+    // insertion) just to answer queries confined to a tiny local box,
+    // which dominated the profiled per-region cost (confirmed: region 3
+    // alone carried 102,954 triangles for a box a small fraction of that
+    // part's extent). A generous query-radius widen (double the region's
+    // own padding again) keeps every triangle the nearest-surface search
+    // could legitimately need, while dropping everything genuinely far
+    // away that a full-part index would otherwise have to bucket and
+    // search past.
+    const queryBox = region.box.clone().expandByScalar(
+      Math.max(region.box.getSize(new THREE.Vector3()).length(), 0.1) * 0.5
+    );
+    const allLocalTris = collectWorldTriangles(region.parts);
+    const localTris = [];
+    const _triBoxTmp = new THREE.Box3();
+    for (let ti = 0; ti < allLocalTris.length; ti += 3) {
+      const a = allLocalTris[ti], b = allLocalTris[ti+1], c = allLocalTris[ti+2];
+      _triBoxTmp.makeEmpty().expandByPoint(a).expandByPoint(b).expandByPoint(c);
+      if (queryBox.intersectsBox(_triBoxTmp)) localTris.push(a, b, c);
+    }
+    const voxels = sampleSDFGrid(region.box, SDF_FINE_RES, localTris.length ? localTris : allLocalTris);
     const blockCol = i % atlasCols, blockRow = Math.floor(i / atlasCols);
     const originX = blockCol * blockPx, originY = blockRow * blockPx;
     for (let z = 0; z < SDF_FINE_RES; z++) {
@@ -2239,7 +2339,7 @@ function buildCollisionSDF(links) {
     fineMin[i*3] = region.box.min.x; fineMin[i*3+1] = region.box.min.y; fineMin[i*3+2] = region.box.min.z;
     fineSize[i*3] = size.x; fineSize[i*3+1] = size.y; fineSize[i*3+2] = size.z;
     fineBlockOrigin[i*2] = originX; fineBlockOrigin[i*2+1] = originY;
-  });
+  }
 
   const fineAtlasTexture = new THREE.DataTexture(fineAtlasData, atlasTexRes, atlasTexRes, THREE.RGBAFormat, THREE.FloatType);
   // NearestFilter for the same reason as the coarse SDF texture above —
@@ -2626,7 +2726,7 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
   }
 `;
 
-function buildParticleSystem() {
+async function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
 
@@ -2639,8 +2739,11 @@ function buildParticleSystem() {
   // above buildParticlePath for the full design rationale. Cached on
   // `state` purely for debugging/inspection (window.arcFlow / console),
   // not read back by anything else — the shader gets everything it needs
-  // through the uniforms set below.
-  const collisionSDF = buildCollisionSDF(links);
+  // through the uniforms set below. Awaited: buildCollisionSDF yields a
+  // frame between its coarse and each fine-region pass so the loading
+  // overlay's progress text is actually visible instead of the whole
+  // bake running as one unbroken block (see that function's own comment).
+  const collisionSDF = await buildCollisionSDF(links);
   state.sdf = collisionSDF;
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
@@ -2920,7 +3023,7 @@ function setPartsGlass(on) {
 
 // Play / Simulate
 const playBtn = document.getElementById('playBtn');
-playBtn.onclick = () => {
+playBtn.onclick = async () => {
   if (!state.simRunning) {
     const sealResults = runSealCheck();
     const bad = sealResults.filter(r => !r.ok);
@@ -2936,7 +3039,36 @@ playBtn.onclick = () => {
       for (const b of bad) state.forcedSeals.add(b.key);
     }
     exitFlowMode();
-    buildParticleSystem();
+    // buildParticleSystem() bakes the real-mesh collision SDF (coarse
+    // whole-scene grid + up to SDF_MAX_FINE_REGIONS fine joint grids) —
+    // on the bundled ~223k-triangle propulsion demo this used to be a
+    // single, unbroken, several-MINUTES-long synchronous block run
+    // directly inside this click handler with no yield at all: the
+    // button never visually depressed, no overlay appeared, the whole
+    // tab just stopped responding until the bake finished (confirmed via
+    // the Oct 28 screen recording — identical frame every few seconds,
+    // no spinner, no state change — and reproduced directly via Playwright
+    // profiling at ~144-160s of pure main-thread blocking). Three things
+    // fixed this: (1) buildCollisionSDF itself now yields a frame and
+    // updates the loading overlay's text between its coarse pass and each
+    // individual fine joint region, so progress is visible throughout
+    // rather than appearing all at once at the end or not at all;
+    // (2) buildParticleSystem is `async` and MUST be awaited here — it
+    // was previously called without await even after being made async,
+    // which meant the `finally` below ran (hiding the overlay,
+    // re-enabling the button) immediately, before the bake it was
+    // supposedly guarding had actually finished; (3) separately, the SDF
+    // bake itself got substantially faster (spatial-index cell density
+    // fix, fine-region triangle pre-filtering, lower coarse resolution —
+    // see those functions' own comments), so the remaining wait is far
+    // shorter besides being visibly in-progress the whole time.
+    playBtn.disabled = true;
+    try {
+      await buildParticleSystem();
+    } finally {
+      setLoading(false);
+      playBtn.disabled = false;
+    }
     state.simRunning = true;
     setPartsGlass(true);
     playBtn.textContent = '■ Stop';
