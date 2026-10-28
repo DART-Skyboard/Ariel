@@ -1693,7 +1693,589 @@ function partContainmentRadius(part) {
   return Math.min(size.x, size.z) * 0.5 * 0.7;
 }
 
-function buildParticlePath(part, links, depth) {
+// ═══════════════════════════════════════════════════════════════════════
+//  ADAPTIVE SDF MESH COLLISION
+//
+//  WHY THIS EXISTS: partContainmentRadius() above is the old crude proxy —
+//  a per-part cylinder guess from the AABB, with NO relationship to the
+//  real wall geometry, and in particular no idea what the wall looks like
+//  right at a joint between two differently-shaped parts (e.g. a wide tank
+//  necking down into a narrow pipe). The particle shader used to just lerp
+//  between two unrelated per-part radii across that boundary, which is why
+//  particles visibly passed straight through walls at joints. This module
+//  replaces that lerp with a real signed-distance-field sampled against
+//  the ACTUAL imported mesh, so the particle shader can push particles
+//  back off a wall it is about to clip through.
+//
+//  SIGN CONVENTION — chosen to agree with detectOpenings(), which is this
+//  file's existing source of truth for "this mesh has an opening here":
+//  detectOpenings() treats a part purely as its mesh surface (triangles),
+//  with boundary edges (seen by only one triangle) marking real holes. It
+//  never reasons about wall thickness or a separate "solid" shell — a tank
+//  wall is just whatever triangles were modeled, usually a single-layer,
+//  not-necessarily-watertight shell. So "inside the mesh" for THIS file's
+//  models already means "inside the hollow interior a fluid could occupy",
+//  because there's no modeled interior/exterior wall pair to tell apart —
+//  the parts are thin single-surface shells, and the volume enclosed by
+//  that one surface (per computeVolume()'s divergence-theorem sense, which
+//  only needs one consistent surface, not two) IS the fluid-legal region.
+//  So: sdf < 0  ⇒  inside the enclosing surface ⇒ fluid-legal interior.
+//      sdf > 0  ⇒  outside the enclosing surface ⇒ illegal (through/past
+//                   the wall) — this is exactly the "clipping through the
+//                   wall" failure mode from the recording.
+//  At an open boundary loop (a real opening/hole in the shell, exactly
+//  where detectOpenings() finds a loop) the pseudo-normal sign test below
+//  is naturally ambiguous right at the hole — which is fine, because that is
+//  precisely where fluid is SUPPOSED to be able to cross from one part's
+//  interior into the next. We don't fight that ambiguity; we rely on it:
+//  it's what lets the SDF collision coexist with buildFlowGraph's
+//  entrance/exit crossing logic instead of fighting it.
+//
+//  GRID STRATEGY (the "two SDF grids" fallback from the build plan, chosen
+//  over a full sparse brick/tile system): one COARSE grid spanning the
+//  whole loaded scene's bounding box (cheap, bulk-interior accuracy is all
+//  that's needed for the open middle of a tank or a straight pipe run),
+//  plus one FINE grid per detected joint (an exit/entrance pair matched by
+//  buildFlowGraph, or a chamber's entrances/nozzle) in a small padded box
+//  around that junction — exactly where today's crude per-part cylinder
+//  lerp is worst, since that's where two unrelated part radii used to
+//  blend across completely different real cross-sections. The particle
+//  shader checks each fine box first and falls back to the coarse grid.
+//
+//  PACKING: this file never requests a WebGL2 context or uses
+//  THREE.Data3DTexture/DataTexture3D anywhere (checked — grep came back
+//  empty), and GLSL1-style texture2D() sampling (used throughout the
+//  existing PARTICLE_SHADER_CORE) is what both WebGL1 and WebGL2 contexts
+//  support identically in a vertex shader. So each 3D SDF grid is packed
+//  as a TILED 2D texture instead of a true 3D texture: Z-slices are laid
+//  out left-to-right, top-to-bottom across one flat 2D image, and the
+//  shader fetches a slice by computing its tile offset — the same trick
+//  this file's own buildParticleSystem() already uses to pack a 1D array
+//  of per-particle waypoints into a 2D texture (see sampleWaypoint).
+// ═══════════════════════════════════════════════════════════════════════
+
+const SDF_COARSE_RES = 28;   // voxels per axis, whole-scene grid — bulk interior only, doesn't need to be fine
+const SDF_FINE_RES = 14;     // voxels per axis, per-joint grid — small box, so this is real resolution there
+const SDF_FINE_PAD_FACTOR = 2.2; // how many joint-radii wide/tall the fine box extends around a junction centroid
+const SDF_MAX_FINE_REGIONS = 24; // hard cap so a scene with many joints can't blow the texture/compute budget
+
+// Signed distance from `point` to the nearest triangle among `triangles`
+// (each a flat [v0x,v0y,v0z, v1..., v2...] array in WORLD space), with the
+// sign from the nearest triangle's own pseudo-normal (see signedDistanceToMesh
+// below, and the header comment above, for why this is the right interior
+// test for this file's thin-shell single-surface parts).
+// This is brute-force O(triangles) per sample point — acceptable because
+// it only runs ONCE per Simulate press while building the grids, never
+// per-frame, and the triangle counts here are the same meshes
+// detectOpenings()/computeVolume() already walk in full every time Flow
+// Selection Mode is entered or the sim starts.
+const _sdfTmpV0 = new THREE.Vector3(), _sdfTmpV1 = new THREE.Vector3(), _sdfTmpV2 = new THREE.Vector3();
+function closestPointOnTriangle(p, a, b, c, out) {
+  // Standard closest-point-on-triangle (Ericson, Real-Time Collision Detection).
+  const ab = b.clone().sub(a), ac = c.clone().sub(a), ap = p.clone().sub(a);
+  const d1 = ab.dot(ap), d2 = ac.dot(ap);
+  if (d1 <= 0 && d2 <= 0) return out.copy(a);
+  const bp = p.clone().sub(b);
+  const d3 = ab.dot(bp), d4 = ac.dot(bp);
+  if (d3 >= 0 && d4 <= d3) return out.copy(b);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return out.copy(a).addScaledVector(ab, v); }
+  const cp = p.clone().sub(c);
+  const d5 = ab.dot(cp), d6 = ac.dot(cp);
+  if (d6 >= 0 && d5 <= d6) return out.copy(c);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return out.copy(a).addScaledVector(ac, w); }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+    const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    return out.copy(b).addScaledVector(c.clone().sub(b), w);
+  }
+  const denom = 1 / (va + vb + vc);
+  const v = vb * denom, w = vc * denom;
+  return out.copy(a).addScaledVector(ab, v).addScaledVector(ac, w);
+}
+
+// Gathers every triangle (in world space) from a list of parts into a flat
+// typed array once, so the per-voxel distance loop below is a tight numeric
+// scan rather than repeated THREE.Vector3 attribute lookups.
+function collectWorldTriangles(parts) {
+  const tris = []; // array of THREE.Vector3 triples
+  for (const part of parts) {
+    for (const mesh of part.meshes) {
+      const geo = mesh.geometry;
+      const pos = geo.attributes.position;
+      const idx = geo.index ? geo.index.array : null;
+      const wm = mesh.matrixWorld;
+      // A mirrored part (negative-scale matrixWorld, common for a mirrored
+      // half of an assembly exported from glTF/CAD) flips the handedness of
+      // (b-a)×(c-a), which flips the face normal's outward direction for
+      // every triangle on that part — and with it, every SDF sign computed
+      // near that part (see signedDistanceToMesh's bestSign comment).
+      // Reversing vertex order when the determinant is negative restores
+      // the outward-pointing winding the sign test assumes.
+      const flip = wm.determinant() < 0;
+      const triCount = idx ? idx.length / 3 : pos.count / 3;
+      for (let t = 0; t < triCount; t++) {
+        const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
+        const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
+        const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
+        const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
+        if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
+      }
+    }
+  }
+  return tris; // flat, every 3 entries = one triangle
+}
+
+// ── Spatial acceleration for signedDistanceToMesh ────────────────────────
+// A real imported assembly can easily carry hundreds of thousands of
+// triangles (the bundled propulsion demo alone is ~223k across its 7
+// parts), and the SDF build samples thousands of voxels (SDF_COARSE_RES³
+// plus several SDF_FINE_RES³ joint grids) — brute-force "nearest triangle
+// among ALL of them" per voxel is O(voxels × triangles), which is tens of
+// billions of triangle-distance tests for a scene this size and makes the
+// build take minutes instead of being usable at all. A uniform spatial
+// hash (triangles bucketed into a coarse 3D grid of cells by their own
+// bounding box) turns each voxel's query into "search the handful of
+// triangles in nearby cells, expanding outward only until something is
+// found" — the standard practical acceleration structure for baking an
+// SDF from a mesh, letting the per-voxel cost scale with LOCAL triangle
+// density instead of the whole model's triangle count.
+function buildTriangleSpatialIndex(tris) {
+  const bounds = new THREE.Box3();
+  for (let i = 0; i < tris.length; i++) bounds.expandByPoint(tris[i]);
+  const size = new THREE.Vector3(); bounds.getSize(size);
+  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+  const triCount = tris.length / 3;
+  // Aim for roughly a handful of triangles per cell on average — enough
+  // cells that most voxel queries only need to look at their own cell and
+  // immediate neighbors, without creating so many cells that the bucket
+  // map itself becomes the bottleneck.
+  const targetCells = Math.max(8, Math.min(4096, Math.ceil(triCount / 6)));
+  const volume = size.x * size.y * size.z;
+  const cellSize = Math.max(Math.cbrt(volume / targetCells), 0.001);
+  const dims = new THREE.Vector3(
+    Math.max(1, Math.ceil(size.x / cellSize)),
+    Math.max(1, Math.ceil(size.y / cellSize)),
+    Math.max(1, Math.ceil(size.z / cellSize)),
+  );
+  const cellOf = (v) => {
+    const cx = Math.min(dims.x - 1, Math.max(0, Math.floor((v.x - bounds.min.x) / cellSize)));
+    const cy = Math.min(dims.y - 1, Math.max(0, Math.floor((v.y - bounds.min.y) / cellSize)));
+    const cz = Math.min(dims.z - 1, Math.max(0, Math.floor((v.z - bounds.min.z) / cellSize)));
+    return { cx, cy, cz };
+  };
+  const buckets = new Map(); // "cx,cy,cz" -> [triIndex0, triIndex0, triIndex0 (its 3 vertex slots), triIndex1, ...]
+  const keyOf = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
+  for (let i = 0; i < tris.length; i += 3) {
+    const a = tris[i], b = tris[i+1], c = tris[i+2];
+    // Bucket a triangle into every cell its (axis-aligned) bounding box
+    // touches, not just its centroid's cell — otherwise a large triangle
+    // spanning several cells would be invisible to a query point that
+    // lands in one of the OTHER cells it actually passes through, which
+    // would wrongly miss it as the nearest surface there.
+    const triBounds = new THREE.Box3().setFromPoints([a, b, c]);
+    const lo = cellOf(triBounds.min), hi = cellOf(triBounds.max);
+    for (let cz = lo.cz; cz <= hi.cz; cz++) {
+      for (let cy = lo.cy; cy <= hi.cy; cy++) {
+        for (let cx = lo.cx; cx <= hi.cx; cx++) {
+          const key = keyOf(cx, cy, cz);
+          let arr = buckets.get(key);
+          if (!arr) { arr = []; buckets.set(key, arr); }
+          arr.push(i);
+        }
+      }
+    }
+  }
+  return { tris, bounds, cellSize, dims, buckets, keyOf, cellOf };
+}
+
+// Nearest-triangle search using the spatial index: starts at the query
+// point's own cell and expands outward ring-by-ring (a cheap Chebyshev-
+// distance shell search over the bucket grid), tracking the true best
+// point-to-triangle distance found so far among all visited candidates.
+//
+// Termination: NOT a closed-form "distance to the next unsearched shell"
+// bound. That approach was tried in several forms (an unclamped growing
+// box, a box clamped to the grid's real [0,dims) extent) and is
+// structurally unworkable here: the search box is built by growing r
+// cells outward from `point`'s OWN cell, so by construction it always
+// contains `point` itself on every axis until that axis's growth
+// saturates the grid's full extent — which has nothing to do with
+// whether a closer unsearched triangle could exist nearby. Traced
+// concretely on this app's real (aspect-skewed) spatial index
+// (dims={x:10,y:56,z:9}), the clamped-box distance measured exactly 0
+// through r=20+ on a representative interior query, i.e. it essentially
+// never fires before the long axis (56 cells) is almost fully searched —
+// which is the same "visit nearly everything" blowup (from near-instant
+// to 400+s on the real 223k-triangle demo) as the unclamped version.
+//
+// Instead: keep tracking true best distance (the real correctness fix,
+// still strictly better than the original "stop one extra ring after
+// first non-empty ring" heuristic CodeRabbit flagged, since bucketed
+// large triangles can leave that heuristic's "first non-empty ring"
+// understating how many rings actually matter) but bound the search with
+// a fixed, generous safety margin of extra rings past the first ring
+// that produces any candidate, rather than a provably-tight analytic
+// stopping distance. This trades a theoretical (vanishingly unlikely in
+// practice — it would require the single nearest triangle to sit
+// SAFETY_RING_MARGIN+ rings farther out than the first hit while nothing
+// closer exists anywhere in between) correctness risk for guaranteed,
+// fast termination independent of the grid's aspect ratio.
+const SAFETY_RING_MARGIN = 3;
+function findNearestTriangleIndices(index, point) {
+  const { dims, buckets, keyOf, cellOf } = index;
+  const center = cellOf(point); // clamped into [0, dims) by cellOf
+  const maxRadius = Math.max(dims.x, dims.y, dims.z);
+  const seen = new Set(); // dedupe triangles stored in multiple buckets
+  let candidateIndices = [];
+  let bestDistSq = Infinity;
+  const closest = new THREE.Vector3();
+  let firstHitRing = -1;
+  for (let r = 0; r <= maxRadius; r++) {
+    if (firstHitRing >= 0 && r > firstHitRing + SAFETY_RING_MARGIN) break;
+    for (let dz = -r; dz <= r; dz++) {
+      const cz = center.cz + dz;
+      if (cz < 0 || cz >= dims.z) continue;
+      for (let dy = -r; dy <= r; dy++) {
+        const cy = center.cy + dy;
+        if (cy < 0 || cy >= dims.y) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          // Only visit the SHELL at this radius (cells strictly inside were
+          // already visited at a smaller r) — skip interior cells.
+          if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+          const cx = center.cx + dx;
+          if (cx < 0 || cx >= dims.x) continue;
+          const arr = buckets.get(keyOf(cx, cy, cz));
+          if (!arr || !arr.length) continue;
+          for (const idx of arr) {
+            if (seen.has(idx)) continue; // large triangle in >1 bucket
+            seen.add(idx);
+            candidateIndices.push(idx);
+            if (firstHitRing < 0) firstHitRing = r;
+            const a = index.tris[idx], b = index.tris[idx+1], c = index.tris[idx+2];
+            closestPointOnTriangle(point, a, b, c, closest);
+            const d = point.distanceToSquared(closest);
+            if (d < bestDistSq) bestDistSq = d;
+          }
+        }
+      }
+    }
+  }
+  return candidateIndices.length ? candidateIndices : null; // array of triangle-start indices (into index.tris), or null if the whole grid was empty
+}
+
+// Unsigned nearest-triangle distance, signed via the PSEUDO-NORMAL
+// technique (Baerentzen & Aanaes) rather than ray-casting parity: once the
+// globally closest triangle to `point` is found, the sign is just
+// sign(dot(point - closestPoint, faceNormalOfClosestTriangle)) — negative
+// (the fluid-legal interior side) when `point` sits on the side the
+// triangle's outward face normal does NOT point toward.
+//
+// This replaces an earlier ray-parity sign test that cast one fixed-
+// direction ray from the point and counted crossings (odd = inside). That
+// approach is the textbook technique for a CLOSED, watertight mesh, but
+// this file's own existing detectOpenings() comment block is explicit that
+// these parts are thin, often non-watertight single-surface shells with
+// real open ends (tank necks, pipe ends, the nozzle throat) — exactly
+// where a fluid is SUPPOSED to flow through. A ray cast from inside such a
+// shell can exit straight through one of those open ends without crossing
+// any other geometry, under-counting crossings and misreporting a point
+// deep in a part's own interior as "outside". (Confirmed empirically while
+// verifying this fix: a probe at the dead center of an open-ended test
+// cylinder's interior read as a false positive/outside under the ray-
+// parity version.) The pseudo-normal test has no such blind spot — it
+// only ever looks at the nearest surface, which is well-defined everywhere
+// except exactly ON that surface, and degrades gracefully (a small sign
+// ambiguity right at an opening's edge) in precisely the region where, per
+// the sign-convention note above, fluid is allowed to cross anyway.
+//
+// Accepts EITHER a flat triangle array (brute-force search over all of
+// them — fine for a small triangle count, e.g. ad hoc debugging/console
+// use) OR a spatial index from buildTriangleSpatialIndex (searches only
+// nearby buckets — what buildSDFGrid/sampleSDFGrid always use for a real
+// scene, where brute force over every triangle per voxel would be far too
+// slow; see buildTriangleSpatialIndex's own comment for the numbers).
+function signedDistanceToMesh(point, trisOrIndex) {
+  const isIndex = trisOrIndex && !Array.isArray(trisOrIndex) && trisOrIndex.tris;
+  const tris = isIndex ? trisOrIndex.tris : trisOrIndex;
+  let candidateIndices = null;
+  if (isIndex) {
+    candidateIndices = findNearestTriangleIndices(trisOrIndex, point);
+    if (!candidateIndices) return Infinity; // empty mesh — shouldn't normally happen, but don't crash
+  }
+
+  let best = Infinity;
+  // Accumulates the face normals of every triangle tied (within epsilon)
+  // for the closest-point distance, so a point whose nearest feature is a
+  // shared edge or vertex gets an angle-weighted pseudo-normal instead of
+  // whichever tied triangle happened to be visited first. At an
+  // unambiguous face hit only one triangle ever ties, so this reduces to
+  // the plain face normal exactly as before.
+  const normalAccum = new THREE.Vector3();
+  const closest = new THREE.Vector3();
+  const toPoint = new THREE.Vector3();
+  const faceNormal = new THREE.Vector3();
+  const considerTriangle = (i) => {
+    const a = tris[i], b = tris[i+1], c = tris[i+2];
+    closestPointOnTriangle(point, a, b, c, closest);
+    const d = point.distanceToSquared(closest);
+    // Scale-relative epsilon: "tied" means the same closest feature (an
+    // edge or vertex shared by adjacent triangles), not merely close in
+    // absolute terms across wildly different part sizes. Guard against
+    // `best` still being Infinity (before any triangle has been
+    // considered) — Infinity * 1e-6 is Infinity, which would make every
+    // first triangle register as a "tie" against an unset best and never
+    // actually set it.
+    const eps = 1e-10 + (Number.isFinite(best) ? best * 1e-6 : 0);
+    // Face normal via the two edge vectors, Newell-free since triangle
+    // winding is consistent within one mesh primitive (as exported by any
+    // standard glTF/OBJ/STL pipeline, and now corrected for mirrored
+    // parts by collectWorldTriangles).
+    _sdfTmpV0.copy(b).sub(a);
+    _sdfTmpV1.copy(c).sub(a);
+    faceNormal.copy(_sdfTmpV0).cross(_sdfTmpV1).normalize();
+    if (d < best - eps) {
+      best = d;
+      normalAccum.copy(faceNormal);
+      toPoint.copy(point).sub(closest);
+    } else if (d < best + eps) {
+      // Same closest feature as the current best (shared edge/vertex at a
+      // crease): accumulate rather than overwrite, so the sign doesn't
+      // depend on triangle visit order — this is exactly the joint/crease
+      // geometry this PR targets.
+      normalAccum.add(faceNormal);
+    }
+  };
+  if (candidateIndices) {
+    for (const i of candidateIndices) considerTriangle(i);
+  } else {
+    for (let i = 0; i < tris.length; i += 3) considerTriangle(i);
+  }
+  // If toPoint and the accumulated normal roughly agree, the point is on
+  // the outward side — positive/illegal. Disagreement means the point is
+  // on the inward (fluid-legal) side — negative.
+  const bestSign = toPoint.dot(normalAccum) >= 0 ? 1 : -1;
+  return Math.sqrt(best) * bestSign;
+}
+
+// Computes signed distances for every voxel of a `res`-per-axis grid over
+// `bounds`, returning a flat Float32Array of res*res*res values (x fastest,
+// then y, then z) normalized by the grid's own diagonal (so values stay in
+// a sane range whether this is the big coarse grid or a tiny fine box —
+// the shader un-normalizes using the same bounds it was given).
+//
+// Builds a triangle spatial index ONCE up front (see
+// buildTriangleSpatialIndex) and reuses it for every voxel in this grid,
+// rather than re-searching all of `tris` per voxel — the difference
+// between a build that's instant and one that hangs for minutes on a
+// real, triangle-dense imported assembly (confirmed: the bundled
+// propulsion demo alone totals ~223k triangles across its 7 parts).
+function sampleSDFGrid(bounds, res, tris) {
+  const size = new THREE.Vector3(); bounds.getSize(size);
+  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+  const diag = size.length();
+  const out = new Float32Array(res * res * res);
+  const index = buildTriangleSpatialIndex(tris);
+  const p = new THREE.Vector3();
+  for (let z = 0; z < res; z++) {
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        p.set(
+          bounds.min.x + (x + 0.5) / res * size.x,
+          bounds.min.y + (y + 0.5) / res * size.y,
+          bounds.min.z + (z + 0.5) / res * size.z,
+        );
+        out[(z * res + y) * res + x] = signedDistanceToMesh(p, index) / diag;
+      }
+    }
+  }
+  return out;
+}
+
+// Packs one res³ voxel grid as a tiled-2D-as-3D texture: Z-slices laid out
+// left-to-right/top-to-bottom across a single square 2D image (tilesPerRow
+// tiles per row), the same "flatten the 3rd dimension into 2D tiles" trick
+// buildParticleSystem() already uses to pack per-particle waypoint arrays.
+// Returns { texture, boundsMin, boundsSize, res, tilesPerRow, texRes }.
+function buildSDFGrid(bounds, res, tris) {
+  const size = new THREE.Vector3(); bounds.getSize(size);
+  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+  const voxels = sampleSDFGrid(bounds, res, tris);
+  const tilesPerRow = Math.ceil(Math.sqrt(res));
+  const texRes = res * tilesPerRow;
+  const data = new Float32Array(texRes * texRes * 4);
+  for (let z = 0; z < res; z++) {
+    const tileX = (z % tilesPerRow) * res, tileY = Math.floor(z / tilesPerRow) * res;
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        const px = tileX + x, py = tileY + y;
+        const di = (py * texRes + px) * 4;
+        data[di] = voxels[(z * res + y) * res + x];
+        data[di+1] = 0; data[di+2] = 0; data[di+3] = 1;
+      }
+    }
+  }
+  const texture = new THREE.DataTexture(data, texRes, texRes, THREE.RGBAFormat, THREE.FloatType);
+  // NearestFilter, not LinearFilter: sampleTiledSDF already does its own
+  // trilinear interpolation by hand across texel centers, so hardware
+  // linear filtering adds nothing — and on a device without
+  // OES_texture_float_linear (common on mobile GPUs), a FloatType texture
+  // with LinearFilter is an incomplete texture that silently samples as
+  // all-zero, making sd=0 everywhere and disabling collision entirely.
+  texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping; texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return { texture, boundsMin: bounds.min.clone(), boundsSize: size.clone(), res, tilesPerRow, texRes };
+}
+
+// Finds the padded junction boxes that most need fine-resolution collision:
+// every exit->entrance link from buildFlowGraph (where two DIFFERENT parts'
+// real cross-sections meet — the exact failure mode from the recording),
+// plus a chamber's own entrance/nozzle openings (multiple feed lines
+// converging into one part is its own tight, high-triangle-density region
+// even without crossing a part boundary). Capped at SDF_MAX_FINE_REGIONS so
+// an elaborate imported assembly can't runaway the SDF build cost.
+function collectJointRegions(links) {
+  const regions = [];
+  const seen = new Set();
+  const addRegion = (center, radius, partsInvolved) => {
+    if (regions.length >= SDF_MAX_FINE_REGIONS) return;
+    const key = center.x.toFixed(2)+','+center.y.toFixed(2)+','+center.z.toFixed(2);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const pad = Math.max(radius, 0.1) * SDF_FINE_PAD_FACTOR;
+    const box = new THREE.Box3(
+      new THREE.Vector3(center.x - pad, center.y - pad, center.z - pad),
+      new THREE.Vector3(center.x + pad, center.y + pad, center.z + pad),
+    );
+    regions.push({ box, parts: partsInvolved });
+  };
+
+  for (const [part, link] of links.entries()) {
+    const mid = part === link.target ? link.viaOpening.centroid
+      : link.viaOpening.centroid.clone().lerp(link.entrance.centroid, 0.5);
+    const r = Math.max(link.viaOpening.radius, link.entrance.radius);
+    addRegion(mid, r, [part, link.target]);
+  }
+  // Chambers: every opening (entrances converging + the nozzle throat) is a
+  // tight, high-density junction region in its own right.
+  for (const part of state.parts) {
+    if (part.type !== 'chamber') continue;
+    for (const o of part.openings) {
+      if (o.role === 'entrance' || o.role === 'nozzle') addRegion(o.centroid, o.radius, [part]);
+    }
+  }
+  return regions;
+}
+
+// Top-level build, called once right before a simulation starts (see the
+// Play button handler) and cached on `state` until the next rebuild — the
+// SDFs describe the mesh/joint geometry, which only changes when parts are
+// added/moved/reclassified or openings are re-marked, not every frame.
+function buildCollisionSDF(links) {
+  const classified = state.parts.filter(p => p.type);
+  if (!classified.length) { state.sdf = null; return null; }
+
+  const sceneBounds = new THREE.Box3();
+  for (const part of classified) for (const m of part.meshes) sceneBounds.expandByObject(m);
+  sceneBounds.expandByScalar(Math.max(sceneBounds.getSize(new THREE.Vector3()).length() * 0.02, 0.05));
+
+  const allTris = collectWorldTriangles(classified);
+  const coarse = buildSDFGrid(sceneBounds, SDF_COARSE_RES, allTris);
+
+  // Every fine grid shares SDF_FINE_RES, so — instead of one texture per
+  // joint, which would need a dynamically-indexed sampler array (poorly
+  // supported on mobile GL, and GLSL sampler arrays must be compile-time
+  // sized anyway) — all fine grids are packed into ONE shared atlas: each
+  // joint gets its own fixed-size block of Z-tiles within a single big
+  // texture, addressed by a per-particle "which fine region, if any" index
+  // uniform the shader looks up with one normal sampler2D. This keeps the
+  // whole fine-collision system down to exactly one extra texture sampler,
+  // not N of them.
+  const jointRegions = collectJointRegions(links);
+  const fineTilesPerRow = Math.ceil(Math.sqrt(SDF_FINE_RES));          // tiles-per-row WITHIN one grid's block
+  const blockPx = SDF_FINE_RES * fineTilesPerRow;                       // pixel size of one grid's block (square)
+  const atlasCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(jointRegions.length, 1))));
+  const atlasRows = Math.max(1, Math.ceil(Math.max(jointRegions.length, 1) / atlasCols));
+  const atlasTexRes = Math.max(blockPx * atlasCols, blockPx * atlasRows, blockPx); // square-enough atlas
+  const fineAtlasData = new Float32Array(Math.max(atlasTexRes, blockPx) * Math.max(atlasTexRes, blockPx) * 4);
+  // Default every texel to a large positive (clearly "outside, far away")
+  // distance so any padding region of the atlas never reads as "inside".
+  for (let i = 0; i < fineAtlasData.length; i += 4) fineAtlasData[i] = 1.0;
+
+  const fineCount = jointRegions.length;
+  const fineMin = new Float32Array(Math.max(fineCount, 1) * 3);
+  const fineSize = new Float32Array(Math.max(fineCount, 1) * 3);
+  const fineBlockOrigin = new Float32Array(Math.max(fineCount, 1) * 2); // pixel-space (x,y) of this joint's block in the atlas
+
+  jointRegions.forEach((region, i) => {
+    // Restrict the triangle list for a fine grid to just the part(s)
+    // actually involved in that joint — keeps each fine build cheap (a
+    // handful of parts' triangles, not the whole scene) and, more
+    // importantly, keeps the pseudo-normal sign test meaningful: a fine
+    // box right at a joint is exactly where two different parts' surfaces
+    // are close together, and mixing in an unrelated third part's
+    // triangles into one local distance query would just add noise (the
+    // nearest-triangle search could then pick a face belonging to a part
+    // that isn't actually what's bounding this particular joint's interior).
+    const localTris = collectWorldTriangles(region.parts);
+    const voxels = sampleSDFGrid(region.box, SDF_FINE_RES, localTris.length ? localTris : allTris);
+    const blockCol = i % atlasCols, blockRow = Math.floor(i / atlasCols);
+    const originX = blockCol * blockPx, originY = blockRow * blockPx;
+    for (let z = 0; z < SDF_FINE_RES; z++) {
+      const tileX = originX + (z % fineTilesPerRow) * SDF_FINE_RES;
+      const tileY = originY + Math.floor(z / fineTilesPerRow) * SDF_FINE_RES;
+      for (let y = 0; y < SDF_FINE_RES; y++) {
+        for (let x = 0; x < SDF_FINE_RES; x++) {
+          const px = tileX + x, py = tileY + y;
+          const di = (py * atlasTexRes + px) * 4;
+          fineAtlasData[di] = voxels[(z * SDF_FINE_RES + y) * SDF_FINE_RES + x];
+        }
+      }
+    }
+    const size = new THREE.Vector3(); region.box.getSize(size);
+    size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+    fineMin[i*3] = region.box.min.x; fineMin[i*3+1] = region.box.min.y; fineMin[i*3+2] = region.box.min.z;
+    fineSize[i*3] = size.x; fineSize[i*3+1] = size.y; fineSize[i*3+2] = size.z;
+    fineBlockOrigin[i*2] = originX; fineBlockOrigin[i*2+1] = originY;
+  });
+
+  const fineAtlasTexture = new THREE.DataTexture(fineAtlasData, atlasTexRes, atlasTexRes, THREE.RGBAFormat, THREE.FloatType);
+  // NearestFilter for the same reason as the coarse SDF texture above —
+  // sampleTiledSDF does its own interpolation, and LinearFilter on a
+  // FloatType texture silently breaks on mobile GPUs without
+  // OES_texture_float_linear.
+  fineAtlasTexture.magFilter = THREE.NearestFilter; fineAtlasTexture.minFilter = THREE.NearestFilter;
+  fineAtlasTexture.wrapS = THREE.ClampToEdgeWrapping; fineAtlasTexture.wrapT = THREE.ClampToEdgeWrapping;
+  fineAtlasTexture.needsUpdate = true;
+
+  return {
+    coarse,
+    fineCount,
+    fineMin, fineSize, fineBlockOrigin,
+    fineAtlasTexture, atlasTexRes, fineTilesPerRow, blockPx,
+  };
+}
+
+// Which fine SDF region (if any) a world-space point falls inside, as an
+// index into collisionSDF's joint-region list, or -1 if none (meaning: use
+// the coarse grid there). Checked per-waypoint when a particle path is
+// built, so the GPU shader can be handed a ready per-waypoint lookup
+// instead of testing every fine box against every particle every frame.
+function fineRegionIndexAt(point, collisionSDF) {
+  if (!collisionSDF || !collisionSDF.fineCount) return -1;
+  for (let i = 0; i < collisionSDF.fineCount; i++) {
+    const mnx = collisionSDF.fineMin[i*3], mny = collisionSDF.fineMin[i*3+1], mnz = collisionSDF.fineMin[i*3+2];
+    const sx = collisionSDF.fineSize[i*3], sy = collisionSDF.fineSize[i*3+1], sz = collisionSDF.fineSize[i*3+2];
+    if (point.x >= mnx && point.x <= mnx + sx &&
+        point.y >= mny && point.y <= mny + sy &&
+        point.z >= mnz && point.z <= mnz + sz) return i;
+  }
+  return -1;
+}
+
+function buildParticlePath(part, links, depth, collisionSDF) {
   // Waypoints: [own centroid, own exit point, next part's centroid, ...]
   // terminating at the chamber's nozzle exit, then arcing on to where it
   // hits and disperses across the floor. Each waypoint carries a
@@ -1752,7 +2334,15 @@ function buildParticlePath(part, links, depth) {
   }
 
   while (path.length < MAX_WAYPOINTS) { path.push(path[path.length - 1].clone()); radii.push(radii[radii.length - 1]); }
-  return { points: path.slice(0, MAX_WAYPOINTS), radii: radii.slice(0, MAX_WAYPOINTS) };
+
+  const points = path.slice(0, MAX_WAYPOINTS);
+  const radiiOut = radii.slice(0, MAX_WAYPOINTS);
+  // Tag each waypoint with the fine SDF region (if any) covering it, so the
+  // vertex shader can look up fine-resolution wall collision exactly where
+  // the old per-part cylinder lerp was worst (joints), without having to
+  // test every fine box against every particle every frame itself.
+  const fineIdx = points.map(p => fineRegionIndexAt(p, collisionSDF));
+  return { points, radii: radiiOut, fineIdx };
 }
 
 // Core position logic shared by BOTH the main perspective display material
@@ -1774,6 +2364,27 @@ const PARTICLE_SHADER_CORE = `
   varying float vThermal;
   varying float vProgress;
 
+  // ── SDF mesh collision uniforms ──────────────────────────────────────
+  // uWaypointFine mirrors uWaypoints' per-particle/per-waypoint layout but
+  // stores, per waypoint, which fine SDF region (if any, else -1) covers
+  // that stretch of path — computed once in JS by fineRegionIndexAt() when
+  // the path is built, not re-tested per-frame on the GPU.
+  uniform sampler2D uWaypointFine;
+  uniform sampler2D uSDFCoarse;        // whole-scene coarse grid, tiled-2D-as-3D
+  uniform vec3 uSDFCoarseMin;
+  uniform vec3 uSDFCoarseSize;
+  uniform float uSDFCoarseRes;
+  uniform float uSDFCoarseTilesPerRow;
+  uniform float uSDFCoarseTexRes;
+  uniform sampler2D uSDFFineAtlas;     // every joint's fine grid packed into one shared atlas texture
+  uniform float uSDFFineRes;
+  uniform float uSDFFineTilesPerRow;   // tiles-per-row WITHIN one joint's own block
+  uniform float uSDFBlockPx;           // pixel size of one joint's block (square) within the atlas
+  uniform float uSDFAtlasTexRes;
+  uniform vec3 uSDFFineMin[${SDF_MAX_FINE_REGIONS}];
+  uniform vec3 uSDFFineSize[${SDF_MAX_FINE_REGIONS}];
+  uniform vec2 uSDFFineBlockOrigin[${SDF_MAX_FINE_REGIONS}];
+
   vec4 sampleWaypoint(float row, float w) {
     // particles are packed ${TEX_COLS} per texture line, so thousands of them never exceed a phone's max texture height
     float col = mod(row, ${TEX_COLS}.0), line = floor(row / ${TEX_COLS}.0);
@@ -1781,6 +2392,149 @@ const PARTICLE_SHADER_CORE = `
     float v = (line + 0.5) / uTexHeight;
     return texture2D(uWaypoints, vec2(u, v)); // xyz = position, w = containment radius
   }
+  // uWaypointFine is packed identically to uWaypoints (same TEX_COLS/MAX_WAYPOINTS
+  // layout) but as a 1-channel "which fine region" lookup, so the same
+  // addressing math applies — kept as its own function for clarity at the call site.
+  float sampleWaypointFineIdx(float row, float w) {
+    float col = mod(row, ${TEX_COLS}.0), line = floor(row / ${TEX_COLS}.0);
+    float u = (col * ${MAX_WAYPOINTS}.0 + w + 0.5) / (${MAX_WAYPOINTS}.0 * ${TEX_COLS}.0);
+    float v = (line + 0.5) / uTexHeight;
+    return texture2D(uWaypointFine, vec2(u, v)).r;
+  }
+
+  // Samples a res³ voxel grid packed as tiled-2D-as-3D (Z-slices laid out
+  // tilesPerRow-per-row across a square texRes×texRes image), with manual
+  // TRILINEAR interpolation across the 8 surrounding voxels — done by hand
+  // (rather than relying on the sampler's own bilinear filtering, which
+  // only blends within a single Z-tile, never across a tile seam) because
+  // two neighboring voxels along Z can land in completely different tiles
+  // of the 2D image, so letting the GPU's native 2D filtering interpolate
+  // between them would blend two UNRELATED tile regions together instead
+  // of the two neighboring Z-slices the SDF actually needs.
+  float sampleTiledSDF(sampler2D tex, vec3 localUV, float res, float tilesPerRow, float texRes, vec2 blockOriginPx) {
+    // localUV in [0,1]^3 within the grid's own bounds.
+    vec3 voxel = localUV * res - 0.5;
+    vec3 v0 = floor(voxel);
+    vec3 f = voxel - v0;
+    float acc = 0.0;
+    for (int dz = 0; dz < 2; dz++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, res - 1.0);
+          float tileX = mod(c.z, tilesPerRow) * res;
+          float tileY = floor(c.z / tilesPerRow) * res;
+          float px = blockOriginPx.x + tileX + c.x;
+          float py = blockOriginPx.y + tileY + c.y;
+          vec2 uv = (vec2(px, py) + 0.5) / texRes;
+          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
+          acc += texture2D(tex, uv).r * w;
+        }
+      }
+    }
+    return acc;
+  }
+
+  // Signed distance (world units, un-normalized) to the nearest wall at
+  // world-space point p, preferring the fine region fineIdx (as resolved
+  // per-waypoint by fineRegionIndexAt() in JS) when it's actually inside
+  // that fine box's bounds, and falling back to the coarse whole-scene
+  // grid otherwise (e.g. the open middle of a tank, or if a lateral offset
+  // pushed the particle just outside its nominal fine box).
+  float sdfAt(vec3 p, float fineIdx) {
+    bool usedFine = false;
+    float sd = 0.0;
+    if (fineIdx >= 0.0) {
+      int idx = int(fineIdx + 0.5);
+      // GLSL requires compile-time array indices on some GL ES targets, so
+      // this unrolls the fixed small region count rather than indexing
+      // uSDFFineMin[idx] dynamically (which some mobile GL drivers reject).
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) {
+          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
+          vec3 local = (p - mn) / sz;
+          if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) {
+            float sdN = sampleTiledSDF(uSDFFineAtlas, local, uSDFFineRes, uSDFFineTilesPerRow, uSDFAtlasTexRes, uSDFFineBlockOrigin[k]);
+            sd = sdN * length(sz);
+            usedFine = true;
+          }
+        }
+      }
+    }
+    if (!usedFine) {
+      vec3 local = (p - uSDFCoarseMin) / uSDFCoarseSize;
+      local = clamp(local, 0.0, 1.0);
+      float sdN = sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexRes, vec2(0.0));
+      sd = sdN * length(uSDFCoarseSize);
+    }
+    return sd;
+  }
+
+  // Samples ONE specific grid (fine region idx, or coarse if idx < 0) at
+  // world point p, with no re-resolution of which grid to use — the
+  // counterpart to sdfAt() that sdfGradient() needs so all 6 of its taps
+  // stay on the same grid (see sdfGradient's comment for why sdfAt() itself,
+  // which re-resolves fine-vs-coarse independently per call, is unsafe to
+  // use for a gradient).
+  float sdfAtFixedGrid(vec3 p, int idx) {
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) {
+          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
+          vec3 local = clamp((p - mn) / sz, 0.0, 1.0);
+          float sdN = sampleTiledSDF(uSDFFineAtlas, local, uSDFFineRes, uSDFFineTilesPerRow, uSDFAtlasTexRes, uSDFFineBlockOrigin[k]);
+          return sdN * length(sz);
+        }
+      }
+      return 0.0; // unreachable: idx always matches one k in range
+    }
+    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
+    float sdN = sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexRes, vec2(0.0));
+    return sdN * length(uSDFCoarseSize);
+  }
+
+  // Estimated inward surface normal at p via a central-difference gradient
+  // of the signed distance field — used to push a particle that has
+  // crossed (or is about to cross) a wall back toward the legal interior,
+  // the standard SDF collision-response technique.
+  //
+  // Resolves which grid covers p ONCE (mirroring sdfAt()'s own fine-vs-
+  // coarse logic), then takes all 6 central-difference taps from that same
+  // grid via sdfAtFixedGrid(), with a step sized to that grid's own voxel
+  // size. sdfAt() itself re-resolves fine-vs-coarse independently on EVERY
+  // tap, so when p sits within a fixed world-space step of a fine box's
+  // face, one tap of a pair reads the fine grid and the other reads the
+  // coarse grid — two fields with different resolutions and different
+  // triangle sets (a fine grid only rasterizes its own region.parts). The
+  // difference then measures the jump between grids, not the true wall
+  // direction — common along a pipe's own axis, since the pipe continues
+  // past the fine box's 2.2×radius padding. A fixed e=0.04 world-space step
+  // also doesn't track grid resolution: the smallest fine box can be ~0.44
+  // units wide (voxel ≈0.031), smaller than a 0.04 step, so the gradient
+  // samples past the feature it's trying to measure.
+  vec3 sdfGradient(vec3 p, float fineIdx) {
+    int idx = -1;
+    float e = 0.5 * length(uSDFCoarseSize) / uSDFCoarseRes; // coarse-grid default step
+    if (fineIdx >= 0.0) {
+      int fi = int(fineIdx + 0.5);
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == fi) {
+          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
+          vec3 local = (p - mn) / sz;
+          if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) {
+            idx = fi;
+            e = 0.5 * length(sz) / uSDFFineRes;
+          }
+        }
+      }
+    }
+    float dx = sdfAtFixedGrid(p + vec3(e,0.0,0.0), idx) - sdfAtFixedGrid(p - vec3(e,0.0,0.0), idx);
+    float dy = sdfAtFixedGrid(p + vec3(0.0,e,0.0), idx) - sdfAtFixedGrid(p - vec3(0.0,e,0.0), idx);
+    float dz = sdfAtFixedGrid(p + vec3(0.0,0.0,e), idx) - sdfAtFixedGrid(p - vec3(0.0,0.0,e), idx);
+    vec3 g = vec3(dx, dy, dz);
+    float len = length(g);
+    return len > 0.0001 ? g / len : vec3(0.0, 1.0, 0.0);
+  }
+
   vec3 computeParticlePosition() {
     float progress = fract(uTime * aSpeed + aPhase);
     vProgress = progress;
@@ -1802,7 +2556,32 @@ const PARTICLE_SHADER_CORE = `
     // Fluid turbulence: swirling eddies that grow as the stream travels, so it billows instead of marching in lanes.
     float ph = aPhase * 6.2831;
     vec3 eddy = vec3(sin(progress * 41.0 + ph * 3.0), cos(progress * 33.0 + ph * 5.0), sin(progress * 27.0 + ph * 2.0));
-    return centerPos + (aLatU * right + aLatV * up2) * rad + eddy * rad * 0.10 * progress;
+    vec3 lateral = (aLatU * right + aLatV * up2) * rad + eddy * rad * 0.10 * progress;
+    vec3 pos = centerPos + lateral;
+
+    // ── Real mesh collision: pull the particle back off the wall ────────
+    // The old behavior (lateral offset scaled by a crude per-part cylinder
+    // radius, nothing more) is still what PLACES the particle in the first
+    // place — this step only CORRECTS it against the actual imported
+    // mesh's signed distance field, which is what fixes the "visibly
+    // passes through walls at joints" failure, since rad above is a
+    // meaningless lerp between two unrelated parts' radii right at a
+    // junction while the SDF is sampled against the real geometry there.
+    float fineIdxA = sampleWaypointFineIdx(aRow, seg);
+    float fineIdxB = sampleWaypointFineIdx(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+    float fineIdx = segT < 0.5 ? fineIdxA : fineIdxB; // whichever endpoint this stretch is nearer to
+    float sd = sdfAt(pos, fineIdx);
+    // sd < 0 is legal fluid interior (see header comment on sign
+    // convention); a small negative skin margin keeps particles reading as
+    // visibly inside the wall rather than exactly grazing it. If sd is
+    // positive (through/past the wall) or inside that margin, push back
+    // along the gradient toward the interior by just enough to clear it.
+    float skin = max(rad * 0.08, 0.01);
+    if (sd > -skin) {
+      vec3 n = sdfGradient(pos, fineIdx); // points toward increasing distance, i.e. OUTWARD
+      pos -= n * (sd + skin);
+    }
+    return pos;
   }
 `;
 
@@ -1853,11 +2632,23 @@ function buildParticleSystem() {
 
   const links = buildFlowGraph();
   state.currentLinks = links; // kept for the per-frame thermal tint update
+
+  // Build the real-geometry collision SDFs for THIS configuration (mesh
+  // positions, classifications and openings as they stand right now) —
+  // once here, not per-frame; see the "ADAPTIVE SDF MESH COLLISION" block
+  // above buildParticlePath for the full design rationale. Cached on
+  // `state` purely for debugging/inspection (window.arcFlow / console),
+  // not read back by anything else — the shader gets everything it needs
+  // through the uniforms set below.
+  const collisionSDF = buildCollisionSDF(links);
+  state.sdf = collisionSDF;
+
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
   const containers = state.parts.filter(p => p.type === 'container' || p.type === 'chamber');
 
   const waypointData = []; // MAX_WAYPOINTS * 3 floats per particle (xyz)
   const radiusData = [];   // MAX_WAYPOINTS floats per particle (containment radius at that waypoint)
+  const fineIdxData = [];  // MAX_WAYPOINTS floats per particle (which fine SDF region, or -1, covers that waypoint)
   const phase = [];
   const speed = [];
   const thermalSeed = [];
@@ -1867,9 +2658,10 @@ function buildParticleSystem() {
   for (const part of containers) {
     const n = part.type === 'chamber' ? Math.round(perContainer * 0.5) : perContainer;
     for (let i = 0; i < n; i++) {
-      const path = buildParticlePath(part, links, 0);
+      const path = buildParticlePath(part, links, 0, collisionSDF);
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
       for (const r of path.radii) radiusData.push(r);
+      for (const fi of path.fineIdx) fineIdxData.push(fi);
       phase.push(Math.random());
       speed.push(0.15 + Math.random() * 0.25);
       thermalSeed.push(part.contents === 'oxidizer' ? 0.15 : part.contents === 'fuel' ? 0.55 : 0.85);
@@ -1916,6 +2708,82 @@ function buildParticleSystem() {
   waypointTex.needsUpdate = true;
   waypointTex.magFilter = THREE.NearestFilter; waypointTex.minFilter = THREE.NearestFilter;
 
+  // Fine-region-index texture — SAME layout/addressing as uWaypoints (see
+  // sampleWaypointFineIdx in PARTICLE_SHADER_CORE), one float per waypoint
+  // telling the shader which joint's fine SDF (if any) applies there.
+  const fineIdxTexData = new Float32Array(texWidth * texHeight * 4);
+  for (let p = 0; p < count; p++) {
+    const line = Math.floor(p / TEX_COLS), colOff = (p % TEX_COLS) * MAX_WAYPOINTS;
+    for (let w = 0; w < MAX_WAYPOINTS; w++) {
+      const dstIdx = (line * texWidth + colOff + w) * 4;
+      fineIdxTexData[dstIdx] = fineIdxData[p * MAX_WAYPOINTS + w];
+    }
+  }
+  const waypointFineTex = new THREE.DataTexture(fineIdxTexData, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
+  waypointFineTex.needsUpdate = true;
+  waypointFineTex.magFilter = THREE.NearestFilter; waypointFineTex.minFilter = THREE.NearestFilter;
+
+  // Flatten the SDF data into the uniform shapes the shader expects. A
+  // THREE.ShaderMaterial uniform declared as `vec3 arr[N]` in GLSL takes a
+  // plain JS array of THREE.Vector3 (or Array) here — three.js handles the
+  // flattening to the underlying uniform3fv call itself.
+  const fineMinUniform = [], fineSizeUniform = [], fineBlockOriginUniform = [];
+  for (let i = 0; i < SDF_MAX_FINE_REGIONS; i++) {
+    if (collisionSDF && i < collisionSDF.fineCount) {
+      fineMinUniform.push(new THREE.Vector3(collisionSDF.fineMin[i*3], collisionSDF.fineMin[i*3+1], collisionSDF.fineMin[i*3+2]));
+      fineSizeUniform.push(new THREE.Vector3(collisionSDF.fineSize[i*3], collisionSDF.fineSize[i*3+1], collisionSDF.fineSize[i*3+2]));
+      fineBlockOriginUniform.push(new THREE.Vector2(collisionSDF.fineBlockOrigin[i*2], collisionSDF.fineBlockOrigin[i*2+1]));
+    } else {
+      // Padding entries: a degenerate zero-size box no real waypoint will
+      // ever test positive against (fineRegionIndexAt only ever hands the
+      // shader an index that WAS a real match in JS), kept only so the
+      // fixed-size GLSL array always has SDF_MAX_FINE_REGIONS entries.
+      fineMinUniform.push(new THREE.Vector3(0,0,0));
+      fineSizeUniform.push(new THREE.Vector3(1,1,1));
+      fineBlockOriginUniform.push(new THREE.Vector2(0,0));
+    }
+  }
+  const sdfUniforms = collisionSDF ? {
+    uWaypointFine: { value: waypointFineTex },
+    uSDFCoarse: { value: collisionSDF.coarse.texture },
+    uSDFCoarseMin: { value: collisionSDF.coarse.boundsMin },
+    uSDFCoarseSize: { value: collisionSDF.coarse.boundsSize },
+    uSDFCoarseRes: { value: collisionSDF.coarse.res },
+    uSDFCoarseTilesPerRow: { value: collisionSDF.coarse.tilesPerRow },
+    uSDFCoarseTexRes: { value: collisionSDF.coarse.texRes },
+    uSDFFineAtlas: { value: collisionSDF.fineAtlasTexture },
+    uSDFFineRes: { value: SDF_FINE_RES },
+    uSDFFineTilesPerRow: { value: collisionSDF.fineTilesPerRow },
+    uSDFBlockPx: { value: collisionSDF.blockPx },
+    uSDFAtlasTexRes: { value: collisionSDF.atlasTexRes },
+    uSDFFineMin: { value: fineMinUniform },
+    uSDFFineSize: { value: fineSizeUniform },
+    uSDFFineBlockOrigin: { value: fineBlockOriginUniform },
+  } : {
+    // No classified parts yet (shouldn't normally happen once Simulate is
+    // pressed, since that requires containers, but guarded defensively):
+    // hand the shader a trivial 1x1 "everything far outside" coarse grid
+    // and no fine regions, so sdfAt() degrades to "never collides" rather
+    // than sampling an undefined texture.
+    uWaypointFine: { value: waypointFineTex },
+    uSDFCoarse: { value: new THREE.DataTexture(new Float32Array([1,0,0,1]), 1, 1, THREE.RGBAFormat, THREE.FloatType) },
+    uSDFCoarseMin: { value: new THREE.Vector3(0,0,0) },
+    uSDFCoarseSize: { value: new THREE.Vector3(1,1,1) },
+    uSDFCoarseRes: { value: 1 },
+    uSDFCoarseTilesPerRow: { value: 1 },
+    uSDFCoarseTexRes: { value: 1 },
+    uSDFFineAtlas: { value: new THREE.DataTexture(new Float32Array([1,0,0,1]), 1, 1, THREE.RGBAFormat, THREE.FloatType) },
+    uSDFFineRes: { value: SDF_FINE_RES },
+    uSDFFineTilesPerRow: { value: 1 },
+    uSDFBlockPx: { value: 1 },
+    uSDFAtlasTexRes: { value: 1 },
+    uSDFFineMin: { value: fineMinUniform },
+    uSDFFineSize: { value: fineSizeUniform },
+    uSDFFineBlockOrigin: { value: fineBlockOriginUniform },
+  };
+  if (sdfUniforms.uSDFCoarse.value.needsUpdate !== undefined) sdfUniforms.uSDFCoarse.value.needsUpdate = true;
+  if (sdfUniforms.uSDFFineAtlas.value.needsUpdate !== undefined) sdfUniforms.uSDFFineAtlas.value.needsUpdate = true;
+
   const geo = new THREE.InstancedBufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0,0,0]), 3));
   const rowIdx = new Float32Array(count);
@@ -1934,6 +2802,7 @@ function buildParticleSystem() {
       uWaypoints: { value: waypointTex },
       uTexHeight: { value: texHeight },
       uSize: { value: 1.5 },
+      ...sdfUniforms,
     },
     vertexShader: PARTICLE_VERTEX_SHADER,
     fragmentShader: THERMAL_RAMP_GLSL + `
@@ -1965,6 +2834,13 @@ function buildParticleSystem() {
       uWaypoints: { value: waypointTex },
       uTexHeight: { value: texHeight },
       uSplatSize: { value: floorHeatRes / 24 },
+      // SAME SDF uniforms (not a second copy built independently) as the
+      // main material — computeParticlePosition()'s collision correction
+      // must land on the identical position in both passes, exactly like
+      // the existing comment on this material already requires for the
+      // waypoint/lerp logic: the floor must not react to heat from a
+      // position the particles don't actually visually occupy.
+      ...sdfUniforms,
     },
     vertexShader: PARTICLE_SPLAT_VERTEX_SHADER,
     fragmentShader: PARTICLE_SPLAT_FRAGMENT_SHADER,
@@ -2078,7 +2954,7 @@ document.getElementById('toggleLeft').onclick = () => document.getElementById('l
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
