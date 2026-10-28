@@ -1806,13 +1806,21 @@ function collectWorldTriangles(parts) {
       const pos = geo.attributes.position;
       const idx = geo.index ? geo.index.array : null;
       const wm = mesh.matrixWorld;
+      // A mirrored part (negative-scale matrixWorld, common for a mirrored
+      // half of an assembly exported from glTF/CAD) flips the handedness of
+      // (b-a)×(c-a), which flips the face normal's outward direction for
+      // every triangle on that part — and with it, every SDF sign computed
+      // near that part (see signedDistanceToMesh's bestSign comment).
+      // Reversing vertex order when the determinant is negative restores
+      // the outward-pointing winding the sign test assumes.
+      const flip = wm.determinant() < 0;
       const triCount = idx ? idx.length / 3 : pos.count / 3;
       for (let t = 0; t < triCount; t++) {
         const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
         const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
         const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
         const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
-        tris.push(v0, v1, v2);
+        if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
       }
     }
   }
@@ -1884,23 +1892,38 @@ function buildTriangleSpatialIndex(tris) {
 
 // Nearest-triangle search using the spatial index: starts at the query
 // point's own cell and expands outward ring-by-ring (a cheap Chebyshev-
-// distance shell search over the bucket grid) until a candidate triangle
-// is found, then expands ONE further ring past that to catch a slightly
-// closer triangle whose bucket is diagonally adjacent (the standard
-// correctness fix for grid-shell nearest-neighbor search: the first ring
-// that contains ANY candidate isn't necessarily the ring containing the
-// TRUE nearest one, since a closer triangle could sit just across a cell
-// boundary in the next ring out).
+// distance shell search over the bucket grid), tracking the true best
+// point-to-triangle distance found so far among this ring's candidates.
+// Stops once the minimum possible distance from `point` to the NEXT
+// unsearched shell exceeds that best distance — the correct termination
+// for grid-shell nearest-neighbor search, rather than "one extra ring
+// after the first non-empty one" (which can still miss a genuinely closer
+// triangle sitting in a farther cell, especially once bucketing has
+// pushed the same large triangle into multiple cells and skewed what
+// "first non-empty ring" even means).
 function findNearestTriangleIndices(index, point) {
-  const { dims, buckets, keyOf, cellOf } = index;
+  const { dims, buckets, keyOf, cellOf, cellSize, bounds } = index;
+  // A point outside the index's own bounds (common for a fine box, which
+  // is padded 2.2× the joint radius well past where its local triangles
+  // actually sit) has its cell coordinates clamped to the edge by cellOf,
+  // which would otherwise make ring radius understate real distance.
+  // Start the "distance to next unsearched shell" accounting from the
+  // point's real distance to the index bounds instead.
+  const distToBounds = bounds.distanceToPoint(point);
   const center = cellOf(point);
   const maxRadius = Math.max(dims.x, dims.y, dims.z);
-  let found = null;
-  let foundAtRadius = -1;
+  const seen = new Set(); // dedupe triangles stored in multiple buckets
+  let candidateIndices = [];
+  let bestDistSq = Infinity;
+  const closest = new THREE.Vector3();
   for (let r = 0; r <= maxRadius; r++) {
-    // Once we have a candidate, only search one extra ring past it, then stop.
-    if (found !== null && r > foundAtRadius + 1) break;
-    let any = false;
+    // The nearest point this shell's OUTER boundary could contain is at
+    // least (r-1)*cellSize away measured from the point's real position
+    // (accounting for the point itself possibly being outside bounds).
+    // Once that lower bound exceeds the best distance already found among
+    // visited candidates, no farther ring can improve on it.
+    const nextShellMinDist = distToBounds + Math.max(0, r - 1) * cellSize;
+    if (candidateIndices.length > 0 && nextShellMinDist * nextShellMinDist > bestDistSq) break;
     for (let dz = -r; dz <= r; dz++) {
       const cz = center.cz + dz;
       if (cz < 0 || cz >= dims.z) continue;
@@ -1914,17 +1937,21 @@ function findNearestTriangleIndices(index, point) {
           const cx = center.cx + dx;
           if (cx < 0 || cx >= dims.x) continue;
           const arr = buckets.get(keyOf(cx, cy, cz));
-          if (arr && arr.length) {
-            any = true;
-            if (found === null) found = [];
-            for (const idx of arr) found.push(idx);
+          if (!arr || !arr.length) continue;
+          for (const idx of arr) {
+            if (seen.has(idx)) continue; // large triangle in >1 bucket
+            seen.add(idx);
+            candidateIndices.push(idx);
+            const a = index.tris[idx], b = index.tris[idx+1], c = index.tris[idx+2];
+            closestPointOnTriangle(point, a, b, c, closest);
+            const d = point.distanceToSquared(closest);
+            if (d < bestDistSq) bestDistSq = d;
           }
         }
       }
     }
-    if (any && foundAtRadius < 0) foundAtRadius = r;
   }
-  return found; // array of triangle-start indices (into index.tris), or null if the whole grid was empty
+  return candidateIndices.length ? candidateIndices : null; // array of triangle-start indices (into index.tris), or null if the whole grid was empty
 }
 
 // Unsigned nearest-triangle distance, signed via the PSEUDO-NORMAL
@@ -1969,6 +1996,13 @@ function signedDistanceToMesh(point, trisOrIndex) {
 
   let best = Infinity;
   let bestSign = 1;
+  // Accumulates the face normals of every triangle tied (within epsilon)
+  // for the closest-point distance, so a point whose nearest feature is a
+  // shared edge or vertex gets an angle-weighted pseudo-normal instead of
+  // whichever tied triangle happened to be visited first. At an
+  // unambiguous face hit only one triangle ever ties, so this reduces to
+  // the plain face normal exactly as before.
+  const normalAccum = new THREE.Vector3();
   const closest = new THREE.Vector3();
   const toPoint = new THREE.Vector3();
   const faceNormal = new THREE.Vector3();
@@ -1976,19 +2010,31 @@ function signedDistanceToMesh(point, trisOrIndex) {
     const a = tris[i], b = tris[i+1], c = tris[i+2];
     closestPointOnTriangle(point, a, b, c, closest);
     const d = point.distanceToSquared(closest);
-    if (d < best) {
+    // Scale-relative epsilon: "tied" means the same closest feature (an
+    // edge or vertex shared by adjacent triangles), not merely close in
+    // absolute terms across wildly different part sizes. Guard against
+    // `best` still being Infinity (before any triangle has been
+    // considered) — Infinity * 1e-6 is Infinity, which would make every
+    // first triangle register as a "tie" against an unset best and never
+    // actually set it.
+    const eps = 1e-10 + (Number.isFinite(best) ? best * 1e-6 : 0);
+    // Face normal via the two edge vectors, Newell-free since triangle
+    // winding is consistent within one mesh primitive (as exported by any
+    // standard glTF/OBJ/STL pipeline, and now corrected for mirrored
+    // parts by collectWorldTriangles).
+    _sdfTmpV0.copy(b).sub(a);
+    _sdfTmpV1.copy(c).sub(a);
+    faceNormal.copy(_sdfTmpV0).cross(_sdfTmpV1).normalize();
+    if (d < best - eps) {
       best = d;
-      // Face normal via the two edge vectors, Newell-free since triangle
-      // winding is consistent within one mesh primitive (as exported by
-      // any standard glTF/OBJ/STL pipeline).
-      _sdfTmpV0.copy(b).sub(a);
-      _sdfTmpV1.copy(c).sub(a);
-      faceNormal.copy(_sdfTmpV0).cross(_sdfTmpV1).normalize();
+      normalAccum.copy(faceNormal);
       toPoint.copy(point).sub(closest);
-      // If toPoint and the face normal roughly agree, the point is on the
-      // normal's (outward) side — positive/illegal. Disagreement means
-      // the point is on the inward (fluid-legal) side — negative.
-      bestSign = toPoint.dot(faceNormal) >= 0 ? 1 : -1;
+    } else if (d < best + eps) {
+      // Same closest feature as the current best (shared edge/vertex at a
+      // crease): accumulate rather than overwrite, so the sign doesn't
+      // depend on triangle visit order — this is exactly the joint/crease
+      // geometry this PR targets.
+      normalAccum.add(faceNormal);
     }
   };
   if (candidateIndices) {
@@ -1996,6 +2042,10 @@ function signedDistanceToMesh(point, trisOrIndex) {
   } else {
     for (let i = 0; i < tris.length; i += 3) considerTriangle(i);
   }
+  // If toPoint and the accumulated normal roughly agree, the point is on
+  // the outward side — positive/illegal. Disagreement means the point is
+  // on the inward (fluid-legal) side — negative.
+  bestSign = toPoint.dot(normalAccum) >= 0 ? 1 : -1;
   return Math.sqrt(best) * bestSign;
 }
 
@@ -2057,7 +2107,13 @@ function buildSDFGrid(bounds, res, tris) {
     }
   }
   const texture = new THREE.DataTexture(data, texRes, texRes, THREE.RGBAFormat, THREE.FloatType);
-  texture.magFilter = THREE.LinearFilter; texture.minFilter = THREE.LinearFilter;
+  // NearestFilter, not LinearFilter: sampleTiledSDF already does its own
+  // trilinear interpolation by hand across texel centers, so hardware
+  // linear filtering adds nothing — and on a device without
+  // OES_texture_float_linear (common on mobile GPUs), a FloatType texture
+  // with LinearFilter is an incomplete texture that silently samples as
+  // all-zero, making sd=0 everywhere and disabling collision entirely.
+  texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping; texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.needsUpdate = true;
   return { texture, boundsMin: bounds.min.clone(), boundsSize: size.clone(), res, tilesPerRow, texRes };
@@ -2176,7 +2232,11 @@ function buildCollisionSDF(links) {
   });
 
   const fineAtlasTexture = new THREE.DataTexture(fineAtlasData, atlasTexRes, atlasTexRes, THREE.RGBAFormat, THREE.FloatType);
-  fineAtlasTexture.magFilter = THREE.LinearFilter; fineAtlasTexture.minFilter = THREE.LinearFilter;
+  // NearestFilter for the same reason as the coarse SDF texture above —
+  // sampleTiledSDF does its own interpolation, and LinearFilter on a
+  // FloatType texture silently breaks on mobile GPUs without
+  // OES_texture_float_linear.
+  fineAtlasTexture.magFilter = THREE.NearestFilter; fineAtlasTexture.minFilter = THREE.NearestFilter;
   fineAtlasTexture.wrapS = THREE.ClampToEdgeWrapping; fineAtlasTexture.wrapT = THREE.ClampToEdgeWrapping;
   fineAtlasTexture.needsUpdate = true;
 
