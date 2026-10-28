@@ -1893,37 +1893,47 @@ function buildTriangleSpatialIndex(tris) {
 // Nearest-triangle search using the spatial index: starts at the query
 // point's own cell and expands outward ring-by-ring (a cheap Chebyshev-
 // distance shell search over the bucket grid), tracking the true best
-// point-to-triangle distance found so far among this ring's candidates.
-// Stops once the minimum possible distance from `point` to the NEXT
-// unsearched shell exceeds that best distance — the correct termination
-// for grid-shell nearest-neighbor search, rather than "one extra ring
-// after the first non-empty one" (which can still miss a genuinely closer
-// triangle sitting in a farther cell, especially once bucketing has
-// pushed the same large triangle into multiple cells and skewed what
-// "first non-empty ring" even means).
+// point-to-triangle distance found so far among all visited candidates.
+//
+// Termination: NOT a closed-form "distance to the next unsearched shell"
+// bound. That approach was tried in several forms (an unclamped growing
+// box, a box clamped to the grid's real [0,dims) extent) and is
+// structurally unworkable here: the search box is built by growing r
+// cells outward from `point`'s OWN cell, so by construction it always
+// contains `point` itself on every axis until that axis's growth
+// saturates the grid's full extent — which has nothing to do with
+// whether a closer unsearched triangle could exist nearby. Traced
+// concretely on this app's real (aspect-skewed) spatial index
+// (dims={x:10,y:56,z:9}), the clamped-box distance measured exactly 0
+// through r=20+ on a representative interior query, i.e. it essentially
+// never fires before the long axis (56 cells) is almost fully searched —
+// which is the same "visit nearly everything" blowup (from near-instant
+// to 400+s on the real 223k-triangle demo) as the unclamped version.
+//
+// Instead: keep tracking true best distance (the real correctness fix,
+// still strictly better than the original "stop one extra ring after
+// first non-empty ring" heuristic CodeRabbit flagged, since bucketed
+// large triangles can leave that heuristic's "first non-empty ring"
+// understating how many rings actually matter) but bound the search with
+// a fixed, generous safety margin of extra rings past the first ring
+// that produces any candidate, rather than a provably-tight analytic
+// stopping distance. This trades a theoretical (vanishingly unlikely in
+// practice — it would require the single nearest triangle to sit
+// SAFETY_RING_MARGIN+ rings farther out than the first hit while nothing
+// closer exists anywhere in between) correctness risk for guaranteed,
+// fast termination independent of the grid's aspect ratio.
+const SAFETY_RING_MARGIN = 3;
 function findNearestTriangleIndices(index, point) {
-  const { dims, buckets, keyOf, cellOf, cellSize, bounds } = index;
-  // A point outside the index's own bounds (common for a fine box, which
-  // is padded 2.2× the joint radius well past where its local triangles
-  // actually sit) has its cell coordinates clamped to the edge by cellOf,
-  // which would otherwise make ring radius understate real distance.
-  // Start the "distance to next unsearched shell" accounting from the
-  // point's real distance to the index bounds instead.
-  const distToBounds = bounds.distanceToPoint(point);
-  const center = cellOf(point);
+  const { dims, buckets, keyOf, cellOf } = index;
+  const center = cellOf(point); // clamped into [0, dims) by cellOf
   const maxRadius = Math.max(dims.x, dims.y, dims.z);
   const seen = new Set(); // dedupe triangles stored in multiple buckets
   let candidateIndices = [];
   let bestDistSq = Infinity;
   const closest = new THREE.Vector3();
+  let firstHitRing = -1;
   for (let r = 0; r <= maxRadius; r++) {
-    // The nearest point this shell's OUTER boundary could contain is at
-    // least (r-1)*cellSize away measured from the point's real position
-    // (accounting for the point itself possibly being outside bounds).
-    // Once that lower bound exceeds the best distance already found among
-    // visited candidates, no farther ring can improve on it.
-    const nextShellMinDist = distToBounds + Math.max(0, r - 1) * cellSize;
-    if (candidateIndices.length > 0 && nextShellMinDist * nextShellMinDist > bestDistSq) break;
+    if (firstHitRing >= 0 && r > firstHitRing + SAFETY_RING_MARGIN) break;
     for (let dz = -r; dz <= r; dz++) {
       const cz = center.cz + dz;
       if (cz < 0 || cz >= dims.z) continue;
@@ -1942,6 +1952,7 @@ function findNearestTriangleIndices(index, point) {
             if (seen.has(idx)) continue; // large triangle in >1 bucket
             seen.add(idx);
             candidateIndices.push(idx);
+            if (firstHitRing < 0) firstHitRing = r;
             const a = index.tris[idx], b = index.tris[idx+1], c = index.tris[idx+2];
             closestPointOnTriangle(point, a, b, c, closest);
             const d = point.distanceToSquared(closest);
@@ -1995,7 +2006,6 @@ function signedDistanceToMesh(point, trisOrIndex) {
   }
 
   let best = Infinity;
-  let bestSign = 1;
   // Accumulates the face normals of every triangle tied (within epsilon)
   // for the closest-point distance, so a point whose nearest feature is a
   // shared edge or vertex gets an angle-weighted pseudo-normal instead of
@@ -2045,7 +2055,7 @@ function signedDistanceToMesh(point, trisOrIndex) {
   // If toPoint and the accumulated normal roughly agree, the point is on
   // the outward side — positive/illegal. Disagreement means the point is
   // on the inward (fluid-legal) side — negative.
-  bestSign = toPoint.dot(normalAccum) >= 0 ? 1 : -1;
+  const bestSign = toPoint.dot(normalAccum) >= 0 ? 1 : -1;
   return Math.sqrt(best) * bestSign;
 }
 
