@@ -609,6 +609,8 @@ function animateBase() {
     // even though that function is defined later in the module — called
     // every frame like the rest of this loop, but it internally throttles
     // its own expensive work (CPU density rebuild) to VOL_REBUILD_INTERVAL_MS.
+    // Fluid follows its parts: refresh the per-part delta matrices BEFORE any gas is drawn this frame (no one-frame lag behind a dragged part).
+    if (typeof followTick === 'function') followTick(false);
     if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
     if (typeof updateGaussianRender === 'function') updateGaussianRender();
     if (typeof liveLeakFrame === 'function') liveLeakFrame(performance.now());
@@ -3510,6 +3512,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   const exhaust = [part.type === 'chamber'];     // downstream of the chamber the area law no longer applies
   const partOfWp = [0];                          // chain index of the part each waypoint belongs to
   const partExitIdx = [];                        // waypoint index of each chain part's exit
+  const chainParts = [part];                     // chain index -> part (fluid follows its parts)
   let cur = part, chainIdx = 0;
   let reachedNozzle = false;
   let exitIdx = MAX_WAYPOINTS; // waypoint index of the nozzle exit plane (the live exhaust plume takes over from here)
@@ -3535,7 +3538,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
     path.push(link.viaOpening.centroid);
     radii.push(rPort * 0.85); flowR.push(rPort); exhaust.push(false); partOfWp.push(chainIdx);
     partExitIdx[chainIdx] = path.length - 1;
-    cur = link.target; chainIdx++;
+    cur = link.target; chainIdx++; chainParts.push(cur);
     if (nextTube) {
       const room = Math.max(1, MAX_WAYPOINTS - 2 - path.length - 2);
       const wps = nextTube.wp.length > room ? nextTube.wp.slice(0, room) : nextTube.wp;
@@ -3603,7 +3606,13 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // the old per-part cylinder lerp was worst (joints), without having to
   // test every fine box against every particle every frame itself.
   const fineIdx = points.map(p => fineRegionIndexAt(p, collisionSDF));
-  return { points, radii: radiiOut, fineIdx, exitIdx, knots };
+  // per-waypoint owner part (it rides with that part when dragged) and ground-anchored flag (the post-nozzle floor points only shift in xz)
+  const owners = [], ground = [];
+  for (let w = 0; w < MAX_WAYPOINTS; w++) {
+    owners.push(chainParts[partOfWp[Math.min(w, partOfWp.length - 1)]] || part);
+    ground.push(reachedNozzle && w > exitIdx ? 1 : 0);
+  }
+  return { points, radii: radiiOut, fineIdx, exitIdx, knots, owners, ground };
 }
 
 // Shared GLSL for sampling the collision SDF — used by the particle vertex
@@ -3621,6 +3630,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
 // Regions [0, uSDFPartStart) are joint regions (restricted to the parts
 // that meet there); [uSDFPartStart, fineCount) are per-part regions (union
 // of all nearby triangles, same semantics as the coarse grid).
+const FOLLOW_MAX_MOVED = 8, FOLLOW_ROWS = 128;   // moved-part wall-remap slots / max part ids the delta texture holds (see FLUID FOLLOWS PARTS)
 const SDF_SAMPLING_GLSL = `
   uniform sampler2D uSDFCoarse;        // whole-scene coarse grid, tiled-2D-as-3D
   uniform vec3 uSDFCoarseMin;
@@ -3640,6 +3650,17 @@ const SDF_SAMPLING_GLSL = `
   uniform float uTubeCount;
   uniform vec4 uTubeBoxMin[${TUBE_MAX}];
   uniform vec4 uTubeBoxMax[${TUBE_MAX}];
+
+  // ── Fluid follows its parts (see FLUID FOLLOWS PARTS) ───────────────────
+  // uPartTex row = part id: texels 0..3 = the part's delta matrix (current pivot world * inverse bake-time world),
+  // texel 4 = the xz shift ground-anchored waypoints take. uMv* = the (up to 8) parts moved since the bake: inverse delta
+  // + bake-space box, so world-space wall queries on moved gas look up the part's own baked cavity.
+  uniform sampler2D uPartTex;
+  uniform float uFollowOn;
+  uniform float uMvCount;
+  uniform mat4 uMvInv[${FOLLOW_MAX_MOVED}];
+  uniform vec3 uMvMin[${FOLLOW_MAX_MOVED}];
+  uniform vec3 uMvMax[${FOLLOW_MAX_MOVED}];
 
   // Signed distance to a fitted bore wall (negative inside the bore) at p, or false when p is outside every tube's
   // bore/wall zone. g = outward radial direction, rinOut = local bore radius. Exact (analytic) at any scale.
@@ -3777,7 +3798,7 @@ const SDF_SAMPLING_GLSL = `
   // (same union-of-all-triangles semantics as the coarse grid, so no seams
   // from joint regions that only know two parts), falls back to coarse.
   // Also returns the local voxel edge (world units) for smoothing widths.
-  float sdfVolume(vec3 p, out float voxelEdge) {
+  float sdfVolumeBake(vec3 p, out float voxelEdge) {
     // Gas inside a fitted thin channel is drawn by the dedicated tube pass (see ensureTubeVolumes); the coarse
     // density grid must not paint a blocky sausage over it, so it is masked out here.
     float tsd, trin; vec3 tg;
@@ -3795,6 +3816,19 @@ const SDF_SAMPLING_GLSL = `
     vec3 cs = uSDFCoarseSize / uSDFCoarseRes;
     voxelEdge = max(cs.x, max(cs.y, cs.z));
     return sampleCoarseGrid(p);
+  }
+  // World-space wall query that respects parts dragged since the bake: a point inside a moved part's CURRENT box is
+  // looked up in that part's bake-space cavity (rigid transform), everything else uses the baked field unchanged.
+  float sdfVolume(vec3 p, out float voxelEdge) {
+    if (uMvCount > 0.5) {
+      for (int k = 0; k < ${FOLLOW_MAX_MOVED}; k++) {
+        if (float(k) >= uMvCount) break;
+        vec3 q = (uMvInv[k] * vec4(p, 1.0)).xyz;
+        if (q.x >= uMvMin[k].x && q.y >= uMvMin[k].y && q.z >= uMvMin[k].z && q.x <= uMvMax[k].x && q.y <= uMvMax[k].y && q.z <= uMvMax[k].z)
+          return sdfVolumeBake(q, voxelEdge);
+      }
+    }
+    return sdfVolumeBake(p, voxelEdge);
   }
 
   // Estimated inward surface normal at p via a central-difference gradient
@@ -3877,6 +3911,26 @@ const PARTICLE_SHADER_CORE = `
     return texture2D(uWaypointFine, vec2(u, v)).g;
   }
 
+  // B/A channels of the same texel: owning part id + 1 (0 = none) and a ground-anchored flag (fluid follows its parts).
+  vec2 sampleWaypointFollow(float row, float w) {
+    float col = mod(row, ${TEX_COLS}.0), line = floor(row / ${TEX_COLS}.0);
+    float u = (col * ${MAX_WAYPOINTS}.0 + w + 0.5) / (${MAX_WAYPOINTS}.0 * ${TEX_COLS}.0);
+    float v = (line + 0.5) / uTexHeight;
+    return texture2D(uWaypointFine, vec2(u, v)).ba;
+  }
+  // The baked position (computed in the part's bake-time space, where the baked wall SDF is valid) is carried rigidly by the
+  // owning part's delta matrix. gPartRot lets velocity-based visuals (Gaussian streaks) rotate too.
+  mat3 gPartRot = mat3(1.0);
+  vec3 followApply(vec3 p, vec2 wf, bool setRot) {
+    if (wf.x < 0.5) return p;
+    float v = (wf.x - 0.5) / ${FOLLOW_ROWS}.0;
+    if (wf.y > 0.5) return p + texture2D(uPartTex, vec2(4.5 / 5.0, v)).xyz;
+    vec4 c0 = texture2D(uPartTex, vec2(0.5 / 5.0, v)), c1 = texture2D(uPartTex, vec2(1.5 / 5.0, v));
+    vec4 c2 = texture2D(uPartTex, vec2(2.5 / 5.0, v)), c3 = texture2D(uPartTex, vec2(3.5 / 5.0, v));
+    if (setRot) gPartRot = mat3(c0.xyz, c1.xyz, c2.xyz);
+    return c0.xyz * p.x + c1.xyz * p.y + c2.xyz * p.z + c3.xyz;
+  }
+
   float gSeg = 0.0;      // set by computeParticlePosition: waypoint segment index, fraction along it, and its span in progress units
   float gSegT = 0.0;
   float gSegSpan = 0.1;
@@ -3946,6 +4000,10 @@ const PARTICLE_SHADER_CORE = `
       vec3 n = sdfGradient(pos, fineIdx); // points toward increasing distance, i.e. OUTWARD
       pos -= n * (sd + skin);
     }
+    if (uFollowOn > 0.5) {
+      vec2 wfa = sampleWaypointFollow(aRow, seg), wfb = sampleWaypointFollow(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+      pos = mix(followApply(pos, wfa, segT < 0.5), followApply(pos, wfb, segT >= 0.5), segT);
+    }
     return pos;
   }
 `;
@@ -3997,6 +4055,191 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
   }
 `;
 
+// ═══════════════════════════════════════════════════════════════════════
+//  FLUID FOLLOWS PARTS
+//
+//  The baked flow is evaluated on the GPU in each part's BAKE-TIME space (waypoints, the wall SDF and the
+//  push-back all assume the parts sit where they did when Simulate was pressed). When the user drags a part
+//  while the sim runs, every waypoint is carried rigidly with the part that owns it: per waypoint the bake
+//  stores the owning part id (uWaypointFine.g) and the shader applies that part's DELTA matrix
+//  (current pivot world * inverse bake-time pivot world — translation, rotation and scale) read from a tiny
+//  [5 x FOLLOW_ROWS] float texture (uPartTex), so gas, path, SDF collision, floor splat, Gaussian splats and the
+//  volumetric CPU splat all travel with the part at zero per-frame cost beyond one 5-texel row upload when
+//  something actually moved. Waypoints on the ground (floor impact / spread) only take the part's xz shift.
+//  A segment between two waypoints owned by different parts blends their transforms, so a seal that stays
+//  within tolerance stays visually connected; one that really breaks is handled by the live-leak system, which
+//  hides the upstream baked gas and re-creates it as pressure-driven leak particles from the same moved position.
+//  Wall masks in world space (volumetric / Gaussian) look moved gas up in the moved part's own baked cavity
+//  through the uMv* remap (sdfVolume), and the volumetric / leak density domains grow to contain moved parts.
+// ═══════════════════════════════════════════════════════════════════════
+const followU = {
+  uPartTex: { value: null }, uFollowOn: { value: 0 }, uMvCount: { value: 0 },
+  uMvInv: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Matrix4()) },
+  uMvMin: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
+  uMvMax: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
+};
+const follow = {
+  data: new Float32Array(5 * FOLLOW_ROWS * 4), tex: null,
+  mats: new Array(FOLLOW_ROWS).fill(null),    // id -> Float32Array(16) delta (null = unmoved)
+  shift: new Array(FOLLOW_ROWS).fill(null),   // id -> [dx, 0, dz] ground-anchored shift (null = unmoved)
+  last: new Map(), box: new Map(), c0: new Map(),
+  on: false, moved: [], dom: null, domVer: 0, ticks: 0,
+};
+(function initFollowTex() {
+  const d = follow.data;
+  for (let r = 0; r < FOLLOW_ROWS; r++) { const o = r * 5 * 4; d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1; }
+  follow.tex = new THREE.DataTexture(d, 5, FOLLOW_ROWS, THREE.RGBAFormat, THREE.FloatType);
+  follow.tex.magFilter = THREE.NearestFilter; follow.tex.minFilter = THREE.NearestFilter; follow.tex.needsUpdate = true;
+  followU.uPartTex.value = follow.tex;
+})();
+
+// A fresh bake: every delta is identity from here on; remember each part's bake-space box and centroid.
+function followRebase() {
+  const d = follow.data;
+  d.fill(0);
+  for (let r = 0; r < FOLLOW_ROWS; r++) { const o = r * 5 * 4; d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1; }
+  follow.tex.needsUpdate = true;
+  follow.mats.fill(null); follow.shift.fill(null); follow.last.clear(); follow.box.clear(); follow.c0.clear();
+  follow.on = false; follow.moved = []; follow.dom = null; follow.domVer++;
+  followU.uFollowOn.value = 0; followU.uMvCount.value = 0;
+  state.root.updateMatrixWorld(true);
+  for (const part of state.parts) {
+    if (!(part.followId >= 0) || !part.meshes || !part.meshes.length) continue;
+    const b = partWorldAABB(part), sz = b.getSize(new THREE.Vector3()), pad = Math.max(sz.x, sz.y, sz.z) * 0.04 + 0.02;
+    b.expandByScalar(pad);
+    follow.box.set(part, b); follow.c0.set(part, partCentroid(part));
+    follow.last.set(part, Float32Array.from(part.pivot.matrixWorld.elements));
+  }
+  // a fitted thin-channel tube is part of its part's cavity: its bake-space box rides with the part too
+  const tl = state.sdf && state.sdf.tubes && state.sdf.tubes.list;
+  if (tl) for (const tube of tl) {
+    const bx = tube.part && follow.box.get(tube.part);
+    if (bx) bx.union(tube.aabb.clone().expandByScalar(tube.rOutMax * 0.5 + 0.02));
+  }
+  followSyncTubeMeshes();
+}
+
+const _fdM = new THREE.Matrix4(), _fdI = new THREE.Matrix4(), _fdV = new THREE.Vector3(), _fdB = new THREE.Box3();
+// Per frame (cheap): re-derive the delta matrices only when some part's pivot matrix actually changed.
+function followTick(force) {
+  const cpu = state.particleCPU;
+  if (!cpu || !state.root || !live.bakedM.size) return false;
+  let changed = !!force;
+  for (const part of state.parts) {
+    if (!(part.followId >= 0) || !part.pivot) continue;
+    part.pivot.updateWorldMatrix(true, false);
+    const e = part.pivot.matrixWorld.elements;
+    let l = follow.last.get(part);
+    if (!l) { follow.last.set(part, Float32Array.from(e)); changed = true; continue; }
+    for (let k = 0; k < 16; k++) if (Math.abs(e[k] - l[k]) > 1e-6) { changed = true; break; }
+    if (changed && !force) break;
+  }
+  if (!changed) return false;
+  const d = follow.data, moved = [];
+  follow.ticks++;
+  for (const part of state.parts) {
+    const id = part.followId;
+    if (!(id >= 0) || !part.pivot) continue;
+    const e = part.pivot.matrixWorld.elements, l = follow.last.get(part);
+    if (l) for (let k = 0; k < 16; k++) l[k] = e[k];
+    const bk = live.bakedM.get(part);
+    if (!bk) continue;
+    _fdM.multiplyMatrices(part.pivot.matrixWorld, _fdI.copy(bk).invert());
+    const m = _fdM.elements;
+    let dev = 0;
+    for (let k = 0; k < 16; k++) dev = Math.max(dev, Math.abs(m[k] - ((k % 5 === 0) ? 1 : 0)));
+    const o = id * 5 * 4;
+    if (dev < 1e-5) {
+      if (follow.mats[id]) { d.fill(0, o, o + 20); d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1; }
+      follow.mats[id] = null; follow.shift[id] = null;
+      continue;
+    }
+    if (!follow.mats[id]) follow.mats[id] = new Float32Array(16);
+    for (let k = 0; k < 16; k++) { follow.mats[id][k] = m[k]; d[o + k] = m[k]; }
+    const c = follow.c0.get(part) || _fdV.set(0, 0, 0);
+    const sx = m[0] * c.x + m[4] * c.y + m[8] * c.z + m[12] - c.x, sz = m[2] * c.x + m[6] * c.y + m[10] * c.z + m[14] - c.z;
+    follow.shift[id] = [sx, 0, sz];
+    d[o + 16] = sx; d[o + 17] = 0; d[o + 18] = sz; d[o + 19] = 0;
+    moved.push({ part, id, mag: Math.hypot(sx, sz) + dev });
+  }
+  follow.tex.needsUpdate = true;
+  moved.sort((a, b) => b.mag - a.mag);
+  follow.moved = moved.map(q => q.part);
+  follow.on = moved.length > 0;
+  followU.uFollowOn.value = follow.on ? 1 : 0;
+  const nMv = Math.min(moved.length, FOLLOW_MAX_MOVED);
+  followU.uMvCount.value = nMv;
+  _fdB.makeEmpty();
+  for (let i = 0; i < moved.length; i++) {
+    const q = moved[i], bx = follow.box.get(q.part);
+    const M = new THREE.Matrix4().fromArray(follow.mats[q.id]);
+    if (bx) _fdB.union(bx.clone().applyMatrix4(M));
+    if (i < nMv && bx) {
+      followU.uMvInv.value[i].copy(M).invert();
+      followU.uMvMin.value[i].copy(bx.min); followU.uMvMax.value[i].copy(bx.max);
+    }
+  }
+  followUpdateDomain(_fdB);
+  followSyncTubeMeshes();
+  return true;
+}
+
+// Thin-channel gas meshes (see ensureTubeVolumes) live in bake space: carry each with its part's delta and tell its shader the inverse.
+const _fsM = new THREE.Matrix4();
+function followSyncTubeMeshes() {
+  if (typeof tubeVol === 'undefined' || !tubeVol || !state.sdf || !state.sdf.tubes) return;
+  const tl = state.sdf.tubes.list;
+  tubeVol.meshes.forEach((mesh, q) => {
+    const tube = tl[q], id = tube && tube.part ? tube.part.followId : -1;
+    const m = id >= 0 ? follow.mats[id] : null, u = mesh.material.uniforms.uInvDelta.value;
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(mesh.userData.fBase);
+    if (m) { _fsM.fromArray(m); mesh.matrix.premultiply(_fsM); u.copy(_fsM).invert(); } else u.identity();
+    mesh.matrixWorldNeedsUpdate = true;
+  });
+}
+
+// Density-volume domain: the baked SDF bounds, grown (with margin + hysteresis) to contain every moved part.
+function followUpdateDomain(movedBox) {
+  const sdf = state.sdf;
+  if (!sdf) return;
+  if (movedBox.isEmpty()) { if (follow.dom) { follow.dom = null; follow.domVer++; } return; }
+  const cmin = sdf.coarse.boundsMin, csz = sdf.coarse.boundsSize;
+  const need = new THREE.Box3(cmin.clone(), cmin.clone().add(csz)).union(movedBox);
+  const cur = follow.dom;
+  if (cur) {
+    const have = new THREE.Box3(cur.min.clone(), cur.min.clone().add(cur.size));
+    const nv = need.getSize(new THREE.Vector3()), hv = cur.size;
+    const contained = have.containsBox(need), tooBig = hv.x * hv.y * hv.z > 5 * nv.x * nv.y * nv.z;
+    if (contained && !tooBig) return;
+  }
+  const sz = need.getSize(new THREE.Vector3()), mg = sz.clone().multiplyScalar(0.12);
+  need.min.sub(mg); need.max.add(mg);
+  follow.dom = { min: need.min.clone(), size: need.getSize(new THREE.Vector3()) };
+  follow.domVer++;
+}
+function followGetDomain(sdf) {
+  return follow.dom || { min: sdf.coarse.boundsMin, size: sdf.coarse.boundsSize };
+}
+
+// CPU mirror of followApply() in the shader, used by the volumetric splat and the live-leak hand-off.
+const _fw = { x: 0, y: 0, z: 0 };
+function followPoint(cpu, wi, x, y, z, out) {
+  const id = cpu.wpPart[wi];
+  if (id < 0 || !follow.mats[id]) { out.x = x; out.y = y; out.z = z; return; }
+  if (cpu.wpGround[wi]) { const sh = follow.shift[id]; out.x = x + sh[0]; out.y = y; out.z = z + sh[2]; return; }
+  const e = follow.mats[id];
+  out.x = e[0] * x + e[4] * y + e[8] * z + e[12]; out.y = e[1] * x + e[5] * y + e[9] * z + e[13]; out.z = e[2] * x + e[6] * y + e[10] * z + e[14];
+}
+const _fwa = { x: 0, y: 0, z: 0 }, _fwb = { x: 0, y: 0, z: 0 };
+// bake-space point of particle p at segment (seg, segB, segT) -> world point in _fw
+function followWorld(cpu, p, seg, segB, segT, x, y, z) {
+  const MW = MAX_WAYPOINTS;
+  followPoint(cpu, p * MW + seg, x, y, z, _fwa);
+  followPoint(cpu, p * MW + segB, x, y, z, _fwb);
+  _fw.x = _fwa.x + (_fwb.x - _fwa.x) * segT; _fw.y = _fwa.y + (_fwb.y - _fwa.y) * segT; _fw.z = _fwa.z + (_fwb.z - _fwa.z) * segT;
+}
+
 // Builds the SDF_SAMPLING_GLSL uniform objects for a baked collisionSDF (or
 // inert "everything far outside, no fine regions" defaults when there is
 // none, so sdfAt() degrades to "never collides" rather than sampling an
@@ -4026,7 +4269,7 @@ function makeSDFUniformSet(collisionSDF) {
       uSDFCoarseRes: { value: new THREE.Vector3(1, 1, 1) }, uSDFCoarseTilesPerRow: { value: 1 }, uSDFCoarseTexSize: { value: new THREE.Vector2(1, 1) },
       uSDFFineAtlas: { value: f }, uSDFAtlasTexSize: { value: new THREE.Vector2(1, 1) }, uSDFPartStart: { value: 0 },
       uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
-      ...tubeUniformSet(null),
+      ...tubeUniformSet(null), ...followU,
     };
   }
   const c = collisionSDF.coarse;
@@ -4037,7 +4280,7 @@ function makeSDFUniformSet(collisionSDF) {
     uSDFFineAtlas: { value: collisionSDF.fineAtlasTexture }, uSDFAtlasTexSize: { value: new THREE.Vector2(collisionSDF.atlasW, collisionSDF.atlasH) },
     uSDFPartStart: { value: collisionSDF.partStart },
     uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
-    ...tubeUniformSet(collisionSDF.tubes),
+    ...tubeUniformSet(collisionSDF.tubes), ...followU,
   };
 }
 function tubeUniformSet(tubeSet) {
@@ -4088,6 +4331,8 @@ async function buildParticleSystem() {
   const knotData = [];     // MAX_WAYPOINTS floats per particle: cumulative path-time at which each waypoint is reached (0..1), from the continuity (v ∝ 1/A) law
   const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
   const exitIdxData = []; // per particle: waypoint index of the nozzle exit plane
+  const wpPart = [], wpGround = []; // per particle waypoint: owning part id / ground-anchored flag (fluid follows its parts)
+  state.parts.forEach((q, qi) => { q.followId = qi < FOLLOW_ROWS ? qi : -1; });
   const phase = [];
   const speed = [];
   const thermalSeed = [];
@@ -4103,6 +4348,7 @@ async function buildParticleSystem() {
       for (const fi of path.fineIdx) fineIdxData.push(fi);
       exitIdxData.push(path.exitIdx);
       for (const k of path.knots) knotData.push(k);
+      for (let w = 0; w < MAX_WAYPOINTS; w++) { wpPart.push(path.owners[w].followId); wpGround.push(path.ground[w]); }
       ownerPart.push(part);
       phase.push(Math.random());
       speed.push(0.15 + Math.random() * 0.25);
@@ -4140,12 +4386,13 @@ async function buildParticleSystem() {
   // decoding the tiled packing back out) since they're the same arrays
   // already built above.
   state.particleCPU = {
-    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData,
-    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart,
+    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData,
+    wpPart: Int16Array.from(wpPart), wpGround: Uint8Array.from(wpGround), // owning part id / ground flag per waypoint (CPU mirror of the shader's follow)
     liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
     affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
   };
   liveSnapshotBaked(); // remember each part's pivot transform at bake time (live leaks measure movement against it)
+  followRebase();      // fluid-follows-parts: deltas are measured from this same bake state
 
   // Pack waypoints into a DataTexture: width = MAX_WAYPOINTS, height = count,
   // RGB = xyz position, A = containment radius at that waypoint. This radius
@@ -4180,6 +4427,8 @@ async function buildParticleSystem() {
       const dstIdx = (line * texWidth + colOff + w) * 4;
       fineIdxTexData[dstIdx] = fineIdxData[p * MAX_WAYPOINTS + w];
       fineIdxTexData[dstIdx + 1] = knotData[p * MAX_WAYPOINTS + w]; // G = time knot of this waypoint (see sampleWaypointKnot)
+      fineIdxTexData[dstIdx + 2] = wpPart[p * MAX_WAYPOINTS + w] + 1; // B = owning part id + 1 (0 = none)
+      fineIdxTexData[dstIdx + 3] = wpGround[p * MAX_WAYPOINTS + w];   // A = ground-anchored waypoint
     }
   }
   const waypointFineTex = new THREE.DataTexture(fineIdxTexData, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
@@ -4345,6 +4594,7 @@ const VOL_MAX_SAMPLES = 60000;       // hard cap on how many particles get splat
 let volEnabled = true;              // mirrors the #volumetricToggle checkbox (markup carries `checked`; default ON per user request)
 let volXray = true;                 // mirrors the #xrayToggle checkbox (default ON): gas inside containers/cavities reads through the walls
 let volMesh = null;                 // the single bounding-box mesh the ray-march shader runs on
+let volDomMin = null, volDomSize = null, volLastDomVer = -1;   // current density-volume domain (see FLUID FOLLOWS PARTS)
 let volDensityTex = null;           // THREE.DataTexture, tiled-2D-as-3D atlas (same convention as uSDFCoarse)
 let volDensityData = null;          // the Float32Array backing volDensityTex, reused across rebuilds (no per-rebuild alloc)
 let volLastBuildAt = -Infinity;
@@ -4630,7 +4880,7 @@ function rebuildVolumetricDensity() {
     } else { volDensityData[i] = 0; volDensityData[i + 1] = 0; volDensityData[i + 2] = 0; volDensityData[i + 3] = 0; }
   }
 
-  const dMin = sdf.coarse.boundsMin, dSize = sdf.coarse.boundsSize;
+  const dMin = volDomMin || sdf.coarse.boundsMin, dSize = volDomSize || sdf.coarse.boundsSize; // density domain (grows to contain moved parts)
   const invSizeX = 1 / Math.max(dSize.x, 1e-5);
   const invSizeY = 1 / Math.max(dSize.y, 1e-5);
   const invSizeZ = 1 / Math.max(dSize.z, 1e-5);
@@ -4716,13 +4966,15 @@ function rebuildVolumetricDensity() {
       if (hue) { cr += (hue[0] - cr) * 0.35; cg += (hue[1] - cg) * 0.35; cb += (hue[2] - cb) * 0.35; }
     }
 
-    if (haveTubes) tubeVolAccum(px, py, pz, cr, cg, cb, 1);
+    if (haveTubes) tubeVolAccum(px, py, pz, cr, cg, cb, 1); // tube bins live in the part's bake space: take the un-dragged position
+    let wx_ = px, wy_ = py, wz_ = pz;
+    if (follow.on) { followWorld(cpu, p, seg, segB, segT, px, py, pz); wx_ = _fw.x; wy_ = _fw.y; wz_ = _fw.z; } // the density splat rides with the part
 
     // Trilinear (cloud-in-cell) accumulate: 8 surrounding voxels weighted by
     // proximity, so density is continuous across voxel borders (the old
     // nearest-cell splat made every voxel a visible hard block).
     const addDens = 0.9;
-    const fx = (px - dMin.x) * invSizeX * resX - 0.5, fy = (py - dMin.y) * invSizeY * resY - 0.5, fz = (pz - dMin.z) * invSizeZ * resZ - 0.5;
+    const fx = (wx_ - dMin.x) * invSizeX * resX - 0.5, fy = (wy_ - dMin.y) * invSizeY * resY - 0.5, fz = (wz_ - dMin.z) * invSizeZ * resZ - 0.5;
     const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
     const wx = fx - x0, wy = fy - y0, wz = fz - z0;
     for (let k = 0; k < 8; k++) {
@@ -4792,6 +5044,7 @@ const TUBE_FRAGMENT_SHADER = `
   uniform float uTubeIdx, uFirstSeg, uSegCount, uLen;
   uniform vec3 uBoxMin, uBoxMax;
   uniform float uXray, uXrayGlow, uAbsorb;
+  uniform mat4 uInvDelta;   // inverse of the owning part's drag since the bake (the tube geometry is baked in the part's own space)
   varying vec3 vWorld;
 
   vec4 densAt(float s) {
@@ -4805,8 +5058,8 @@ const TUBE_FRAGMENT_SHADER = `
   }
 
   void main() {
-    vec3 ro = cameraPosition;
-    vec3 rd = normalize(vWorld - ro);
+    vec3 ro = (uInvDelta * vec4(cameraPosition, 1.0)).xyz;
+    vec3 rd = normalize((uInvDelta * vec4(vWorld, 1.0)).xyz - ro);
     vec3 invRd = 1.0 / max(abs(rd), vec3(1e-5)) * sign(rd + vec3(1e-9));
     vec3 tA = (uBoxMin - ro) * invRd, tB = (uBoxMax - ro) * invRd;
     vec3 tMn = min(tA, tB), tMx = max(tA, tB);
@@ -4904,7 +5157,7 @@ function ensureTubeVolumes() {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uTubeTex: { value: ts.tex }, uTubeDens: { value: densTex }, uTubeIdx: { value: q }, uFirstSeg: { value: tube.firstSeg }, uSegCount: { value: tube.nSegs }, uLen: { value: tube.L },
-        uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.55 },
+        uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.55 }, uInvDelta: { value: new THREE.Matrix4() },
       },
       vertexShader: TUBE_VERTEX_SHADER, fragmentShader: TUBE_FRAGMENT_SHADER,
       transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.BackSide,
@@ -4912,6 +5165,7 @@ function ensureTubeVolumes() {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
     mesh.scale.copy(size); mesh.position.copy(ctr); mesh.frustumCulled = false; mesh.renderOrder = 10; mesh.visible = false;
     mesh.updateMatrixWorld(true);
+    mesh.userData.fBase = mesh.matrix.clone(); // bake-space placement; followSyncTubeMeshes premultiplies the part's drag
     scene.add(mesh); meshes.push(mesh);
   });
   // nominal particles-per-bin if the bore were uniformly filled: sum over particles of the path-time fraction spent in the tube / bins
@@ -4931,6 +5185,7 @@ function ensureTubeVolumes() {
   }
   tubeVol = { stamp: sdf, tubeSet: ts, meshes, densTex, densData, nominal,
               cnt: ts.list.map(() => new Float32Array(TUBE_BINS)), col: ts.list.map(() => new Float32Array(TUBE_BINS * 3)) };
+  followSyncTubeMeshes();
   return tubeVol;
 }
 // per-rebuild: decay the bins (same temporal smoothing as the main grid), called before particles are accumulated
@@ -5017,12 +5272,14 @@ function updateVolumetricRender(nowMs) {
 
   const mesh = ensureVolumetricMesh();
 
-  if (sdf !== volLastSDFRef) {
-    // Domain changed (new Simulate press) — resync the box transform, the
+  if (sdf !== volLastSDFRef || volLastDomVer !== follow.domVer) {
+    // Domain changed (new Simulate press, or a dragged part pushed the gas outside it) — resync the box transform, the
     // density grid shape and the SDF uniforms the shader needs. Doing this
     // only on change (not every frame) mirrors the iOS renderer's own
     // "domain size changes slowly" note.
-    const size = sdf.coarse.boundsSize, min = sdf.coarse.boundsMin;
+    const dom = followGetDomain(sdf);
+    const size = dom.size, min = dom.min;
+    volDomMin = min.clone(); volDomSize = size.clone(); volLastDomVer = follow.domVer;
     mesh.scale.set(Math.max(size.x, 0.001), Math.max(size.y, 0.001), Math.max(size.z, 0.001));
     mesh.position.set(min.x + size.x * 0.5, min.y + size.y * 0.5, min.z + size.z * 0.5);
     mesh.updateMatrixWorld(true); // so matrixWorld below reflects the scale/position just set, not last frame's
@@ -5139,7 +5396,7 @@ const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
     float seg = gSeg, segT = gSegT;
     vec4 a4 = sampleWaypoint(aRow, seg);
     vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
-    vec3 vel = (b4.xyz - a4.xyz) * (aSpeed * 0.35 / gSegSpan);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
+    vec3 vel = gPartRot * (b4.xyz - a4.xyz) * (aSpeed * 0.35 / gSegSpan);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
     float rad = mix(a4.w, b4.w, segT);
     float press = aPress * (1.0 - 0.35 * vProgress);
     float sigma = clamp(rad * 0.25, uGsSize * 0.12, uGsSize * 3.0) * (0.8 + 0.55 * press);
@@ -5598,12 +5855,26 @@ function liveBakedState(p, uTime) {
   _bp.x = ax + (bx - ax) * segT + (lu * rx + lv * ux) * rad;
   _bp.y = ay + (by - ay) * segT + (lu * ry + lv * uy) * rad;
   _bp.z = az + (bz - az) * segT + (lu * rz + lv * uz) * rad;
+  if (follow.on) { followWorld(cpu, p, seg, segB, segT, _bp.x, _bp.y, _bp.z); _bp.x = _fw.x; _bp.y = _fw.y; _bp.z = _fw.z; } // carried with its part, same as the GPU
   _bp.seg = seg; _bp.progress = progress;
 }
 
+// Mean world position of the baked particles OWNED by `part` right now (CPU mirror of the shader, incl. fluid-follows-parts).
+// Optional segMax limits it to particles still in segments <= segMax. Used by the regression harness.
+function followOwnedCentroid(part, segMax) {
+  const cpu = state.particleCPU; if (!cpu || !particleSystem) return null;
+  const uTime = particleSystem.material.uniforms.uTime.value;
+  let n = 0, x = 0, y = 0, z = 0;
+  for (let p = 0; p < cpu.count; p++) {
+    if (cpu.ownerPart[p] !== part || cpu.liveArr[p] > 0.5) continue;
+    liveBakedState(p, uTime); if (segMax !== undefined && _bp.seg > segMax) continue; x += _bp.x; y += _bp.y; z += _bp.z; n++;
+  }
+  return n ? { n, x: x / n, y: y / n, z: z / n } : null;
+}
 function liveConvert(newGroups) {
   const cpu = state.particleCPU;
   if (!cpu || !particleSystem || !newGroups.length) return;
+  followTick(true); // hand-off positions must use the parts' CURRENT transforms
   const uTime = particleSystem.material.uniforms.uTime.value;
   const MW = MAX_WAYPOINTS;
   if (!live.pendIdx || live.pendIdx.length < cpu.count) { live.pendIdx = new Int32Array(cpu.count); live.pendT = new Float32Array(cpu.count); }
@@ -5621,7 +5892,7 @@ function liveConvert(newGroups) {
     liveBakedState(p, uTime);
     const metaO = state.pathMeta && state.pathMeta.get(owner);
     const gapWp = metaO && metaO.exitIdx[gk] != null ? metaO.exitIdx[gk] : 2 * gk + 1; // waypoint index of the leaking part's exit
-    if (_bp.seg <= gapWp - 1) { cpu.liveArr[p] = 1; ups.get(g.id).push(p); }
+    if (_bp.seg <= gapWp - 1 + (g.gapDist > 0.3 ? 1 : 0)) { cpu.liveArr[p] = 1; ups.get(g.id).push(p); } // a wide gap also takes the stretch that would span it
     else if (live.pendN < cpu.count) {
       // already past the gap when it broke: finishes its lap, hidden when it wraps back to the (now leaking) start
       live.pendIdx[live.pendN] = p;
@@ -5647,13 +5918,8 @@ function liveConvert(newGroups) {
       liveBakedState(p, uTime);
       const metaO = state.pathMeta && state.pathMeta.get(owner);
       const gapWp = metaO && metaO.exitIdx[gk] != null ? metaO.exitIdx[gk] : 2 * gk + 1;
-      const ci = Math.min(metaO ? metaO.partOfWp[Math.min(_bp.seg + 1, metaO.nReal - 1)] : Math.floor((_bp.seg + 1) / 2), gk);
-      const delta = liveDelta(chain[ci]); // the owning part may have been dragged since the bake
-      const e = delta.elements, x = _bp.x, y = _bp.y, z = _bp.z;
       const i = live.n++;
-      live.px[i] = e[0] * x + e[4] * y + e[8] * z + e[12];
-      live.py[i] = e[1] * x + e[5] * y + e[9] * z + e[13];
-      live.pz[i] = e[2] * x + e[6] * y + e[10] * z + e[14];
+      live.px[i] = _bp.x; live.py[i] = _bp.y; live.pz[i] = _bp.z; // _bp is already carried with its (possibly dragged) owning part
       live.vx[i] = live.vy[i] = live.vz[i] = 0;
       live.st[i] = 1; live.grp[i] = g.id; live.rt[i] = Math.min(_bp.seg + 1, gapWp);
       live.age[i] = 0; live.life[i] = 3.5 + Math.random() * 3.0; live.heat[i] = cpu.thermalSeed[p];
@@ -5979,9 +6245,10 @@ function liveEnsureLeakMesh() {
     live.leakMesh.frustumCulled = false; live.leakMesh.renderOrder = 12; live.leakMesh.visible = false;
     scene.add(live.leakMesh);
   }
-  if (live.leakDomainRef !== sdf) {
+  if (live.leakDomainRef !== sdf || live.leakDomVer !== follow.domVer) {
     // domain: the cavity bounds widened sideways and extended down to the floor so the dispersing plume stays inside it
-    const b = sdf.coarse.boundsMin, s = sdf.coarse.boundsSize;
+    const dom = followGetDomain(sdf), b = dom.min, s = dom.size;
+    live.leakDomVer = follow.domVer;
     const mn = new THREE.Vector3(b.x - 0.6 * s.x, 0, b.z - 0.6 * s.z);
     const sz = new THREE.Vector3(s.x * 2.2, Math.max(b.y + s.y + 1, 1), s.z * 2.2);
     const m = live.leakMesh;
@@ -7326,7 +7593,7 @@ async function presetLoadFile(file) {
 // ═══ /PRESET SAVE/LOAD ═══
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset };
 // Test/debug hook: renders every baked particle's CURRENT position (exactly what the vertex shader computes, including the SDF
 // push-back) into a float target and reads it back. Used to verify bore containment / transit; not part of the UI.
 function debugReadParticlePositions(tOverride) {
@@ -7364,7 +7631,7 @@ function debugReadParticlePositions(tOverride) {
 window.arcFlowDebug = { readParticles: debugReadParticlePositions };
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
