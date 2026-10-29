@@ -253,6 +253,14 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       Replaces the point-sprite particle display with a continuous ray-marched density field — the same rendering approach ArcLake-iOS uses for its fluid view, reusing Arc Flow's existing real-mesh collision SDF so the fluid is shaped by (and never renders inside) the actual imported geometry. The waypoint/physics simulation itself is unchanged — this only swaps the VISUAL layer.
       <br>On by default: this adds a per-frame CPU density-texture rebuild and a full-screen ray-march pass on top of the existing simulation, which costs noticeably more than point sprites on an integrated/mobile GPU. Untick it to fall back to point sprites if it runs choppy on your device.
     </div>
+
+    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="xrayToggle" checked style="width:auto;margin:0;">
+      X-ray interior glow
+    </label>
+    <div class="sec-sub">
+      Gas inside a container, pipe or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the volumetric render; untick to see the gas only where the walls don't hide it.
+    </div>
   </div>
 
   <div id="viewport">
@@ -566,6 +574,7 @@ const state = {
   simRunning: false,
 };
 window._arcFlowState = state; // for debugging from console
+window._arcFlowView = { camera, controls, renderer, scene }; // debug/test hook (camera framing from automation)
 
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingText = document.getElementById('loadingText');
@@ -2070,10 +2079,26 @@ function partContainmentRadius(part) {
 // only" per its own original comment — it was never meant to carry fine
 // detail, so spending that much time on it bought nothing the fine
 // per-joint grids don't already provide where precision actually matters.
-const SDF_COARSE_RES = 20;   // voxels per axis, whole-scene grid — bulk interior only, doesn't need to be fine
+const SDF_COARSE_RES = 20;   // whole-scene grid voxel BUDGET = RES^3 (8000). Since task #51 the budget is spread per-axis by the scene's aspect ratio (a tall stack gets more voxels along Y) instead of a cubic RES^3 lattice.
+const SDF_COARSE_MAX_AXIS = 56;  // per-axis cap for the coarse grid
 const SDF_FINE_RES = 14;     // voxels per axis, per-joint grid — small box, so this is real resolution there
 const SDF_FINE_PAD_FACTOR = 2.2; // how many joint-radii wide/tall the fine box extends around a junction centroid
-const SDF_MAX_FINE_REGIONS = 24; // hard cap so a scene with many joints can't blow the texture/compute budget
+const SDF_MAX_FINE_REGIONS = 24; // hard cap (joint + per-part regions TOGETHER) so a scene can't blow the texture/uniform/compute budget
+// ── Adaptive per-part SDF (task #51) ────────────────────────────────────
+// Every classified part also gets its OWN grid (a "part region" in the same
+// fine atlas), sized from the part's bounding box vs. a target voxel size
+// — NOT from its tessellation. A sparsely-tessellated import (a tank that is
+// 40 big triangles) still needs an accurate collision body, so the visible
+// mesh is left alone and the SDF build "virtually" subdivides any triangle
+// longer than ~SDF_VIRTUAL_EDGE_VOXELS voxels (see subdivideLargeTris).
+const SDF_MAX_PART_REGIONS = 8;          // part regions reserved out of SDF_MAX_FINE_REGIONS (joints get the rest)
+const SDF_PART_MIN_CELLS = 14;           // the part's thinnest bbox dimension gets at least this many voxels, budget permitting
+const SDF_PART_BUDGET = { chamber: 4000, container: 2400, pipe: 1200, other: 1200 }; // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
+const SDF_PART_MAX_AXIS = 48;            // per-axis cap for one part region
+const SDF_VIRTUAL_EDGE_VOXELS = 2.5;     // ...but never split below this many voxels
+const SDF_VIRTUAL_EDGE_CELLS = 4;        // triangles longer than this many spatial-index cells (and > SDF_VIRTUAL_EDGE_VOXELS voxels) are virtually bisected
+const SDF_VIRTUAL_PHONG_ALPHA = 0.75;    // Phong-tessellation strength when a bisected edge's endpoints carry smooth vertex normals (0 = flat midpoints)
+const SDF_VIRTUAL_EXTRA_TRI_CAP = 200000; // hard cap on virtual triangles ADDED per grid build
 
 // Signed distance from `point` to the nearest triangle among `triangles`
 // (each a flat [v0x,v0y,v0z, v1..., v2...] array in WORLD space), with the
@@ -2150,11 +2175,30 @@ function worldTrianglesForPart(part) {
     // the outward-pointing winding the sign test assumes.
     const flip = wm.determinant() < 0;
     const triCount = idx ? idx.length / 3 : pos.count / 3;
+    // Sparse-tessellation support (task #51): for OVERSIZE triangles of a
+    // mesh that carries smooth vertex normals, remember each vertex's world
+    // normal on the (SDF-only) vertex copy as `.n`, so the virtual
+    // subdivision in subdivideLargeTris can Phong-project new midpoints
+    // toward the intended curved surface. Dense triangles never get one, so
+    // this costs memory only for the few big faces.
+    const nrm = geo.attributes.normal || null;
+    let normalMat = null, bigEdge2 = Infinity;
+    if (nrm) {
+      normalMat = new THREE.Matrix3().getNormalMatrix(wm);
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const bd = geo.boundingBox.getSize(new THREE.Vector3()).length() * wm.getMaxScaleOnAxis();
+      bigEdge2 = (bd * 0.04) * (bd * 0.04);
+    }
     for (let t = 0; t < triCount; t++) {
       const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
       const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
       const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
       const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
+      if (nrm && Math.max(v0.distanceToSquared(v1), v1.distanceToSquared(v2), v2.distanceToSquared(v0)) > bigEdge2) {
+        v0.n = new THREE.Vector3().fromBufferAttribute(nrm, i0).applyMatrix3(normalMat).normalize();
+        v1.n = new THREE.Vector3().fromBufferAttribute(nrm, i1).applyMatrix3(normalMat).normalize();
+        v2.n = new THREE.Vector3().fromBufferAttribute(nrm, i2).applyMatrix3(normalMat).normalize();
+      }
       if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
     }
   }
@@ -2423,64 +2467,198 @@ function signedDistanceToMesh(point, trisOrIndex) {
   return Math.sqrt(best) * bestSign;
 }
 
-// Computes signed distances for every voxel of a `res`-per-axis grid over
-// `bounds`, returning a flat Float32Array of res*res*res values (x fastest,
-// then y, then z) normalized by the grid's own diagonal (so values stay in
-// a sane range whether this is the big coarse grid or a tiny fine box —
-// the shader un-normalizes using the same bounds it was given).
+// ── Virtual triangle subdivision (task #51) ──────────────────────────────
+// The distance/sign query itself is exact for a big flat triangle
+// (closestPointOnTriangle handles the interior, and the face normal is the
+// right pseudo-normal everywhere on it), so sparse tessellation does NOT make
+// a distance sample wrong. What it does break is everything AROUND the query:
+// a long thin sliver bucketed by its bounding box lands in dozens of
+// spatial-index cells (every ring search re-tests it), a single big face
+// makes the "first hit ring + margin" termination meaningless (its bbox
+// reaches cells nowhere near its surface), and nothing lets the nearest-
+// triangle search stay local. Splitting every over-long triangle by longest-
+// edge bisection (children keep the parent's winding, so normals/sign are
+// bit-identical) gives the index locally balanced buckets again. It only
+// touches the list handed to the SDF bake: the visible meshes and the cached
+// per-part world triangles are never modified. Sub-triangles that fall
+// outside `clipBox` (when given) are discarded, and `capObj.left` bounds the
+// total number of triangles ADDED so a pathological import cannot explode.
+function subdivideLargeTris(tris, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved) {
+  if (maxEdgeCurved == null) maxEdgeCurved = maxEdge;
+  const maxEC2 = maxEdgeCurved * maxEdgeCurved;
+  const _fn = new THREE.Vector3(), _e1 = new THREE.Vector3();
+  // A triangle is "curved" when its smooth vertex normals visibly differ from its face normal; only those benefit from being cut finer than the index needs.
+  const isCurved = (a, b, c) => {
+    if (!(a.n && b.n && c.n)) return false;
+    _fn.copy(b).sub(a); _e1.copy(c).sub(a); _fn.cross(_e1).normalize();
+    return Math.min(_fn.dot(a.n), _fn.dot(b.n), _fn.dot(c.n)) < 0.9995;
+  };
+  if (phongAlpha == null) phongAlpha = SDF_VIRTUAL_PHONG_ALPHA;
+  // Midpoint of edge p-q. With smooth vertex normals on both ends (see
+  // worldTrianglesForPart) it is Phong-projected: pulled toward the average
+  // of its projections onto the two vertices' tangent planes, i.e. toward the
+  // curved surface the coarse polygon stands for. Flat-shaded faces (normal
+  // == face normal) project to themselves, so boxes/plates stay exactly flat.
+  const _d = new THREE.Vector3();
+  const midpoint = (p, q) => {
+    const m = p.clone().add(q).multiplyScalar(0.5);
+    if (p.n && q.n) {
+      let proj = new THREE.Vector3();
+      for (const v of [p, q]) {
+        _d.copy(m).sub(v);
+        proj.add(m.clone().addScaledVector(v.n, -_d.dot(v.n)));
+      }
+      proj.multiplyScalar(0.5);
+      m.lerp(proj, phongAlpha);
+      m.n = p.n.clone().add(q.n).normalize();
+    }
+    return m;
+  };
+  const maxE2 = maxEdge * maxEdge;
+  const out = [];
+  const stack = [];
+  const bMin = new THREE.Vector3(), bMax = new THREE.Vector3();
+  const outsideClip = (a, b, c) => {
+    if (!clipBox) return false;
+    bMin.set(Math.min(a.x, b.x, c.x), Math.min(a.y, b.y, c.y), Math.min(a.z, b.z, c.z));
+    bMax.set(Math.max(a.x, b.x, c.x), Math.max(a.y, b.y, c.y), Math.max(a.z, b.z, c.z));
+    return bMax.x < clipBox.min.x || bMin.x > clipBox.max.x || bMax.y < clipBox.min.y || bMin.y > clipBox.max.y ||
+           bMax.z < clipBox.min.z || bMin.z > clipBox.max.z;
+  };
+  let added = 0;
+  for (let i = 0; i < tris.length; i += 3) {
+    stack.length = 0;
+    stack.push(tris[i], tris[i + 1], tris[i + 2]);
+    while (stack.length) {
+      const c = stack.pop(), b = stack.pop(), a = stack.pop();
+      if (outsideClip(a, b, c)) continue;
+      const ab = a.distanceToSquared(b), bc = b.distanceToSquared(c), ca = c.distanceToSquared(a);
+      const longest = Math.max(ab, bc, ca);
+      const lim = (maxEC2 < maxE2 && isCurved(a, b, c)) ? maxEC2 : maxE2;
+      if (longest <= lim || capObj.left <= 0) { out.push(a, b, c); continue; }
+      capObj.left--; added++;
+      // bisect the longest edge; both children keep a->b->c winding
+      if (ab >= bc && ab >= ca) { const m = midpoint(a, b); stack.push(a, m, c, m, b, c); }
+      else if (bc >= ca)        { const m = midpoint(b, c); stack.push(a, b, m, a, m, c); }
+      else                      { const m = midpoint(c, a); stack.push(a, b, m, m, b, c); }
+    }
+  }
+  return { tris: out, added };
+}
+
+// Same cell-size rule buildTriangleSpatialIndex applies to a triangle list
+// (≈6 triangles per cell over the list's bounds), so subdivision can be
+// sized against the index it feeds.
+function estimateSpatialIndexCell(tris) {
+  const b = new THREE.Box3();
+  for (let i = 0; i < tris.length; i++) b.expandByPoint(tris[i]);
+  const sz = b.getSize(new THREE.Vector3());
+  const vol = Math.max(sz.x, 0.001) * Math.max(sz.y, 0.001) * Math.max(sz.z, 0.001);
+  const targetCells = Math.max(8, Math.min(65536, Math.ceil((tris.length / 3) / 6)));
+  return Math.max(Math.cbrt(vol / targetCells), 0.001);
+}
+
+// Picks per-axis voxel counts for a box so the voxels are ~cubic with edge
+// `h0` (smaller h = finer), then coarsens h until the total fits `budget`.
+function adaptiveGridRes(size, h0, budget, minAxis, maxAxis) {
+  const sx = Math.max(size.x, 1e-3), sy = Math.max(size.y, 1e-3), sz = Math.max(size.z, 1e-3);
+  const clampA = (v) => Math.max(minAxis, Math.min(maxAxis, Math.round(v)));
+  let h = Math.max(h0, 1e-4);
+  let res = [clampA(sx / h), clampA(sy / h), clampA(sz / h)];
+  for (let it = 0; it < 80 && res[0] * res[1] * res[2] > budget; it++) {
+    h *= 1.05;
+    res = [clampA(sx / h), clampA(sy / h), clampA(sz / h)];
+  }
+  return { res, h };
+}
+
+// Computes signed distances for every voxel of a res-per-axis grid over
+// `bounds` (`res` is a number, or [rx,ry,rz]), returning a flat Float32Array
+// of rx*ry*rz values (x fastest, then y, then z) normalized by the grid's own
+// diagonal (so values stay in a sane range whether this is the big coarse
+// grid or a tiny fine box — the shader un-normalizes using the same bounds).
 //
-// Builds a triangle spatial index ONCE up front (see
-// buildTriangleSpatialIndex) and reuses it for every voxel in this grid,
-// rather than re-searching all of `tris` per voxel — the difference
-// between a build that's instant and one that hangs for minutes on a
-// real, triangle-dense imported assembly (confirmed: the bundled
-// propulsion demo alone totals ~223k triangles across its 7 parts).
-function sampleSDFGrid(bounds, res, tris) {
+// Builds a triangle spatial index ONCE up front (see buildTriangleSpatialIndex)
+// and reuses it for every voxel. Over-long triangles are virtually subdivided
+// first (see subdivideLargeTris) relative to THIS grid's voxel size.
+// opts.stats (optional) accumulates { virtualAdded, voxels }.
+function sampleSDFGrid(bounds, res, tris, opts) {
+  const R = Array.isArray(res) ? res : [res, res, res];
   const size = new THREE.Vector3(); bounds.getSize(size);
   size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
   const diag = size.length();
-  const out = new Float32Array(res * res * res);
-  const index = buildTriangleSpatialIndex(tris);
+  const out = new Float32Array(R[0] * R[1] * R[2]);
+  let work = tris;
+  if (!opts || opts.subdivide !== false) {
+    const voxelEdge = Math.max(size.x / R[0], size.y / R[1], size.z / R[2]);
+    // Only split triangles that are genuinely OVERSIZE for what is being
+    // asked of them: longer than several spatial-index cells AND several
+    // voxels. (Measured: splitting a sparse mesh down to ~voxel size makes the
+    // build 10-40x SLOWER with bit-identical distances, because the exact
+    // point-triangle distance never needed the subdivision — it only helps
+    // when a big face would otherwise be bucketed into dozens of cells of a
+    // finer index built for the dense geometry around it.)
+    const cellEst = estimateSpatialIndexCell(tris);
+    const maxEdge = Math.max(SDF_VIRTUAL_EDGE_CELLS * cellEst, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+    const cap = (opts && opts.cap) || { left: SDF_VIRTUAL_EXTRA_TRI_CAP };
+    // Sub-triangles beyond half a grid-diagonal from the grid are dropped
+    // (same widening the joint/part triangle pre-filter uses): a huge
+    // ground-plane-sized triangle is only subdivided where it can matter.
+    const clip = (opts && opts.clipBox) || bounds.clone ? ((opts && opts.clipBox) || bounds.clone().expandByScalar(diag * 0.5)) : null;
+    const sub = subdivideLargeTris(tris, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+    work = sub.tris;
+    if (opts && opts.stats) opts.stats.virtualAdded += sub.added;
+  }
+  if (opts && opts.stats) opts.stats.voxels += out.length;
+  const index = buildTriangleSpatialIndex(work);
   const p = new THREE.Vector3();
-  for (let z = 0; z < res; z++) {
-    for (let y = 0; y < res; y++) {
-      for (let x = 0; x < res; x++) {
+  for (let z = 0; z < R[2]; z++) {
+    for (let y = 0; y < R[1]; y++) {
+      for (let x = 0; x < R[0]; x++) {
         p.set(
-          bounds.min.x + (x + 0.5) / res * size.x,
-          bounds.min.y + (y + 0.5) / res * size.y,
-          bounds.min.z + (z + 0.5) / res * size.z,
+          bounds.min.x + (x + 0.5) / R[0] * size.x,
+          bounds.min.y + (y + 0.5) / R[1] * size.y,
+          bounds.min.z + (z + 0.5) / R[2] * size.z,
         );
-        out[(z * res + y) * res + x] = signedDistanceToMesh(p, index) / diag;
+        out[(z * R[1] + y) * R[0] + x] = signedDistanceToMesh(p, index) / diag;
       }
     }
   }
   return out;
 }
 
-// Packs one res³ voxel grid as a tiled-2D-as-3D texture: Z-slices laid out
-// left-to-right/top-to-bottom across a single square 2D image (tilesPerRow
-// tiles per row), the same "flatten the 3rd dimension into 2D tiles" trick
-// buildParticleSystem() already uses to pack per-particle waypoint arrays.
-// Returns { texture, boundsMin, boundsSize, res, tilesPerRow, texRes }.
-function buildSDFGrid(bounds, res, tris) {
-  const size = new THREE.Vector3(); bounds.getSize(size);
-  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
-  const voxels = sampleSDFGrid(bounds, res, tris);
-  const tilesPerRow = Math.ceil(Math.sqrt(res));
-  const texRes = res * tilesPerRow;
-  const data = new Float32Array(texRes * texRes * 4);
-  for (let z = 0; z < res; z++) {
-    const tileX = (z % tilesPerRow) * res, tileY = Math.floor(z / tilesPerRow) * res;
-    for (let y = 0; y < res; y++) {
-      for (let x = 0; x < res; x++) {
-        const px = tileX + x, py = tileY + y;
-        const di = (py * texRes + px) * 4;
-        data[di] = voxels[(z * res + y) * res + x];
-        data[di+1] = 0; data[di+2] = 0; data[di+3] = 1;
+// Tiled-2D-as-3D layout for an [rx,ry,rz] grid: each z-slice is an rx×ry
+// tile, tilesPerRow tiles per row, so the packed image is (tpr*rx)×(rows*ry).
+function tiledLayout(R) {
+  const tpr = Math.ceil(Math.sqrt(R[2]));
+  const rows = Math.ceil(R[2] / tpr);
+  return { tpr, w: tpr * R[0], h: rows * R[1] };
+}
+function writeTiledGrid(data, texW, originX, originY, R, tpr, voxels) {
+  for (let z = 0; z < R[2]; z++) {
+    const tileX = originX + (z % tpr) * R[0];
+    const tileY = originY + Math.floor(z / tpr) * R[1];
+    for (let y = 0; y < R[1]; y++) {
+      for (let x = 0; x < R[0]; x++) {
+        data[((tileY + y) * texW + tileX + x) * 4] = voxels[(z * R[1] + y) * R[0] + x];
       }
     }
   }
-  const texture = new THREE.DataTexture(data, texRes, texRes, THREE.RGBAFormat, THREE.FloatType);
+}
+
+// Packs one voxel grid as a tiled-2D-as-3D texture (see tiledLayout).
+// Returns { texture, boundsMin, boundsSize, res (max axis, kept for
+// compatibility), resXYZ, tilesPerRow, texW, texH, texRes (max(texW,texH)) }.
+function buildSDFGrid(bounds, res, tris, opts) {
+  const R = Array.isArray(res) ? res : [res, res, res];
+  const size = new THREE.Vector3(); bounds.getSize(size);
+  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+  const voxels = sampleSDFGrid(bounds, R, tris, opts);
+  const lay = tiledLayout(R);
+  const data = new Float32Array(lay.w * lay.h * 4);
+  for (let i = 3; i < data.length; i += 4) data[i] = 1;
+  writeTiledGrid(data, lay.w, 0, 0, R, lay.tpr, voxels);
+  const texture = new THREE.DataTexture(data, lay.w, lay.h, THREE.RGBAFormat, THREE.FloatType);
   // NearestFilter, not LinearFilter: sampleTiledSDF already does its own
   // trilinear interpolation by hand across texel centers, so hardware
   // linear filtering adds nothing — and on a device without
@@ -2490,7 +2668,8 @@ function buildSDFGrid(bounds, res, tris) {
   texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping; texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.needsUpdate = true;
-  return { texture, boundsMin: bounds.min.clone(), boundsSize: size.clone(), res, tilesPerRow, texRes };
+  return { texture, boundsMin: bounds.min.clone(), boundsSize: size.clone(), res: Math.max(R[0], R[1], R[2]), resXYZ: R.slice(),
+           tilesPerRow: lay.tpr, texW: lay.w, texH: lay.h, texRes: Math.max(lay.w, lay.h) };
 }
 
 // Finds the padded junction boxes that most need fine-resolution collision:
@@ -2498,13 +2677,15 @@ function buildSDFGrid(bounds, res, tris) {
 // real cross-sections meet — the exact failure mode from the recording),
 // plus a chamber's own entrance/nozzle openings (multiple feed lines
 // converging into one part is its own tight, high-triangle-density region
-// even without crossing a part boundary). Capped at SDF_MAX_FINE_REGIONS so
-// an elaborate imported assembly can't runaway the SDF build cost.
-function collectJointRegions(links) {
+// even without crossing a part boundary). Capped (joints share
+// SDF_MAX_FINE_REGIONS with the per-part regions) so an elaborate imported
+// assembly can't runaway the SDF build cost.
+function collectJointRegions(links, cap) {
   const regions = [];
   const seen = new Set();
+  const maxRegions = cap == null ? SDF_MAX_FINE_REGIONS : cap;
   const addRegion = (center, radius, partsInvolved) => {
-    if (regions.length >= SDF_MAX_FINE_REGIONS) return;
+    if (regions.length >= maxRegions) return;
     const key = center.x.toFixed(2)+','+center.y.toFixed(2)+','+center.z.toFixed(2);
     if (seen.has(key)) return;
     seen.add(key);
@@ -2513,7 +2694,7 @@ function collectJointRegions(links) {
       new THREE.Vector3(center.x - pad, center.y - pad, center.z - pad),
       new THREE.Vector3(center.x + pad, center.y + pad, center.z + pad),
     );
-    regions.push({ box, parts: partsInvolved });
+    regions.push({ box, parts: partsInvolved, kind: 'joint', res: [SDF_FINE_RES, SDF_FINE_RES, SDF_FINE_RES] });
   };
 
   for (const [part, link] of links.entries()) {
@@ -2533,25 +2714,57 @@ function collectJointRegions(links) {
   return regions;
 }
 
+// One adaptive region per classified part (task #51): box = the part's
+// world bounding box + a small pad, resolution from adaptiveGridRes() so the
+// part's thinnest dimension gets SDF_PART_MIN_CELLS voxels where the
+// SDF_PART_BUDGET[kind] allows, never more than SDF_PART_MAX_AXIS per axis.
+// Chambers first, then containers, then pipes; larger parts first within a
+// kind; capped at SDF_MAX_PART_REGIONS.
+function collectPartRegions(classified) {
+  const rank = { chamber: 0, container: 1, pipe: 2 };
+  const items = [];
+  for (const part of classified) {
+    const box = new THREE.Box3();
+    for (const m of part.meshes) box.expandByObject(m);
+    if (box.isEmpty()) continue;
+    const sz = box.getSize(new THREE.Vector3());
+    items.push({ part, box, sz, diag: sz.length(), rank: rank[part.type] != null ? rank[part.type] : 3 });
+  }
+  items.sort((a, b) => a.rank - b.rank || b.diag - a.diag);
+  const chosen = items.slice(0, SDF_MAX_PART_REGIONS);
+  return chosen.map(it => {
+    const perBudget = SDF_PART_BUDGET[it.part.type] || SDF_PART_BUDGET.other;
+    const pad = Math.max(it.diag * 0.02, 0.03);
+    const box = it.box.clone().expandByScalar(pad);
+    const size = box.getSize(new THREE.Vector3());
+    const thin = Math.max(Math.min(size.x, size.y, size.z), 1e-3);
+    const g = adaptiveGridRes(size, thin / SDF_PART_MIN_CELLS, perBudget, 4, SDF_PART_MAX_AXIS);
+    return { box, parts: [it.part], kind: 'part', res: g.res, voxel: g.h, name: it.part.name };
+  });
+}
+
 // Top-level build, called once right before a simulation starts (see the
 // Play button handler) and cached on `state` until the next rebuild — the
 // SDFs describe the mesh/joint geometry, which only changes when parts are
 // added/moved/reclassified or openings are re-marked, not every frame.
 //
-// Async + yielded: even after the speed fixes below (spatial-index cell
-// density, fine-region triangle pre-filtering, lower coarse resolution),
-// this is still real work — tens of seconds on a dense real-world import
-// is possible. Running it as one unbroken synchronous call is what made
-// Simulate LOOK frozen in the first place (confirmed via Playwright
-// profiling: the whole bake ran as a single main-thread block with no
-// paint in between, ~144-160s on the bundled demo before these fixes).
-// Yielding a frame — and updating the loading overlay's text — between
-// the coarse pass and every individual fine region means the browser
-// actually paints progress throughout, so however long the real work
-// takes, it never again looks like nothing is happening.
+// Async + yielded: even after the speed fixes (spatial-index cell density,
+// fine-region triangle pre-filtering, lower coarse budget), this is still
+// real work. Yielding a frame — and updating the loading overlay's text —
+// between the coarse pass and every individual region means the browser
+// actually paints progress throughout, so it never looks frozen.
+//
+// Layout: coarse whole-scene grid (per-axis res from the scene's aspect) +
+// ONE shared fine atlas holding, in order, the joint regions (small, fine,
+// restricted to the parts involved) then the per-part adaptive regions
+// (union of every nearby triangle, same semantics as the coarse grid, just
+// finer). Regions have independent per-axis resolutions and are shelf-packed
+// into the atlas, so one extra sampler still carries everything.
 async function buildCollisionSDF(links) {
   const classified = state.parts.filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
+  const tStart = performance.now();
+  const stats = { virtualAdded: 0, voxels: 0 };
 
   const sceneBounds = new THREE.Box3();
   for (const part of classified) for (const m of part.meshes) sceneBounds.expandByObject(m);
@@ -2560,63 +2773,65 @@ async function buildCollisionSDF(links) {
   const allTris = collectWorldTriangles(classified);
   setLoading(true, 'Building collision data… (coarse grid)');
   await new Promise(requestAnimationFrame);
-  const coarse = buildSDFGrid(sceneBounds, SDF_COARSE_RES, allTris);
+  const sceneSize = sceneBounds.getSize(new THREE.Vector3());
+  const coarseGeom = adaptiveGridRes(sceneSize, Math.cbrt(Math.max(sceneSize.x, 1e-3) * Math.max(sceneSize.y, 1e-3) * Math.max(sceneSize.z, 1e-3) / (SDF_COARSE_RES ** 3)),
+                                     SDF_COARSE_RES ** 3 * 1.25, 6, SDF_COARSE_MAX_AXIS);
+  const tCoarse = performance.now();
+  const coarse = buildSDFGrid(sceneBounds, coarseGeom.res, allTris, { stats });
+  const coarseMs = performance.now() - tCoarse;
 
-  // Every fine grid shares SDF_FINE_RES, so — instead of one texture per
-  // joint, which would need a dynamically-indexed sampler array (poorly
-  // supported on mobile GL, and GLSL sampler arrays must be compile-time
-  // sized anyway) — all fine grids are packed into ONE shared atlas: each
-  // joint gets its own fixed-size block of Z-tiles within a single big
-  // texture, addressed by a per-particle "which fine region, if any" index
-  // uniform the shader looks up with one normal sampler2D. This keeps the
-  // whole fine-collision system down to exactly one extra texture sampler,
-  // not N of them.
-  const jointRegions = collectJointRegions(links);
-  const fineTilesPerRow = Math.ceil(Math.sqrt(SDF_FINE_RES));          // tiles-per-row WITHIN one grid's block
-  const blockPx = SDF_FINE_RES * fineTilesPerRow;                       // pixel size of one grid's block (square)
-  const atlasCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(jointRegions.length, 1))));
-  const atlasRows = Math.max(1, Math.ceil(Math.max(jointRegions.length, 1) / atlasCols));
-  const atlasTexRes = Math.max(blockPx * atlasCols, blockPx * atlasRows, blockPx); // square-enough atlas
-  const fineAtlasData = new Float32Array(Math.max(atlasTexRes, blockPx) * Math.max(atlasTexRes, blockPx) * 4);
+  const partRegions = collectPartRegions(classified);
+  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length);
+  const regions = jointRegions.concat(partRegions);
+  const fineCount = regions.length;
+  const partStart = jointRegions.length;
+
+  // Shelf-pack every region's tiled block into one atlas (blocks differ in
+  // size because each region has its own per-axis resolution).
+  const layouts = regions.map(r => tiledLayout(r.res));
+  let totalArea = 0, maxW = 1;
+  for (const l of layouts) { totalArea += l.w * l.h; maxW = Math.max(maxW, l.w); }
+  const atlasW = Math.min(2048, Math.max(maxW, Math.ceil(Math.sqrt(Math.max(totalArea, 1) * 1.3))));
+  const origins = [];
+  let cx = 0, cy = 0, shelfH = 0;
+  for (const l of layouts) {
+    if (cx + l.w > atlasW) { cy += shelfH; cx = 0; shelfH = 0; }
+    origins.push([cx, cy]);
+    cx += l.w; shelfH = Math.max(shelfH, l.h);
+  }
+  const atlasH = Math.max(1, cy + shelfH);
+  const fineAtlasData = new Float32Array(atlasW * atlasH * 4);
   // Default every texel to a large positive (clearly "outside, far away")
   // distance so any padding region of the atlas never reads as "inside".
   for (let i = 0; i < fineAtlasData.length; i += 4) fineAtlasData[i] = 1.0;
 
-  const fineCount = jointRegions.length;
-  const fineMin = new Float32Array(Math.max(fineCount, 1) * 3);
-  const fineSize = new Float32Array(Math.max(fineCount, 1) * 3);
-  const fineBlockOrigin = new Float32Array(Math.max(fineCount, 1) * 2); // pixel-space (x,y) of this joint's block in the atlas
+  const n1 = Math.max(fineCount, 1);
+  const fineMin = new Float32Array(n1 * 3), fineSize = new Float32Array(n1 * 3);
+  const fineRes = new Float32Array(n1 * 3), fineBlockOrigin = new Float32Array(n1 * 2), fineTpr = new Float32Array(n1);
+  const regionInfo = [];
 
-  for (let i = 0; i < jointRegions.length; i++) {
-    const region = jointRegions[i];
-    setLoading(true, `Building collision data… (joint ${i + 1}/${jointRegions.length})`);
+  for (let i = 0; i < regions.length; i++) {
+    const region = regions[i];
+    setLoading(true, `Building collision data… (${region.kind === 'part' ? 'part ' + (i - partStart + 1) + '/' + partRegions.length : 'joint ' + (i + 1) + '/' + jointRegions.length})`);
     await new Promise(requestAnimationFrame);
-    // Restrict the triangle list for a fine grid to just the part(s)
-    // actually involved in that joint — keeps each fine build cheap (a
-    // handful of parts' triangles, not the whole scene) and, more
-    // importantly, keeps the pseudo-normal sign test meaningful: a fine
-    // box right at a joint is exactly where two different parts' surfaces
-    // are close together, and mixing in an unrelated third part's
-    // triangles into one local distance query would just add noise (the
-    // nearest-triangle search could then pick a face belonging to a part
-    // that isn't actually what's bounding this particular joint's interior).
-    // Filter down to triangles actually near this joint's (small, padded)
-    // box before building a spatial index for them. Previously this passed
-    // the FULL triangle set of every part touching the joint — for a part
-    // with 100k+ triangles spanning the whole assembly, that meant
-    // rebuilding a 100k-triangle spatial index (bounds pass + bucket
-    // insertion) just to answer queries confined to a tiny local box,
-    // which dominated the profiled per-region cost (confirmed: region 3
-    // alone carried 102,954 triangles for a box a small fraction of that
-    // part's extent). A generous query-radius widen (double the region's
-    // own padding again) keeps every triangle the nearest-surface search
-    // could legitimately need, while dropping everything genuinely far
-    // away that a full-part index would otherwise have to bucket and
-    // search past.
-    const queryBox = region.box.clone().expandByScalar(
-      Math.max(region.box.getSize(new THREE.Vector3()).length(), 0.1) * 0.5
-    );
-    const allLocalTris = collectWorldTriangles(region.parts);
+    const tRegion = performance.now();
+    // Filter down to triangles actually near this region's (small, padded)
+    // box before building a spatial index for them — a generous query-radius
+    // widen keeps every triangle the nearest-surface search could
+    // legitimately need while dropping everything genuinely far away.
+    // Joint regions use ONLY the involved parts (a joint box is where two
+    // parts' surfaces meet; an unrelated third part would add noise to the
+    // local nearest-surface/sign test); part regions use every classified
+    // part's triangles, i.e. the same union the coarse grid sees.
+    // (Part regions widen by a tighter margin — a part's own walls lie inside
+    // its box, so only a thin shell of neighbours' triangles can ever be the
+    // nearest surface for a sample point inside it.)
+    const regSize = region.box.getSize(new THREE.Vector3());
+    const regVoxel = Math.max(regSize.x / region.res[0], regSize.y / region.res[1], regSize.z / region.res[2]);
+    const queryBox = region.box.clone().expandByScalar(region.kind === 'part'
+      ? Math.max(regVoxel * 8, regSize.length() * 0.2)
+      : Math.max(regSize.length(), 0.1) * 0.5);
+    const allLocalTris = region.kind === 'part' ? allTris : collectWorldTriangles(region.parts);
     const localTris = [];
     const _triBoxTmp = new THREE.Box3();
     for (let ti = 0; ti < allLocalTris.length; ti += 3) {
@@ -2624,28 +2839,19 @@ async function buildCollisionSDF(links) {
       _triBoxTmp.makeEmpty().expandByPoint(a).expandByPoint(b).expandByPoint(c);
       if (queryBox.intersectsBox(_triBoxTmp)) localTris.push(a, b, c);
     }
-    const voxels = sampleSDFGrid(region.box, SDF_FINE_RES, localTris.length ? localTris : allLocalTris);
-    const blockCol = i % atlasCols, blockRow = Math.floor(i / atlasCols);
-    const originX = blockCol * blockPx, originY = blockRow * blockPx;
-    for (let z = 0; z < SDF_FINE_RES; z++) {
-      const tileX = originX + (z % fineTilesPerRow) * SDF_FINE_RES;
-      const tileY = originY + Math.floor(z / fineTilesPerRow) * SDF_FINE_RES;
-      for (let y = 0; y < SDF_FINE_RES; y++) {
-        for (let x = 0; x < SDF_FINE_RES; x++) {
-          const px = tileX + x, py = tileY + y;
-          const di = (py * atlasTexRes + px) * 4;
-          fineAtlasData[di] = voxels[(z * SDF_FINE_RES + y) * SDF_FINE_RES + x];
-        }
-      }
-    }
+    const voxels = sampleSDFGrid(region.box, region.res, localTris.length ? localTris : allLocalTris, { stats, clipBox: queryBox });
+    const L = layouts[i], [originX, originY] = origins[i];
+    writeTiledGrid(fineAtlasData, atlasW, originX, originY, region.res, L.tpr, voxels);
     const size = new THREE.Vector3(); region.box.getSize(size);
     size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
     fineMin[i*3] = region.box.min.x; fineMin[i*3+1] = region.box.min.y; fineMin[i*3+2] = region.box.min.z;
     fineSize[i*3] = size.x; fineSize[i*3+1] = size.y; fineSize[i*3+2] = size.z;
-    fineBlockOrigin[i*2] = originX; fineBlockOrigin[i*2+1] = originY;
+    fineRes[i*3] = region.res[0]; fineRes[i*3+1] = region.res[1]; fineRes[i*3+2] = region.res[2];
+    fineBlockOrigin[i*2] = originX; fineBlockOrigin[i*2+1] = originY; fineTpr[i] = L.tpr;
+    regionInfo.push({ kind: region.kind, name: region.name || null, res: region.res.slice(), voxelEdge: +Math.max(size.x / region.res[0], size.y / region.res[1], size.z / region.res[2]).toFixed(4), ms: Math.round(performance.now() - tRegion) });
   }
 
-  const fineAtlasTexture = new THREE.DataTexture(fineAtlasData, atlasTexRes, atlasTexRes, THREE.RGBAFormat, THREE.FloatType);
+  const fineAtlasTexture = new THREE.DataTexture(fineAtlasData, atlasW, atlasH, THREE.RGBAFormat, THREE.FloatType);
   // NearestFilter for the same reason as the coarse SDF texture above —
   // sampleTiledSDF does its own interpolation, and LinearFilter on a
   // FloatType texture silently breaks on mobile GPUs without
@@ -2656,17 +2862,24 @@ async function buildCollisionSDF(links) {
 
   return {
     coarse,
-    fineCount,
-    fineMin, fineSize, fineBlockOrigin,
-    fineAtlasTexture, atlasTexRes, fineTilesPerRow, blockPx,
+    fineCount, partStart,
+    fineMin, fineSize, fineRes, fineBlockOrigin, fineTpr,
+    fineAtlasTexture, atlasW, atlasH,
+    buildMs: Math.round(performance.now() - tStart),
+    info: {
+      coarseRes: coarse.resXYZ, coarseVoxelEdge: +Math.max(coarse.boundsSize.x / coarse.resXYZ[0], coarse.boundsSize.y / coarse.resXYZ[1], coarse.boundsSize.z / coarse.resXYZ[2]).toFixed(4),
+      coarseMs: Math.round(coarseMs), atlas: [atlasW, atlasH], voxels: stats.voxels, virtualTrisAdded: stats.virtualAdded,
+      regions: regionInfo,
+    },
   };
 }
 
 // Which fine SDF region (if any) a world-space point falls inside, as an
-// index into collisionSDF's joint-region list, or -1 if none (meaning: use
-// the coarse grid there). Checked per-waypoint when a particle path is
-// built, so the GPU shader can be handed a ready per-waypoint lookup
-// instead of testing every fine box against every particle every frame.
+// index into collisionSDF's region list (joints first, then per-part
+// regions), or -1 if none (meaning: use the coarse grid there). Checked
+// per-waypoint when a particle path is built, so the GPU shader can be
+// handed a ready per-waypoint lookup instead of testing every box against
+// every particle every frame.
 function fineRegionIndexAt(point, collisionSDF) {
   if (!collisionSDF || !collisionSDF.fineCount) return -1;
   for (let i = 0; i < collisionSDF.fineCount; i++) {
@@ -2749,6 +2962,176 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   return { points, radii: radiiOut, fineIdx };
 }
 
+// Shared GLSL for sampling the collision SDF — used by the particle vertex
+// shader (collision push-back) AND the volumetric ray-march fragment shader
+// (wall mask / X-ray interior), so both read the identical geometry data.
+//
+// Grids are tiled-2D-as-3D: each z-slice is an rx×ry tile, tilesPerRow tiles
+// per row; the coarse grid and every fine region have their OWN per-axis
+// resolution (task #51 adaptive resolution). Fine regions all live in ONE
+// atlas texture; per-region metadata is packed into three vec4 arrays so the
+// uniform footprint stays at 3 slots per region (same as before):
+//   uSDFFineA[k] = (boxMin.xyz,       resX)
+//   uSDFFineB[k] = (boxSize.xyz,      resY)
+//   uSDFFineC[k] = (blockOrigin.xy,   resZ, tilesPerRow)
+// Regions [0, uSDFPartStart) are joint regions (restricted to the parts
+// that meet there); [uSDFPartStart, fineCount) are per-part regions (union
+// of all nearby triangles, same semantics as the coarse grid).
+const SDF_SAMPLING_GLSL = `
+  uniform sampler2D uSDFCoarse;        // whole-scene coarse grid, tiled-2D-as-3D
+  uniform vec3 uSDFCoarseMin;
+  uniform vec3 uSDFCoarseSize;
+  uniform vec3 uSDFCoarseRes;          // per-axis voxel counts
+  uniform float uSDFCoarseTilesPerRow;
+  uniform vec2 uSDFCoarseTexSize;
+  uniform sampler2D uSDFFineAtlas;     // every region's grid packed into one shared atlas texture
+  uniform vec2 uSDFAtlasTexSize;
+  uniform float uSDFPartStart;         // first per-part region index (== fineCount when none)
+  uniform vec4 uSDFFineA[${SDF_MAX_FINE_REGIONS}];
+  uniform vec4 uSDFFineB[${SDF_MAX_FINE_REGIONS}];
+  uniform vec4 uSDFFineC[${SDF_MAX_FINE_REGIONS}];
+
+  // Samples a voxel grid packed as tiled-2D-as-3D with manual TRILINEAR
+  // interpolation across the 8 surrounding voxels, taps clamped to the
+  // grid's own [0,res-1] range so a tap can never read a neighbouring tile
+  // (or another region's block) — done by hand because hardware bilinear
+  // filtering would blend unrelated tiles across a seam.
+  float sampleTiledSDF(sampler2D tex, vec3 localUV, vec3 res, float tilesPerRow, vec2 texSize, vec2 blockOriginPx) {
+    vec3 voxel = localUV * res - 0.5;
+    vec3 v0 = floor(voxel);
+    vec3 f = voxel - v0;
+    float acc = 0.0;
+    for (int dz = 0; dz < 2; dz++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), vec3(0.0), res - 1.0);
+          float tileX = mod(c.z, tilesPerRow) * res.x;
+          float tileY = floor(c.z / tilesPerRow) * res.y;
+          vec2 uv = (vec2(blockOriginPx.x + tileX + c.x, blockOriginPx.y + tileY + c.y) + 0.5) / texSize;
+          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
+          acc += texture2D(tex, uv).r * w;
+        }
+      }
+    }
+    return acc;
+  }
+
+  // Which fine region (if any) actually contains world point p, checked
+  // against EVERY region's real box rather than trusting the per-waypoint
+  // fineIdx hint alone: the hint only reflects where a particle is along its
+  // waypoint SEGMENT, not where its rendered position is after the lateral
+  // turbulence/containment offset — for roughly half of any segment leading
+  // into a joint the hint pointed at the far waypoint's region (or -1), so a
+  // particle already offset into wall territory fell back to the coarse grid,
+  // far too coarse for a narrow pipe beside a tank wall (the "seeping
+  // through the cracks" report). Hint-first (cheap common case), then every
+  // region by bounds. startK lets the volumetric renderer skip joint regions.
+  int resolveFineIdxFrom(vec3 p, float hintIdx, int startK) {
+    if (hintIdx >= 0.0) {
+      int hint = int(hintIdx + 0.5);
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == hint && k >= startK) {
+          vec3 local = (p - uSDFFineA[k].xyz) / uSDFFineB[k].xyz;
+          if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) return k;
+        }
+      }
+    }
+    for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+      if (k < startK) continue;
+      if (k == int(hintIdx + 0.5) && hintIdx >= 0.0) continue; // already tested above
+      vec3 sz = uSDFFineB[k].xyz;
+      // A zero-size slot (unused, beyond this scene's fineCount) must never
+      // match — guard against it reading as a valid [0,1]^3 box for every p.
+      if (sz.x <= 0.0 || sz.y <= 0.0 || sz.z <= 0.0) continue;
+      vec3 local = (p - uSDFFineA[k].xyz) / sz;
+      if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) return k;
+    }
+    return -1;
+  }
+  int resolveFineIdx(vec3 p, float hintIdx) { return resolveFineIdxFrom(p, hintIdx, 0); }
+
+  // Samples fine region k (compile-time index inside the unrolled loops
+  // below — some mobile GL drivers reject dynamic uniform-array indexing).
+  float sampleFineRegion(vec3 p, int k, bool clampLocal) {
+    vec3 local = (p - uSDFFineA[k].xyz) / uSDFFineB[k].xyz;
+    if (clampLocal) local = clamp(local, 0.0, 1.0);
+    vec3 res = vec3(uSDFFineA[k].w, uSDFFineB[k].w, uSDFFineC[k].z);
+    return sampleTiledSDF(uSDFFineAtlas, local, res, uSDFFineC[k].w, uSDFAtlasTexSize, uSDFFineC[k].xy) * length(uSDFFineB[k].xyz);
+  }
+  float sampleCoarseGrid(vec3 p) {
+    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
+    return sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexSize, vec2(0.0)) * length(uSDFCoarseSize);
+  }
+
+  // Signed distance (world units) to the nearest wall at world-space point
+  // p, preferring the fine region resolved for p and falling back to the
+  // coarse whole-scene grid otherwise. sd < 0 = fluid-legal interior.
+  float sdfAt(vec3 p, float fineIdx) {
+    int idx = resolveFineIdx(p, fineIdx);
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) return sampleFineRegion(p, k, false);
+      }
+    }
+    return sampleCoarseGrid(p);
+  }
+
+  // Samples ONE specific grid (fine region idx, or coarse if idx < 0) at
+  // world point p, with no re-resolution of which grid to use — what
+  // sdfGradient() needs so all 6 of its taps stay on the same grid.
+  float sdfAtFixedGrid(vec3 p, int idx) {
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) return sampleFineRegion(p, k, true);
+      }
+      return 0.0; // unreachable: idx always matches one k in range
+    }
+    return sampleCoarseGrid(p);
+  }
+
+  // Volumetric-renderer variant: resolves among the PER-PART regions only
+  // (same union-of-all-triangles semantics as the coarse grid, so no seams
+  // from joint regions that only know two parts), falls back to coarse.
+  // Also returns the local voxel edge (world units) for smoothing widths.
+  float sdfVolume(vec3 p, out float voxelEdge) {
+    int idx = resolveFineIdxFrom(p, -1.0, int(uSDFPartStart + 0.5));
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) {
+          vec3 vsz = uSDFFineB[k].xyz / vec3(uSDFFineA[k].w, uSDFFineB[k].w, uSDFFineC[k].z);
+          voxelEdge = max(vsz.x, max(vsz.y, vsz.z));
+          return sampleFineRegion(p, k, false);
+        }
+      }
+    }
+    vec3 cs = uSDFCoarseSize / uSDFCoarseRes;
+    voxelEdge = max(cs.x, max(cs.y, cs.z));
+    return sampleCoarseGrid(p);
+  }
+
+  // Estimated inward surface normal at p via a central-difference gradient
+  // of the signed distance field — used to push a particle that has crossed
+  // (or is about to cross) a wall back toward the legal interior. Resolves
+  // which grid covers p ONCE, then takes all 6 taps from that same grid with
+  // a step sized to that grid's own voxel size (sdfAt() re-resolves per call,
+  // so using it for a gradient would measure the jump between grids).
+  vec3 sdfGradient(vec3 p, float fineIdx) {
+    int idx = resolveFineIdx(p, fineIdx);
+    float e = 0.5 * length(uSDFCoarseSize / uSDFCoarseRes); // coarse-grid default step
+    if (idx >= 0) {
+      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
+        if (k == idx) e = 0.5 * length(uSDFFineB[k].xyz / vec3(uSDFFineA[k].w, uSDFFineB[k].w, uSDFFineC[k].z));
+      }
+    }
+    float dx = sdfAtFixedGrid(p + vec3(e,0.0,0.0), idx) - sdfAtFixedGrid(p - vec3(e,0.0,0.0), idx);
+    float dy = sdfAtFixedGrid(p + vec3(0.0,e,0.0), idx) - sdfAtFixedGrid(p - vec3(0.0,e,0.0), idx);
+    float dz = sdfAtFixedGrid(p + vec3(0.0,0.0,e), idx) - sdfAtFixedGrid(p - vec3(0.0,0.0,e), idx);
+    vec3 g = vec3(dx, dy, dz);
+    float len = length(g);
+    return len > 0.0001 ? g / len : vec3(0.0, 1.0, 0.0);
+  }
+`;
+
 // Core position logic shared by BOTH the main perspective display material
 // AND the orthographic top-down floor-splat material — each supplies its
 // own main()/gl_PointSize afterward, since perspective point-size scaling
@@ -2775,20 +3158,7 @@ const PARTICLE_SHADER_CORE = `
   // that stretch of path — computed once in JS by fineRegionIndexAt() when
   // the path is built, not re-tested per-frame on the GPU.
   uniform sampler2D uWaypointFine;
-  uniform sampler2D uSDFCoarse;        // whole-scene coarse grid, tiled-2D-as-3D
-  uniform vec3 uSDFCoarseMin;
-  uniform vec3 uSDFCoarseSize;
-  uniform float uSDFCoarseRes;
-  uniform float uSDFCoarseTilesPerRow;
-  uniform float uSDFCoarseTexRes;
-  uniform sampler2D uSDFFineAtlas;     // every joint's fine grid packed into one shared atlas texture
-  uniform float uSDFFineRes;
-  uniform float uSDFFineTilesPerRow;   // tiles-per-row WITHIN one joint's own block
-  uniform float uSDFBlockPx;           // pixel size of one joint's block (square) within the atlas
-  uniform float uSDFAtlasTexRes;
-  uniform vec3 uSDFFineMin[${SDF_MAX_FINE_REGIONS}];
-  uniform vec3 uSDFFineSize[${SDF_MAX_FINE_REGIONS}];
-  uniform vec2 uSDFFineBlockOrigin[${SDF_MAX_FINE_REGIONS}];
+  ${SDF_SAMPLING_GLSL}
 
   vec4 sampleWaypoint(float row, float w) {
     // particles are packed ${TEX_COLS} per texture line, so thousands of them never exceed a phone's max texture height
@@ -2805,179 +3175,6 @@ const PARTICLE_SHADER_CORE = `
     float u = (col * ${MAX_WAYPOINTS}.0 + w + 0.5) / (${MAX_WAYPOINTS}.0 * ${TEX_COLS}.0);
     float v = (line + 0.5) / uTexHeight;
     return texture2D(uWaypointFine, vec2(u, v)).r;
-  }
-
-  // Samples a res³ voxel grid packed as tiled-2D-as-3D (Z-slices laid out
-  // tilesPerRow-per-row across a square texRes×texRes image), with manual
-  // TRILINEAR interpolation across the 8 surrounding voxels — done by hand
-  // (rather than relying on the sampler's own bilinear filtering, which
-  // only blends within a single Z-tile, never across a tile seam) because
-  // two neighboring voxels along Z can land in completely different tiles
-  // of the 2D image, so letting the GPU's native 2D filtering interpolate
-  // between them would blend two UNRELATED tile regions together instead
-  // of the two neighboring Z-slices the SDF actually needs.
-  float sampleTiledSDF(sampler2D tex, vec3 localUV, float res, float tilesPerRow, float texRes, vec2 blockOriginPx) {
-    // localUV in [0,1]^3 within the grid's own bounds.
-    vec3 voxel = localUV * res - 0.5;
-    vec3 v0 = floor(voxel);
-    vec3 f = voxel - v0;
-    float acc = 0.0;
-    for (int dz = 0; dz < 2; dz++) {
-      for (int dy = 0; dy < 2; dy++) {
-        for (int dx = 0; dx < 2; dx++) {
-          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, res - 1.0);
-          float tileX = mod(c.z, tilesPerRow) * res;
-          float tileY = floor(c.z / tilesPerRow) * res;
-          float px = blockOriginPx.x + tileX + c.x;
-          float py = blockOriginPx.y + tileY + c.y;
-          vec2 uv = (vec2(px, py) + 0.5) / texRes;
-          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
-          acc += texture2D(tex, uv).r * w;
-        }
-      }
-    }
-    return acc;
-  }
-
-  // Signed distance (world units, un-normalized) to the nearest wall at
-  // world-space point p, preferring the fine region fineIdx (as resolved
-  // per-waypoint by fineRegionIndexAt() in JS) when it's actually inside
-  // that fine box's bounds, and falling back to the coarse whole-scene
-  // grid otherwise (e.g. the open middle of a tank, or if a lateral offset
-  // pushed the particle just outside its nominal fine box).
-  // Which fine region (if any) actually contains world point p, checked
-  // against EVERY region's real box rather than trusting the per-waypoint
-  // fineIdx hint alone. The hint (whichever path ENDPOINT a particle's
-  // interpolation parameter is nearer to) only reflects where the particle
-  // is along its waypoint SEGMENT, not where its actual rendered position
-  // is after the lateral turbulence/containment offset is added — for
-  // roughly the first half of any segment leading into a joint, fineIdx
-  // pointed at the FAR waypoint's region (or -1), so a particle already
-  // laterally offset into real wall territory near that joint fell back to
-  // the coarse whole-scene grid (res ${SDF_COARSE_RES}³), far too coarse to
-  // resolve a narrow pipe passing close beside a tank wall — the particle
-  // read as "inside" the coarse bulk interior right up until it visibly
-  // speckled out through the seam. This is the exact failure from the
-  // "seeping through the cracks where the pipe passes through" report:
-  // the fine per-joint SDF existed and was correctly built, it just wasn't
-  // being consulted yet at the point in the path where the leak occurs.
-  // Hint-first (cheap common case: particle is where its segment expects),
-  // then fall back to testing every region directly by bounds.
-  int resolveFineIdx(vec3 p, float hintIdx) {
-    if (hintIdx >= 0.0) {
-      int hint = int(hintIdx + 0.5);
-      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
-        if (k == hint) {
-          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
-          vec3 local = (p - mn) / sz;
-          if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) return k;
-        }
-      }
-    }
-    for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
-      if (k == int(hintIdx + 0.5) && hintIdx >= 0.0) continue; // already tested above
-      vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
-      // A region with zero size (unused slot beyond this scene's actual
-      // fineCount) must never match — guard against it reading as a valid
-      // [0,1]^3 box for every p once mn/sz are both zero-initialized.
-      if (sz.x <= 0.0 || sz.y <= 0.0 || sz.z <= 0.0) continue;
-      vec3 local = (p - mn) / sz;
-      if (local.x >= 0.0 && local.x <= 1.0 && local.y >= 0.0 && local.y <= 1.0 && local.z >= 0.0 && local.z <= 1.0) return k;
-    }
-    return -1;
-  }
-
-  float sdfAt(vec3 p, float fineIdx) {
-    bool usedFine = false;
-    float sd = 0.0;
-    int idx = resolveFineIdx(p, fineIdx);
-    if (idx >= 0) {
-      // GLSL requires compile-time array indices on some GL ES targets, so
-      // this unrolls the fixed small region count rather than indexing
-      // uSDFFineMin[idx] dynamically (which some mobile GL drivers reject).
-      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
-        if (k == idx) {
-          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
-          vec3 local = (p - mn) / sz;
-          float sdN = sampleTiledSDF(uSDFFineAtlas, local, uSDFFineRes, uSDFFineTilesPerRow, uSDFAtlasTexRes, uSDFFineBlockOrigin[k]);
-          sd = sdN * length(sz);
-          usedFine = true;
-        }
-      }
-    }
-    if (!usedFine) {
-      vec3 local = (p - uSDFCoarseMin) / uSDFCoarseSize;
-      local = clamp(local, 0.0, 1.0);
-      float sdN = sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexRes, vec2(0.0));
-      sd = sdN * length(uSDFCoarseSize);
-    }
-    return sd;
-  }
-
-  // Samples ONE specific grid (fine region idx, or coarse if idx < 0) at
-  // world point p, with no re-resolution of which grid to use — the
-  // counterpart to sdfAt() that sdfGradient() needs so all 6 of its taps
-  // stay on the same grid (see sdfGradient's comment for why sdfAt() itself,
-  // which re-resolves fine-vs-coarse independently per call, is unsafe to
-  // use for a gradient).
-  float sdfAtFixedGrid(vec3 p, int idx) {
-    if (idx >= 0) {
-      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
-        if (k == idx) {
-          vec3 mn = uSDFFineMin[k], sz = uSDFFineSize[k];
-          vec3 local = clamp((p - mn) / sz, 0.0, 1.0);
-          float sdN = sampleTiledSDF(uSDFFineAtlas, local, uSDFFineRes, uSDFFineTilesPerRow, uSDFAtlasTexRes, uSDFFineBlockOrigin[k]);
-          return sdN * length(sz);
-        }
-      }
-      return 0.0; // unreachable: idx always matches one k in range
-    }
-    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
-    float sdN = sampleTiledSDF(uSDFCoarse, local, uSDFCoarseRes, uSDFCoarseTilesPerRow, uSDFCoarseTexRes, vec2(0.0));
-    return sdN * length(uSDFCoarseSize);
-  }
-
-  // Estimated inward surface normal at p via a central-difference gradient
-  // of the signed distance field — used to push a particle that has
-  // crossed (or is about to cross) a wall back toward the legal interior,
-  // the standard SDF collision-response technique.
-  //
-  // Resolves which grid covers p ONCE (mirroring sdfAt()'s own fine-vs-
-  // coarse logic), then takes all 6 central-difference taps from that same
-  // grid via sdfAtFixedGrid(), with a step sized to that grid's own voxel
-  // size. sdfAt() itself re-resolves fine-vs-coarse independently on EVERY
-  // tap, so when p sits within a fixed world-space step of a fine box's
-  // face, one tap of a pair reads the fine grid and the other reads the
-  // coarse grid — two fields with different resolutions and different
-  // triangle sets (a fine grid only rasterizes its own region.parts). The
-  // difference then measures the jump between grids, not the true wall
-  // direction — common along a pipe's own axis, since the pipe continues
-  // past the fine box's 2.2×radius padding. A fixed e=0.04 world-space step
-  // also doesn't track grid resolution: the smallest fine box can be ~0.44
-  // units wide (voxel ≈0.031), smaller than a 0.04 step, so the gradient
-  // samples past the feature it's trying to measure.
-  vec3 sdfGradient(vec3 p, float fineIdx) {
-    // Resolved the same way as sdfAt() now does — by p's ACTUAL position
-    // against every region's real bounds, not just the per-waypoint hint —
-    // so the gradient's wall-pushback direction lines up with the distance
-    // sdfAt() just reported for this same p. See resolveFineIdx()'s comment
-    // for why the hint alone under-covers the joint-leak case.
-    int idx = resolveFineIdx(p, fineIdx);
-    float e = 0.5 * length(uSDFCoarseSize) / uSDFCoarseRes; // coarse-grid default step
-    if (idx >= 0) {
-      for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
-        if (k == idx) {
-          vec3 sz = uSDFFineSize[k];
-          e = 0.5 * length(sz) / uSDFFineRes;
-        }
-      }
-    }
-    float dx = sdfAtFixedGrid(p + vec3(e,0.0,0.0), idx) - sdfAtFixedGrid(p - vec3(e,0.0,0.0), idx);
-    float dy = sdfAtFixedGrid(p + vec3(0.0,e,0.0), idx) - sdfAtFixedGrid(p - vec3(0.0,e,0.0), idx);
-    float dz = sdfAtFixedGrid(p + vec3(0.0,0.0,e), idx) - sdfAtFixedGrid(p - vec3(0.0,0.0,e), idx);
-    vec3 g = vec3(dx, dy, dz);
-    float len = length(g);
-    return len > 0.0001 ? g / len : vec3(0.0, 1.0, 0.0);
   }
 
   vec3 computeParticlePosition() {
@@ -3076,6 +3273,48 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
     gl_FragColor = vec4(vThermal, 1.0, 0.0, edge * floorProximity * 0.012);
   }
 `;
+
+// Builds the SDF_SAMPLING_GLSL uniform objects for a baked collisionSDF (or
+// inert "everything far outside, no fine regions" defaults when there is
+// none, so sdfAt() degrades to "never collides" rather than sampling an
+// undefined texture).
+function makeSDFUniformSet(collisionSDF) {
+  const A = [], B = [], C = [];
+  for (let i = 0; i < SDF_MAX_FINE_REGIONS; i++) {
+    if (collisionSDF && i < collisionSDF.fineCount) {
+      A.push(new THREE.Vector4(collisionSDF.fineMin[i*3], collisionSDF.fineMin[i*3+1], collisionSDF.fineMin[i*3+2], collisionSDF.fineRes[i*3]));
+      B.push(new THREE.Vector4(collisionSDF.fineSize[i*3], collisionSDF.fineSize[i*3+1], collisionSDF.fineSize[i*3+2], collisionSDF.fineRes[i*3+1]));
+      C.push(new THREE.Vector4(collisionSDF.fineBlockOrigin[i*2], collisionSDF.fineBlockOrigin[i*2+1], collisionSDF.fineRes[i*3+2], collisionSDF.fineTpr[i]));
+    } else {
+      // Padding entries, kept only so the fixed-size GLSL arrays always have
+      // SDF_MAX_FINE_REGIONS entries. Placed far from the origin (rather than
+      // at (0,0,0)-(1,1,1), which overlaps real geometry near world origin)
+      // so resolveFineIdx()'s by-position scan can never false-match one.
+      A.push(new THREE.Vector4(1e6, 1e6, 1e6, 1));
+      B.push(new THREE.Vector4(1, 1, 1, 1));
+      C.push(new THREE.Vector4(0, 0, 1, 1));
+    }
+  }
+  const dummy = () => new THREE.DataTexture(new Float32Array([1, 0, 0, 1]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+  if (!collisionSDF) {
+    const c = dummy(), f = dummy(); c.needsUpdate = true; f.needsUpdate = true;
+    return {
+      uSDFCoarse: { value: c }, uSDFCoarseMin: { value: new THREE.Vector3(0, 0, 0) }, uSDFCoarseSize: { value: new THREE.Vector3(1, 1, 1) },
+      uSDFCoarseRes: { value: new THREE.Vector3(1, 1, 1) }, uSDFCoarseTilesPerRow: { value: 1 }, uSDFCoarseTexSize: { value: new THREE.Vector2(1, 1) },
+      uSDFFineAtlas: { value: f }, uSDFAtlasTexSize: { value: new THREE.Vector2(1, 1) }, uSDFPartStart: { value: 0 },
+      uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
+    };
+  }
+  const c = collisionSDF.coarse;
+  return {
+    uSDFCoarse: { value: c.texture }, uSDFCoarseMin: { value: c.boundsMin }, uSDFCoarseSize: { value: c.boundsSize },
+    uSDFCoarseRes: { value: new THREE.Vector3(c.resXYZ[0], c.resXYZ[1], c.resXYZ[2]) }, uSDFCoarseTilesPerRow: { value: c.tilesPerRow },
+    uSDFCoarseTexSize: { value: new THREE.Vector2(c.texW, c.texH) },
+    uSDFFineAtlas: { value: collisionSDF.fineAtlasTexture }, uSDFAtlasTexSize: { value: new THREE.Vector2(collisionSDF.atlasW, collisionSDF.atlasH) },
+    uSDFPartStart: { value: collisionSDF.partStart },
+    uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
+  };
+}
 
 async function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
@@ -3200,67 +3439,12 @@ async function buildParticleSystem() {
   waypointFineTex.needsUpdate = true;
   waypointFineTex.magFilter = THREE.NearestFilter; waypointFineTex.minFilter = THREE.NearestFilter;
 
-  // Flatten the SDF data into the uniform shapes the shader expects. A
-  // THREE.ShaderMaterial uniform declared as `vec3 arr[N]` in GLSL takes a
-  // plain JS array of THREE.Vector3 (or Array) here — three.js handles the
-  // flattening to the underlying uniform3fv call itself.
-  const fineMinUniform = [], fineSizeUniform = [], fineBlockOriginUniform = [];
-  for (let i = 0; i < SDF_MAX_FINE_REGIONS; i++) {
-    if (collisionSDF && i < collisionSDF.fineCount) {
-      fineMinUniform.push(new THREE.Vector3(collisionSDF.fineMin[i*3], collisionSDF.fineMin[i*3+1], collisionSDF.fineMin[i*3+2]));
-      fineSizeUniform.push(new THREE.Vector3(collisionSDF.fineSize[i*3], collisionSDF.fineSize[i*3+1], collisionSDF.fineSize[i*3+2]));
-      fineBlockOriginUniform.push(new THREE.Vector2(collisionSDF.fineBlockOrigin[i*2], collisionSDF.fineBlockOrigin[i*2+1]));
-    } else {
-      // Padding entries, kept only so the fixed-size GLSL array always has
-      // SDF_MAX_FINE_REGIONS entries. Placed far from the origin (rather
-      // than at (0,0,0)-(1,1,1), which overlaps real scene geometry any
-      // time a part sits near world origin) so resolveFineIdx()'s by-
-      // position scan — which now tests every slot against a particle's
-      // ACTUAL world position, not just a JS-supplied hint it used to
-      // trust blindly — can never false-match an unused slot.
-      fineMinUniform.push(new THREE.Vector3(1e6, 1e6, 1e6));
-      fineSizeUniform.push(new THREE.Vector3(1,1,1));
-      fineBlockOriginUniform.push(new THREE.Vector2(0,0));
-    }
-  }
-  const sdfUniforms = collisionSDF ? {
-    uWaypointFine: { value: waypointFineTex },
-    uSDFCoarse: { value: collisionSDF.coarse.texture },
-    uSDFCoarseMin: { value: collisionSDF.coarse.boundsMin },
-    uSDFCoarseSize: { value: collisionSDF.coarse.boundsSize },
-    uSDFCoarseRes: { value: collisionSDF.coarse.res },
-    uSDFCoarseTilesPerRow: { value: collisionSDF.coarse.tilesPerRow },
-    uSDFCoarseTexRes: { value: collisionSDF.coarse.texRes },
-    uSDFFineAtlas: { value: collisionSDF.fineAtlasTexture },
-    uSDFFineRes: { value: SDF_FINE_RES },
-    uSDFFineTilesPerRow: { value: collisionSDF.fineTilesPerRow },
-    uSDFBlockPx: { value: collisionSDF.blockPx },
-    uSDFAtlasTexRes: { value: collisionSDF.atlasTexRes },
-    uSDFFineMin: { value: fineMinUniform },
-    uSDFFineSize: { value: fineSizeUniform },
-    uSDFFineBlockOrigin: { value: fineBlockOriginUniform },
-  } : {
-    // No classified parts yet (shouldn't normally happen once Simulate is
-    // pressed, since that requires containers, but guarded defensively):
-    // hand the shader a trivial 1x1 "everything far outside" coarse grid
-    // and no fine regions, so sdfAt() degrades to "never collides" rather
-    // than sampling an undefined texture.
-    uWaypointFine: { value: waypointFineTex },
-    uSDFCoarse: { value: new THREE.DataTexture(new Float32Array([1,0,0,1]), 1, 1, THREE.RGBAFormat, THREE.FloatType) },
-    uSDFCoarseMin: { value: new THREE.Vector3(0,0,0) },
-    uSDFCoarseSize: { value: new THREE.Vector3(1,1,1) },
-    uSDFCoarseRes: { value: 1 },
-    uSDFCoarseTilesPerRow: { value: 1 },
-    uSDFCoarseTexRes: { value: 1 },
-    uSDFFineAtlas: { value: new THREE.DataTexture(new Float32Array([1,0,0,1]), 1, 1, THREE.RGBAFormat, THREE.FloatType) },
-    uSDFFineRes: { value: SDF_FINE_RES },
-    uSDFFineTilesPerRow: { value: 1 },
-    uSDFBlockPx: { value: 1 },
-    uSDFAtlasTexRes: { value: 1 },
-    uSDFFineMin: { value: fineMinUniform },
-    uSDFFineSize: { value: fineSizeUniform },
-    uSDFFineBlockOrigin: { value: fineBlockOriginUniform },
-  };
+  // Flatten the SDF data into the uniform shapes the shader expects (see
+  // makeSDFUniformSet / SDF_SAMPLING_GLSL). The same set also feeds the
+  // volumetric ray-march material, so both read identical geometry data.
+  const sdfSet = makeSDFUniformSet(collisionSDF);
+  state.sdfUniformSet = sdfSet;
+  const sdfUniforms = Object.assign({ uWaypointFine: { value: waypointFineTex } }, sdfSet);
   if (sdfUniforms.uSDFCoarse.value.needsUpdate !== undefined) sdfUniforms.uSDFCoarse.value.needsUpdate = true;
   if (sdfUniforms.uSDFFineAtlas.value.needsUpdate !== undefined) sdfUniforms.uSDFFineAtlas.value.needsUpdate = true;
 
@@ -3395,27 +3579,50 @@ async function buildParticleSystem() {
 // there.
 // ═══════════════════════════════════════════════════════════════════════
 
-const VOL_RES = 40;                 // voxels per axis — deliberately modest (mobile/perf budget, see UI toggle's own sec-sub)
+// Volume budget (task #51): the density grid used to be a cubic VOL_RES³ lattice laid over the WHOLE scene bounds. On a tall
+// stack (a ~1:5:1 box) that made every voxel a stretched vertical column, which is exactly the blocky, crystalline spikes seen
+// inside the CombustionChamber (only a handful of cells spanned its height). The same voxel BUDGET is now spread per-axis from
+// the scene's aspect so voxels are ~cubic, and the splat is trilinear (cloud-in-cell) instead of nearest-cell.
+const VOL_RES = 40;                 // voxel budget = VOL_RES^3 (64,000), distributed per-axis by the scene aspect (mobile/perf budget)
+const VOL_MAX_AXIS = 160;           // per-axis cap
+const VOL_MAX_STEPS = 112;          // ray-march step cap per pixel
 const VOL_REBUILD_INTERVAL_MS = 90; // ~11 Hz CPU density rebuild; the ray march itself still runs every rendered frame
 const VOL_SAMPLE_STRIDE_MIN = 1;    // always visit every particle when the count is small
 const VOL_MAX_SAMPLES = 9000;       // hard cap on how many particles get splatted per rebuild, regardless of total count
 
 let volEnabled = true;              // mirrors the #volumetricToggle checkbox (markup carries `checked`; default ON per user request)
+let volXray = true;                 // mirrors the #xrayToggle checkbox (default ON): gas inside containers/cavities reads through the walls
 let volMesh = null;                 // the single bounding-box mesh the ray-march shader runs on
 let volDensityTex = null;           // THREE.DataTexture, tiled-2D-as-3D atlas (same convention as uSDFCoarse)
 let volDensityData = null;          // the Float32Array backing volDensityTex, reused across rebuilds (no per-rebuild alloc)
 let volLastBuildAt = -Infinity;
-let volTilesPerRow = 1, volTexRes = VOL_RES;
+let volResXYZ = [VOL_RES, VOL_RES, VOL_RES];
+let volTilesPerRow = 1, volTexW = VOL_RES, volTexH = VOL_RES;
 
 // Ray-march fragment shader: samples the tiled density/color atlas with
-// the SAME manual trilinear scheme as sampleTiledSDF (see that function's
-// own comment for why hardware bilinear filtering can't be used across a
-// tile seam), accumulates with Beer-Lambert extinction (not flat additive
-// blending — mirrors ArcVolumetricFluidRenderer.swift's fragment modifier
-// comment on exactly this point, avoiding the particle renderer's own
-// blowout problem at high particle density), and consults this file's
-// EXISTING coarse mesh-collision SDF so the fluid is never shown occupying
-// space the real imported geometry already occupies.
+// manual trilinear interpolation (hardware bilinear would blend across tile
+// seams; every tap is clamped into its own voxel range so it can never read
+// a neighbouring tile), accumulates with Beer-Lambert extinction (not flat
+// additive blending), and consults this file's collision SDF so the fluid is
+// shaped by the real imported geometry.
+//
+// Artifact fixes (task #51), main volume only — the live-leak plume shares
+// this shader with VOL_NO_WALL defined and keeps its exact previous path:
+//  - start of every ray is jittered by interleaved-gradient noise (hides the
+//    fixed-step banding / slicing without a noise texture);
+//  - step length follows the density voxel size (~0.7 voxel) instead of a
+//    fixed 40 steps across the whole box, and halves near walls;
+//  - the wall mask is a smooth function of the SDF (width = the SDF voxel
+//    size there) instead of a hard `sd <= 0.002` cut, and is evaluated with
+//    the adaptive per-part SDF regions rather than the coarse grid alone;
+//  - the density sample is taken first and the (more expensive) SDF only
+//    where there is gas.
+// X-ray (uXray): gas inside a container/cavity (SDF interior) gets a hue
+// shift toward cold-cyan/warm-amber by its temperature colour, a density-
+// weighted self-emissive glow that is brighter deep inside than at the wall,
+// a lifted additive offset, and a thin rim light at the wall — and the mesh
+// is drawn with depth testing OFF (see ensureVolumetricMesh) so the walls
+// don't hide it. Nothing about the part meshes changes.
 const VOLUMETRIC_VERTEX_SHADER = `
   varying vec3 vLocalPos; // box-local position in [-0.5, 0.5]^3, used to derive the ray direction per-fragment
   void main() {
@@ -3426,44 +3633,26 @@ const VOLUMETRIC_VERTEX_SHADER = `
 const VOLUMETRIC_FRAGMENT_SHADER = `
   precision highp float;
   uniform sampler2D uVolDensity;      // RGBA: r = density, gba = density-weighted color (same channel layout as iOS bakeVolume)
-  uniform float uVolRes;
+  uniform vec3 uVolRes;               // per-axis voxel counts
   uniform float uVolTilesPerRow;
-  uniform float uVolTexRes;
+  uniform vec2 uVolTexSize;
   uniform vec3 uVolMin;
   uniform vec3 uVolSize;
-  // Computed on the CPU each frame (THREE.Matrix4.invert, see
-  // updateVolumetricRender) rather than GLSL inverse() — this file never
-  // requests a WebGL2 context (see the SDF-atlas header comment earlier
-  // in this file), and inverse() is a GLSL ES 3.00-only built-in with no
-  // equivalent in the GLSL ES 1.00 shaders WebGL1 compiles, which is what
-  // actually tripped the "no matching overloaded function" compile error
-  // this comment replaces. modelMatrix itself is only auto-declared by
-  // THREE's shader chunks in material types that request it; a bespoke
-  // ShaderMaterial like this one must also supply it explicitly to use it
-  // at all, so both pieces are passed in as plain uniforms instead.
+  // Computed on the CPU (THREE.Matrix4.invert, see updateVolumetricRender)
+  // rather than GLSL inverse(): inverse() is GLSL ES 3.00-only and this file
+  // targets WebGL1-compatible shaders. modelMatrix is only auto-declared for
+  // some material types, so the inverse is passed in as a plain uniform.
   uniform mat4 uInverseModelMatrix;
-
-  // Reuses this file's own real-mesh collision SDF — same uniforms/
-  // function the particle vertex shader already samples (PARTICLE_SHADER_
-  // CORE's sdfAt), so "don't render density inside a solid wall" uses the
-  // identical geometry data as "don't let a particle pass through a solid
-  // wall", per the task's single-source-of-truth requirement. Only the
-  // coarse grid is sampled here (not the per-joint fine atlas): the ray
-  // march's job is to not show fluid INSIDE thick/bulk wall material,
-  // which the coarse whole-scene grid already resolves — the fine grids
-  // exist for precise PARTICLE placement right at tight joints, a finer
-  // distinction than this volume's own ${VOL_RES}³ resolution could
-  // visibly benefit from anyway.
-  uniform sampler2D uSDFCoarse;
-  uniform vec3 uSDFCoarseMin;
-  uniform vec3 uSDFCoarseSize;
-  uniform float uSDFCoarseRes;
-  uniform float uSDFCoarseTilesPerRow;
-  uniform float uSDFCoarseTexRes;
+#ifndef VOL_NO_WALL
+  uniform float uXray;
+  uniform float uXrayGlow;
+  uniform float uVolAbsorb;
+  ${SDF_SAMPLING_GLSL}
+#endif
 
   varying vec3 vLocalPos;
 
-  float sampleTiledVol(sampler2D tex, vec3 localUV01, float res, float tilesPerRow, float texRes, out vec3 colorOut) {
+  float sampleTiledVol(sampler2D tex, vec3 localUV01, vec3 res, float tilesPerRow, vec2 texSize, out vec3 colorOut) {
     vec3 voxel = clamp(localUV01, 0.0, 1.0) * res - 0.5;
     vec3 v0 = floor(voxel);
     vec3 f = voxel - v0;
@@ -3472,12 +3661,10 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
     for (int dz = 0; dz < 2; dz++) {
       for (int dy = 0; dy < 2; dy++) {
         for (int dx = 0; dx < 2; dx++) {
-          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, res - 1.0);
-          float tileX = mod(c.z, tilesPerRow) * res;
-          float tileY = floor(c.z / tilesPerRow) * res;
-          float px = tileX + c.x;
-          float py = tileY + c.y;
-          vec2 uv = (vec2(px, py) + 0.5) / texRes;
+          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), vec3(0.0), res - 1.0);
+          float tileX = mod(c.z, tilesPerRow) * res.x;
+          float tileY = floor(c.z / tilesPerRow) * res.y;
+          vec2 uv = (vec2(tileX + c.x, tileY + c.y) + 0.5) / texSize;
           vec4 s = texture2D(tex, uv);
           float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
           dAcc += s.r * w;
@@ -3489,37 +3676,11 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
     return dAcc;
   }
 
-  // Coarse-grid-only SDF sample, same math as sdfAt()/sampleTiledSDF in
-  // PARTICLE_SHADER_CORE but inlined here (this shader has no fine-region
-  // uniforms — see the comment above on why only the coarse grid is used).
-  float sampleCoarseSDF(vec3 p) {
-    vec3 local = clamp((p - uSDFCoarseMin) / uSDFCoarseSize, 0.0, 1.0);
-    vec3 voxel = local * uSDFCoarseRes - 0.5;
-    vec3 v0 = floor(voxel);
-    vec3 f = voxel - v0;
-    float acc = 0.0;
-    for (int dz = 0; dz < 2; dz++) {
-      for (int dy = 0; dy < 2; dy++) {
-        for (int dx = 0; dx < 2; dx++) {
-          vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), 0.0, uSDFCoarseRes - 1.0);
-          float tileX = mod(c.z, uSDFCoarseTilesPerRow) * uSDFCoarseRes;
-          float tileY = floor(c.z / uSDFCoarseTilesPerRow) * uSDFCoarseRes;
-          float px = tileX + c.x, py = tileY + c.y;
-          vec2 uv = (vec2(px, py) + 0.5) / uSDFCoarseTexRes;
-          float w = (dx == 0 ? (1.0 - f.x) : f.x) * (dy == 0 ? (1.0 - f.y) : f.y) * (dz == 0 ? (1.0 - f.z) : f.z);
-          acc += texture2D(uSDFCoarse, uv).r * w;
-        }
-      }
-    }
-    return acc * length(uSDFCoarseSize);
-  }
-
   void main() {
     // Camera position in the box's LOCAL space (mirrors
     // ArcVolumetricFluidRenderer.swift's fragment modifier, which derives
     // localCamPos the same way via the inverse model transform) — the
-    // node is scaled/positioned to exactly cover uVolMin..uVolMin+uVolSize,
-    // so its own local space already IS the volume's object space.
+    // node is scaled/positioned to exactly cover uVolMin..uVolMin+uVolSize.
     vec3 localCamPos = (uInverseModelMatrix * vec4(cameraPosition, 1.0)).xyz;
     vec3 rd = normalize(vLocalPos - localCamPos);
     vec3 ro = localCamPos;
@@ -3534,77 +3695,119 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
 
     if (tFar <= tNear) discard;
 
-    const int STEPS = 40; // kept modest — this runs full-screen every frame, unlike the per-particle SDF taps elsewhere in this file
+#ifdef VOL_NO_WALL
+    // ── live-leak plume path: unchanged from before task #51 ──
+    const int STEPS = 40;
     float stepSize = (tFar - tNear) / float(STEPS);
     float t = tNear;
     float transmittance = 1.0;
     vec3 accumColor = vec3(0.0);
-
     for (int i = 0; i < STEPS; i++) {
-      vec3 pLocal = ro + rd * (t + stepSize * 0.5);
-      vec3 pWorld = pLocal + vec3(0.5); // box-local [-0.5,0.5] -> volume-local [0,1] offset, matches vol01 below
-      vec3 vol01 = pWorld; // the box IS scaled to uVolSize and positioned at uVolMin+uVolSize*0.5, so this local [0,1] cube already maps onto the density grid 1:1
-
-      vec3 worldPos = uVolMin + vol01 * uVolSize;
-#ifdef VOL_NO_WALL
-      float wallSD = -1.0; // live-leak volume: particles do their own CPU wall collision, and the plume lives OUTSIDE the cavity SDF
+      vec3 vol01 = ro + rd * (t + stepSize * 0.5) + vec3(0.5);
+      vec3 col;
+      float dens = sampleTiledVol(uVolDensity, vol01, uVolRes, uVolTilesPerRow, uVolTexSize, col);
+      if (dens > 0.003) {
+        float absorb = 1.0 - exp(-dens * stepSize * uVolRes.x * 0.9);
+        accumColor += transmittance * absorb * col;
+        transmittance *= (1.0 - absorb);
+        if (transmittance < 0.015) break;
+      }
+      t += stepSize;
+    }
+    float alpha = 1.0 - transmittance;
+    if (alpha < 0.003) discard;
+    gl_FragColor = vec4(accumColor, alpha);
 #else
-      float wallSD = sampleCoarseSDF(worldPos);
-#endif
-      // wallSD > 0 means outside the fluid-legal interior (see this file's
-      // sign convention comment on signedDistanceToMesh) — i.e. inside/
-      // past a real wall from the ray march's point of view. Skip the
-      // step entirely rather than just zeroing color, so a dense fluid
-      // region never "shows through" a thin wall from extinction alone.
-      if (wallSD <= 0.002) {
-        vec3 col;
-        float dens = sampleTiledVol(uVolDensity, vol01, uVolRes, uVolTilesPerRow, uVolTexRes, col);
+    // Step ~0.7 voxel along the ray's dominant axis, bounded by VOL_MAX_STEPS across this ray's span.
+    vec3 ard = abs(rd);
+    float dtVox = 0.7 / max(max(uVolRes.x * ard.x, uVolRes.y * ard.y), max(uVolRes.z * ard.z, 1e-4));
+    float dt = max(dtVox, (tFar - tNear) / float(${VOL_MAX_STEPS}));
+    float worldPerT = length(rd * uVolSize);                     // world distance covered per unit of t
+    vec3 vsz = uVolSize / uVolRes;
+    float vox = (vsz.x + vsz.y + vsz.z) / 3.0;                   // density voxel edge, world units
+    // Interleaved gradient noise (Jimenez): per-pixel start offset in [0,1) of one step.
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float t = tNear + jit * dt;
+    float transmittance = 1.0;
+    vec3 accumColor = vec3(0.0);
+
+    for (int i = 0; i < ${VOL_MAX_STEPS}; i++) {
+      if (t >= tFar) break;
+      float stepScale = 1.0;
+      vec3 vol01 = ro + rd * t + vec3(0.5); // box is scaled to uVolSize at uVolMin+uVolSize*0.5, so box-local [0,1] maps 1:1 onto the density grid
+      vec3 col;
+      float dens = sampleTiledVol(uVolDensity, vol01, uVolRes, uVolTilesPerRow, uVolTexSize, col);
+      if (dens > 0.003) {
+        vec3 worldPos = uVolMin + vol01 * uVolSize;
+        float sdVox;
+        float sd = sdfVolume(worldPos, sdVox);
+        // sd > 0 = outside the fluid-legal interior (inside/past a real wall).
+        // Smooth mask over ~1 SDF voxel, centered on the surface.
+        float mask = 1.0 - smoothstep(-0.5 * sdVox, 0.5 * sdVox, sd);
+        if (abs(sd) < 1.5 * sdVox) stepScale = 0.5; // finer steps right at a surface
+        dens *= mask;
         if (dens > 0.003) {
-          float absorb = 1.0 - exp(-dens * stepSize * uVolRes * 0.9);
-          accumColor += transmittance * absorb * col;
+          float stepWorld = dt * stepScale * worldPerT;
+          float absorb = 1.0 - exp(-dens * stepWorld / vox * uVolAbsorb * (uXray > 0.5 ? 1.4 : 1.0)); // X-ray gas must read over a bright wall
+          if (uXray > 0.5) {
+            float depthIn = clamp(-sd / (sdVox * 5.0), 0.0, 1.0);          // 0 at the wall .. 1 deep inside
+            float rim = exp(-pow(sd / (sdVox * 1.2), 2.0));                // thin lit band right at the wall
+            float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);     // temperature proxy from the baked thermal colour
+            vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm); // cold cyan -> hot amber
+            vec3 lit = mix(col, tint, 0.3);                                // hue shift
+            float glow = uXrayGlow * (0.6 + 0.4 * depthIn);                // internal illumination, strongest away from the wall
+            vec3 emit = lit * (1.0 + glow) + vec3(0.02, 0.05, 0.08) * glow; // self-emissive + lifted offset
+            accumColor += transmittance * absorb * emit;
+            accumColor += transmittance * (1.0 - exp(-dens * 0.6)) * rim * tint * 0.45 * uXrayGlow; // wall rim light
+          } else {
+            accumColor += transmittance * absorb * col;
+          }
           transmittance *= (1.0 - absorb);
           if (transmittance < 0.015) break;
         }
       }
-      t += stepSize;
+      t += dt * stepScale;
     }
 
     float alpha = 1.0 - transmittance;
     if (alpha < 0.003) discard;
-    gl_FragColor = vec4(accumColor, alpha);
+    // accumColor is premultiplied by alpha; the material uses NormalBlending
+    // (straight alpha), so un-premultiply before output. Soft tone-map keeps
+    // emissive glow from clipping to flat white.
+    vec3 rgb = accumColor / alpha;
+    rgb = 1.0 - exp(-rgb * 1.25);
+    gl_FragColor = vec4(rgb, alpha);
+#endif
   }
 `;
 
 // Builds (once) the bounding-box mesh the ray march runs on, sized/
 // positioned to the SDF's own coarse-grid domain (state.sdf.coarse) —
 // reusing that bounds, rather than computing a separate one, keeps the
-// volume's world-space mapping trivially consistent with the SDF it
-// samples for occlusion (same reasoning as reusing isFineSolid's own grid
-// in the iOS renderer instead of a parallel domain box).
+// volume's world-space mapping trivially consistent with the SDF it samples.
 function ensureVolumetricMesh() {
   if (volMesh) return volMesh;
   const geo = new THREE.BoxGeometry(1, 1, 1); // unit box; scaled/positioned per-update below
   const mat = new THREE.ShaderMaterial({
-    uniforms: {
+    uniforms: Object.assign({
       uVolDensity: { value: null },
-      uVolRes: { value: VOL_RES },
+      uVolRes: { value: new THREE.Vector3(VOL_RES, VOL_RES, VOL_RES) },
       uVolTilesPerRow: { value: 1 },
-      uVolTexRes: { value: VOL_RES },
+      uVolTexSize: { value: new THREE.Vector2(VOL_RES, VOL_RES) },
       uVolMin: { value: new THREE.Vector3() },
       uVolSize: { value: new THREE.Vector3(1, 1, 1) },
       uInverseModelMatrix: { value: new THREE.Matrix4() },
-      uSDFCoarse: { value: null },
-      uSDFCoarseMin: { value: new THREE.Vector3() },
-      uSDFCoarseSize: { value: new THREE.Vector3(1, 1, 1) },
-      uSDFCoarseRes: { value: 1 },
-      uSDFCoarseTilesPerRow: { value: 1 },
-      uSDFCoarseTexRes: { value: 1 },
-    },
+      uXray: { value: volXray ? 1 : 0 },
+      uXrayGlow: { value: 0.65 },
+      uVolAbsorb: { value: 0.38 },
+    }, makeSDFUniformSet(null)),
     vertexShader: VOLUMETRIC_VERTEX_SHADER,
     fragmentShader: VOLUMETRIC_FRAGMENT_SHADER,
     transparent: true,
     depthWrite: false,
-    depthTest: true,
+    // X-ray ON draws the gas regardless of the (opaque) part shells in front
+    // of it; OFF restores ordinary depth testing, where the walls hide it.
+    depthTest: !volXray,
     side: THREE.BackSide, // see camera-inside-the-box note below
   });
   volMesh = new THREE.Mesh(geo, mat);
@@ -3615,52 +3818,79 @@ function ensureVolumetricMesh() {
   return volMesh;
 }
 
+// Contents colour used to hue-shift X-ray gas (baked into the splat colour
+// on the CPU only while X-ray is on): [r, g, b].
+const VOL_CONTENT_HUE = {
+  helium: [0.78, 0.68, 1.0],   // pale violet
+  oxidizer: [0.25, 0.72, 1.0], // cyan-blue
+  fuel: [1.0, 0.62, 0.2],      // amber
+  chamber: [1.0, 0.5, 0.18],   // hot orange
+};
+
+// Allocates the density grid for the current SDF domain: voxels ~cubic over
+// the scene bounds within the VOL_RES^3 budget (see header comment).
+function allocVolumeForDomain(size) {
+  const vol = Math.max(size.x, 1e-3) * Math.max(size.y, 1e-3) * Math.max(size.z, 1e-3);
+  const g = adaptiveGridRes(size, Math.cbrt(vol / (VOL_RES ** 3)), VOL_RES ** 3, 6, VOL_MAX_AXIS);
+  volResXYZ = g.res;
+  const lay = tiledLayout(volResXYZ);
+  volTilesPerRow = lay.tpr; volTexW = lay.w; volTexH = lay.h;
+  volDensityData = new Float32Array(volTexW * volTexH * 4);
+  if (volDensityTex) { volDensityTex.dispose(); volDensityTex = null; }
+}
+
 // Rebuilds the CPU density+color volume from the current particle state —
 // the direct counterpart to ArcVolumetricFluidRenderer.bakeVolume(), but
 // splatting discrete particle positions into cells (accumulate-and-
 // normalize) instead of resampling a continuous simulation grid, since
 // this file's simulation state IS a set of particles, not a voxel grid
-// with its own density field.
+// with its own density field. The splat is trilinear (8 cells, cloud-in-
+// cell), not nearest-cell, so density varies smoothly across voxel borders.
 function rebuildVolumetricDensity() {
   const sdf = state.sdf;
   const cpu = state.particleCPU;
-  if (!sdf || !cpu || !cpu.count) return false;
+  if (!sdf || !cpu || !cpu.count || !volDensityData) return false;
 
-  const res = VOL_RES;
-  if (!volDensityData) {
-    volTilesPerRow = Math.ceil(Math.sqrt(res));
-    volTexRes = res * volTilesPerRow;
-    volDensityData = new Float32Array(volTexRes * volTexRes * 4);
-  }
+  const [resX, resY, resZ] = volResXYZ;
   // Decay the previous frame's density rather than clearing to zero: at
   // an ~11Hz rebuild rate with a sampled subset of particles each time
   // (see VOL_MAX_SAMPLES), a hard clear would make the field visibly
-  // flicker/strobe between rebuilds as different particle subsets land in
-  // different cells. Exponential decay toward the freshly-splatted values
-  // gives smooth temporal blending instead, at negligible extra cost.
-  for (let i = 0; i < volDensityData.length; i++) volDensityData[i] *= 0.55;
+  // flicker/strobe between rebuilds. Colour channels are kept as
+  // colour*density while accumulating (normalized again below).
+  for (let i = 0; i < volDensityData.length; i += 4) {
+    const d0 = volDensityData[i];
+    if (d0 > 1e-5) {
+      const d = d0 * 0.55;
+      volDensityData[i] = d;
+      volDensityData[i + 1] *= d; volDensityData[i + 2] *= d; volDensityData[i + 3] *= d;
+    } else { volDensityData[i] = 0; volDensityData[i + 1] = 0; volDensityData[i + 2] = 0; volDensityData[i + 3] = 0; }
+  }
 
   const dMin = sdf.coarse.boundsMin, dSize = sdf.coarse.boundsSize;
   const invSizeX = 1 / Math.max(dSize.x, 1e-5);
   const invSizeY = 1 / Math.max(dSize.y, 1e-5);
   const invSizeZ = 1 / Math.max(dSize.z, 1e-5);
 
-  const { count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV } = cpu;
+  const { count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart } = cpu;
   const MW = MAX_WAYPOINTS;
   // uTime drives computeParticlePosition() in lockstep on the GPU — mirror
   // the exact same clock value here so the CPU-splatted density tracks
-  // where the point-sprite particles would actually be this instant, not
-  // a separately-advancing approximation.
+  // where the point-sprite particles would actually be this instant.
   const uTime = particleSystem ? particleSystem.material.uniforms.uTime.value : 0;
 
   // Sample a bounded subset of particles per rebuild (see header comment)
   // rather than every one — a stride walk rather than random picks, so
-  // coverage is even across the whole particle set frame to frame instead
-  // of favoring whichever containers happen to be listed first.
+  // coverage is even across the whole particle set frame to frame.
   const stride = Math.max(VOL_SAMPLE_STRIDE_MIN, Math.ceil(count / VOL_MAX_SAMPLES));
 
   const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
   const liveHidden = cpu.liveArr;
+  const hueCache = new Map(); // part -> [r,g,b] contents hue (only consulted while X-ray is on)
+  const hueFor = (part) => {
+    let h = hueCache.get(part);
+    if (!h) { h = (part && VOL_CONTENT_HUE[part.type === 'chamber' ? 'chamber' : part.contents]) || null; hueCache.set(part, h || false); }
+    return h || null;
+  };
   for (let p = 0; p < count; p += stride) {
     if (liveHidden && liveHidden[p] > 0.5) continue; // taken over by the live leak system (rendered via the leak volume instead)
     const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
@@ -3701,21 +3931,10 @@ function rebuildVolumetricDensity() {
     const pz = tmpA.z + (tmpB.z - tmpA.z) * segT + (lu * rz + lv * uz) * rad + eddyZ * rad * 0.10 * progress;
 
     // NOTE: deliberately skips the GPU shader's final SDF-based wall-
-    // collision correction (sdfAt/sdfGradient push-back) — that per-
-    // particle correction matters most right at joints, a precision this
-    // volume's own ${VOL_RES}³ cells can't resolve meaningfully anyway,
-    // and the ray march's own sampleCoarseSDF occlusion check (in the
-    // fragment shader above) independently prevents density from ever
-    // being DRAWN inside a wall even if a splatted position lands just
-    // past one — the visible result (no fluid showing through walls) is
-    // preserved without needing this CPU mirror to replicate that step.
-    const gx = Math.floor((px - dMin.x) * invSizeX * res);
-    const gy = Math.floor((py - dMin.y) * invSizeY * res);
-    const gz = Math.floor((pz - dMin.z) * invSizeZ * res);
-    if (gx < 0 || gy < 0 || gz < 0 || gx >= res || gy >= res || gz >= res) continue;
-
-    const tileX = (gz % volTilesPerRow) * res, tileY = Math.floor(gz / volTilesPerRow) * res;
-    const di = ((tileY + gy) * volTexRes + (tileX + gx)) * 4;
+    // collision correction (sdfAt/sdfGradient push-back): the ray march's own
+    // sdfVolume() wall mask (fragment shader) independently prevents density
+    // from ever being DRAWN inside a wall even if a splatted position lands
+    // just past one.
 
     // Thermal color ramp — same cold/mid/warm/hot breakpoints as
     // thermalRamp() in THERMAL_RAMP_GLSL, evaluated here in JS so the
@@ -3726,15 +3945,29 @@ function rebuildVolumetricDensity() {
     if (t < 0.33) { const k = t / 0.33; cr = 0.2 + (0.0 - 0.2) * k; cg = 0.55 + (0.9 - 0.55) * k; cb = 1.0 + (0.85 - 1.0) * k; }
     else if (t < 0.66) { const k = (t - 0.33) / 0.33; cr = 0.0 + (1.0 - 0.0) * k; cg = 0.9 + (0.55 - 0.9) * k; cb = 0.85 + (0.15 - 0.85) * k; }
     else { const k = (t - 0.66) / 0.34; cr = 1.0; cg = 0.55 + (0.95 - 0.55) * k; cb = 0.15 + (0.85 - 0.15) * k; }
+    if (volXray) { // contents hue shift (X-ray look): helium violet, oxidizer cyan, fuel amber, chamber hot orange
+      const hue = hueFor(ownerPart && ownerPart[p]);
+      if (hue) { cr += (hue[0] - cr) * 0.35; cg += (hue[1] - cg) * 0.35; cb += (hue[2] - cb) * 0.35; }
+    }
 
-    // Accumulate (not overwrite) so multiple particles landing in the same
-    // cell build up density, same intent as the point-sprite renderer's
-    // additive floor-heat splat.
+    // Trilinear (cloud-in-cell) accumulate: 8 surrounding voxels weighted by
+    // proximity, so density is continuous across voxel borders (the old
+    // nearest-cell splat made every voxel a visible hard block).
     const addDens = 0.9;
-    volDensityData[di] += addDens;
-    volDensityData[di + 1] += cr * addDens;
-    volDensityData[di + 2] += cg * addDens;
-    volDensityData[di + 3] += cb * addDens;
+    const fx = (px - dMin.x) * invSizeX * resX - 0.5, fy = (py - dMin.y) * invSizeY * resY - 0.5, fz = (pz - dMin.z) * invSizeZ * resZ - 0.5;
+    const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+    const wx = fx - x0, wy = fy - y0, wz = fz - z0;
+    for (let k = 0; k < 8; k++) {
+      const cx = x0 + (k & 1), cy = y0 + ((k >> 1) & 1), cz = z0 + ((k >> 2) & 1);
+      if (cx < 0 || cy < 0 || cz < 0 || cx >= resX || cy >= resY || cz >= resZ) continue;
+      const wt = ((k & 1) ? wx : 1 - wx) * (((k >> 1) & 1) ? wy : 1 - wy) * (((k >> 2) & 1) ? wz : 1 - wz) * addDens;
+      if (wt <= 0) continue;
+      const di = ((Math.floor(cz / volTilesPerRow) * resY + cy) * volTexW + (cz % volTilesPerRow) * resX + cx) * 4;
+      volDensityData[di] += wt;
+      volDensityData[di + 1] += cr * wt;
+      volDensityData[di + 2] += cg * wt;
+      volDensityData[di + 3] += cb * wt;
+    }
   }
 
   // Normalize color channels by accumulated density per-cell (so color
@@ -3749,13 +3982,12 @@ function rebuildVolumetricDensity() {
   }
 
   if (!volDensityTex) {
-    volDensityTex = new THREE.DataTexture(volDensityData, volTexRes, volTexRes, THREE.RGBAFormat, THREE.FloatType);
+    volDensityTex = new THREE.DataTexture(volDensityData, volTexW, volTexH, THREE.RGBAFormat, THREE.FloatType);
     // NearestFilter for the same reason as every other FloatType DataTexture
     // in this file (uSDFCoarse, uSDFFineAtlas, uWaypoints): this shader
     // does its own manual trilinear interpolation (sampleTiledVol), and a
     // LinearFilter FloatType texture silently reads as all-zero on mobile
-    // GPUs lacking OES_texture_float_linear — exactly the bug class this
-    // file's existing SDF textures already had to avoid.
+    // GPUs lacking OES_texture_float_linear.
     volDensityTex.magFilter = THREE.NearestFilter; volDensityTex.minFilter = THREE.NearestFilter;
     volDensityTex.wrapS = THREE.ClampToEdgeWrapping; volDensityTex.wrapT = THREE.ClampToEdgeWrapping;
   }
@@ -3776,11 +4008,10 @@ function updateVolumetricRender(nowMs) {
   const mesh = ensureVolumetricMesh();
 
   if (sdf !== volLastSDFRef) {
-    // Domain changed (new Simulate press) — resync the box transform and
-    // the SDF-sampling uniforms this material needs for occlusion. Doing
-    // this only on change (not every frame) mirrors the iOS renderer's own
-    // "domain size changes slowly" comment on why it re-scales a cached
-    // box rather than rebuilding geometry every bake.
+    // Domain changed (new Simulate press) — resync the box transform, the
+    // density grid shape and the SDF uniforms the shader needs. Doing this
+    // only on change (not every frame) mirrors the iOS renderer's own
+    // "domain size changes slowly" note.
     const size = sdf.coarse.boundsSize, min = sdf.coarse.boundsMin;
     mesh.scale.set(Math.max(size.x, 0.001), Math.max(size.y, 0.001), Math.max(size.z, 0.001));
     mesh.position.set(min.x + size.x * 0.5, min.y + size.y * 0.5, min.z + size.z * 0.5);
@@ -3789,16 +4020,18 @@ function updateVolumetricRender(nowMs) {
     u.uVolMin.value.copy(min);
     u.uVolSize.value.copy(size);
     // Only the mesh's OWN transform changes (and only when the domain
-    // changes, i.e. right here) — the camera moving every frame via
-    // OrbitControls doesn't affect this inverse, so it's computed once per
-    // domain change rather than every render.
+    // changes, i.e. right here) — OrbitControls moving the camera doesn't
+    // affect this inverse.
     u.uInverseModelMatrix.value.copy(mesh.matrixWorld).invert();
-    u.uSDFCoarse.value = sdf.coarse.texture;
-    u.uSDFCoarseMin.value.copy(sdf.coarse.boundsMin);
-    u.uSDFCoarseSize.value.copy(sdf.coarse.boundsSize);
-    u.uSDFCoarseRes.value = sdf.coarse.res;
-    u.uSDFCoarseTilesPerRow.value = sdf.coarse.tilesPerRow;
-    u.uSDFCoarseTexRes.value = sdf.coarse.texRes;
+    allocVolumeForDomain(size);
+    u.uVolRes.value.set(volResXYZ[0], volResXYZ[1], volResXYZ[2]);
+    u.uVolTilesPerRow.value = volTilesPerRow;
+    u.uVolTexSize.value.set(volTexW, volTexH);
+    // Same SDF uniform objects' VALUES the particle shader uses (copied by
+    // value onto this material's own uniform objects; replacing the objects
+    // themselves after the program is compiled would not be picked up).
+    const set = state.sdfUniformSet || makeSDFUniformSet(sdf);
+    for (const k of Object.keys(set)) if (u[k]) u[k].value = set[k].value;
     volLastSDFRef = sdf;
     volLastBuildAt = -Infinity; // force an immediate density rebuild for the new domain
   }
@@ -3807,8 +4040,6 @@ function updateVolumetricRender(nowMs) {
     volLastBuildAt = nowMs;
     if (rebuildVolumetricDensity()) {
       mesh.material.uniforms.uVolDensity.value = volDensityTex;
-      mesh.material.uniforms.uVolTilesPerRow.value = volTilesPerRow;
-      mesh.material.uniforms.uVolTexRes.value = volTexRes;
     }
   }
 
@@ -3826,6 +4057,18 @@ document.getElementById('volumetricToggle').onchange = (e) => {
   if (particleSystem) particleSystem.visible = !volEnabled;
   if (!volEnabled && volMesh) volMesh.visible = false;
 };
+
+// X-ray toggle (default ON). Applies to the volumetric gas only: parts are
+// never made transparent. ON = depth test off + interior glow/hue shift so
+// gas inside a container/cavity reads through the wall; OFF = the ordinary
+// depth-tested, un-lit gas (hidden behind opaque shells). Works the same
+// whether or not Flow Selection Mode's own see-through part materials are
+// active (there the walls are already ~transparent; the glow still applies).
+function applyVolXray() {
+  if (volMesh) { volMesh.material.uniforms.uXray.value = volXray ? 1 : 0; volMesh.material.depthTest = !volXray; }
+  volLastBuildAt = -Infinity; // re-bake the splat colours (contents hue is only applied while X-ray is on)
+}
+document.getElementById('xrayToggle').onchange = (e) => { volXray = e.target.checked; applyVolXray(); };
 
 // ═══════════════════════════════════════════════════════════════════════
 //  LIVE PRESSURE-DRIVEN LEAKS
@@ -4380,10 +4623,8 @@ function liveEnsureLeakMesh() {
     live.leakTex.wrapS = THREE.ClampToEdgeWrapping; live.leakTex.wrapT = THREE.ClampToEdgeWrapping;
     const mat = new THREE.ShaderMaterial({
       uniforms: {
-        uVolDensity: { value: live.leakTex }, uVolRes: { value: LEAK_RES }, uVolTilesPerRow: { value: live.leakTpr }, uVolTexRes: { value: live.leakTexRes },
+        uVolDensity: { value: live.leakTex }, uVolRes: { value: new THREE.Vector3(LEAK_RES, LEAK_RES, LEAK_RES) }, uVolTilesPerRow: { value: live.leakTpr }, uVolTexSize: { value: new THREE.Vector2(live.leakTexRes, live.leakTexRes) },
         uVolMin: { value: new THREE.Vector3() }, uVolSize: { value: new THREE.Vector3(1, 1, 1) }, uInverseModelMatrix: { value: new THREE.Matrix4() },
-        uSDFCoarse: { value: null }, uSDFCoarseMin: { value: new THREE.Vector3() }, uSDFCoarseSize: { value: new THREE.Vector3(1, 1, 1) },
-        uSDFCoarseRes: { value: 1 }, uSDFCoarseTilesPerRow: { value: 1 }, uSDFCoarseTexRes: { value: 1 },
       },
       defines: { VOL_NO_WALL: 1 },
       vertexShader: VOLUMETRIC_VERTEX_SHADER, fragmentShader: VOLUMETRIC_FRAGMENT_SHADER,
@@ -4664,7 +4905,7 @@ document.getElementById('toggleLeft').onclick = () => document.getElementById('l
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
