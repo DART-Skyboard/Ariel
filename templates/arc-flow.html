@@ -236,6 +236,10 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 
     <div class="sec-h">◈ Joints</div>
     <div id="jointReport"><div class="sec-sub">Press Simulate to check how parts connect.</div></div>
+    <div class="sec-h">◈ Channel flow</div>
+    <div id="channelFlowReport"><div class="sec-sub">Press Simulate to fit thin channels and compute their flow.</div></div>
+    <label class="field">Model unit (metres per unit)</label>
+    <input type="number" id="flowUnitM" value="0.0254" step="0.001" min="0.00001">
 
     <div class="sec-h">◈ Propulsion Preset</div>
     <label class="field">Engine / Exhaust Model</label>
@@ -1913,7 +1917,7 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
 // on the floor. The previous budget (6) was too tight — particles from the
 // propellant tanks never actually reached the nozzle, only ones that
 // started directly inside the chamber did.
-const MAX_WAYPOINTS = 10;
+const MAX_WAYPOINTS = 32; // was 10: thin-channel centerlines (a pipe follows its own bore, not just its bbox centre) need extra waypoint slots
 const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture short: 16384 particles = 1024 lines)
 // particleSystem / particleSplatMaterial are declared near the floor-heat
 // system above (they're referenced during initial setup).
@@ -1985,7 +1989,7 @@ function renderJointReport() {
     const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
     if (lk) {
       // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
-      rows.push(`<div class="seal-bad">✗ ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}</span></div>`);
+      rows.push(`<div class="seal-bad">✗ ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${lk.vJet.toFixed(0)} m/s${lk.jetChoked ? ' (choked)' : ''}, ${(lk.mdot * 1000).toFixed(0)} g/s through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
       continue;
     }
     rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${link.auto ? 'auto, from mesh overlap' : 'marked openings'})</span></div>`);
@@ -1997,6 +2001,26 @@ function renderJointReport() {
     rows.push(`<div class="seal-bad">! ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">overlap connects them, but both already have an outgoing link</span></div>`);
   }
   el.innerHTML = rows.length ? rows.join('') : '<div class="sec-sub">No joints found. Mark openings, or fit parts so their meshes overlap.</div>';
+  renderChannelFlowReport();
+}
+
+// "Water hose" read-out for every fitted thin channel (see "THIN CHANNELS"): bore, length, exit speed, mass flow.
+function renderChannelFlowReport() {
+  const el = document.getElementById('channelFlowReport');
+  if (!el) return;
+  const flows = state.channelFlows;
+  if (!flows || !flows.size) { el.innerHTML = state.sdf ? '<div class="sec-sub">No thin channels fitted (no pipe-classified or strongly elongated part).</div>' : ''; return; }
+  const unit = state.flowUnitM || FLOW_UNIT_M_DEFAULT;
+  const rows = [];
+  for (const [part, r] of flows) {
+    const d = r.minBoreModel;
+    rows.push(`<div class="seal-ok" style="display:block"><b>${part.name}</b> · ${r.fluid.label} from ${r.srcName} @ ${r.P0psi.toFixed(0)} psi<br>` +
+      `<span style="opacity:.85">bore Ø${d.toFixed(3)}–${r.maxBoreModel.toFixed(3)} (${(d * unit * 1000).toFixed(1)} mm) · length ${r.lengthModel.toFixed(2)} (L/D ${r.LoverD.toFixed(0)}) · ${r.tube.nSegs} fitted segments<br>` +
+      `exit ${r.vExit.toFixed(1)} m/s${r.gas ? ' (Mach ' + r.mach.toFixed(2) + (r.choked ? ', choked' : '') + ')' : ''} · mass flow ${(r.mdot * 1000).toFixed(0)} g/s · ΔP ${(r.dP / PSI_PA).toFixed(0)} psi (friction ${(r.dpFric / PSI_PA).toFixed(1)}) · Re ${r.Re.toFixed(0)}<br>` +
+      `v = Q/A: ${r.vMin.toFixed(1)}–${r.vMax.toFixed(1)} m/s along the bore · inlet pressure ${(r.dpInlet / PSI_PA).toFixed(1)} psi dynamic head</span></div>`);
+  }
+  el.innerHTML = rows.join('') +
+    `<div class="sec-sub">Assumes 1 model unit = ${(unit * 1000).toFixed(1)} mm and chamber back-pressure ${(CHAMBER_BACKPRESSURE_FRAC * 100).toFixed(0)}% of tank pressure. Particle speed along each path follows v ∝ 1/A (faster through narrow bores, compressed for display).</div>`;
 }
 
 // ── Per-part thermal reaction ────────────────────────────────────
@@ -2147,7 +2171,7 @@ const SDF_COARSE_RES = 20;   // whole-scene grid voxel BUDGET = RES^3 (8000). Si
 const SDF_COARSE_MAX_AXIS = 56;  // per-axis cap for the coarse grid
 const SDF_FINE_RES = 14;     // voxels per axis, per-joint grid — small box, so this is real resolution there
 const SDF_FINE_PAD_FACTOR = 2.2; // how many joint-radii wide/tall the fine box extends around a junction centroid
-const SDF_MAX_FINE_REGIONS = 24; // hard cap (joint + per-part regions TOGETHER) so a scene can't blow the texture/uniform/compute budget
+const SDF_MAX_FINE_REGIONS = 48; // hard cap (joint + per-part regions TOGETHER) so a scene can't blow the texture/uniform/compute budget
 // ── Adaptive per-part SDF (task #51) ────────────────────────────────────
 // Every classified part also gets its OWN grid (a "part region" in the same
 // fine atlas), sized from the part's bounding box vs. a target voxel size
@@ -2155,10 +2179,10 @@ const SDF_MAX_FINE_REGIONS = 24; // hard cap (joint + per-part regions TOGETHER)
 // 40 big triangles) still needs an accurate collision body, so the visible
 // mesh is left alone and the SDF build "virtually" subdivides any triangle
 // longer than ~SDF_VIRTUAL_EDGE_VOXELS voxels (see subdivideLargeTris).
-const SDF_MAX_PART_REGIONS = 8;          // part regions reserved out of SDF_MAX_FINE_REGIONS (joints get the rest)
+const SDF_MAX_PART_REGIONS = 24;          // part regions reserved out of SDF_MAX_FINE_REGIONS (joints get the rest)
 const SDF_PART_MIN_CELLS = 14;           // the part's thinnest bbox dimension gets at least this many voxels, budget permitting
-const SDF_PART_BUDGET = { chamber: 4000, container: 2400, pipe: 1200, other: 1200 }; // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
-const SDF_PART_MAX_AXIS = 48;            // per-axis cap for one part region
+const SDF_PART_BUDGET = { chamber: 32000, container: 20000, pipe: 20000, other: 20000 }; // soft: accuracy first (builds are async/time-sliced); a heavy scene is the user's call to lighten // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
+const SDF_PART_MAX_AXIS = 160;            // per-axis cap for one part region
 const SDF_VIRTUAL_EDGE_VOXELS = 2.5;     // ...but never split below this many voxels
 const SDF_VIRTUAL_EDGE_CELLS = 4;        // triangles longer than this many spatial-index cells (and > SDF_VIRTUAL_EDGE_VOXELS voxels) are virtually bisected
 const SDF_VIRTUAL_PHONG_ALPHA = 0.75;    // Phong-tessellation strength when a bisected edge's endpoints carry smooth vertex normals (0 = flat midpoints)
@@ -2736,6 +2760,444 @@ function buildSDFGrid(bounds, res, tris, opts) {
            tilesPerRow: lay.tpr, texW: lay.w, texH: lay.h, texRes: Math.max(lay.w, lay.h) };
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  THIN CHANNELS: TUBE-FITTED COLLISION + "WATER HOSE" FLOW PHYSICS
+//
+//  WHY: the box-shaped SDF grids above are sized from a part's bounding box. A
+//  long narrow feed line (FuelChannel: ~16.5 long, bore Ø≈0.2) ends up with
+//  voxels ~2x the bore, so the grid never contains a legal interior there: the
+//  fluid does not recognise the pipe as an opening and is pushed out through
+//  the walls. Refining a regular grid until the bore has ~6 voxels would be
+//  ~170x600x35 voxels for that one pipe, i.e. minutes of CPU. Instead, thin /
+//  elongated parts (PIPE-classified, or bbox aspect >= SDF_TUBE_ASPECT) get a
+//  "virtual refinement": their centerline + inner bore radius are fitted from
+//  the mesh vertices (visible mesh untouched) and the bore is represented as an
+//  ANALYTIC capsule chain, i.e. a hybrid tube SDF that is exact (infinitely
+//  fine) across the bore. It is consulted FIRST by sdfAt / sdfGradient /
+//  sdfVolume (GLSL) and by the live-leak CPU SDF (JS), so particles, ray-march
+//  occlusion and live leaks all see the same bore. Mesh grids stay in charge
+//  everywhere else (tanks, joints, the wall exterior).
+//
+//  The same fit supplies the per-station bore area A(s), which drives the
+//  continuity / Bernoulli / Darcy-Weisbach channel flow below.
+// ═══════════════════════════════════════════════════════════════════════
+const TUBE_MAX = 16;                   // fitted tubes the shaders can hold
+const TUBE_SEG_MAX = 64;               // capsule segments per tube
+const TUBE_TEX_W = TUBE_MAX * TUBE_SEG_MAX;
+const TUBE_WP_MAX = 20;                 // waypoints a fitted tube contributes to a particle path
+const TUBE_BINS = 128;                 // 1-D density bins along a tube (ray-march emission)
+const SDF_TUBE_ASPECT = 6;             // bbox aspect (long / middle extent) that makes a non-pipe part count as a channel
+const SDF_TUBE_MIN_CELLS = 6;          // target voxels across the smallest bore
+const SDF_JOINT_MIN_RADIUS = 0.03;
+const FLOW_UNIT_M_DEFAULT = 0.0254;    // ASSUMPTION: 1 model unit = 1 inch (editable in the Joints panel); only the physics read-out uses it
+const FLUID_PROPS = {
+  helium:   { gas: true, M: 0.004003, gamma: 1.667, mu: 2.0e-5, label: 'helium' },
+  oxidizer: { rho: 1141, mu: 1.9e-4, label: 'oxidizer (LOX-like)' },
+  fuel:     { rho: 810,  mu: 1.6e-3, label: 'fuel (RP-1-like)' },
+  other:    { rho: 1000, mu: 1.0e-3, label: 'liquid' },
+};
+const PSI_PA = 6894.757;
+
+function partWorldVertices(part) {
+  const out = [];
+  for (const m of part.meshes) {
+    const pos = m.geometry && m.geometry.attributes && m.geometry.attributes.position;
+    if (!pos) continue;
+    m.updateWorldMatrix(true, false);
+    const e = m.matrixWorld.elements;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      out.push(e[0]*x + e[4]*y + e[8]*z + e[12], e[1]*x + e[5]*y + e[9]*z + e[13], e[2]*x + e[6]*y + e[10]*z + e[14]);
+    }
+  }
+  return out;
+}
+
+// Douglas-Peucker on a 3-D polyline; returns indices of kept points.
+function simplifyPolyline(P, tol) {
+  const n = P.length / 3, keep = new Uint8Array(n);
+  keep[0] = 1; keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    if (b <= a + 1) continue;
+    const ax = P[3*a], ay = P[3*a+1], az = P[3*a+2];
+    let dx = P[3*b] - ax, dy = P[3*b+1] - ay, dz = P[3*b+2] - az;
+    const l2 = Math.max(dx*dx + dy*dy + dz*dz, 1e-12);
+    let best = -1, bi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const px = P[3*i] - ax, py = P[3*i+1] - ay, pz = P[3*i+2] - az;
+      const t = Math.max(0, Math.min(1, (px*dx + py*dy + pz*dz) / l2));
+      const d = Math.hypot(px - dx*t, py - dy*t, pz - dz*t);
+      if (d > best) { best = d; bi = i; }
+    }
+    if (best > tol) { keep[bi] = 1; stack.push([a, bi], [bi, b]); }
+  }
+  const idx = []; for (let i = 0; i < n; i++) if (keep[i]) idx.push(i);
+  return idx;
+}
+
+// Fits an inner-bore tube to a thin/elongated part from its vertices: seed at the middle of the long axis, then march a
+// ring-sized slab along the axis in both directions (re-centering on the ring of wall vertices each step, so elbows are
+// followed), recording the centre and the inner/outer wall radii. Returns null when the part is not tube-like.
+function fitTubeForPart(part) {
+  const t0 = performance.now();
+  const V = partWorldVertices(part), n = V.length / 3;
+  if (n < 60) return null;
+  const mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { const v = V[3*i+k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+  const ext = [mx[0]-mn[0], mx[1]-mn[1], mx[2]-mn[2]];
+  const sorted = ext.slice().sort((a, b) => b - a);
+  const diag = Math.hypot(ext[0], ext[1], ext[2]);
+  const portR = Math.max(0.02, ...part.openings.map(o => o.radius || 0));
+  // spatial hash
+  const cs = Math.max(0.2, Math.min(portR * 3, 0.6));
+  const cells = new Map();
+  const ck = (ix, iy, iz) => ((ix + 4096) * 8192 + (iy + 4096)) * 8192 + (iz + 4096);
+  for (let i = 0; i < n; i++) {
+    const k = ck(Math.floor(V[3*i] / cs), Math.floor(V[3*i+1] / cs), Math.floor(V[3*i+2] / cs));
+    let a = cells.get(k); if (!a) { a = []; cells.set(k, a); } a.push(i);
+  }
+  const rvx = [], rvy = [], rvz = [], rr = [];
+  // ring of wall vertices in the slab |axial| < h, radial < Rw around centre c, axis d
+  function ring(cx, cy, cz, dx, dy, dz, h, Rw) {
+    rvx.length = rvy.length = rvz.length = rr.length = 0;
+    const R = Math.hypot(h, Rw);
+    const x0 = Math.floor((cx - R) / cs), x1 = Math.floor((cx + R) / cs), y0 = Math.floor((cy - R) / cs), y1 = Math.floor((cy + R) / cs), z0 = Math.floor((cz - R) / cs), z1 = Math.floor((cz + R) / cs);
+    for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) for (let iz = z0; iz <= z1; iz++) {
+      const a = cells.get(ck(ix, iy, iz)); if (!a) continue;
+      for (const i of a) {
+        const px = V[3*i] - cx, py = V[3*i+1] - cy, pz = V[3*i+2] - cz;
+        const ax = px*dx + py*dy + pz*dz; if (ax > h || ax < -h) continue;
+        const qx = px - dx*ax, qy = py - dy*ax, qz = pz - dz*ax;
+        const r = Math.hypot(qx, qy, qz); if (r > Rw) continue;
+        rvx.push(qx); rvy.push(qy); rvz.push(qz); rr.push(r);
+      }
+    }
+    return rr.length;
+  }
+  // re-centre on the ring, return {cx,cy,cz,rIn,rOut,n}
+  function measure(cx, cy, cz, dx, dy, dz, h, Rw) {
+    let m = 0;
+    for (let it = 0; it < 3; it++) {
+      m = ring(cx, cy, cz, dx, dy, dz, h, Rw);
+      if (m < 10) return null;
+      let sx = 0, sy = 0, sz = 0; for (let i = 0; i < m; i++) { sx += rvx[i]; sy += rvy[i]; sz += rvz[i]; }
+      cx += sx / m; cy += sy / m; cz += sz / m;
+    }
+    m = ring(cx, cy, cz, dx, dy, dz, h, Rw);
+    if (m < 10) return null;
+    const rs = rr.slice().sort((a, b) => a - b);
+    return { cx, cy, cz, n: m, rIn: rs[Math.floor(m * 0.1)], rOut: rs[Math.min(m - 1, Math.floor(m * 0.98))] };
+  }
+  // seed: mean of the vertices, axis from the local PCA (power iteration) of vertices within ~1.5 of it
+  let mx0 = 0, my0 = 0, mz0 = 0; for (let i = 0; i < n; i++) { mx0 += V[3*i]; my0 += V[3*i+1]; mz0 += V[3*i+2]; } mx0 /= n; my0 /= n; mz0 /= n;
+  const axisOf = (cx, cy, cz, rad) => {
+    const L = []; for (let i = 0; i < n; i++) { if (Math.abs(V[3*i]-cx) < rad && Math.abs(V[3*i+1]-cy) < rad && Math.abs(V[3*i+2]-cz) < rad) L.push(i); }
+    if (L.length < 20) return null;
+    let ax = 0, ay = 0, az = 0; for (const i of L) { ax += V[3*i]; ay += V[3*i+1]; az += V[3*i+2]; } ax /= L.length; ay /= L.length; az /= L.length;
+    let c = [0,0,0,0,0,0]; // xx xy xz yy yz zz
+    for (const i of L) { const x = V[3*i]-ax, y = V[3*i+1]-ay, z = V[3*i+2]-az; c[0]+=x*x; c[1]+=x*y; c[2]+=x*z; c[3]+=y*y; c[4]+=y*z; c[5]+=z*z; }
+    let v = [ext[0] >= ext[1] && ext[0] >= ext[2] ? 1 : 0, ext[1] > ext[0] && ext[1] >= ext[2] ? 1 : 0, ext[2] > ext[0] && ext[2] > ext[1] ? 1 : 0];
+    for (let it = 0; it < 30; it++) {
+      const w = [c[0]*v[0]+c[1]*v[1]+c[2]*v[2], c[1]*v[0]+c[3]*v[1]+c[4]*v[2], c[2]*v[0]+c[4]*v[1]+c[5]*v[2]];
+      const l = Math.hypot(w[0], w[1], w[2]) || 1; v = [w[0]/l, w[1]/l, w[2]/l];
+    }
+    return v;
+  };
+  let c = [mx0, my0, mz0], d = axisOf(c[0], c[1], c[2], Math.max(1.0, portR * 6));
+  if (!d) return null;
+  let Rw = portR * 2.2, h = Math.max(portR * 0.45, 0.03);
+  let m0 = null;
+  // snap the seed to a ring-bearing location: slide along the axis if the mean fell off the wall
+  for (let it = 0; it < 4 && !m0; it++) {
+    m0 = measure(c[0], c[1], c[2], d[0], d[1], d[2], h, Rw);
+    if (!m0) {
+      // pull the seed onto the nearest vertex
+      let bi = -1, bd = 1e9; for (let i = 0; i < n; i += 3) { const dd = (V[3*i]-c[0])**2 + (V[3*i+1]-c[1])**2 + (V[3*i+2]-c[2])**2; if (dd < bd) { bd = dd; bi = i; } }
+      c = [V[3*bi], V[3*bi+1], V[3*bi+2]]; Rw *= 1.5;
+    }
+  }
+  if (!m0) return null;
+  for (let it = 0; it < 3; it++) { // refine the axis from rings a step either side
+    const dd = axisOf(m0.cx, m0.cy, m0.cz, Math.max(m0.rOut * 6, 0.5)); if (dd) d = (dd[0]*d[0]+dd[1]*d[1]+dd[2]*d[2] < 0) ? [-dd[0], -dd[1], -dd[2]] : dd;
+    const mm = measure(m0.cx, m0.cy, m0.cz, d[0], d[1], d[2], h, Rw); if (mm) m0 = mm;
+  }
+  const rIn0 = m0.rIn, rOut0 = m0.rOut;
+  if (!(rOut0 > 0) || rOut0 > Math.max(portR * 4, diag * 0.25)) return null;
+  Rw = rOut0 * 1.8; h = Math.max(rOut0 * 0.5, 0.025);
+  const step = h * 1.1, maxSteps = Math.min(1200, Math.ceil(diag * 2.5 / step));
+  const march = (sgn) => {
+    const pts = []; let cx = m0.cx, cy = m0.cy, cz = m0.cz, dx = sgn*d[0], dy = sgn*d[1], dz = sgn*d[2];
+    let miss = 0;
+    for (let s = 0; s < maxSteps; s++) {
+      const nx = cx + dx*step, ny = cy + dy*step, nz = cz + dz*step;
+      const m = measure(nx, ny, nz, dx, dy, dz, h, Rw);
+      if (!m) { if (++miss > 2) break; cx = nx; cy = ny; cz = nz; continue; }
+      miss = 0;
+      if (m.rIn > rIn0 * 1.7 || m.rIn < rIn0 * 0.45 || m.rOut > rOut0 * 1.5) break; // flange / ball / end cap: the tube is over
+      let ex = m.cx - cx, ey = m.cy - cy, ez = m.cz - cz; const el = Math.hypot(ex, ey, ez);
+      if (el > 1e-6) { ex /= el; ey /= el; ez /= el; dx = 0.55*dx + 0.45*ex; dy = 0.55*dy + 0.45*ey; dz = 0.55*dz + 0.45*ez; const l = Math.hypot(dx, dy, dz); dx /= l; dy /= l; dz /= l; }
+      cx = m.cx; cy = m.cy; cz = m.cz;
+      pts.push({ x: cx, y: cy, z: cz, rIn: m.rIn, rOut: m.rOut });
+    }
+    return pts;
+  };
+  const fw = march(1), bw = march(-1);
+  const all = bw.reverse().concat([{ x: m0.cx, y: m0.cy, z: m0.cz, rIn: m0.rIn, rOut: m0.rOut }], fw);
+  if (all.length < 4) return null;
+  // orient: first point nearest the entrance port
+  const ent = part.openings.find(o => o.role === 'entrance'), ex = part.openings.find(o => o.role === 'exit');
+  if (ent && ex) {
+    const dEnt0 = Math.hypot(all[0].x - ent.centroid.x, all[0].y - ent.centroid.y, all[0].z - ent.centroid.z);
+    const dEntN = Math.hypot(all[all.length-1].x - ent.centroid.x, all[all.length-1].y - ent.centroid.y, all[all.length-1].z - ent.centroid.z);
+    if (dEntN < dEnt0) all.reverse();
+  }
+  // smooth radii (running median of 5) so single bad rings do not pinch the bore
+  const rInS = all.map((_, i) => { const w = []; for (let k = Math.max(0, i-2); k <= Math.min(all.length-1, i+2); k++) w.push(all[k].rIn); w.sort((a, b) => a - b); return w[w.length >> 1]; });
+  const rOutS = all.map((_, i) => { const w = []; for (let k = Math.max(0, i-2); k <= Math.min(all.length-1, i+2); k++) w.push(all[k].rOut); w.sort((a, b) => a - b); return w[w.length >> 1]; });
+  const P = new Float32Array(all.length * 3); all.forEach((q, i) => { P[3*i] = q.x; P[3*i+1] = q.y; P[3*i+2] = q.z; });
+  let tol = Math.max(rIn0 * 0.12, 0.004), keep = simplifyPolyline(P, tol);
+  while (keep.length - 1 > TUBE_SEG_MAX) { tol *= 1.35; keep = simplifyPolyline(P, tol); }
+  // conservative radius at each kept vertex: min over the span between its neighbouring keepers
+  const kp = keep.map((ix, j) => {
+    const a = keep[Math.max(0, j-1)], b = keep[Math.min(keep.length-1, j+1)];
+    let ri = Infinity, ro = 0; for (let k = a; k <= b; k++) { ri = Math.min(ri, rInS[k]); ro = Math.max(ro, rOutS[k]); }
+    return { p: new THREE.Vector3(P[3*ix], P[3*ix+1], P[3*ix+2]), rIn: ri, rOut: Math.max(ro, ri * 1.05) };
+  });
+  // Trim any overshoot past the ports (the march can run on into a neck/flange) and extend the chain exactly to each port so the
+  // bore is a legal interior all the way to the joint.
+  const portsFixed = [];
+  if (ent) {
+    while (kp.length > 3 && kp[1].p.distanceTo(ent.centroid) < kp[0].p.distanceTo(ent.centroid)) kp.shift();
+    if (kp[0].p.distanceTo(ent.centroid) > 0.02) { kp.unshift({ p: ent.centroid.clone(), rIn: kp[0].rIn, rOut: kp[0].rOut }); portsFixed.push('entrance'); }
+  }
+  if (ex) {
+    while (kp.length > 3 && kp[kp.length-2].p.distanceTo(ex.centroid) < kp[kp.length-1].p.distanceTo(ex.centroid)) kp.pop();
+    if (kp[kp.length-1].p.distanceTo(ex.centroid) > 0.02) { kp.push({ p: ex.centroid.clone(), rIn: kp[kp.length-1].rIn, rOut: kp[kp.length-1].rOut }); portsFixed.push('exit'); }
+  }
+  while (kp.length - 1 > TUBE_SEG_MAX) { // still too many (very long fits): drop the least-bent interior vertex
+    let bi = -1, bv = Infinity;
+    for (let k = 1; k < kp.length - 1; k++) { const ab = kp[k].p.clone().sub(kp[k-1].p), bc = kp[k+1].p.clone().sub(kp[k].p); const v = ab.angleTo(bc) * Math.min(ab.length(), bc.length()); if (v < bv) { bv = v; bi = k; } }
+    kp.splice(bi, 1);
+  }
+  const segs = []; let s0 = 0;
+  for (let j = 0; j < kp.length - 1; j++) {
+    const len = kp[j].p.distanceTo(kp[j+1].p);
+    segs.push({ a: kp[j].p, b: kp[j+1].p, rA: kp[j].rIn, rB: kp[j+1].rIn, oA: kp[j].rOut, oB: kp[j+1].rOut, len, s0 });
+    s0 += len;
+  }
+  // waypoint stations for particle paths: the kept vertices, thinned to TUBE_WP_MAX
+  let wpIdx = kp.map((_, i) => i).filter(i => i > 0 && i < kp.length - 1); // interior stations only: the end vertices sit on the ports, which the path adds itself
+  if (!wpIdx.length) { wpIdx = [0]; }
+  while (wpIdx.length > TUBE_WP_MAX) { // drop the interior vertex whose removal bends the line least
+    let bi = -1, bv = Infinity;
+    for (let k = 1; k < wpIdx.length - 1; k++) {
+      const A = kp[wpIdx[k-1]].p, B = kp[wpIdx[k]].p, C = kp[wpIdx[k+1]].p;
+      const ab = B.clone().sub(A), bc = C.clone().sub(B);
+      const turn = ab.angleTo(bc) * Math.min(ab.length(), bc.length());
+      if (turn < bv) { bv = turn; bi = k; }
+    }
+    wpIdx.splice(bi, 1);
+  }
+  const wp = wpIdx.map(i => ({ pos: kp[i].p.clone(), r: kp[i].rIn }));
+  if (wpIdx.length === 1 && wpIdx[0] === 0) wp[0].pos.copy(kp[0].p).lerp(kp[kp.length-1].p, 0.5);
+  let minR = Infinity, maxR = 0, aabbMin = new THREE.Vector3(1e9, 1e9, 1e9), aabbMax = new THREE.Vector3(-1e9, -1e9, -1e9);
+  for (const q of kp) { minR = Math.min(minR, q.rIn); maxR = Math.max(maxR, q.rIn); aabbMin.min(q.p); aabbMax.max(q.p); }
+  let outMax = 0; for (const q of kp) outMax = Math.max(outMax, q.rOut);
+  aabbMin.subScalar(outMax * 2); aabbMax.addScalar(outMax * 2);
+  return { part, name: part.name, segs, L: s0, wp, minRIn: minR, maxRIn: maxR, rOutMax: outMax,
+           aabb: new THREE.Box3(aabbMin, aabbMax), nRings: all.length, nSegs: segs.length, fitMs: performance.now() - t0,
+           bboxAspect: sorted[0] / Math.max(sorted[1], 1e-6), seedRIn: rIn0, seedROut: rOut0 };
+}
+
+// Which parts get a tube: PIPE-classified parts, plus any part whose bbox is strongly elongated (aspect >= SDF_TUBE_ASPECT)
+// with two or more openings (a long narrow channel that was not classified as a pipe).
+function isThinChannelCandidate(part) {
+  if (part.type === 'pipe') return true;
+  const box = new THREE.Box3(); for (const m of part.meshes) box.expandByObject(m);
+  if (box.isEmpty()) return false;
+  const s = box.getSize(new THREE.Vector3()).toArray().sort((a, b) => b - a);
+  return s[0] / Math.max(s[1], 1e-6) >= SDF_TUBE_ASPECT && (part.openings || []).length >= 2 && part.type !== 'chamber';
+}
+
+// Fits every channel and packs them for the shaders (3 texel rows x TUBE_TEX_W columns: (p0,rIn0) (p1,rIn1) (rOut0,rOut1)).
+function buildTubeSet(classified) {
+  const t0 = performance.now();
+  const list = [], byPart = new Map(), failed = [];
+  for (const part of classified) {
+    if (list.length >= TUBE_MAX) break;
+    if (!isThinChannelCandidate(part)) continue;
+    let tube = null;
+    try { tube = fitTubeForPart(part); } catch (err) { console.error('tube fit failed for', part.name, err); }
+    if (!tube) { failed.push(part.name); continue; }
+    list.push(tube); byPart.set(part, tube);
+  }
+  const data = new Float32Array(TUBE_TEX_W * 3 * 4);
+  const boxMin = [], boxMax = [];
+  let seg = 0;
+  list.forEach((tube, q) => {
+    tube.firstSeg = seg;
+    for (const sg of tube.segs) {
+      const k = seg++;
+      data.set([sg.a.x, sg.a.y, sg.a.z, sg.rA], (0 * TUBE_TEX_W + k) * 4);
+      data.set([sg.b.x, sg.b.y, sg.b.z, sg.rB], (1 * TUBE_TEX_W + k) * 4);
+      data.set([sg.oA, sg.oB, sg.s0, sg.len], (2 * TUBE_TEX_W + k) * 4);
+    }
+    boxMin.push(new THREE.Vector4(tube.aabb.min.x, tube.aabb.min.y, tube.aabb.min.z, tube.firstSeg));
+    boxMax.push(new THREE.Vector4(tube.aabb.max.x, tube.aabb.max.y, tube.aabb.max.z, tube.nSegs));
+  });
+  while (boxMin.length < TUBE_MAX) { boxMin.push(new THREE.Vector4(1e6, 1e6, 1e6, 0)); boxMax.push(new THREE.Vector4(1e6 + 1, 1e6 + 1, 1e6 + 1, 0)); }
+  const tex = new THREE.DataTexture(data, TUBE_TEX_W, 3, THREE.RGBAFormat, THREE.FloatType);
+  tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping; tex.wrapT = THREE.ClampToEdgeWrapping; tex.needsUpdate = true;
+  return { list, byPart, failed, tex, boxMin, boxMax, count: list.length, ms: Math.round(performance.now() - t0) };
+}
+
+// JS mirror of the GLSL tubeProbe(): signed distance to the bore wall (negative inside the bore) over capsule segments
+// {a,b,rA,rB,oA,oB}. Returns true when p lies in a tube's bore/wall zone and fills out = {sd, gx, gy, gz, rIn}.
+function tubeProbeSegs(segs, x, y, z, out) {
+  let bestRho = 1e9, bi = -1, bt = 0;
+  const n = segs.length;
+  for (let j = 0; j < n; j++) {
+    const s = segs[j], ax = s.a.x, ay = s.a.y, az = s.a.z;
+    const bx = s.b.x - ax, by = s.b.y - ay, bz = s.b.z - az;
+    const l2 = Math.max(bx*bx + by*by + bz*bz, 1e-10);
+    const t = ((x-ax)*bx + (y-ay)*by + (z-az)*bz) / l2;
+    if ((j === 0 && t < 0) || (j === n - 1 && t > 1)) continue;
+    const tc = t < 0 ? 0 : t > 1 ? 1 : t;
+    const rho = Math.hypot(x - (ax + bx*tc), y - (ay + by*tc), z - (az + bz*tc));
+    if (rho < bestRho) { bestRho = rho; bi = j; bt = tc; }
+  }
+  if (bi < 0) return false;
+  const s = segs[bi];
+  const rIn = s.rA + (s.rB - s.rA) * bt, rOut = s.oA + (s.oB - s.oA) * bt;
+  if (bestRho >= rOut * 2.0) return false;
+  const cx = s.a.x + (s.b.x - s.a.x) * bt, cy = s.a.y + (s.b.y - s.a.y) * bt, cz = s.a.z + (s.b.z - s.a.z) * bt;
+  const inv = 1 / Math.max(bestRho, 1e-5);
+  out.sd = bestRho - rIn; out.gx = (x - cx) * inv; out.gy = (y - cy) * inv; out.gz = (z - cz) * inv; out.rIn = rIn; out.s = s.s0 + s.len * bt; out.rho = bestRho;
+  return true;
+}
+
+// ── Channel flow physics ("water hose") ────────────────────────────────
+// Sections are ordered along the flow: {A m^2, D m, L m}. Continuity gives v_i = Q / A_i; the pressure budget is
+//   dP = 1/2 rho Q^2 [ K_in / A_1^2 + K_bend / A_min^2 + sum f_i L_i / (D_i A_i^2) + 1 / (Cd A_N)^2 ]
+// (inlet contraction + bends + Darcy-Weisbach friction + exit kinetic/orifice term), f from laminar 64/Re or Haaland.
+// For gas the incompressible estimate uses the mean density and the mass flow is capped at the choked value
+// mdot* = Cd A_min P0 sqrt(gamma / (Rs T)) (2/(gamma+1))^((gamma+1)/(2(gamma-1))); the exit speed is capped at sonic.
+function solveChannelFlow(sections, fluid, P0Pa, PdPa, opts) {
+  opts = opts || {};
+  const Cd = opts.Cd || 1, Kin = opts.Kin == null ? 0.5 : opts.Kin, Kbend = opts.Kbend || 0, rough = opts.rough || 2e-6;
+  const T = opts.T || 300, Rg = 8.314;
+  const gas = !!fluid.gas;
+  const Rs = gas ? Rg / fluid.M : 0;
+  const dP = Math.max(P0Pa - PdPa, 1);
+  const rho = gas ? Math.max((P0Pa + Math.max(PdPa, 0)) / 2, 1) / (Rs * T) : fluid.rho;
+  const n = sections.length;
+  let Amin = Infinity; for (const s of sections) Amin = Math.min(Amin, s.A);
+  const f = sections.map(() => 0.03);
+  let Q = 0, S = 1;
+  for (let it = 0; it < 40; it++) {
+    S = Kin / (sections[0].A ** 2) + Kbend / (Amin ** 2) + 1 / ((Cd * sections[n-1].A) ** 2);
+    for (let i = 0; i < n; i++) if (sections[i].L > 0) S += f[i] * sections[i].L / (sections[i].D * sections[i].A ** 2);
+    Q = Math.sqrt(2 * dP / (rho * S));
+    let delta = 0;
+    for (let i = 0; i < n; i++) {
+      const v = Q / sections[i].A, Re = Math.max(rho * v * sections[i].D / fluid.mu, 1);
+      const fn = Re < 2300 ? 64 / Re : Math.pow(-1.8 * Math.log10(Math.pow(rough / sections[i].D / 3.7, 1.11) + 6.9 / Re), -2);
+      delta = Math.max(delta, Math.abs(fn - f[i])); f[i] = fn;
+    }
+    if (delta < 1e-5) break;
+  }
+  let mdot = rho * Q, choked = false;
+  let vExit = Q / (Cd * sections[n-1].A), vMax = 0, vMin = Infinity;
+  for (const s of sections) { const v = Q / s.A; vMax = Math.max(vMax, v); vMin = Math.min(vMin, v); }
+  let mach = 0;
+  if (gas) {
+    const g = fluid.gamma;
+    const mChoke = Cd * Amin * P0Pa * Math.sqrt(g / (Rs * T)) * Math.pow(2 / (g + 1), (g + 1) / (2 * (g - 1)));
+    const aSonic = Math.sqrt(g * Rs * T);
+    if (mdot >= mChoke) { mdot = mChoke; choked = true; }
+    Q = mdot / rho; vMax = 0; vMin = Infinity;
+    for (const s of sections) { const v = Q / s.A; vMax = Math.max(vMax, v); vMin = Math.min(vMin, v); }
+    vExit = Math.min(Q / (Cd * sections[n-1].A), aSonic * (choked ? 0.9 : 1)); // sonic ceiling at the exit
+    mach = vExit / aSonic;
+  }
+  let dpFric = 0; const vF = Q / 1;
+  for (let i = 0; i < n; i++) if (sections[i].L > 0) { const v = Q / sections[i].A; dpFric += f[i] * sections[i].L / sections[i].D * 0.5 * rho * v * v; }
+  const v1 = Q / sections[0].A;
+  return { mdot, Q, rho, vExit, vMax, vMin, mach, choked, gas, dP, dpFric, dpInlet: 0.5 * rho * v1 * v1 * (1 + Kin),
+           Re: rho * (Q / Amin) * Math.sqrt(4 * Amin / Math.PI) / fluid.mu, fMean: f.reduce((a, b) => a + b, 0) / n };
+}
+
+// Fluid feeding a part: the contents of the nearest upstream non-pressurant container (falls back to the part itself).
+function upstreamFluidOf(part) {
+  const links = state.currentLinks;
+  let cur = part, best = null, guard = 0;
+  const seen = new Set();
+  while (cur && guard++ < 8 && !seen.has(cur)) {
+    seen.add(cur);
+    const own = cur.type === 'pipe' ? null : cur.contents; // a pipe carries its feed's fluid; its default 'contents' field is not a reservoir
+    if (own && own !== 'helium') { best = cur; break; }
+    if (own && !best) best = cur;
+    let up = null;
+    if (links) for (const [p, l] of links) if (l.target === cur) { up = p; break; }
+    if (!up) break;
+    cur = up;
+  }
+  return best;
+}
+function fluidProps(part) {
+  const c = part && part.contents;
+  return FLUID_PROPS[c] || FLUID_PROPS.other;
+}
+
+// Per-tube numbers for the demo / any scene: bore area profile A(s), min bore, length, exit velocity, mass flow.
+function computeChannelFlows() {
+  const tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.list : [];
+  const unit = state.flowUnitM || FLOW_UNIT_M_DEFAULT;
+  const out = new Map();
+  const pamb = Math.max(parseFloat((document.getElementById('atmoPsi') || {}).value) || 0, 0);
+  for (const tube of tubes) {
+    const src = upstreamFluidOf(tube.part);
+    const fl = fluidProps(src);
+    const P0 = Math.max(((src && src.internalPsi) || 400), 1);
+    const Pd = Math.max(P0 * CHAMBER_BACKPRESSURE_FRAC, pamb);
+    // sections: one per capsule segment (bore at its mid-point), lengths in metres
+    const sections = tube.segs.map(sg => {
+      const r = 0.5 * (sg.rA + sg.rB) * unit;
+      return { A: Math.PI * r * r, D: 2 * r, L: sg.len * unit };
+    });
+    // total bend angle -> minor loss (about 0.3 per 90 degrees for a smooth bend)
+    let turn = 0; for (let j = 1; j < tube.segs.length; j++) turn += tube.segs[j-1].b.clone().sub(tube.segs[j-1].a).angleTo(tube.segs[j].b.clone().sub(tube.segs[j].a));
+    const r = solveChannelFlow(sections, fl, P0 * PSI_PA, Pd * PSI_PA, { Kin: 0.5, Kbend: 0.3 * turn / (Math.PI / 2), Cd: 1 });
+    out.set(tube.part, Object.assign(r, {
+      tube, fluid: fl, srcName: src ? src.name : '?', P0psi: P0, Pdpsi: Pd, lengthModel: tube.L, minBoreModel: tube.minRIn * 2, maxBoreModel: tube.maxRIn * 2,
+      minBoreMM: tube.minRIn * 2 * unit * 1000, lengthM: tube.L * unit, LoverD: tube.L / Math.max(tube.minRIn * 2, 1e-9), turnDeg: turn * 180 / Math.PI,
+    }));
+  }
+  return out;
+}
+const CHAMBER_BACKPRESSURE_FRAC = 0.55; // ASSUMPTION: chamber pressure = 55% of the feed tank (pressure-fed engine); shown in the panel
+
+// Orifice / channel jet for the live-leak system: dpPsi over a hole of diameter holeD (model units) fed through an optional
+// upstream fitted tube. Returns {v (m/s at the vena contracta), mdot, choked}.
+function leakJet(fluid, dpPsi, pambPsi, holeD, tube) {
+  const unit = state.flowUnitM || FLOW_UNIT_M_DEFAULT;
+  const Cd = 0.62;
+  const r = Math.max(holeD * 0.5, 1e-4) * unit;
+  const sections = [];
+  if (tube) for (const sg of tube.segs) { const rr = 0.5 * (sg.rA + sg.rB) * unit; sections.push({ A: Math.PI * rr * rr, D: 2 * rr, L: sg.len * unit }); }
+  sections.push({ A: Math.PI * r * r, D: 2 * r, L: 0 });
+  const P0 = (Math.max(dpPsi, 0) + pambPsi) * PSI_PA, Pd = pambPsi * PSI_PA;
+  const res = solveChannelFlow(sections, fluid, P0, Pd, { Kin: tube ? 0.5 : 0.0, Kbend: 0, Cd });
+  if (fluid.gas && res.choked) res.vExit = Math.sqrt(2 * fluid.gamma / (fluid.gamma + 1) * (8.314 / fluid.M) * 300); // sonic jet
+  return res;
+}
+// Visual speed (model units / s) for a physical jet speed (m/s): saturating, so a Mach-3 helium jet and a 70 m/s liquid jet both read.
+function jetVisualSpeed(vPhys) { return Math.max(1.5, LIVE_VMAX * (1 - Math.exp(-vPhys / 90))); }
+
+
 // Finds the padded junction boxes that most need fine-resolution collision:
 // every exit->entrance link from buildFlowGraph (where two DIFFERENT parts'
 // real cross-sections meet — the exact failure mode from the recording),
@@ -2744,7 +3206,7 @@ function buildSDFGrid(bounds, res, tris, opts) {
 // even without crossing a part boundary). Capped (joints share
 // SDF_MAX_FINE_REGIONS with the per-part regions) so an elaborate imported
 // assembly can't runaway the SDF build cost.
-function collectJointRegions(links, cap) {
+function collectJointRegions(links, cap, tubeSet) {
   const regions = [];
   const seen = new Set();
   const maxRegions = cap == null ? SDF_MAX_FINE_REGIONS : cap;
@@ -2753,7 +3215,7 @@ function collectJointRegions(links, cap) {
     const key = center.x.toFixed(2)+','+center.y.toFixed(2)+','+center.z.toFixed(2);
     if (seen.has(key)) return;
     seen.add(key);
-    const pad = Math.max(radius, 0.1) * SDF_FINE_PAD_FACTOR;
+    const pad = Math.max(radius, SDF_JOINT_MIN_RADIUS) * SDF_FINE_PAD_FACTOR;
     const box = new THREE.Box3(
       new THREE.Vector3(center.x - pad, center.y - pad, center.z - pad),
       new THREE.Vector3(center.x + pad, center.y + pad, center.z + pad),
@@ -2764,7 +3226,10 @@ function collectJointRegions(links, cap) {
   for (const [part, link] of links.entries()) {
     const mid = part === link.target ? link.viaOpening.centroid
       : link.viaOpening.centroid.clone().lerp(link.entrance.centroid, 0.5);
-    const r = Math.max(link.viaOpening.radius, link.entrance.radius);
+    let r = Math.max(link.viaOpening.radius, link.entrance.radius);
+    // Auto-scale to the true bore: a joint box has a fixed SDF_FINE_RES voxels, so sizing it from the smallest bore through
+    // the joint keeps >= ~6 voxels across that bore (the nominal port radius can be larger than a fitted pipe's bore).
+    if (tubeSet) for (const p of [part, link.target]) { const tb = tubeSet.byPart.get(p); if (tb) r = Math.min(r, tb.minRIn); }
     addRegion(mid, r, [part, link.target]);
   }
   // Chambers: every opening (entrances converging + the nozzle throat) is a
@@ -2844,8 +3309,14 @@ async function buildCollisionSDF(links) {
   const coarse = buildSDFGrid(sceneBounds, coarseGeom.res, allTris, { stats });
   const coarseMs = performance.now() - tCoarse;
 
+  // Thin channels: fit analytic bore tubes (cheap, no per-voxel mesh queries) BEFORE the joint boxes are sized so a joint
+  // at a pipe end is scaled to the pipe's true bore, not the (larger) nominal port.
+  setLoading(true, 'Building collision data… (thin channels)');
+  await new Promise(requestAnimationFrame);
+  const tubeSet = buildTubeSet(classified);
+
   const partRegions = collectPartRegions(classified);
-  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length);
+  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet);
   const regions = jointRegions.concat(partRegions);
   const fineCount = regions.length;
   const partStart = jointRegions.length;
@@ -2929,11 +3400,16 @@ async function buildCollisionSDF(links) {
     fineCount, partStart,
     fineMin, fineSize, fineRes, fineBlockOrigin, fineTpr,
     fineAtlasTexture, atlasW, atlasH,
+    tubes: tubeSet,
     buildMs: Math.round(performance.now() - tStart),
     info: {
       coarseRes: coarse.resXYZ, coarseVoxelEdge: +Math.max(coarse.boundsSize.x / coarse.resXYZ[0], coarse.boundsSize.y / coarse.resXYZ[1], coarse.boundsSize.z / coarse.resXYZ[2]).toFixed(4),
       coarseMs: Math.round(coarseMs), atlas: [atlasW, atlasH], voxels: stats.voxels, virtualTrisAdded: stats.virtualAdded,
       regions: regionInfo,
+      tubes: tubeSet.list.map(t => ({ name: t.name, lengthModel: +t.L.toFixed(3), minBoreDia: +(t.minRIn * 2).toFixed(4), maxBoreDia: +(t.maxRIn * 2).toFixed(4), segments: t.nSegs, rings: t.nRings,
+        fitMs: Math.round(t.fitMs), analytic: true, legacyGridVoxelEdge: (regionInfo.find(r => r.name === t.name) || {}).voxelEdge || null,
+        legacyVoxelsAcrossBore: (regionInfo.find(r => r.name === t.name) || {}).voxelEdge ? +((t.minRIn * 2) / regionInfo.find(r => r.name === t.name).voxelEdge).toFixed(2) : null })),
+      tubeFitMs: tubeSet.ms, tubesFailed: tubeSet.failed,
     },
   };
 }
@@ -2964,9 +3440,21 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // whatever opening it's passing through) — this is what keeps particles
   // inside the actual container/pipe cross-section instead of traveling
   // as a bare line through empty space.
+  //
+  // Thin channels (see "THIN CHANNELS"): a fitted pipe contributes its own
+  // bore CENTERLINE stations instead of its bbox centre (which lies outside the
+  // bore of an elbowed pipe), with the bore radius as containment radius. Every
+  // waypoint also carries a flow radius; the continuity law v ∝ 1/A over those
+  // radii sets the time knots (faster through the narrow bore, slower through
+  // tanks), so the baked speed varies along the path like water in a hose.
+  const tubes = collisionSDF && collisionSDF.tubes ? collisionSDF.tubes.byPart : null;
   const path = [partCentroid(part)];
   const radii = [partContainmentRadius(part)];
-  let cur = part;
+  const flowR = [Math.max(radii[0], 1e-3)];      // radius used for the area law
+  const exhaust = [part.type === 'chamber'];     // downstream of the chamber the area law no longer applies
+  const partOfWp = [0];                          // chain index of the part each waypoint belongs to
+  const partExitIdx = [];                        // waypoint index of each chain part's exit
+  let cur = part, chainIdx = 0;
   let reachedNozzle = false;
   let exitIdx = MAX_WAYPOINTS; // waypoint index of the nozzle exit plane (the live exhaust plume takes over from here)
 
@@ -2975,7 +3463,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
     const nozzle = cur.openings.find(o => o.role === 'nozzle');
     if (nozzle) {
       path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
-      radii.push(nozzle.radius * 0.9);
+      radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(0);
       reachedNozzle = true;
     }
   }
@@ -2984,16 +3472,27 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   while (!reachedNozzle && path.length < MAX_WAYPOINTS - 2) {
     const link = links.get(cur);
     if (!link) break;
+    const curTube = tubes && tubes.get(cur), nextTube = tubes && tubes.get(link.target);
+    let rPort = link.viaOpening.radius;
+    if (curTube) rPort = Math.min(rPort, curTube.segs[curTube.segs.length - 1].rB);
+    if (nextTube) rPort = Math.min(rPort, nextTube.segs[0].rA);
     path.push(link.viaOpening.centroid);
-    radii.push(link.viaOpening.radius * 0.85);
-    cur = link.target;
-    path.push(partCentroid(cur));
-    radii.push(partContainmentRadius(cur));
+    radii.push(rPort * 0.85); flowR.push(rPort); exhaust.push(false); partOfWp.push(chainIdx);
+    partExitIdx[chainIdx] = path.length - 1;
+    cur = link.target; chainIdx++;
+    if (nextTube) {
+      const room = Math.max(1, MAX_WAYPOINTS - 2 - path.length - 2);
+      const wps = nextTube.wp.length > room ? nextTube.wp.slice(0, room) : nextTube.wp;
+      for (const w of wps) { path.push(w.pos); radii.push(w.r * 0.8); flowR.push(w.r); exhaust.push(false); partOfWp.push(chainIdx); }
+    } else {
+      path.push(partCentroid(cur));
+      radii.push(partContainmentRadius(cur)); flowR.push(Math.max(radii[radii.length - 1], 1e-3)); exhaust.push(cur.type === 'chamber'); partOfWp.push(chainIdx);
+    }
     if (cur.type === 'chamber') {
       const nozzle = cur.openings.find(o => o.role === 'nozzle');
       if (nozzle) {
         path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
-        radii.push(nozzle.radius * 0.9);
+        radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(chainIdx);
         reachedNozzle = true;
       }
       break;
@@ -3012,20 +3511,43 @@ function buildParticlePath(part, links, depth, collisionSDF) {
     const spreadZ = (Math.random() - 0.5) * dropHeight * 0.7;
     const floorHit = new THREE.Vector3(exitPt.x + spreadX * 0.4, 0.05, exitPt.z + spreadZ * 0.4);
     const floorSpread = new THREE.Vector3(exitPt.x + spreadX, 0.02, exitPt.z + spreadZ);
-    path.push(floorHit);    radii.push(radii[radii.length - 1] * 1.4);
-    path.push(floorSpread); radii.push(radii[radii.length - 1] * 1.3);
+    path.push(floorHit);    radii.push(radii[radii.length - 1] * 1.4); flowR.push(flowR[flowR.length - 1] * 1.4); exhaust.push(true); partOfWp.push(chainIdx);
+    path.push(floorSpread); radii.push(radii[radii.length - 1] * 1.3); flowR.push(flowR[flowR.length - 1] * 1.3); exhaust.push(true); partOfWp.push(chainIdx);
   }
+  partExitIdx[chainIdx] = path.length - 1;
 
+  const nReal = Math.min(path.length, MAX_WAYPOINTS);
   while (path.length < MAX_WAYPOINTS) { path.push(path[path.length - 1].clone()); radii.push(radii[radii.length - 1]); }
 
   const points = path.slice(0, MAX_WAYPOINTS);
   const radiiOut = radii.slice(0, MAX_WAYPOINTS);
+  // Time knots from the continuity law. Visual speed factor w = sqrt(A_ref / A) (square-root compressed and clamped so a
+  // 100:1 area ratio stays watchable); the physical v = Q / A numbers are reported separately by computeChannelFlows.
+  const Aref = Math.PI * flowR[0] * flowR[0];
+  const wgt = [];
+  for (let i = 0; i < nReal; i++) wgt.push(exhaust[i] ? 1.0 : Math.max(0.4, Math.min(6.0, Math.sqrt(Aref / (Math.PI * flowR[i] * flowR[i])))));
+  const dur = [];
+  for (let i = 0; i < MAX_WAYPOINTS - 1; i++) {
+    if (i < nReal - 1) dur.push(Math.max(points[i].distanceTo(points[i + 1]), 1e-3) / (0.5 * (wgt[i] + wgt[i + 1])));
+    else dur.push(0);
+  }
+  let realSum = 0; for (let i = 0; i < nReal - 1; i++) realSum += dur[i];
+  if (nReal < MAX_WAYPOINTS) dur[nReal - 1] = 0.6 * realSum / Math.max(nReal - 1, 1); // brief dwell on the floor before the particle respawns at its source
+  let tot = 0; for (const d of dur) tot += d;
+  const knots = [0]; let acc = 0;
+  for (let i = 0; i < MAX_WAYPOINTS - 1; i++) { acc += dur[i] / tot; knots.push(Math.min(acc, 1)); }
+  knots[MAX_WAYPOINTS - 1] = 1;
+  if (!state.pathMeta) state.pathMeta = new Map();
+  if (!state.pathMeta.has(part) || state.pathMeta.get(part).stamp !== state.sdf) {
+    const ptsF = new Float32Array(nReal * 3); for (let i = 0; i < nReal; i++) { ptsF[3*i] = points[i].x; ptsF[3*i+1] = points[i].y; ptsF[3*i+2] = points[i].z; }
+    state.pathMeta.set(part, { stamp: state.sdf, exitIdx: partExitIdx.slice(), partOfWp: partOfWp.slice(), nReal, flowR: flowR.slice(), wgt: wgt.slice(), knots: knots.slice(), pts: ptsF });
+  }
   // Tag each waypoint with the fine SDF region (if any) covering it, so the
   // vertex shader can look up fine-resolution wall collision exactly where
   // the old per-part cylinder lerp was worst (joints), without having to
   // test every fine box against every particle every frame itself.
   const fineIdx = points.map(p => fineRegionIndexAt(p, collisionSDF));
-  return { points, radii: radiiOut, fineIdx, exitIdx };
+  return { points, radii: radiiOut, fineIdx, exitIdx, knots };
 }
 
 // Shared GLSL for sampling the collision SDF — used by the particle vertex
@@ -3056,6 +3578,44 @@ const SDF_SAMPLING_GLSL = `
   uniform vec4 uSDFFineA[${SDF_MAX_FINE_REGIONS}];
   uniform vec4 uSDFFineB[${SDF_MAX_FINE_REGIONS}];
   uniform vec4 uSDFFineC[${SDF_MAX_FINE_REGIONS}];
+  // Fitted thin-channel tubes (see "THIN CHANNELS"): analytic capsule chains packed in a 3-row float texture
+  // (row0 = p0.xyz,rIn0  row1 = p1.xyz,rIn1  row2 = rOut0,rOut1,s0,len), one AABB per tube (w = first seg / seg count).
+  uniform sampler2D uTubeTex;
+  uniform float uTubeCount;
+  uniform vec4 uTubeBoxMin[${TUBE_MAX}];
+  uniform vec4 uTubeBoxMax[${TUBE_MAX}];
+
+  // Signed distance to a fitted bore wall (negative inside the bore) at p, or false when p is outside every tube's
+  // bore/wall zone. g = outward radial direction, rinOut = local bore radius. Exact (analytic) at any scale.
+  bool tubeProbe(vec3 p, out float sd, out vec3 g, out float rinOut) {
+    sd = 1e4; g = vec3(0.0, 1.0, 0.0); rinOut = 0.0;
+    for (int q = 0; q < ${TUBE_MAX}; q++) {
+      if (float(q) >= uTubeCount) break;
+      vec4 bmn = uTubeBoxMin[q];
+      vec4 bmx = uTubeBoxMax[q];
+      if (p.x < bmn.x || p.y < bmn.y || p.z < bmn.z || p.x > bmx.x || p.y > bmx.y || p.z > bmx.z) continue;
+      float bestRho = 1e9; vec3 bestAx = p; float bestRin = 0.0; float bestRout = 0.0;
+      for (int j = 0; j < ${TUBE_SEG_MAX}; j++) {
+        if (float(j) >= bmx.w) break;
+        float u = (bmn.w + float(j) + 0.5) / ${TUBE_TEX_W}.0;
+        vec4 A = texture2D(uTubeTex, vec2(u, 0.16667));
+        vec4 B = texture2D(uTubeTex, vec2(u, 0.5));
+        vec4 C = texture2D(uTubeTex, vec2(u, 0.83333));
+        vec3 ab = B.xyz - A.xyz;
+        float t = dot(p - A.xyz, ab) / max(dot(ab, ab), 1e-10);
+        if ((j == 0 && t < 0.0) || (float(j) >= bmx.w - 1.0 && t > 1.0)) continue;
+        float tc = clamp(t, 0.0, 1.0);
+        vec3 ax = A.xyz + ab * tc;
+        float rho = distance(p, ax);
+        if (rho < bestRho) { bestRho = rho; bestAx = ax; bestRin = mix(A.w, B.w, tc); bestRout = mix(C.x, C.y, tc); }
+      }
+      if (bestRho < bestRout * 2.0) { // capture zone wider than the wall: a particle that strayed just outside is pulled back into the bore
+        sd = bestRho - bestRin; g = (p - bestAx) / max(bestRho, 1e-5); rinOut = bestRin;
+        return true;
+      }
+    }
+    return false;
+  }
 
   // Samples a voxel grid packed as tiled-2D-as-3D with manual TRILINEAR
   // interpolation across the 8 surrounding voxels, taps clamped to the
@@ -3133,6 +3693,8 @@ const SDF_SAMPLING_GLSL = `
   // p, preferring the fine region resolved for p and falling back to the
   // coarse whole-scene grid otherwise. sd < 0 = fluid-legal interior.
   float sdfAt(vec3 p, float fineIdx) {
+    float tsd, trin; vec3 tg;
+    if (tubeProbe(p, tsd, tg, trin)) return tsd; // thin channel: exact analytic bore, wins over every mesh grid
     int idx = resolveFineIdx(p, fineIdx);
     if (idx >= 0) {
       for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
@@ -3160,6 +3722,10 @@ const SDF_SAMPLING_GLSL = `
   // from joint regions that only know two parts), falls back to coarse.
   // Also returns the local voxel edge (world units) for smoothing widths.
   float sdfVolume(vec3 p, out float voxelEdge) {
+    // Gas inside a fitted thin channel is drawn by the dedicated tube pass (see ensureTubeVolumes); the coarse
+    // density grid must not paint a blocky sausage over it, so it is masked out here.
+    float tsd, trin; vec3 tg;
+    if (tubeProbe(p, tsd, tg, trin)) { voxelEdge = max(trin * 0.5, 1e-3); return 1.0; }
     int idx = resolveFineIdxFrom(p, -1.0, int(uSDFPartStart + 0.5));
     if (idx >= 0) {
       for (int k = 0; k < ${SDF_MAX_FINE_REGIONS}; k++) {
@@ -3182,6 +3748,8 @@ const SDF_SAMPLING_GLSL = `
   // a step sized to that grid's own voxel size (sdfAt() re-resolves per call,
   // so using it for a gradient would measure the jump between grids).
   vec3 sdfGradient(vec3 p, float fineIdx) {
+    float tsd, trin; vec3 tg;
+    if (tubeProbe(p, tsd, tg, trin)) return tg; // analytic: radial direction away from the bore axis
     int idx = resolveFineIdx(p, fineIdx);
     float e = 0.5 * length(uSDFCoarseSize / uSDFCoarseRes); // coarse-grid default step
     if (idx >= 0) {
@@ -3244,14 +3812,45 @@ const PARTICLE_SHADER_CORE = `
     float v = (line + 0.5) / uTexHeight;
     return texture2D(uWaypointFine, vec2(u, v)).r;
   }
+  // G channel of the same texel: the path-time at which waypoint w is reached (monotone 0..1). Segment durations follow
+  // the continuity law (narrow bore = short time = fast), so speed varies along the path instead of being constant per segment.
+  float sampleWaypointKnot(float row, float w) {
+    float col = mod(row, ${TEX_COLS}.0), line = floor(row / ${TEX_COLS}.0);
+    float u = (col * ${MAX_WAYPOINTS}.0 + w + 0.5) / (${MAX_WAYPOINTS}.0 * ${TEX_COLS}.0);
+    float v = (line + 0.5) / uTexHeight;
+    return texture2D(uWaypointFine, vec2(u, v)).g;
+  }
+
+  float gSeg = 0.0;      // set by computeParticlePosition: waypoint segment index, fraction along it, and its span in progress units
+  float gSegT = 0.0;
+  float gSegSpan = 0.1;
+  // segment index at path progress p (same knot search as computeParticlePosition; used by the post-nozzle hide test)
+  float segOfProgress(float row, float p) {
+    float s = 0.0;
+    for (int i = 1; i < ${MAX_WAYPOINTS}; i++) {
+      float kN = sampleWaypointKnot(row, float(i));
+      if (p >= kN && kN < 0.99999) s = float(i);
+    }
+    return s;
+  }
 
   vec3 computeParticlePosition() {
     float progress = fract(uTime * aSpeed + aPhase);
     vProgress = progress;
     vThermal = aThermal + progress * 0.4;
-    float segF = progress * ${MAX_WAYPOINTS - 1}.0;
-    float seg = floor(segF);
-    float segT = fract(segF);
+    // find the segment whose [knot_i, knot_i+1) contains progress (knots are non-decreasing; zero-length segments are skipped)
+    float seg = 0.0;
+    float segT = 0.0;
+    float kPrev = 0.0;
+    for (int i = 1; i < ${MAX_WAYPOINTS}; i++) {
+      float kN = sampleWaypointKnot(aRow, float(i));
+      if (progress >= kN && float(i) < ${MAX_WAYPOINTS - 1}.0 + 0.5 && kN < 0.99999) { seg = float(i); kPrev = kN; }
+    }
+    {
+      float kEnd = sampleWaypointKnot(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+      segT = clamp((progress - kPrev) / max(kEnd - kPrev, 1e-5), 0.0, 1.0);
+      gSeg = seg; gSegT = segT; gSegSpan = max(kEnd - kPrev, 1e-5);
+    }
     vec4 a4 = sampleWaypoint(aRow, seg);
     vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
     vec3 a = a4.xyz, b = b4.xyz;
@@ -3298,7 +3897,7 @@ const PARTICLE_SHADER_CORE = `
 const PARTICLE_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSize;
   void main() {
-    if (aLive > 0.5 || (uHidePost > 0.5 && floor(fract(uTime * aSpeed + aPhase) * ${MAX_WAYPOINTS - 1}.0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vec4 mv = modelViewMatrix * vec4(pos, 1.0);
     gl_Position = projectionMatrix * mv;
@@ -3315,7 +3914,7 @@ const PARTICLE_SPLAT_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSplatSize;
   varying float vHeightAboveFloor;
   void main() {
-    if (aLive > 0.5 || (uHidePost > 0.5 && floor(fract(uTime * aSpeed + aPhase) * ${MAX_WAYPOINTS - 1}.0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vHeightAboveFloor = pos.y; // floor is always at world y = 0 in this tool
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -3371,6 +3970,7 @@ function makeSDFUniformSet(collisionSDF) {
       uSDFCoarseRes: { value: new THREE.Vector3(1, 1, 1) }, uSDFCoarseTilesPerRow: { value: 1 }, uSDFCoarseTexSize: { value: new THREE.Vector2(1, 1) },
       uSDFFineAtlas: { value: f }, uSDFAtlasTexSize: { value: new THREE.Vector2(1, 1) }, uSDFPartStart: { value: 0 },
       uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
+      ...tubeUniformSet(null),
     };
   }
   const c = collisionSDF.coarse;
@@ -3381,10 +3981,22 @@ function makeSDFUniformSet(collisionSDF) {
     uSDFFineAtlas: { value: collisionSDF.fineAtlasTexture }, uSDFAtlasTexSize: { value: new THREE.Vector2(collisionSDF.atlasW, collisionSDF.atlasH) },
     uSDFPartStart: { value: collisionSDF.partStart },
     uSDFFineA: { value: A }, uSDFFineB: { value: B }, uSDFFineC: { value: C },
+    ...tubeUniformSet(collisionSDF.tubes),
   };
+}
+function tubeUniformSet(tubeSet) {
+  if (!tubeSet || !tubeSet.count) {
+    const t = new THREE.DataTexture(new Float32Array(TUBE_TEX_W * 3 * 4), TUBE_TEX_W, 3, THREE.RGBAFormat, THREE.FloatType);
+    t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.needsUpdate = true;
+    const bn = [], bx = [];
+    for (let i = 0; i < TUBE_MAX; i++) { bn.push(new THREE.Vector4(1e6, 1e6, 1e6, 0)); bx.push(new THREE.Vector4(1e6 + 1, 1e6 + 1, 1e6 + 1, 0)); }
+    return { uTubeTex: { value: t }, uTubeCount: { value: 0 }, uTubeBoxMin: { value: bn }, uTubeBoxMax: { value: bx } };
+  }
+  return { uTubeTex: { value: tubeSet.tex }, uTubeCount: { value: tubeSet.count }, uTubeBoxMin: { value: tubeSet.boxMin }, uTubeBoxMax: { value: tubeSet.boxMax } };
 }
 
 async function buildParticleSystem() {
+  if (particleCoreSystem) { scene.remove(particleCoreSystem); particleCoreSystem.material.dispose(); particleCoreSystem = null; }
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
   if (gsMesh) { scene.remove(gsMesh); gsMesh.geometry.dispose(); gsMesh.material.dispose(); gsMesh = null; }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
@@ -3406,6 +4018,9 @@ async function buildParticleSystem() {
   // bake running as one unbroken block (see that function's own comment).
   const collisionSDF = await buildCollisionSDF(links);
   state.sdf = collisionSDF;
+  if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
+  state.pathMeta = new Map();
+  state.channelFlows = computeChannelFlows(); // bore areas -> continuity / Bernoulli / Darcy-Weisbach per fitted channel
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
   const containers = state.parts.filter(p => p.type === 'container' || p.type === 'chamber');
@@ -3413,6 +4028,7 @@ async function buildParticleSystem() {
   const waypointData = []; // MAX_WAYPOINTS * 3 floats per particle (xyz)
   const radiusData = [];   // MAX_WAYPOINTS floats per particle (containment radius at that waypoint)
   const fineIdxData = [];  // MAX_WAYPOINTS floats per particle (which fine SDF region, or -1, covers that waypoint)
+  const knotData = [];     // MAX_WAYPOINTS floats per particle: cumulative path-time at which each waypoint is reached (0..1), from the continuity (v ∝ 1/A) law
   const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
   const exitIdxData = []; // per particle: waypoint index of the nozzle exit plane
   const phase = [];
@@ -3429,6 +4045,7 @@ async function buildParticleSystem() {
       for (const r of path.radii) radiusData.push(r);
       for (const fi of path.fineIdx) fineIdxData.push(fi);
       exitIdxData.push(path.exitIdx);
+      for (const k of path.knots) knotData.push(k);
       ownerPart.push(part);
       phase.push(Math.random());
       speed.push(0.15 + Math.random() * 0.25);
@@ -3467,6 +4084,7 @@ async function buildParticleSystem() {
   // already built above.
   state.particleCPU = {
     count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData,
+    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart,
     liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
     affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
   };
@@ -3504,6 +4122,7 @@ async function buildParticleSystem() {
     for (let w = 0; w < MAX_WAYPOINTS; w++) {
       const dstIdx = (line * texWidth + colOff + w) * 4;
       fineIdxTexData[dstIdx] = fineIdxData[p * MAX_WAYPOINTS + w];
+      fineIdxTexData[dstIdx + 1] = knotData[p * MAX_WAYPOINTS + w]; // G = time knot of this waypoint (see sampleWaypointKnot)
     }
   }
   const waypointFineTex = new THREE.DataTexture(fineIdxTexData, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
@@ -3572,6 +4191,7 @@ async function buildParticleSystem() {
   particleSystem.visible = (typeof renderMode === 'undefined') ? false : renderMode === 'points';
   scene.add(particleSystem);
   buildGaussianBaked(geo, mat.uniforms, sdfUniforms, collisionSDF, ownerPart, count);
+  buildParticleCores(particleSystem);
 
   // Splat material for painting this same particle stream onto the floor's
   // heat-accumulation buffer (see initFloorHeatSystem) — identical position
@@ -3663,7 +4283,7 @@ const VOL_MAX_AXIS = 160;           // per-axis cap
 const VOL_MAX_STEPS = 112;          // ray-march step cap per pixel
 const VOL_REBUILD_INTERVAL_MS = 90; // ~11 Hz CPU density rebuild; the ray march itself still runs every rendered frame
 const VOL_SAMPLE_STRIDE_MIN = 1;    // always visit every particle when the count is small
-const VOL_MAX_SAMPLES = 9000;       // hard cap on how many particles get splatted per rebuild, regardless of total count
+const VOL_MAX_SAMPLES = 60000;       // hard cap on how many particles get splatted per rebuild, regardless of total count
 
 let volEnabled = true;              // mirrors the #volumetricToggle checkbox (markup carries `checked`; default ON per user request)
 let volXray = true;                 // mirrors the #xrayToggle checkbox (default ON): gas inside containers/cavities reads through the walls
@@ -3914,6 +4534,18 @@ function allocVolumeForDomain(size) {
   if (volDensityTex) { volDensityTex.dispose(); volDensityTex = null; }
 }
 
+// CPU mirror of the shader's knot lookup in computeParticlePosition(): which waypoint segment particle p is on at path-progress
+// `progress`, and how far along it. Result in _bseg.
+const _bseg = { seg: 0, segT: 0 };
+function bakedSegment(cpu, p, progress) {
+  const MW = MAX_WAYPOINTS, kd = cpu.knotData, base = p * MW;
+  let seg = 0, kPrev = 0;
+  for (let i = 1; i < MW; i++) { const kN = kd[base + i]; if (progress >= kN && kN < 0.99999) { seg = i; kPrev = kN; } }
+  const kEnd = kd[base + Math.min(seg + 1, MW - 1)];
+  _bseg.seg = seg;
+  _bseg.segT = Math.max(0, Math.min(1, (progress - kPrev) / Math.max(kEnd - kPrev, 1e-5)));
+}
+
 // Rebuilds the CPU density+color volume from the current particle state —
 // the direct counterpart to ArcVolumetricFluidRenderer.bakeVolume(), but
 // splatting discrete particle positions into cells (accumulate-and-
@@ -3960,6 +4592,8 @@ function rebuildVolumetricDensity() {
 
   const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
   const liveHidden = cpu.liveArr;
+  const haveTubes = !!ensureTubeVolumes();
+  if (haveTubes) tubeVolDecay();
   const hueCache = new Map(); // part -> [r,g,b] contents hue (only consulted while X-ray is on)
   const hueFor = (part) => {
     let h = hueCache.get(part);
@@ -3969,10 +4603,9 @@ function rebuildVolumetricDensity() {
   for (let p = 0; p < count; p += stride) {
     if (liveHidden && liveHidden[p] > 0.5) continue; // taken over by the live leak system (rendered via the leak volume instead)
     const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
-    const segF = progress * (MW - 1);
-    const seg = Math.floor(segF);
+    bakedSegment(cpu, p, progress);
+    const seg = _bseg.seg, segT = _bseg.segT;
     if (plumeHidePostUniform.value > 0.5 && seg >= cpu.exitIdx[p]) continue; // past the nozzle: the live exhaust plume draws that
-    const segT = segF - seg;
     const segB = Math.min(seg + 1, MW - 1);
     const baseA = (p * MW + seg) * 3, baseB = (p * MW + segB) * 3;
     tmpA.set(waypointData[baseA], waypointData[baseA + 1], waypointData[baseA + 2]);
@@ -4026,6 +4659,8 @@ function rebuildVolumetricDensity() {
       if (hue) { cr += (hue[0] - cr) * 0.35; cg += (hue[1] - cg) * 0.35; cb += (hue[2] - cb) * 0.35; }
     }
 
+    if (haveTubes) tubeVolAccum(px, py, pz, cr, cg, cb, 1);
+
     // Trilinear (cloud-in-cell) accumulate: 8 surrounding voxels weighted by
     // proximity, so density is continuous across voxel borders (the old
     // nearest-cell splat made every voxel a visible hard block).
@@ -4057,6 +4692,8 @@ function rebuildVolumetricDensity() {
     }
   }
 
+  if (haveTubes) tubeVolUpload(stride);
+
   if (!volDensityTex) {
     volDensityTex = new THREE.DataTexture(volDensityData, volTexW, volTexH, THREE.RGBAFormat, THREE.FloatType);
     // NearestFilter for the same reason as every other FloatType DataTexture
@@ -4071,15 +4708,255 @@ function rebuildVolumetricDensity() {
   return true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  THIN-CHANNEL GAS (ray-march) + EMISSIVE PARTICLE CORES
+//
+//  The shared density grid covers the whole 37-unit stack in ~0.65-unit voxels, so a Ø0.2 pipe never registers in it (and its
+//  SDF mask used to kill what did). Each fitted tube therefore gets its own TUBE-ALIGNED volume: a 1-D density/colour profile
+//  along the bore (TUBE_BINS bins, filled each rebuild from the CPU-mirrored particle positions) is ray-marched analytically
+//  inside the bore capsules (ray/cylinder chords, a few samples per chord, radial falloff + wall rim light). Its resolution is
+//  a fraction of the bore, so the gas in a thin pipe is drawn crisply at any zoom, with no voxel blockiness.
+//
+//  Emissive cores: the same GPU particle stream (identical positions, SDF-corrected, full frame rate) is also drawn as tiny
+//  additive hot cores while the volumetric view is on, so dense gas glitters with "points of light" instead of a flat haze.
+// ═══════════════════════════════════════════════════════════════════════
+const TUBE_VERTEX_SHADER = `
+  varying vec3 vWorld;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+const TUBE_FRAGMENT_SHADER = `
+  precision highp float;
+  uniform sampler2D uTubeTex;
+  uniform sampler2D uTubeDens;
+  uniform float uTubeIdx, uFirstSeg, uSegCount, uLen;
+  uniform vec3 uBoxMin, uBoxMax;
+  uniform float uXray, uXrayGlow, uAbsorb;
+  varying vec3 vWorld;
+
+  vec4 densAt(float s) {
+    float f = clamp(s / max(uLen, 1e-4), 0.0, 1.0) * ${TUBE_BINS}.0 - 0.5;
+    float i0 = floor(f);
+    float t = f - i0;
+    float v = (uTubeIdx + 0.5) / ${TUBE_MAX}.0;
+    float u0 = (clamp(i0, 0.0, ${TUBE_BINS - 1}.0) + 0.5) / ${TUBE_BINS}.0;
+    float u1 = (clamp(i0 + 1.0, 0.0, ${TUBE_BINS - 1}.0) + 0.5) / ${TUBE_BINS}.0;
+    return mix(texture2D(uTubeDens, vec2(u0, v)), texture2D(uTubeDens, vec2(u1, v)), t);
+  }
+
+  void main() {
+    vec3 ro = cameraPosition;
+    vec3 rd = normalize(vWorld - ro);
+    vec3 invRd = 1.0 / max(abs(rd), vec3(1e-5)) * sign(rd + vec3(1e-9));
+    vec3 tA = (uBoxMin - ro) * invRd, tB = (uBoxMax - ro) * invRd;
+    vec3 tMn = min(tA, tB), tMx = max(tA, tB);
+    float tNear = max(max(tMn.x, tMn.y), max(tMn.z, 0.0));
+    float tFar = min(min(tMx.x, tMx.y), tMx.z);
+    if (tFar <= tNear) discard;
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float transmittance = 1.0;
+    vec3 acc = vec3(0.0);
+    for (int j = 0; j < ${TUBE_SEG_MAX}; j++) {
+      if (float(j) >= uSegCount) break;
+      float u = (uFirstSeg + float(j) + 0.5) / ${TUBE_TEX_W}.0;
+      vec4 A = texture2D(uTubeTex, vec2(u, 0.16667));
+      vec4 B = texture2D(uTubeTex, vec2(u, 0.5));
+      vec4 C = texture2D(uTubeTex, vec2(u, 0.83333));
+      vec3 ba = B.xyz - A.xyz;
+      float baba = dot(ba, ba);
+      vec3 oc = ro - A.xyz;
+      float R = 0.5 * (A.w + B.w);
+      float bard = dot(ba, rd), baoc = dot(ba, oc);
+      float k2 = baba - bard * bard;
+      float k1 = baba * dot(oc, rd) - baoc * bard;
+      float k0 = baba * dot(oc, oc) - baoc * baoc - R * R * baba;
+      float t0 = -1e9, t1 = 1e9;
+      if (k2 > 1e-6 * baba) {
+        float h = k1 * k1 - k2 * k0;
+        if (h < 0.0) continue;
+        h = sqrt(h);
+        t0 = (-k1 - h) / k2; t1 = (-k1 + h) / k2;
+      } else if (k0 > 0.0) continue;
+      if (abs(bard) > 1e-6 * sqrt(baba)) {
+        float ta = (0.0 - baoc) / bard, tb = (baba - baoc) / bard;
+        t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb));
+      } else if (baoc < 0.0 || baoc > baba) continue;
+      t0 = max(t0, tNear); t1 = min(t1, tFar);
+      if (t1 <= t0) continue;
+      float chord = t1 - t0;
+      float nF = clamp(ceil(chord / max(R * 0.4, 0.02)), 3.0, 24.0);
+      float dt = chord / nF;
+      for (int i = 0; i < 24; i++) {
+        if (float(i) >= nF) break;
+        float t = t0 + (float(i) + jit) * dt;
+        vec3 p = ro + rd * t;
+        float tt = clamp(dot(p - A.xyz, ba) / max(baba, 1e-10), 0.0, 1.0);
+        float rho = distance(p, A.xyz + ba * tt);
+        float rn = rho / max(R, 1e-4);
+        if (rn > 1.0) continue;
+        vec4 d4 = densAt(C.z + C.w * tt);
+        float dens = d4.r;
+        if (dens < 0.01) continue;
+        vec3 col = d4.gba;
+        float prof = 0.35 + 0.65 * smoothstep(1.0, 0.45, rn);        // thin soft falloff toward the bore wall
+        float absorb = 1.0 - exp(-dens * dt / max(R, 1e-3) * uAbsorb * prof);
+        vec3 emit = col;
+        if (uXray > 0.5) {
+          float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);
+          vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm);
+          vec3 lit = mix(col, tint, 0.3);
+          float depthIn = 1.0 - rn;
+          float glow = uXrayGlow * (0.7 + 0.5 * depthIn);
+          emit = lit * (1.0 + glow) + vec3(0.02, 0.05, 0.08) * glow;
+          float rim = exp(-pow((rn - 0.9) / 0.12, 2.0));
+          acc += transmittance * (1.0 - exp(-dens * 0.5)) * rim * tint * 0.5 * uXrayGlow;
+        }
+        acc += transmittance * absorb * emit * 1.35;
+        transmittance *= (1.0 - absorb);
+        if (transmittance < 0.02) break;
+      }
+      if (transmittance < 0.02) break;
+    }
+    float alpha = 1.0 - transmittance;
+    if (alpha < 0.003) discard;
+    vec3 rgb = acc / alpha;
+    rgb = 1.0 - exp(-rgb * 1.25);
+    gl_FragColor = vec4(rgb, alpha);
+  }
+`;
+
+let tubeVol = null; // { tubeSet, meshes[], densTex, densData, cnt[], col[], nominal[], stamp }
+function ensureTubeVolumes() {
+  const sdf = state.sdf;
+  if (!sdf || !sdf.tubes || !sdf.tubes.count) { if (tubeVol) for (const m of tubeVol.meshes) m.visible = false; return null; }
+  if (tubeVol && tubeVol.stamp === sdf) return tubeVol;
+  if (tubeVol) for (const m of tubeVol.meshes) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
+  const ts = sdf.tubes;
+  const densData = new Float32Array(TUBE_BINS * TUBE_MAX * 4);
+  const densTex = new THREE.DataTexture(densData, TUBE_BINS, TUBE_MAX, THREE.RGBAFormat, THREE.FloatType);
+  densTex.magFilter = THREE.NearestFilter; densTex.minFilter = THREE.NearestFilter;
+  densTex.wrapS = THREE.ClampToEdgeWrapping; densTex.wrapT = THREE.ClampToEdgeWrapping; densTex.needsUpdate = true;
+  const meshes = [];
+  ts.list.forEach((tube, q) => {
+    const pad = tube.rOutMax * 0.5 + 0.02;
+    const bmin = tube.aabb.min.clone().subScalar(pad), bmax = tube.aabb.max.clone().addScalar(pad);
+    const size = bmax.clone().sub(bmin), ctr = bmin.clone().add(bmax).multiplyScalar(0.5);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTubeTex: { value: ts.tex }, uTubeDens: { value: densTex }, uTubeIdx: { value: q }, uFirstSeg: { value: tube.firstSeg }, uSegCount: { value: tube.nSegs }, uLen: { value: tube.L },
+        uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.9 },
+      },
+      vertexShader: TUBE_VERTEX_SHADER, fragmentShader: TUBE_FRAGMENT_SHADER,
+      transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.BackSide,
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+    mesh.scale.copy(size); mesh.position.copy(ctr); mesh.frustumCulled = false; mesh.renderOrder = 10; mesh.visible = false;
+    mesh.updateMatrixWorld(true);
+    scene.add(mesh); meshes.push(mesh);
+  });
+  // nominal particles-per-bin if the bore were uniformly filled: sum over particles of the path-time fraction spent in the tube / bins
+  const cpu = state.particleCPU, nominal = ts.list.map(() => 1e-6);
+  if (cpu) {
+    for (let p = 0; p < cpu.count; p++) {
+      const meta = state.pathMeta && state.pathMeta.get(cpu.ownerPart[p]);
+      if (!meta) continue;
+      const chain = liveChainOf(cpu.ownerPart[p]);
+      ts.list.forEach((tube, q) => {
+        const k = chain.indexOf(tube.part);
+        if (k < 0 || meta.exitIdx[k] == null) return;
+        const kEnd = meta.knots[meta.exitIdx[k]], kStart = k > 0 && meta.exitIdx[k - 1] != null ? meta.knots[meta.exitIdx[k - 1]] : 0;
+        nominal[q] += Math.max(kEnd - kStart, 0) / TUBE_BINS;
+      });
+    }
+  }
+  tubeVol = { stamp: sdf, tubeSet: ts, meshes, densTex, densData, nominal,
+              cnt: ts.list.map(() => new Float32Array(TUBE_BINS)), col: ts.list.map(() => new Float32Array(TUBE_BINS * 3)) };
+  return tubeVol;
+}
+// per-rebuild: decay the bins (same temporal smoothing as the main grid), called before particles are accumulated
+function tubeVolDecay() {
+  if (!tubeVol) return;
+  for (let q = 0; q < tubeVol.cnt.length; q++) { const c = tubeVol.cnt[q], k = tubeVol.col[q]; for (let i = 0; i < TUBE_BINS; i++) { c[i] *= 0.55; k[3*i] *= 0.55; k[3*i+1] *= 0.55; k[3*i+2] *= 0.55; } }
+}
+const _tp = { sd: 0, gx: 0, gy: 0, gz: 0, rIn: 0, s: 0, rho: 0 };
+function tubeVolAccum(x, y, z, r, g, b, w) {
+  const ts = tubeVol.tubeSet;
+  for (let q = 0; q < ts.list.length; q++) {
+    const tube = ts.list[q], bb = tube.aabb;
+    if (x < bb.min.x || x > bb.max.x || y < bb.min.y || y > bb.max.y || z < bb.min.z || z > bb.max.z) continue;
+    if (!tubeProbeSegs(tube.segs, x, y, z, _tp)) continue;
+    if (_tp.rho > _tp.rIn * 1.15) continue; // in the wall zone, not the bore
+    const bi = Math.max(0, Math.min(TUBE_BINS - 1, Math.floor(_tp.s / tube.L * TUBE_BINS)));
+    tubeVol.cnt[q][bi] += w; tubeVol.col[q][3*bi] += r * w; tubeVol.col[q][3*bi+1] += g * w; tubeVol.col[q][3*bi+2] += b * w;
+    return;
+  }
+}
+function tubeVolUpload(stride) {
+  if (!tubeVol) return;
+  const D = tubeVol.densData;
+  for (let q = 0; q < tubeVol.cnt.length; q++) {
+    const c = tubeVol.cnt[q], k = tubeVol.col[q], nom = tubeVol.nominal[q] * 2.2; // the decayed sum holds ~1/(1-0.55) = 2.2 rebuilds of counts, so a uniformly filled bore reads ~1
+    for (let i = 0; i < TUBE_BINS; i++) {
+      const o = (q * TUBE_BINS + i) * 4, n = c[i];
+      // 3-bin smoothing of the count profile
+      const nn = (c[Math.max(0, i-1)] + 2 * n + c[Math.min(TUBE_BINS-1, i+1)]) * 0.25;
+      const d = Math.min(2.2, nn * stride / Math.max(nom, 1e-6));
+      D[o] = d;
+      if (n > 1e-6) { D[o+1] = k[3*i] / n; D[o+2] = k[3*i+1] / n; D[o+3] = k[3*i+2] / n; } else { D[o+1] = 0.3; D[o+2] = 0.7; D[o+3] = 1.0; }
+    }
+  }
+  tubeVol.densTex.needsUpdate = true;
+}
+function updateTubeVolumes(visible) {
+  const tv = ensureTubeVolumes();
+  if (!tv) return;
+  for (const m of tv.meshes) { m.visible = visible; m.material.uniforms.uXray.value = volXray ? 1 : 0; m.material.depthTest = !volXray; }
+}
+
+// Emissive cores: the point-sprite stream drawn a second time as tiny additive hot cores (smooth, GPU-positioned).
+let particleCoreSystem = null;
+function buildParticleCores(pointsObj) {
+  if (particleCoreSystem) { scene.remove(particleCoreSystem); particleCoreSystem.material.dispose(); particleCoreSystem = null; }
+  const base = pointsObj.material;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({}, base.uniforms, { uSize: { value: 0.55 } }),   // shares uTime/waypoints/SDF with the main stream, own size
+    vertexShader: PARTICLE_VERTEX_SHADER,
+    fragmentShader: THERMAL_RAMP_GLSL + `
+      varying float vThermal;
+      varying float vProgress;
+      void main() {
+        vec2 c = gl_PointCoord - vec2(0.5);
+        float d = length(c) * 2.0;
+        if (d > 1.0) discard;
+        float core = pow(1.0 - d, 2.2);
+        vec3 col = thermalRamp(vThermal);
+        vec3 hot = mix(col, vec3(1.0), 0.55) * (0.9 + 1.4 * core);
+        gl_FragColor = vec4(hot, core * 0.85);
+      }`,
+    transparent: true, depthWrite: false, depthTest: !volXray, blending: THREE.AdditiveBlending,
+  });
+  particleCoreSystem = new THREE.Points(pointsObj.geometry, mat);
+  particleCoreSystem.frustumCulled = false; particleCoreSystem.renderOrder = 11; particleCoreSystem.visible = false;
+  scene.add(particleCoreSystem);
+}
+function updateParticleCores(visible) {
+  if (!particleCoreSystem) return;
+  particleCoreSystem.visible = visible;
+  particleCoreSystem.material.depthTest = !volXray;
+}
+
 // Called once per rendered frame (from animateBase) while the volumetric
 // toggle is on and a simulation is running — cheap when there's nothing
 // new to do (density rebuild is throttled to VOL_REBUILD_INTERVAL_MS, the
 // mesh transform only needs recomputing when state.sdf actually changes).
 let volLastSDFRef = null;
 function updateVolumetricRender(nowMs) {
-  if (!volEnabled) { if (volMesh) volMesh.visible = false; return; }
+  if (!volEnabled) { if (volMesh) volMesh.visible = false; updateTubeVolumes(false); updateParticleCores(false); return; }
   const sdf = state.sdf;
-  if (!sdf || !state.particleCPU || !state.simRunning) { if (volMesh) volMesh.visible = false; return; }
+  if (!sdf || !state.particleCPU || !state.simRunning) { if (volMesh) volMesh.visible = false; updateTubeVolumes(false); updateParticleCores(false); return; }
 
   const mesh = ensureVolumetricMesh();
 
@@ -4120,6 +4997,8 @@ function updateVolumetricRender(nowMs) {
   }
 
   mesh.visible = true;
+  updateTubeVolumes(true);
+  updateParticleCores(true);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -4200,11 +5079,10 @@ const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
     if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 pos = computeParticlePosition();           // also sets vThermal / vProgress
     // path tangent + containment radius, re-read the cheap way (2 fetches)
-    float segF = vProgress * ${MAX_WAYPOINTS - 1}.0;
-    float seg = floor(segF), segT = fract(segF);
+    float seg = gSeg, segT = gSegT;
     vec4 a4 = sampleWaypoint(aRow, seg);
     vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
-    vec3 vel = (b4.xyz - a4.xyz) * (${MAX_WAYPOINTS - 1}.0 * aSpeed * 0.35);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
+    vec3 vel = (b4.xyz - a4.xyz) * (aSpeed * 0.35 / gSegSpan);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
     float rad = mix(a4.w, b4.w, segT);
     float press = aPress * (1.0 - 0.35 * vProgress);
     float sigma = clamp(rad * 0.25, uGsSize * 0.12, uGsSize * 3.0) * (0.8 + 0.55 * press);
@@ -4388,6 +5266,22 @@ function setRenderMode(mode) {
 renderModeEl.onchange = (e) => setRenderMode(e.target.value);
 volToggleEl.onchange = (e) => setRenderMode(e.target.checked ? 'volumetric' : 'points');
 // (initial sync with the checkbox runs at the end of setup, after `live` exists — see appReady)
+// Toggle wiring: flips volEnabled, hides/shows the point-sprite system so
+// the two renderers are mutually exclusive (never drawn double), and
+// leaves the underlying simulation (particleSystem's uTime-driven
+// computeParticlePosition, the SDF collision, the floor heat splat — all
+// untouched) running exactly as before either way, per the task's
+// "visual layer only" requirement.
+document.getElementById('flowUnitM').onchange = (e) => {
+  const v = parseFloat(e.target.value);
+  if (v > 0) { state.flowUnitM = v; if (state.sdf) { state.channelFlows = computeChannelFlows(); renderChannelFlowReport(); } }
+};
+document.getElementById('volumetricToggle').onchange = (e) => {
+  volEnabled = e.target.checked;
+  if (particleSystem) particleSystem.visible = !volEnabled;
+  if (!volEnabled && volMesh) volMesh.visible = false;
+  if (!volEnabled) { updateTubeVolumes(false); updateParticleCores(false); }
+};
 
 // X-ray toggle (default ON). Applies to the volumetric gas only: parts are
 // never made transparent. ON = depth test off + interior glow/hue shift so
@@ -4396,6 +5290,7 @@ volToggleEl.onchange = (e) => setRenderMode(e.target.checked ? 'volumetric' : 'p
 // whether or not Flow Selection Mode's own see-through part materials are
 // active (there the walls are already ~transparent; the glow still applies).
 function applyVolXray() {
+  updateTubeVolumes(volEnabled && state.simRunning); updateParticleCores(volEnabled && state.simRunning);
   if (volMesh) { volMesh.material.uniforms.uXray.value = volXray ? 1 : 0; volMesh.material.depthTest = !volXray; }
   if (gsMesh) { gsMesh.material.uniforms.uXray.value = volXray ? 1 : 0; gsMesh.material.depthTest = !volXray; }
   volLastBuildAt = -Infinity; // re-bake the splat colours (contents hue is only applied while X-ray is on)
@@ -4434,7 +5329,7 @@ document.getElementById('xrayToggle').onchange = (e) => { volXray = e.target.che
 //              (volumetric mode) whose domain reaches down to the floor and
 //              which skips the cavity-SDF wall mask (the plume is outside it).
 // ═══════════════════════════════════════════════════════════════════════
-const LIVE_MAX = 1600;               // hard cap on live particles (mobile budget)
+const LIVE_MAX = 8000;               // hard cap on live particles (mobile budget)
 const LEAK_RES = 48;                 // leak density volume voxels per axis
 const LIVE_WATCH_MS = 120, LIVE_SETTLE_MS = 250, LIVE_MAXWAIT_MS = 700;
 const LIVE_GRAD_K = 0.35, LIVE_DRAG_IN = 1.2, LIVE_VMAX = 22, LIVE_JET_K = 1.0;
@@ -4571,16 +5466,34 @@ function liveEvalLinks(movedSet) {
 function liveFillRoute(r, g, origin) {
   const chain = liveChainOf(origin);
   const k = chain.indexOf(g.part);
-  const n = 2 * k + 2;
-  if (!r.pts || r.pts.length !== n * 3) { r.pts = new Float32Array(n * 3); r.rem = new Float32Array(n); }
+  const meta = state.pathMeta && state.pathMeta.get(origin);
+  // Route nodes mirror the baked waypoints up to the leaking part's exit (so a pipe contributes its bore centerline stations,
+  // not just a centroid), each carried by that part's movement since the bake; the last node is the gap itself.
+  let n, wpOf = null;
+  if (meta && meta.exitIdx[k] != null) { n = meta.exitIdx[k] + 1; wpOf = meta.partOfWp; }
+  else n = 2 * k + 2;
+  if (!r.pts || r.pts.length !== n * 3) { r.pts = new Float32Array(n * 3); r.rem = new Float32Array(n); r.thr = new Float32Array(n); }
   r.last = n - 1;
-  for (let i = 0; i <= k; i++) {
-    const c = partCentroid(chain[i]);
-    r.pts[6 * i] = c.x; r.pts[6 * i + 1] = c.y; r.pts[6 * i + 2] = c.z;
-    let ex = null;
-    if (i === k) ex = g.gap;
-    else { const o = liveExitOpening(chain[i]); ex = o ? o.centroid : state.currentLinks.get(chain[i]).viaOpening.centroid; }
-    r.pts[6 * i + 3] = ex.x; r.pts[6 * i + 4] = ex.y; r.pts[6 * i + 5] = ex.z;
+  if (wpOf) {
+    const deltas = chain.slice(0, k + 1).map(p => liveDelta(p).elements);
+    for (let w = 0; w < n; w++) {
+      const ci = Math.min(wpOf[w], k), e = deltas[ci];
+      const x = meta.pts[3*w], y = meta.pts[3*w+1], z = meta.pts[3*w+2];
+      r.pts[3*w] = e[0]*x + e[4]*y + e[8]*z + e[12]; r.pts[3*w+1] = e[1]*x + e[5]*y + e[9]*z + e[13]; r.pts[3*w+2] = e[2]*x + e[6]*y + e[10]*z + e[14];
+      const tb = state.sdf && state.sdf.tubes && state.sdf.tubes.byPart.get(chain[ci]);
+      r.thr[w] = tb ? Math.max(0.15, 2.5 * meta.flowR[w]) : 0.8; // narrow bore: advance to the next station only when actually near it
+    }
+    r.pts[3*(n-1)] = g.gap.x; r.pts[3*(n-1)+1] = g.gap.y; r.pts[3*(n-1)+2] = g.gap.z;
+  } else {
+    for (let i = 0; i <= k; i++) {
+      const c = partCentroid(chain[i]);
+      r.pts[6 * i] = c.x; r.pts[6 * i + 1] = c.y; r.pts[6 * i + 2] = c.z;
+      let ex = null;
+      if (i === k) ex = g.gap;
+      else { const o = liveExitOpening(chain[i]); ex = o ? o.centroid : state.currentLinks.get(chain[i]).viaOpening.centroid; }
+      r.pts[6 * i + 3] = ex.x; r.pts[6 * i + 4] = ex.y; r.pts[6 * i + 5] = ex.z;
+    }
+    r.thr.fill(0.8);
   }
   r.rem[n - 1] = 0;
   for (let j = n - 2; j >= 0; j--) {
@@ -4593,7 +5506,7 @@ function liveRouteFor(g, origin) {
   return r;
 }
 function liveRefreshGroup(g, v) {
-  g.gap.copy(v.gap); g.gapDist = v.gapDist;
+  g.gap.copy(v.gap); g.gapDist = v.gapDist; g.holeR = v.radius;
   const c = partCentroid(g.part);
   g.dir.copy(g.gap).sub(c);
   if (g.dir.lengthSq() < 1e-8) g.dir.set(0, -1, 0); else g.dir.normalize();
@@ -4608,7 +5521,8 @@ function liveBakedState(p, uTime) {
   const cpu = state.particleCPU, MW = MAX_WAYPOINTS;
   const { waypointData, radiusData, phase, speed, latU, latV } = cpu;
   const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1;
-  const segF = progress * (MW - 1), seg = Math.floor(segF), segT = segF - seg;
+  bakedSegment(cpu, p, progress);
+  const seg = _bseg.seg, segT = _bseg.segT;
   const segB = Math.min(seg + 1, MW - 1);
   const a = (p * MW + seg) * 3, b = (p * MW + segB) * 3;
   const ax = waypointData[a], ay = waypointData[a + 1], az = waypointData[a + 2];
@@ -4648,7 +5562,9 @@ function liveConvert(newGroups) {
     cpu.affGroup[p] = g.id;
     originsOf.get(g.id).add(owner);
     liveBakedState(p, uTime);
-    if (_bp.seg <= 2 * gk) { cpu.liveArr[p] = 1; ups.get(g.id).push(p); }
+    const metaO = state.pathMeta && state.pathMeta.get(owner);
+    const gapWp = metaO && metaO.exitIdx[gk] != null ? metaO.exitIdx[gk] : 2 * gk + 1; // waypoint index of the leaking part's exit
+    if (_bp.seg <= gapWp - 1) { cpu.liveArr[p] = 1; ups.get(g.id).push(p); }
     else if (live.pendN < cpu.count) {
       // already past the gap when it broke: finishes its lap, hidden when it wraps back to the (now leaking) start
       live.pendIdx[live.pendN] = p;
@@ -4672,7 +5588,9 @@ function liveConvert(newGroups) {
       const p = list[j], owner = cpu.ownerPart[p];
       const chain = liveChainOf(owner), gk = chain.indexOf(g.part);
       liveBakedState(p, uTime);
-      const ci = Math.min(Math.floor((_bp.seg + 1) / 2), gk);
+      const metaO = state.pathMeta && state.pathMeta.get(owner);
+      const gapWp = metaO && metaO.exitIdx[gk] != null ? metaO.exitIdx[gk] : 2 * gk + 1;
+      const ci = Math.min(metaO ? metaO.partOfWp[Math.min(_bp.seg + 1, metaO.nReal - 1)] : Math.floor((_bp.seg + 1) / 2), gk);
       const delta = liveDelta(chain[ci]); // the owning part may have been dragged since the bake
       const e = delta.elements, x = _bp.x, y = _bp.y, z = _bp.z;
       const i = live.n++;
@@ -4680,7 +5598,7 @@ function liveConvert(newGroups) {
       live.py[i] = e[1] * x + e[5] * y + e[9] * z + e[13];
       live.pz[i] = e[2] * x + e[6] * y + e[10] * z + e[14];
       live.vx[i] = live.vy[i] = live.vz[i] = 0;
-      live.st[i] = 1; live.grp[i] = g.id; live.rt[i] = Math.min(_bp.seg + 1, 2 * gk + 1);
+      live.st[i] = 1; live.grp[i] = g.id; live.rt[i] = Math.min(_bp.seg + 1, gapWp);
       live.age[i] = 0; live.life[i] = 3.5 + Math.random() * 3.0; live.heat[i] = cpu.thermalSeed[p];
       live.rref[i] = liveRouteFor(g, owner);
       made++;
@@ -4787,6 +5705,7 @@ async function liveUpdate() {
         if (part.type) refreshPartOpenings(part);
       }
       state.root.updateMatrixWorld(true);
+      liveRefreshTubes();
       liveApplyVerdict(liveEvalLinks(moved));
       renderJointReport();
       live.updates++;
@@ -4822,6 +5741,24 @@ function liveWatchTick(now) {
   }
 }
 
+// ── fitted thin channels, carried with their parts' current transforms ──
+const _ltp = { sd: 0, gx: 0, gy: 1, gz: 0, rIn: 0, s: 0, rho: 0 };
+function liveRefreshTubes() {
+  const ts = state.sdf && state.sdf.tubes;
+  live.tubes = [];
+  if (!ts || !ts.count) return;
+  for (const tube of ts.list) {
+    const d = liveDelta(tube.part);
+    live.tubes.push({ part: tube.part, segs: tube.segs.map(sg => ({ a: sg.a.clone().applyMatrix4(d), b: sg.b.clone().applyMatrix4(d), rA: sg.rA, rB: sg.rB, oA: sg.oA, oB: sg.oB, s0: sg.s0, len: sg.len })) });
+  }
+}
+function liveTubeProbe(x, y, z) {
+  const T = live.tubes;
+  if (!T) return false;
+  for (let i = 0; i < T.length; i++) if (tubeProbeSegs(T[i].segs, x, y, z, _ltp)) return true;
+  return false;
+}
+
 // ── dynamics ──────────────────────────────────────────────────────────
 function liveSdfAt(x, y, z) {
   const S = live.sdf, res = S.res, d = S.data, m = res - 1;
@@ -4843,6 +5780,13 @@ function liveStep(h, pamb) {
   for (const g of L.groups.values()) {
     const frac = g.nTotal ? g.nInside / g.nTotal : 0;
     g.dp = Math.max(g.P0 * frac - pamb, LIVE_DP_MIN);
+    if (!g.jetDp || Math.abs(g.dp - g.jetDp) > 0.015 * g.jetDp || g.jetAmb !== pamb || g.jetHole !== g.holeR) {
+      // jet speed from dP, the ACTUAL outlet diameter and the upstream channel (fitted bore, length, friction), not a constant
+      const src = upstreamFluidOf(g.part), tube = state.sdf && state.sdf.tubes ? state.sdf.tubes.byPart.get(g.part) : null;
+      const jr = leakJet(fluidProps(src), g.dp, pamb, 2 * (g.holeR || 0.15), tube);
+      g.vJet = jr.vExit; g.mdot = jr.mdot; g.jetChoked = jr.choked; g.vVis = jetVisualSpeed(jr.vExit);
+      g.jetDp = g.dp; g.jetAmb = pamb; g.jetHole = g.holeR;
+    }
   }
   for (let i = 0; i < L.n; i++) {
     const s = L.st[i];
@@ -4855,7 +5799,7 @@ function liveStep(h, pamb) {
       let t = L.rt[i];
       let dx = pts[3 * t] - x, dy = pts[3 * t + 1] - y, dz = pts[3 * t + 2] - z;
       let d = Math.hypot(dx, dy, dz);
-      if (t < r.last && d < 0.8) { t++; L.rt[i] = t; dx = pts[3 * t] - x; dy = pts[3 * t + 1] - y; dz = pts[3 * t + 2] - z; d = Math.hypot(dx, dy, dz); }
+      if (t < r.last && d < (r.thr ? r.thr[t] : 0.8)) { t++; L.rt[i] = t; dx = pts[3 * t] - x; dy = pts[3 * t + 1] - y; dz = pts[3 * t + 2] - z; d = Math.hypot(dx, dy, dz); }
       const a = LIVE_GRAD_K * g.dp / (d + r.rem[t] + 2.0);  // pressure gradient: dP over the remaining path
       const inv = d > 1e-4 ? 1 / d : 0;
       vx += (dx * inv * a - LIVE_DRAG_IN * vx) * h; vy += (dy * inv * a - LIVE_DRAG_IN * vy) * h; vz += (dz * inv * a - LIVE_DRAG_IN * vz) * h;
@@ -4865,25 +5809,36 @@ function liveStep(h, pamb) {
       const gx = x - g.gap.x, gy = y - g.gap.y, gz = z - g.gap.z;
       const gd2 = gx * gx + gy * gy + gz * gz;
       const mouth = g.ap * 2.2;
-      if (S && gd2 > mouth * mouth) {
-        const sd = liveSdfAt(x, y, z);
-        if (sd > -LIVE_SKIN) {            // through/at a wall: push back along the SDF gradient, kill the outward velocity
-          const e = S.size.x / S.res;
-          let nx = liveSdfAt(x + e, y, z) - liveSdfAt(x - e, y, z), ny = liveSdfAt(x, y + e, z) - liveSdfAt(x, y - e, z), nz = liveSdfAt(x, y, z + e) - liveSdfAt(x, y, z - e);
-          const nl = Math.hypot(nx, ny, nz);
-          if (nl > 1e-6) {
-            nx /= nl; ny /= nl; nz /= nl;
-            const push = sd + LIVE_SKIN;
+      if (gd2 > mouth * mouth) {
+        // A fitted thin channel is an exact analytic bore (the 26^3 grid below is far too coarse for it); elsewhere the grid.
+        if (liveTubeProbe(x, y, z)) {
+          const skin = Math.min(LIVE_SKIN, _ltp.rIn * 0.2);
+          if (_ltp.sd > -skin) {
+            const push = _ltp.sd + skin, nx = _ltp.gx, ny = _ltp.gy, nz = _ltp.gz;
             x -= nx * push; y -= ny * push; z -= nz * push;
             const vn = vx * nx + vy * ny + vz * nz;
             if (vn > 0) { vx -= nx * vn * 1.3; vy -= ny * vn * 1.3; vz -= nz * vn * 1.3; }
+          }
+        } else if (S) {
+          const sd = liveSdfAt(x, y, z);
+          if (sd > -LIVE_SKIN) {            // through/at a wall: push back along the SDF gradient, kill the outward velocity
+            const e = S.size.x / S.res;
+            let nx = liveSdfAt(x + e, y, z) - liveSdfAt(x - e, y, z), ny = liveSdfAt(x, y + e, z) - liveSdfAt(x, y - e, z), nz = liveSdfAt(x, y, z + e) - liveSdfAt(x, y, z - e);
+            const nl = Math.hypot(nx, ny, nz);
+            if (nl > 1e-6) {
+              nx /= nl; ny /= nl; nz /= nl;
+              const push = sd + LIVE_SKIN;
+              x -= nx * push; y -= ny * push; z -= nz * push;
+              const vn = vx * nx + vy * ny + vz * nz;
+              if (vn > 0) { vx -= nx * vn * 1.3; vy -= ny * vn * 1.3; vz -= nz * vn * 1.3; }
+            }
           }
         }
       }
       // through the mouth -> vent
       const through = t >= r.last && (gx * g.dir.x + gy * g.dir.y + gz * g.dir.z) > 0;
       if (through || gd2 < (g.ap * 0.8) * (g.ap * 0.8)) {
-        const vj = Math.min(LIVE_JET_K * Math.sqrt(g.dp), LIVE_VMAX);
+        const vj = Math.min(g.vVis || LIVE_JET_K * Math.sqrt(g.dp), LIVE_VMAX); // physical jet (dP, actual hole diameter, upstream channel) -> visual speed
         const cs = 0.35; // cone half-angle (rad-ish) of the jet
         const jx = g.dir.x + (Math.random() - 0.5) * cs * 2, jy = g.dir.y + (Math.random() - 0.5) * cs * 2, jz = g.dir.z + (Math.random() - 0.5) * cs * 2;
         const jl = Math.hypot(jx, jy, jz) || 1;
@@ -6315,6 +7270,44 @@ async function presetLoadFile(file) {
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset };
+// Test/debug hook: renders every baked particle's CURRENT position (exactly what the vertex shader computes, including the SDF
+// push-back) into a float target and reads it back. Used to verify bore containment / transit; not part of the UI.
+function debugReadParticlePositions(tOverride) {
+  if (!particleSystem || !state.particleCPU) return null;
+  const uT = particleSystem.material.uniforms.uTime, uTSave = uT.value;
+  if (tOverride != null) uT.value = tOverride;
+  const n = state.particleCPU.count, W = 128, H = Math.max(1, Math.ceil(n / W));
+  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false });
+  const mat = new THREE.ShaderMaterial({
+    uniforms: particleSystem.material.uniforms,
+    vertexShader: PARTICLE_SHADER_CORE + `
+      varying vec3 vOut;
+      void main() {
+        if (aLive > 0.5) vOut = vec3(-9999.0); else vOut = computeParticlePosition();
+        gl_Position = vec4((mod(aRow, ${W}.0) + 0.5) / ${W}.0 * 2.0 - 1.0, (floor(aRow / ${W}.0) + 0.5) / ${H}.0 * 2.0 - 1.0, 0.0, 1.0);
+        gl_PointSize = 1.0;
+      }`,
+    fragmentShader: `varying vec3 vOut; void main() { gl_FragColor = vec4(vOut, 1.0); }`,
+    depthTest: false, depthWrite: false, transparent: false, blending: THREE.NoBlending,
+  });
+  const pts = new THREE.Points(particleSystem.geometry, mat); pts.frustumCulled = false;
+  const sc = new THREE.Scene(); sc.add(pts);
+  const prevRT = renderer.getRenderTarget(), prevClear = new THREE.Color(); renderer.getClearColor(prevClear); const prevA = renderer.getClearAlpha();
+  renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
+  renderer.render(sc, new THREE.Camera());
+  const buf = new Float32Array(W * H * 4);
+  renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+  renderer.setRenderTarget(prevRT); renderer.setClearColor(prevClear, prevA);
+  rt.dispose(); mat.dispose();
+  uT.value = uTSave;
+  const out = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { out[3*i] = buf[4*i]; out[3*i+1] = buf[4*i+1]; out[3*i+2] = buf[4*i+2]; }
+  return { pos: out, count: n, uTime: particleSystem.material.uniforms.uTime.value };
+}
+window.arcFlowDebug = { readParticles: debugReadParticlePositions };
+
+// Expose for debugging / follow-on iteration
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, fitTubeForPart, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
