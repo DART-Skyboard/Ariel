@@ -353,7 +353,7 @@ controls.target.set(0, 10, 0);
 // part owns as one rigid unit — including any openings already marked on
 // it, which stay correct automatically (see refreshPartOpenings above).
 const transformControls = new TransformControls(camera, renderer.domElement);
-transformControls.addEventListener('dragging-changed', (ev) => { controls.enabled = !ev.value; });
+transformControls.addEventListener('dragging-changed', (ev) => { controls.enabled = !ev.value; if (!ev.value && typeof liveKick === 'function') liveKick(); });
 transformControls.addEventListener('objectChange', () => {
   const part = state.selectedPart;
   if (part) {
@@ -549,6 +549,7 @@ function animateBase() {
     // every frame like the rest of this loop, but it internally throttles
     // its own expensive work (CPU density rebuild) to VOL_REBUILD_INTERVAL_MS.
     if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
+    if (typeof liveLeakFrame === 'function') liveLeakFrame(performance.now());
   }
   renderer.render(scene, camera);
 }
@@ -1908,6 +1909,12 @@ function renderJointReport() {
   const links = state.currentLinks || new Map();
   const rows = [];
   for (const [part, link] of links.entries()) {
+    const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
+    if (lk) {
+      // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
+      rows.push(`<div class="seal-bad">✗ ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}</span></div>`);
+      continue;
+    }
     rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${link.auto ? 'auto, from mesh overlap' : 'marked openings'})</span></div>`);
   }
   for (const r of (state.autoPenetrationRejected || [])) {
@@ -2758,6 +2765,7 @@ const PARTICLE_SHADER_CORE = `
   attribute float aThermal;
   attribute float aLatU;
   attribute float aLatV;
+  attribute float aLive;   // 1 = this baked particle has been taken over by the live pressure-driven leak system (hidden here)
   varying float vThermal;
   varying float vProgress;
 
@@ -3025,6 +3033,7 @@ const PARTICLE_SHADER_CORE = `
 const PARTICLE_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSize;
   void main() {
+    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vec4 mv = modelViewMatrix * vec4(pos, 1.0);
     gl_Position = projectionMatrix * mv;
@@ -3041,6 +3050,7 @@ const PARTICLE_SPLAT_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSplatSize;
   varying float vHeightAboveFloor;
   void main() {
+    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vHeightAboveFloor = pos.y; // floor is always at world y = 0 in this tool
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -3071,6 +3081,7 @@ async function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
   state.particleCPU = null; // stale until rebuilt below — volumetric renderer checks for this
+  liveReset(); // drop any live leak state from a previous bake
 
   const links = buildFlowGraph();
   state.currentLinks = links; // kept for the per-frame thermal tint update
@@ -3094,6 +3105,7 @@ async function buildParticleSystem() {
   const waypointData = []; // MAX_WAYPOINTS * 3 floats per particle (xyz)
   const radiusData = [];   // MAX_WAYPOINTS floats per particle (containment radius at that waypoint)
   const fineIdxData = [];  // MAX_WAYPOINTS floats per particle (which fine SDF region, or -1, covers that waypoint)
+  const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
   const phase = [];
   const speed = [];
   const thermalSeed = [];
@@ -3107,6 +3119,7 @@ async function buildParticleSystem() {
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
       for (const r of path.radii) radiusData.push(r);
       for (const fi of path.fineIdx) fineIdxData.push(fi);
+      ownerPart.push(part);
       phase.push(Math.random());
       speed.push(0.15 + Math.random() * 0.25);
       thermalSeed.push(part.contents === 'oxidizer' ? 0.15 : part.contents === 'fuel' ? 0.55 : 0.85);
@@ -3143,8 +3156,11 @@ async function buildParticleSystem() {
   // decoding the tiled packing back out) since they're the same arrays
   // already built above.
   state.particleCPU = {
-    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV,
+    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart,
+    liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
+    affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
   };
+  liveSnapshotBaked(); // remember each part's pivot transform at bake time (live leaks measure movement against it)
 
   // Pack waypoints into a DataTexture: width = MAX_WAYPOINTS, height = count,
   // RGB = xyz position, A = containment radius at that waypoint. This radius
@@ -3258,6 +3274,10 @@ async function buildParticleSystem() {
   geo.setAttribute('aThermal', new THREE.InstancedBufferAttribute(new Float32Array(thermalSeed), 1));
   geo.setAttribute('aLatU', new THREE.InstancedBufferAttribute(new Float32Array(latU), 1));
   geo.setAttribute('aLatV', new THREE.InstancedBufferAttribute(new Float32Array(latV), 1));
+  const liveAttr = new THREE.InstancedBufferAttribute(state.particleCPU.liveArr, 1);
+  liveAttr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('aLive', liveAttr);
+  state.particleCPU.liveAttr = liveAttr;
   geo.instanceCount = count;
 
   const mat = new THREE.ShaderMaterial({
@@ -3526,7 +3546,11 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
       vec3 vol01 = pWorld; // the box IS scaled to uVolSize and positioned at uVolMin+uVolSize*0.5, so this local [0,1] cube already maps onto the density grid 1:1
 
       vec3 worldPos = uVolMin + vol01 * uVolSize;
+#ifdef VOL_NO_WALL
+      float wallSD = -1.0; // live-leak volume: particles do their own CPU wall collision, and the plume lives OUTSIDE the cavity SDF
+#else
       float wallSD = sampleCoarseSDF(worldPos);
+#endif
       // wallSD > 0 means outside the fluid-legal interior (see this file's
       // sign convention comment on signedDistanceToMesh) — i.e. inside/
       // past a real wall from the ray march's point of view. Skip the
@@ -3636,7 +3660,9 @@ function rebuildVolumetricDensity() {
   const stride = Math.max(VOL_SAMPLE_STRIDE_MIN, Math.ceil(count / VOL_MAX_SAMPLES));
 
   const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+  const liveHidden = cpu.liveArr;
   for (let p = 0; p < count; p += stride) {
+    if (liveHidden && liveHidden[p] > 0.5) continue; // taken over by the live leak system (rendered via the leak volume instead)
     const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
     const segF = progress * (MW - 1);
     const seg = Math.floor(segF);
@@ -3801,6 +3827,693 @@ document.getElementById('volumetricToggle').onchange = (e) => {
   if (!volEnabled && volMesh) volMesh.visible = false;
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+//  LIVE PRESSURE-DRIVEN LEAKS
+//
+//  The baked flow (buildParticlePath waypoints, evaluated on the GPU) is a
+//  pre-authored emission: it assumes every joint stays sealed. This module
+//  makes the fluid a live collision body when that assumption breaks.
+//
+//   1. WATCH   liveWatchTick() polls each classified part's pivot matrix while
+//              the sim runs (also kicked when a gizmo drag ends), debounced.
+//   2. DETECT  liveUpdate() refreshes the moved parts' openings + triangle
+//              caches and re-tests every BAKED link: marked-opening links by
+//              exit/entrance gap vs the same tolerance runSealCheck uses;
+//              auto (mesh-overlap) links by re-running detectPenetrationJoint.
+//   3. SWITCH  every baked particle upstream of a newly broken link is hidden
+//              (aLive attribute) and re-created as a CPU "live" particle at
+//              its current position. Particles already downstream finish
+//              their lap and are hidden when they next wrap. Restoring the
+//              seal releases the group and the baked flow resumes as before.
+//   4. DRIVE   live particles accelerate along their (live) route toward the
+//              gap with a = K * dP / (remaining path + L0): a pressure
+//              gradient, so a shorter path escapes faster. dP = P0*fraction
+//              remaining - ambient, so the rush decays as mass leaves. Walls
+//              are enforced against a CPU SDF rebuilt from the moved geometry
+//              (switched off inside the gap mouth). Past the mouth the gas
+//              takes a jet velocity ~ sqrt(dP), then gravity + drag (drag
+//              scales with ambient pressure) + growing turbulence disperse it
+//              and it fades out.
+//   5. RENDER  ONE state drives both views: a Points sprite layer (point mode)
+//              and a trilinear density splat into a second ray-march volume
+//              (volumetric mode) whose domain reaches down to the floor and
+//              which skips the cavity-SDF wall mask (the plume is outside it).
+// ═══════════════════════════════════════════════════════════════════════
+const LIVE_MAX = 1600;               // hard cap on live particles (mobile budget)
+const LEAK_RES = 48;                 // leak density volume voxels per axis
+const LIVE_WATCH_MS = 120, LIVE_SETTLE_MS = 250, LIVE_MAXWAIT_MS = 700;
+const LIVE_GRAD_K = 0.35, LIVE_DRAG_IN = 1.2, LIVE_VMAX = 22, LIVE_JET_K = 1.0;
+const LIVE_G = 9.81, LIVE_DP_MIN = 2.0, LIVE_SKIN = 0.06, LIVE_SDF_RES = 26;
+
+const live = {
+  n: 0,
+  px: new Float32Array(LIVE_MAX), py: new Float32Array(LIVE_MAX), pz: new Float32Array(LIVE_MAX),
+  vx: new Float32Array(LIVE_MAX), vy: new Float32Array(LIVE_MAX), vz: new Float32Array(LIVE_MAX),
+  st: new Uint8Array(LIVE_MAX),      // 0 free, 1 inside (driven to the gap), 2 vented (free flight), 3 dead
+  grp: new Int16Array(LIVE_MAX), rt: new Uint8Array(LIVE_MAX),
+  age: new Float32Array(LIVE_MAX), life: new Float32Array(LIVE_MAX), heat: new Float32Array(LIVE_MAX),
+  rref: new Array(LIVE_MAX).fill(null),
+  groups: new Map(), byId: new Map(), nextId: 0,
+  sdf: null,
+  bakedM: new Map(), snap: new Map(), chainCache: new Map(),
+  moved: new Set(), firstChangeAt: 0, lastChangeAt: 0, lastWatch: 0,
+  busy: false, pending: false, autoOk: new Map(),
+  pendIdx: null, pendT: null, pendN: 0,
+  points: null, pointAlpha: null, pointSize: null, pointHeat: null,
+  leakMesh: null, leakTex: null, leakData: null, leakTpr: 1, leakTexRes: LEAK_RES, leakDomainRef: null,
+  lastStepAt: 0, lastVolAt: 0, lastPendAt: 0, lastReportAt: 0, atmo: 1, updates: 0, lastUpdateMs: 0,
+};
+const _liveRgb = [0, 0, 0];
+function liveRamp(t) {
+  t = Math.max(0, Math.min(1, t));
+  if (t < 0.33) { const k = t / 0.33; _liveRgb[0] = 0.2 - 0.2 * k; _liveRgb[1] = 0.55 + 0.35 * k; _liveRgb[2] = 1.0 - 0.15 * k; }
+  else if (t < 0.66) { const k = (t - 0.33) / 0.33; _liveRgb[0] = k; _liveRgb[1] = 0.9 - 0.35 * k; _liveRgb[2] = 0.85 - 0.7 * k; }
+  else { const k = (t - 0.66) / 0.34; _liveRgb[0] = 1.0; _liveRgb[1] = 0.55 + 0.4 * k; _liveRgb[2] = 0.15 + 0.7 * k; }
+}
+
+function liveGroupFor(part) { return live.groups.get(part) || null; }
+
+function liveSnapshotBaked() {
+  live.bakedM.clear(); live.snap.clear(); live.chainCache.clear(); live.autoOk.clear();
+  state.root.updateMatrixWorld(true);
+  for (const part of state.parts) {
+    live.bakedM.set(part, part.pivot.matrixWorld.clone());
+    live.snap.set(part, Float32Array.from(part.pivot.matrixWorld.elements));
+  }
+}
+function liveWatchStart() {
+  state.root.updateMatrixWorld(true);
+  for (const part of state.parts) live.snap.set(part, Float32Array.from(part.pivot.matrixWorld.elements));
+  live.moved.clear(); live.firstChangeAt = 0; live.lastWatch = 0;
+}
+function liveKick() { live.lastChangeAt = -1e9; }
+
+function liveReset() {
+  const cpu = state.particleCPU;
+  if (cpu && cpu.liveArr) { cpu.liveArr.fill(0); cpu.affGroup.fill(-1); if (cpu.liveAttr) cpu.liveAttr.needsUpdate = true; }
+  live.groups.clear(); live.byId.clear(); live.n = 0; live.st.fill(0); live.pendN = 0;
+  live.sdf = null; live.moved.clear(); live.firstChangeAt = 0; live.autoOk.clear();
+  for (let i = 0; i < LIVE_MAX; i++) live.rref[i] = null;
+  if (live.points) live.points.visible = false;
+  if (live.leakMesh) live.leakMesh.visible = false;
+  if (live.leakData) live.leakData.fill(0);
+}
+
+// The parts a baked particle of `part` passes through, in order — mirrors the
+// loop in buildParticlePath (a link per exiting part, stop at the chamber).
+function liveChainOf(part) {
+  let c = live.chainCache.get(part);
+  if (c) return c;
+  c = [part];
+  const links = state.currentLinks;
+  let cur = part;
+  while (links && c.length < 5 && cur.type !== 'chamber') {
+    const l = links.get(cur);
+    if (!l) break;
+    cur = l.target; c.push(cur);
+  }
+  live.chainCache.set(part, c);
+  return c;
+}
+
+function liveBoxGap(a, b) {
+  const dx = Math.max(0, a.min.x - b.max.x, b.min.x - a.max.x);
+  const dy = Math.max(0, a.min.y - b.max.y, b.min.y - a.max.y);
+  const dz = Math.max(0, a.min.z - b.max.z, b.min.z - a.max.z);
+  return Math.hypot(dx, dy, dz);
+}
+function liveDelta(part) {
+  const b = live.bakedM.get(part);
+  return b ? new THREE.Matrix4().multiplyMatrices(part.pivot.matrixWorld, b.clone().invert()) : new THREE.Matrix4();
+}
+function liveExitOpening(part) { return part.openings.find(o => o.role === 'exit') || null; }
+
+// Re-test every BAKED link against the parts' current transforms.
+// Returns Map(exitingPart -> { gap: Vector3, gapDist, radius }) for broken ones.
+function liveEvalLinks(movedSet) {
+  const out = new Map();
+  const links = state.currentLinks;
+  if (!links) return out;
+  for (const [part, link] of links) {
+    const target = link.target;
+    let ok = true, gapDist = 0, radius = link.viaOpening.radius;
+    let gap = null;
+    if (link.auto) {
+      // Mesh-overlap joint: only re-run the (expensive) overlap test when one of its two parts actually moved.
+      let verdict = live.autoOk.get(part);
+      if (verdict === undefined || movedSet.has(part) || movedSet.has(target)) {
+        const r = detectPenetrationJoint(part, target);
+        verdict = !!(r && r.sealed);
+        live.autoOk.set(part, verdict);
+      }
+      ok = verdict;
+      if (!ok) {
+        gap = link.viaOpening.centroid.clone().applyMatrix4(liveDelta(part));
+        gapDist = liveBoxGap(partWorldAABB(part), partWorldAABB(target));
+      }
+    } else {
+      const ex = part.openings.find(o => o.role === 'exit' && (!link.viaOpening.id || o.id === link.viaOpening.id)) || liveExitOpening(part);
+      // Nearest entrance on the target, exactly like runSealCheck (buildFlowGraph links to the target's
+      // FIRST entrance, which on a multi-feed chamber isn't necessarily the one this exit actually mates with).
+      let en = null, bd = Infinity;
+      if (ex) for (const o of target.openings) if (o.role === 'entrance') { const d = o.centroid.distanceTo(ex.centroid); if (d < bd) { bd = d; en = o; } }
+      if (ex && en) {
+        gapDist = ex.centroid.distanceTo(en.centroid);
+        const tol = Math.max(ex.radius, en.radius) * 0.4 + 0.03;
+        const forced = state.forcedSeals && state.forcedSeals.has(part.name + '|' + target.name);
+        ok = gapDist <= tol || !!forced;
+        if (!ok) { gap = ex.centroid.clone(); radius = ex.radius; }
+      }
+    }
+    if (!ok) out.set(part, { gap, gapDist, radius });
+  }
+  return out;
+}
+
+// Live route for a particle of `origin` toward group g's gap:
+// [centroid P0, exit P0, centroid P1, exit P1, ..., centroid Pk, gap].
+function liveFillRoute(r, g, origin) {
+  const chain = liveChainOf(origin);
+  const k = chain.indexOf(g.part);
+  const n = 2 * k + 2;
+  if (!r.pts || r.pts.length !== n * 3) { r.pts = new Float32Array(n * 3); r.rem = new Float32Array(n); }
+  r.last = n - 1;
+  for (let i = 0; i <= k; i++) {
+    const c = partCentroid(chain[i]);
+    r.pts[6 * i] = c.x; r.pts[6 * i + 1] = c.y; r.pts[6 * i + 2] = c.z;
+    let ex = null;
+    if (i === k) ex = g.gap;
+    else { const o = liveExitOpening(chain[i]); ex = o ? o.centroid : state.currentLinks.get(chain[i]).viaOpening.centroid; }
+    r.pts[6 * i + 3] = ex.x; r.pts[6 * i + 4] = ex.y; r.pts[6 * i + 5] = ex.z;
+  }
+  r.rem[n - 1] = 0;
+  for (let j = n - 2; j >= 0; j--) {
+    r.rem[j] = r.rem[j + 1] + Math.hypot(r.pts[3 * j + 3] - r.pts[3 * j], r.pts[3 * j + 4] - r.pts[3 * j + 1], r.pts[3 * j + 5] - r.pts[3 * j + 2]);
+  }
+}
+function liveRouteFor(g, origin) {
+  let r = g.routes.get(origin);
+  if (!r) { r = { pts: null, rem: null, last: 0 }; g.routes.set(origin, r); liveFillRoute(r, g, origin); }
+  return r;
+}
+function liveRefreshGroup(g, v) {
+  g.gap.copy(v.gap); g.gapDist = v.gapDist;
+  const c = partCentroid(g.part);
+  g.dir.copy(g.gap).sub(c);
+  if (g.dir.lengthSq() < 1e-8) g.dir.set(0, -1, 0); else g.dir.normalize();
+  g.ap = Math.max(0.35, Math.min(2, v.radius * 1.3));
+  for (const [origin, r] of g.routes) liveFillRoute(r, g, origin); // in place: live particles keep their reference
+}
+
+// Same math as computeParticlePosition()'s waypoint/lerp/eddy part (the CPU
+// mirror rebuildVolumetricDensity also uses), minus the SDF push-back.
+const _bp = { x: 0, y: 0, z: 0, seg: 0, progress: 0 };
+function liveBakedState(p, uTime) {
+  const cpu = state.particleCPU, MW = MAX_WAYPOINTS;
+  const { waypointData, radiusData, phase, speed, latU, latV } = cpu;
+  const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1;
+  const segF = progress * (MW - 1), seg = Math.floor(segF), segT = segF - seg;
+  const segB = Math.min(seg + 1, MW - 1);
+  const a = (p * MW + seg) * 3, b = (p * MW + segB) * 3;
+  const ax = waypointData[a], ay = waypointData[a + 1], az = waypointData[a + 2];
+  const bx = waypointData[b], by = waypointData[b + 1], bz = waypointData[b + 2];
+  const rad = radiusData[p * MW + seg] + (radiusData[p * MW + segB] - radiusData[p * MW + seg]) * segT;
+  let tx = bx - ax, ty = by - ay, tz = bz - az;
+  const tl = Math.hypot(tx, ty, tz);
+  if (tl > 0.0001) { tx /= tl; ty /= tl; tz /= tl; } else { tx = 0; ty = 1; tz = 0; }
+  const upX = Math.abs(ty) > 0.98;
+  const rux = upX ? 0 : 1, ruy = upX ? 1 : 0;
+  let rx = ty * 0 - tz * ruy, ry = tz * rux - tx * 0, rz = tx * ruy - ty * rux;
+  const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+  let ux = ry * tz - rz * ty, uy = rz * tx - rx * tz, uz = rx * ty - ry * tx;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const lu = latU[p], lv = latV[p];
+  _bp.x = ax + (bx - ax) * segT + (lu * rx + lv * ux) * rad;
+  _bp.y = ay + (by - ay) * segT + (lu * ry + lv * uy) * rad;
+  _bp.z = az + (bz - az) * segT + (lu * rz + lv * uz) * rad;
+  _bp.seg = seg; _bp.progress = progress;
+}
+
+function liveConvert(newGroups) {
+  const cpu = state.particleCPU;
+  if (!cpu || !particleSystem || !newGroups.length) return;
+  const uTime = particleSystem.material.uniforms.uTime.value;
+  const MW = MAX_WAYPOINTS;
+  if (!live.pendIdx || live.pendIdx.length < cpu.count) { live.pendIdx = new Int32Array(cpu.count); live.pendT = new Float32Array(cpu.count); }
+  const ups = new Map(); for (const g of newGroups) ups.set(g.id, []);
+  const originsOf = new Map(); for (const g of newGroups) originsOf.set(g.id, new Set());
+  for (let p = 0; p < cpu.count; p++) {
+    if (cpu.affGroup[p] !== -1) continue;
+    const owner = cpu.ownerPart[p];
+    const chain = liveChainOf(owner);
+    let g = null, gk = -1;
+    for (let i = 0; i < chain.length - 1; i++) { const gg = live.groups.get(chain[i]); if (gg) { g = gg; gk = i; break; } }
+    if (!g || !g.fresh) continue;
+    cpu.affGroup[p] = g.id;
+    originsOf.get(g.id).add(owner);
+    liveBakedState(p, uTime);
+    if (_bp.seg <= 2 * gk) { cpu.liveArr[p] = 1; ups.get(g.id).push(p); }
+    else if (live.pendN < cpu.count) {
+      // already past the gap when it broke: finishes its lap, hidden when it wraps back to the (now leaking) start
+      live.pendIdx[live.pendN] = p;
+      live.pendT[live.pendN] = (Math.floor(uTime * cpu.speed[p] + cpu.phase[p]) + 1 - cpu.phase[p]) / cpu.speed[p];
+      live.pendN++;
+    }
+  }
+  let total = 0; for (const g of newGroups) total += ups.get(g.id).length;
+  const budget = Math.max(0, LIVE_MAX - live.n);
+  const stride = Math.max(1, Math.ceil(total / Math.max(budget, 1)));
+  for (const g of newGroups) {
+    // reservoir pressure: highest-pressure non-pressurant part feeding this leak
+    let P0 = 0, anyNonHe = false;
+    for (const o of originsOf.get(g.id)) if (o.contents !== 'helium') { anyNonHe = true; P0 = Math.max(P0, o.internalPsi || 0); }
+    if (!anyNonHe) for (const o of originsOf.get(g.id)) P0 = Math.max(P0, o.internalPsi || 0);
+    if (!P0) P0 = g.part.internalPsi || 0;
+    g.P0 = P0;
+    const list = ups.get(g.id);
+    let made = 0;
+    for (let j = 0; j < list.length && live.n < LIVE_MAX; j += stride) {
+      const p = list[j], owner = cpu.ownerPart[p];
+      const chain = liveChainOf(owner), gk = chain.indexOf(g.part);
+      liveBakedState(p, uTime);
+      const ci = Math.min(Math.floor((_bp.seg + 1) / 2), gk);
+      const delta = liveDelta(chain[ci]); // the owning part may have been dragged since the bake
+      const e = delta.elements, x = _bp.x, y = _bp.y, z = _bp.z;
+      const i = live.n++;
+      live.px[i] = e[0] * x + e[4] * y + e[8] * z + e[12];
+      live.py[i] = e[1] * x + e[5] * y + e[9] * z + e[13];
+      live.pz[i] = e[2] * x + e[6] * y + e[10] * z + e[14];
+      live.vx[i] = live.vy[i] = live.vz[i] = 0;
+      live.st[i] = 1; live.grp[i] = g.id; live.rt[i] = Math.min(_bp.seg + 1, 2 * gk + 1);
+      live.age[i] = 0; live.life[i] = 3.5 + Math.random() * 3.0; live.heat[i] = cpu.thermalSeed[p];
+      live.rref[i] = liveRouteFor(g, owner);
+      made++;
+    }
+    g.nTotal = made; g.nInside = made; g.weight = made ? list.length / made : 1;
+    g.fresh = false;
+  }
+  cpu.liveAttr.needsUpdate = true;
+  live.lastStepAt = performance.now();
+}
+
+function liveReleaseGroup(g) {
+  const cpu = state.particleCPU;
+  if (cpu && cpu.liveArr) {
+    for (let p = 0; p < cpu.count; p++) if (cpu.affGroup[p] === g.id) { cpu.affGroup[p] = -1; cpu.liveArr[p] = 0; }
+    cpu.liveAttr.needsUpdate = true;
+    let w = 0;
+    for (let j = 0; j < live.pendN; j++) { const p = live.pendIdx[j]; if (cpu.affGroup[p] !== -1) { live.pendIdx[w] = p; live.pendT[w] = live.pendT[j]; w++; } }
+    live.pendN = w;
+  }
+  for (let i = 0; i < live.n; i++) if (live.grp[i] === g.id) { live.st[i] = 0; live.rref[i] = null; }
+  live.groups.delete(g.part); live.byId.delete(g.id);
+  if (!live.groups.size) { live.n = 0; live.sdf = null; }
+}
+
+function liveApplyVerdict(verdict) {
+  for (const g of [...live.groups.values()]) if (!verdict.has(g.part)) liveReleaseGroup(g);   // seal restored
+  const fresh = [];
+  for (const [part, v] of verdict) {
+    let g = live.groups.get(part);
+    if (!g) {
+      g = { id: live.nextId++, part, target: state.currentLinks.get(part).target, gap: new THREE.Vector3(), dir: new THREE.Vector3(),
+            gapDist: 0, ap: 0.5, P0: 0, nTotal: 0, nInside: 0, weight: 1, dp: LIVE_DP_MIN, routes: new Map(), fresh: true };
+      live.groups.set(part, g); live.byId.set(g.id, g);
+      fresh.push(g);
+    }
+    liveRefreshGroup(g, v);
+  }
+  liveConvert(fresh);
+}
+
+// CPU wall SDF over the parts the leaking gas lives in, rebuilt from their CURRENT transforms.
+// Built incrementally in the background (per-part spatial indices cached, each part one
+// frame; voxel queries time-sliced) so a drag never freezes the page. Until it lands, live
+// particles are steered along their route without wall pushback (the previous grid, if any,
+// stays in use). Union of cavities = min over the parts' signed distances.
+let _liveSdfToken = 0;
+async function liveEnsureSdf() {
+  const token = ++_liveSdfToken;
+  if (!live.groups.size) { live.sdf = null; return; }
+  const parts = new Set();
+  for (const g of live.groups.values()) {
+    let any = false;
+    for (const origin of g.routes.keys()) { any = true; const ch = liveChainOf(origin); for (let i = 0; i <= ch.indexOf(g.part); i++) parts.add(ch[i]); }
+    if (!any) parts.add(g.part);
+  }
+  const list = [...parts], t0 = performance.now();
+  const boxes = list.map(p => partWorldAABB(p)), indices = [];
+  for (const p of list) {
+    await new Promise(requestAnimationFrame);
+    if (token !== _liveSdfToken) return;
+    indices.push(penIndexForPart(p));
+  }
+  const box = new THREE.Box3(); for (const b of boxes) box.union(b);
+  const sz = new THREE.Vector3(); box.getSize(sz);
+  box.expandByScalar(Math.max(sz.length() * 0.05, 0.1)); box.getSize(sz);
+  const res = LIVE_SDF_RES, diag = Math.max(sz.length(), 1e-3), data = new Float32Array(res * res * res);
+  const pt = new THREE.Vector3();
+  let z = 0;
+  while (z < res) {
+    await new Promise(requestAnimationFrame);
+    if (token !== _liveSdfToken) return;
+    const tz = performance.now();
+    while (z < res && performance.now() - tz < 10) {
+      for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+        pt.set(box.min.x + (x + 0.5) / res * sz.x, box.min.y + (y + 0.5) / res * sz.y, box.min.z + (z + 0.5) / res * sz.z);
+        let best = Infinity;
+        for (let k = 0; k < list.length; k++) {
+          let d;
+          if (!indices[k]) continue;
+          if (boxes[k].containsPoint(pt)) d = signedDistanceToMesh(pt, indices[k]);
+          else d = Math.max(boxes[k].distanceToPoint(pt), 1e-3); // outside the part's box: certainly outside its cavity
+          if (d < best) best = d;
+        }
+        data[(z * res + y) * res + x] = best / diag;
+      }
+      z++;
+    }
+  }
+  if (token !== _liveSdfToken) return;
+  live.sdf = { data, res, min: box.min.clone(), size: sz.clone(), diag, ms: performance.now() - t0 };
+}
+
+async function liveUpdate() {
+  if (live.busy) { live.pending = true; return; }
+  live.busy = true;
+  const t0 = performance.now();
+  try {
+    do {
+      live.pending = false;
+      const moved = new Set(live.moved); live.moved.clear();
+      for (const part of moved) {
+        _worldTriCache.delete(part); _penIndexCache.delete(part);
+        if (part.type) refreshPartOpenings(part);
+      }
+      state.root.updateMatrixWorld(true);
+      liveApplyVerdict(liveEvalLinks(moved));
+      renderJointReport();
+      live.updates++;
+      liveEnsureSdf(); // background, not awaited: the seal verdict must stay responsive
+    } while (live.pending);
+  } catch (err) {
+    console.error('live seal update failed', err);
+  } finally {
+    live.busy = false;
+    live.lastUpdateMs = performance.now() - t0;
+  }
+}
+
+function liveWatchTick(now) {
+  if (now - live.lastWatch < LIVE_WATCH_MS) return;
+  live.lastWatch = now;
+  state.root.updateMatrixWorld();
+  for (const part of state.parts) {
+    if (!part.type) continue;
+    const e = part.pivot.matrixWorld.elements, s = live.snap.get(part);
+    if (!s) { live.snap.set(part, Float32Array.from(e)); continue; }
+    let changed = false;
+    for (let k = 0; k < 16; k++) if (Math.abs(e[k] - s[k]) > 1e-5) { changed = true; break; }
+    if (changed) {
+      for (let k = 0; k < 16; k++) s[k] = e[k];
+      live.moved.add(part); live.lastChangeAt = now;
+      if (!live.firstChangeAt) live.firstChangeAt = now;
+    }
+  }
+  if (live.moved.size && (now - live.lastChangeAt >= LIVE_SETTLE_MS || now - live.firstChangeAt >= LIVE_MAXWAIT_MS)) {
+    live.firstChangeAt = 0;
+    liveUpdate();
+  }
+}
+
+// ── dynamics ──────────────────────────────────────────────────────────
+function liveSdfAt(x, y, z) {
+  const S = live.sdf, res = S.res, d = S.data, m = res - 1;
+  let fx = (x - S.min.x) / S.size.x * res - 0.5, fy = (y - S.min.y) / S.size.y * res - 0.5, fz = (z - S.min.z) / S.size.z * res - 0.5;
+  fx = fx < 0 ? 0 : fx > m ? m : fx; fy = fy < 0 ? 0 : fy > m ? m : fy; fz = fz < 0 ? 0 : fz > m ? m : fz;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+  const x1 = x0 < m ? x0 + 1 : m, y1 = y0 < m ? y0 + 1 : m, z1 = z0 < m ? z0 + 1 : m;
+  const tx = fx - x0, ty = fy - y0, tz = fz - z0;
+  const i00 = (z0 * res + y0) * res, i10 = (z0 * res + y1) * res, i01 = (z1 * res + y0) * res, i11 = (z1 * res + y1) * res;
+  const c00 = d[i00 + x0] * (1 - tx) + d[i00 + x1] * tx, c10 = d[i10 + x0] * (1 - tx) + d[i10 + x1] * tx;
+  const c01 = d[i01 + x0] * (1 - tx) + d[i01 + x1] * tx, c11 = d[i11 + x0] * (1 - tx) + d[i11 + x1] * tx;
+  return ((c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz) * S.diag;
+}
+
+function liveStep(h, pamb) {
+  const L = live, S = L.sdf;
+  const atmo = L.atmo;
+  const kdFree = 0.15 + 0.85 * atmo;
+  for (const g of L.groups.values()) {
+    const frac = g.nTotal ? g.nInside / g.nTotal : 0;
+    g.dp = Math.max(g.P0 * frac - pamb, LIVE_DP_MIN);
+  }
+  for (let i = 0; i < L.n; i++) {
+    const s = L.st[i];
+    if (s === 0 || s === 3) continue;
+    const g = L.byId.get(L.grp[i]);
+    if (!g) { L.st[i] = 0; continue; }
+    let x = L.px[i], y = L.py[i], z = L.pz[i], vx = L.vx[i], vy = L.vy[i], vz = L.vz[i];
+    if (s === 1) {
+      const r = L.rref[i], pts = r.pts;
+      let t = L.rt[i];
+      let dx = pts[3 * t] - x, dy = pts[3 * t + 1] - y, dz = pts[3 * t + 2] - z;
+      let d = Math.hypot(dx, dy, dz);
+      if (t < r.last && d < 0.8) { t++; L.rt[i] = t; dx = pts[3 * t] - x; dy = pts[3 * t + 1] - y; dz = pts[3 * t + 2] - z; d = Math.hypot(dx, dy, dz); }
+      const a = LIVE_GRAD_K * g.dp / (d + r.rem[t] + 2.0);  // pressure gradient: dP over the remaining path
+      const inv = d > 1e-4 ? 1 / d : 0;
+      vx += (dx * inv * a - LIVE_DRAG_IN * vx) * h; vy += (dy * inv * a - LIVE_DRAG_IN * vy) * h; vz += (dz * inv * a - LIVE_DRAG_IN * vz) * h;
+      const sp = Math.hypot(vx, vy, vz);
+      if (sp > LIVE_VMAX) { const k = LIVE_VMAX / sp; vx *= k; vy *= k; vz *= k; }
+      x += vx * h; y += vy * h; z += vz * h;
+      const gx = x - g.gap.x, gy = y - g.gap.y, gz = z - g.gap.z;
+      const gd2 = gx * gx + gy * gy + gz * gz;
+      const mouth = g.ap * 2.2;
+      if (S && gd2 > mouth * mouth) {
+        const sd = liveSdfAt(x, y, z);
+        if (sd > -LIVE_SKIN) {            // through/at a wall: push back along the SDF gradient, kill the outward velocity
+          const e = S.size.x / S.res;
+          let nx = liveSdfAt(x + e, y, z) - liveSdfAt(x - e, y, z), ny = liveSdfAt(x, y + e, z) - liveSdfAt(x, y - e, z), nz = liveSdfAt(x, y, z + e) - liveSdfAt(x, y, z - e);
+          const nl = Math.hypot(nx, ny, nz);
+          if (nl > 1e-6) {
+            nx /= nl; ny /= nl; nz /= nl;
+            const push = sd + LIVE_SKIN;
+            x -= nx * push; y -= ny * push; z -= nz * push;
+            const vn = vx * nx + vy * ny + vz * nz;
+            if (vn > 0) { vx -= nx * vn * 1.3; vy -= ny * vn * 1.3; vz -= nz * vn * 1.3; }
+          }
+        }
+      }
+      // through the mouth -> vent
+      const through = t >= r.last && (gx * g.dir.x + gy * g.dir.y + gz * g.dir.z) > 0;
+      if (through || gd2 < (g.ap * 0.8) * (g.ap * 0.8)) {
+        const vj = Math.min(LIVE_JET_K * Math.sqrt(g.dp), LIVE_VMAX);
+        const cs = 0.35; // cone half-angle (rad-ish) of the jet
+        const jx = g.dir.x + (Math.random() - 0.5) * cs * 2, jy = g.dir.y + (Math.random() - 0.5) * cs * 2, jz = g.dir.z + (Math.random() - 0.5) * cs * 2;
+        const jl = Math.hypot(jx, jy, jz) || 1;
+        const v0 = Math.max(vj, Math.hypot(vx, vy, vz));
+        vx = jx / jl * v0; vy = jy / jl * v0; vz = jz / jl * v0;
+        L.st[i] = 2; L.age[i] = 0; g.nInside = Math.max(0, g.nInside - 1);
+      }
+    } else {
+      // vented: free flight — gravity, ambient-pressure-scaled drag, growing turbulence
+      const age = L.age[i], sp = Math.min(age / L.life[i], 1);
+      const tn = 2.0 + 6.0 * sp;
+      vx += (Math.sin(age * 7.1 + i * 1.7) * tn - kdFree * vx) * h;
+      vy += (-LIVE_G * 0.6 + Math.sin(age * 5.2 + i * 0.9) * tn - kdFree * vy) * h;
+      vz += (Math.cos(age * 6.3 + i * 2.3) * tn - kdFree * vz) * h;
+      x += vx * h; y += vy * h; z += vz * h;
+      if (y < 0.05) { y = 0.05; if (vy < 0) vy *= -0.25; vx *= 0.85; vz *= 0.85; }
+      L.age[i] = age + h;
+      if (L.age[i] > L.life[i]) L.st[i] = 3;
+    }
+    L.px[i] = x; L.py[i] = y; L.pz[i] = z; L.vx[i] = vx; L.vy[i] = vy; L.vz[i] = vz;
+  }
+}
+
+function liveEnsurePoints() {
+  if (live.points) return;
+  const geo = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(LIVE_MAX * 3), 3);
+  live.pointAlpha = new THREE.BufferAttribute(new Float32Array(LIVE_MAX), 1);
+  live.pointSize = new THREE.BufferAttribute(new Float32Array(LIVE_MAX), 1);
+  live.pointHeat = new THREE.BufferAttribute(new Float32Array(LIVE_MAX), 1);
+  for (const a of [pos, live.pointAlpha, live.pointSize, live.pointHeat]) a.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', pos);
+  geo.setAttribute('aAlpha', live.pointAlpha); geo.setAttribute('aSize', live.pointSize); geo.setAttribute('aHeat', live.pointHeat);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uSize: { value: 1.5 } },
+    vertexShader: `
+      uniform float uSize; attribute float aAlpha; attribute float aSize; attribute float aHeat;
+      varying float vAlpha; varying float vHeat;
+      void main() {
+        vAlpha = aAlpha; vHeat = aHeat;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * aSize * (200.0 / -mv.z);
+      }`,
+    fragmentShader: THERMAL_RAMP_GLSL + `
+      varying float vAlpha; varying float vHeat;
+      void main() {
+        vec2 c = gl_PointCoord - vec2(0.5);
+        float d = length(c) * 2.0;
+        if (d > 1.0 || vAlpha <= 0.002) discard;
+        gl_FragColor = vec4(thermalRamp(vHeat) * (1.0 + 0.5 * (1.0 - d)), pow(1.0 - d, 1.6) * vAlpha);
+      }`,
+    transparent: true, depthWrite: false,
+  });
+  live.points = new THREE.Points(geo, mat);
+  live.points.frustumCulled = false;
+  live.points.renderOrder = 11;
+  live.points.visible = false;
+  scene.add(live.points);
+}
+
+function liveEnsureLeakMesh() {
+  const sdf = state.sdf;
+  if (!sdf) return null;
+  if (!live.leakMesh) {
+    live.leakTpr = Math.ceil(Math.sqrt(LEAK_RES)); live.leakTexRes = LEAK_RES * live.leakTpr;
+    live.leakData = new Float32Array(live.leakTexRes * live.leakTexRes * 4);
+    live.leakTex = new THREE.DataTexture(live.leakData, live.leakTexRes, live.leakTexRes, THREE.RGBAFormat, THREE.FloatType);
+    live.leakTex.magFilter = THREE.NearestFilter; live.leakTex.minFilter = THREE.NearestFilter;
+    live.leakTex.wrapS = THREE.ClampToEdgeWrapping; live.leakTex.wrapT = THREE.ClampToEdgeWrapping;
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uVolDensity: { value: live.leakTex }, uVolRes: { value: LEAK_RES }, uVolTilesPerRow: { value: live.leakTpr }, uVolTexRes: { value: live.leakTexRes },
+        uVolMin: { value: new THREE.Vector3() }, uVolSize: { value: new THREE.Vector3(1, 1, 1) }, uInverseModelMatrix: { value: new THREE.Matrix4() },
+        uSDFCoarse: { value: null }, uSDFCoarseMin: { value: new THREE.Vector3() }, uSDFCoarseSize: { value: new THREE.Vector3(1, 1, 1) },
+        uSDFCoarseRes: { value: 1 }, uSDFCoarseTilesPerRow: { value: 1 }, uSDFCoarseTexRes: { value: 1 },
+      },
+      defines: { VOL_NO_WALL: 1 },
+      vertexShader: VOLUMETRIC_VERTEX_SHADER, fragmentShader: VOLUMETRIC_FRAGMENT_SHADER,
+      transparent: true, depthWrite: false, depthTest: true, side: THREE.BackSide,
+    });
+    live.leakMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+    live.leakMesh.frustumCulled = false; live.leakMesh.renderOrder = 12; live.leakMesh.visible = false;
+    scene.add(live.leakMesh);
+  }
+  if (live.leakDomainRef !== sdf) {
+    // domain: the cavity bounds widened sideways and extended down to the floor so the dispersing plume stays inside it
+    const b = sdf.coarse.boundsMin, s = sdf.coarse.boundsSize;
+    const mn = new THREE.Vector3(b.x - 0.6 * s.x, 0, b.z - 0.6 * s.z);
+    const sz = new THREE.Vector3(s.x * 2.2, Math.max(b.y + s.y + 1, 1), s.z * 2.2);
+    const m = live.leakMesh;
+    m.scale.copy(sz); m.position.set(mn.x + sz.x / 2, mn.y + sz.y / 2, mn.z + sz.z / 2);
+    m.updateMatrixWorld(true);
+    m.material.uniforms.uVolMin.value.copy(mn); m.material.uniforms.uVolSize.value.copy(sz);
+    m.material.uniforms.uInverseModelMatrix.value.copy(m.matrixWorld).invert();
+    live.leakDomainRef = sdf;
+  }
+  return live.leakMesh;
+}
+
+function liveLeakSplat(x, y, z, w, r, gg, b) {
+  const m = live.leakMesh, res = LEAK_RES, tpr = live.leakTpr, tex = live.leakTexRes, d = live.leakData;
+  const mn = m.material.uniforms.uVolMin.value, sz = m.material.uniforms.uVolSize.value;
+  const fx = (x - mn.x) / sz.x * res - 0.5, fy = (y - mn.y) / sz.y * res - 0.5, fz = (z - mn.z) / sz.z * res - 0.5;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz);
+  const tx = fx - x0, ty = fy - y0, tz = fz - z0;
+  for (let k = 0; k < 8; k++) {
+    const cx = x0 + (k & 1), cy = y0 + ((k >> 1) & 1), cz = z0 + ((k >> 2) & 1);
+    if (cx < 0 || cy < 0 || cz < 0 || cx >= res || cy >= res || cz >= res) continue;
+    const wt = w * ((k & 1) ? tx : 1 - tx) * (((k >> 1) & 1) ? ty : 1 - ty) * (((k >> 2) & 1) ? tz : 1 - tz);
+    if (wt <= 0) continue;
+    const di = (((Math.floor(cz / tpr)) * res + cy) * tex + ((cz % tpr) * res + cx)) * 4;
+    d[di] += wt; d[di + 1] += r * wt; d[di + 2] += gg * wt; d[di + 3] += b * wt;
+  }
+}
+
+function liveUpdateVisuals(now) {
+  const L = live, n = L.n;
+  liveEnsurePoints();
+  const pa = L.points.geometry.attributes.position.array, aa = L.pointAlpha.array, sa = L.pointSize.array, ha = L.pointHeat.array;
+  let active = 0;
+  for (let i = 0; i < n; i++) {
+    const s = L.st[i];
+    if (s === 1 || s === 2) {
+      active++;
+      const sp = s === 2 ? Math.min(L.age[i] / L.life[i], 1) : 0;
+      pa[3 * i] = L.px[i]; pa[3 * i + 1] = L.py[i]; pa[3 * i + 2] = L.pz[i];
+      aa[i] = s === 1 ? 0.85 : 0.7 * (1 - sp) * (1 - sp);
+      sa[i] = 1 + 2.2 * sp;
+      ha[i] = L.heat[i] * (1 - 0.5 * sp);
+    } else { pa[3 * i + 1] = -1000; aa[i] = 0; }
+  }
+  L.points.geometry.setDrawRange(0, n);
+  L.points.geometry.attributes.position.needsUpdate = true; L.pointAlpha.needsUpdate = true; L.pointSize.needsUpdate = true; L.pointHeat.needsUpdate = true;
+  L.points.visible = !volEnabled && active > 0;
+
+  const mesh = liveEnsureLeakMesh();
+  if (mesh) {
+    mesh.visible = volEnabled && active > 0;
+    if (volEnabled && now - L.lastVolAt >= VOL_REBUILD_INTERVAL_MS) {
+      L.lastVolAt = now;
+      const d = L.leakData;
+      for (let i = 0; i < d.length; i++) d[i] *= 0.55;
+      const sz = mesh.material.uniforms.uVolSize.value;
+      const cx = sz.x / LEAK_RES, cy = sz.y / LEAK_RES, cz = sz.z / LEAK_RES;
+      for (let i = 0; i < n; i++) {
+        const s = L.st[i];
+        if (s !== 1 && s !== 2) continue;
+        const g = L.byId.get(L.grp[i]);
+        const sp = s === 2 ? Math.min(L.age[i] / L.life[i], 1) : 0;
+        liveRamp(L.heat[i] * (1 - 0.5 * sp));
+        const wgt = 0.35 * Math.min(g ? g.weight : 1, 6) * (1 - sp) * (1 - sp * 0.5);
+        if (sp > 0.3) {
+          // dispersing: smear into the 6 neighbouring cells as the puff grows
+          const sm = (sp - 0.3) / 0.7 * 0.5, c0 = wgt * (1 - sm), c1 = wgt * sm / 6;
+          liveLeakSplat(L.px[i], L.py[i], L.pz[i], c0, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i] + cx, L.py[i], L.pz[i], c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i] - cx, L.py[i], L.pz[i], c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i], L.py[i] + cy, L.pz[i], c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i], L.py[i] - cy, L.pz[i], c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i], L.py[i], L.pz[i] + cz, c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+          liveLeakSplat(L.px[i], L.py[i], L.pz[i] - cz, c1, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+        } else liveLeakSplat(L.px[i], L.py[i], L.pz[i], wgt, _liveRgb[0], _liveRgb[1], _liveRgb[2]);
+      }
+      for (let i = 0; i < d.length; i += 4) {
+        const dn = d[i];
+        if (dn > 1e-5) { d[i + 1] /= dn; d[i + 2] /= dn; d[i + 3] /= dn; }
+      }
+      L.leakTex.needsUpdate = true;
+    }
+  }
+}
+
+function liveLeakFrame(now) {
+  if (!state.simRunning || !state.particleCPU) return;
+  liveWatchTick(now);
+  if (!live.n) {
+    if (live.points && live.points.visible) live.points.visible = false;
+    if (live.leakMesh && live.leakMesh.visible) live.leakMesh.visible = false;
+    return;
+  }
+  // baked particles that were downstream of the gap finish their lap, then are hidden at wrap
+  if (live.pendN && now - live.lastPendAt > 100) {
+    live.lastPendAt = now;
+    const cpu = state.particleCPU, uTime = particleSystem.material.uniforms.uTime.value;
+    let dirty = false;
+    for (let j = 0; j < live.pendN;) {
+      if (uTime >= live.pendT[j]) {
+        cpu.liveArr[live.pendIdx[j]] = 1; dirty = true;
+        live.pendN--; live.pendIdx[j] = live.pendIdx[live.pendN]; live.pendT[j] = live.pendT[live.pendN];
+      } else j++;
+    }
+    if (dirty) cpu.liveAttr.needsUpdate = true;
+  }
+  let dt = (now - live.lastStepAt) / 1000;
+  live.lastStepAt = now;
+  if (!(dt > 0)) return;
+  dt = Math.min(dt, 0.12);
+  const pamb = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
+  live.atmo = Math.min(pamb / 14.696, 1);
+  const sub = Math.ceil(dt / 0.04), h = dt / sub;
+  for (let k = 0; k < sub; k++) liveStep(h, pamb);
+  liveUpdateVisuals(now);
+  if (now - live.lastReportAt > 500 && live.groups.size) { live.lastReportAt = now; renderJointReport(); }
+}
+
 let simClock = new THREE.Clock();
 function animateParticles() {
   requestAnimationFrame(animateParticles);
@@ -3933,11 +4646,13 @@ playBtn.onclick = async () => {
       );
     }
     state.simRunning = true;
+    liveWatchStart();
     setPartsGlass(true);
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
   } else {
     state.simRunning = false;
+    liveReset();
     setPartsGlass(false);
     playBtn.textContent = '▶ Simulate';
     playBtn.classList.remove('playing');
@@ -3949,7 +4664,7 @@ document.getElementById('toggleLeft').onclick = () => document.getElementById('l
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
