@@ -209,10 +209,27 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <button class="btn" id="btnImport">Import File</button>
       <button class="btn danger" id="btnClear">Clear Scene</button>
     </div>
-    <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip" style="display:none">
+    <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip,.json,application/json" style="display:none">
     <div class="sec-sub">glb · gltf · obj · fbx · stl · dae · zip</div>
     <button class="btn full" id="btnResetDefaults">Reset to Default Settings</button>
     <div class="sec-sub">Snaps the demo propulsion parts (if loaded) back to their pre-configured types, contents, pressures, and opening roles — without re-importing the file.</div>
+
+    <!-- ===== PRESET SAVE/LOAD (UI) — see the "PRESET SAVE/LOAD" section in the module script ===== -->
+    <div class="sec-h">◈ Presets</div>
+    <label class="field">Save scope</label>
+    <select id="presetScope"><option value="all">Whole scene</option></select>
+    <div class="btnrow">
+      <button class="btn" id="btnPresetSave">Save preset</button>
+      <button class="btn" id="btnPresetLoad">Load preset</button>
+    </div>
+    <input type="file" id="presetFileInput" accept=".json,application/json" style="display:none">
+    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="presetAutoRestore" style="width:auto;margin:0;">
+      Auto-restore last preset per asset
+    </label>
+    <div class="sec-sub">Saves every part's configuration plus the global fluid settings as a .json linked to the imported 3D file(s). Load it later (or drop the .json onto the viewport) to restore. Auto-restore re-applies the last saved/loaded preset for an asset when it is imported again (stored in this browser only).</div>
+    <div id="presetStatus" class="sec-sub"></div>
+    <!-- ===== /PRESET SAVE/LOAD (UI) ===== -->
 
     <div class="sec-h">◈ Parts</div>
     <div id="partList"></div>
@@ -643,9 +660,11 @@ async function loadFromArrayBuffer(name, buf, siblingFiles) {
 }
 
 async function loadFile(file) {
+  if (/\.json$/i.test(file.name)) return presetLoadFile(file);   // PRESET SAVE/LOAD: a dropped/picked .json is a preset, not a model
   setLoading(true, 'Reading ' + file.name + '…');
   const ext = extOf(file.name);
   try {
+    const _pa = await presetBeginAsset(file.name, file, 'import');
     if (ext === 'zip') {
       const zip = await JSZip.loadAsync(file);
       const entries = Object.keys(zip.files).filter(f => !zip.files[f].dir);
@@ -660,11 +679,13 @@ async function loadFile(file) {
       setLoading(true, 'Parsing ' + modelName + '…');
       const object = await loadFromArrayBuffer(modelName, buf, siblings);
       onSceneLoaded(object);
+      await presetEndAsset(_pa);
     } else {
       const buf = await file.arrayBuffer();
       setLoading(true, 'Parsing ' + file.name + '…');
       const object = await loadFromArrayBuffer(file.name, buf, null);
       onSceneLoaded(object);
+      await presetEndAsset(_pa);
     }
   } catch (err) {
     console.error(err);
@@ -680,9 +701,11 @@ async function loadDemo() {
     const res = await fetch(DEMO_URL);
     if (!res.ok) throw new Error('Demo file not found on server.');
     const buf = await res.arrayBuffer();
+    const _pa = await presetBeginAsset('CombustionChamber.glb', buf, 'demo');
     const object = await loadFromArrayBuffer('CombustionChamber.glb', buf, null);
     onSceneLoaded(object);
     applyDefaultDemoConfiguration();
+    await presetEndAsset(_pa);
   } catch (err) {
     console.error(err);
     alert('Could not load demo file: ' + err.message);
@@ -816,6 +839,7 @@ function clearScene() {
   if (state.root) { scene.remove(state.root); state.root = null; }
   state.parts = [];
   state.selectedPart = null;
+  if (typeof presetOnClear === 'function') presetOnClear();   // PRESET SAVE/LOAD
   exitFlowMode();
   document.getElementById('partList').innerHTML = '';
   document.getElementById('partCount').textContent = '';
@@ -5188,6 +5212,421 @@ playBtn.onclick = async () => {
 // Mobile panel toggles
 document.getElementById('toggleLeft').onclick = () => document.getElementById('leftPanel').classList.toggle('open');
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PRESET SAVE/LOAD
+//
+//  Save/Load the whole simulation setup as JSON, linked to the imported 3D
+//  asset(s). Shared schema with the iOS app ("arclake.module-preset"):
+//
+//   { "schema":"arclake.module-preset", "version":1, "module":"fluid",
+//     "createdAt": ISO8601, "appVersion":"web",
+//     "asset": { "name", "sha256"|null, "bytes", "source":"import|demo|remote",
+//                "parts":[ {"key","name","bbox":[minx,miny,minz,maxx,maxy,maxz]} ] },
+//     "settings": { "global": {...}, "parts": { "<partKey>": {...} } } }
+//
+//   Multi-asset scenes use  "assets":[ {…asset, "key"} ]  and
+//   "settings": { "global": {...}, "assets": { "<assetKey>": { "parts": {…} } } }
+//   (assetKey = sha256, else name#bytes).  partKey = nodeName|bbox signature
+//   (bbox in the part's own pivot space, 3 decimals), so parts re-link even when
+//   a file is re-imported.  Matching tiers: exact key, name+bbox tolerance,
+//   bbox only, name only (warned).  global = { atmosphere:{preset,ambientPsi},
+//   particlesPerContainer, thermalResolution, volumetric, xray, extra:{<controlId>:v},
+//   camera:{position,target,fov} } — "extra" captures any other left-panel control
+//   (e.g. flame/rocket presets) generically.  Part settings: type, contents,
+//   material, massKg, tempK, internalPsi, densityKgM3, transform, hiddenMeshes,
+//   openings:[{id,kind:auto|paint,role,radius,perimeter,centroid,normal,points}]
+//   (openings in pivot-local space), forcedSealTo:[partKey].
+//   Input is parsed with JSON.parse only (never eval) and every field is
+//   type/range validated before it touches state.
+// ═══════════════════════════════════════════════════════════════════════
+const PRESET_SCHEMA = 'arclake.module-preset', PRESET_VERSION = 1, PRESET_MODULE = 'fluid';
+const PRESET_LS_PREFIX = 'arcflow.preset.v1:', PRESET_LS_AUTO = 'arcflow.preset.autoRestore';
+const PRESET_TYPES = ['container', 'pipe', 'chamber'], PRESET_CONTENTS = ['oxidizer', 'fuel', 'helium'], PRESET_ROLES = ['entrance', 'exit', 'nozzle'];
+const PRESET_KNOWN = { atmoPreset: 'atmosphere.preset', atmoPsi: 'atmosphere.ambientPsi', particlesPerContainer: 'particlesPerContainer',
+                       thermalResolution: 'thermalResolution', volumetricToggle: 'volumetric', xrayToggle: 'xray' };
+let presetPending = null;     // { preset, entries, global, globalApplied } waiting for an asset import
+let presetBusy = false;
+
+const _prnd = (v, d = 5) => { const k = Math.pow(10, d); return Math.round(v * k) / k; };
+const _pnum = (v, lo = -Infinity, hi = Infinity) => (typeof v === 'number' && isFinite(v)) ? Math.min(hi, Math.max(lo, v)) : null;
+const _pvec = (a, n) => Array.isArray(a) && a.length === n && a.every(x => typeof x === 'number' && isFinite(x));
+function presetLsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function presetLsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+function presetStatus(lines, kind) {
+  const el = document.getElementById('presetStatus'); if (!el) return;
+  el.innerHTML = ''; el.style.color = kind === 'error' ? '#ff6b6b' : (kind === 'warn' ? '#ffc861' : '');
+  for (const l of [].concat(lines)) { const d = document.createElement('div'); d.textContent = l; el.appendChild(d); }
+  if (presetPending) {
+    const b = document.createElement('button'); b.className = 'btn full'; b.textContent = 'Apply pending preset now'; b.onclick = () => presetApplyPending(true);
+    el.appendChild(b);
+  }
+}
+async function presetSha256(buf) {
+  try { if (!(globalThis.crypto && crypto.subtle)) return null;
+    const h = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+    return [...h].map(x => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return null; }
+}
+const presetAssetKey = a => a.sha256 || (a.name + '#' + a.bytes);
+
+// ── asset registry (hooked from loadFile / loadDemo / clearScene) ──
+async function presetBeginAsset(name, src, source) {
+  const buf = (src instanceof ArrayBuffer) ? src : await src.arrayBuffer();
+  return { name, bytes: buf.byteLength, sha256: await presetSha256(buf), source, firstPart: state.parts.length };
+}
+function presetPartSig(part) {
+  if (part._presetKey) return;
+  state.root && state.root.updateMatrixWorld(true);
+  const inv = part.pivot.matrixWorld.clone().invert(), box = new THREE.Box3(), tmp = new THREE.Box3();
+  for (const m of part.meshes) {
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    tmp.copy(m.geometry.boundingBox).applyMatrix4(inv.clone().multiply(m.matrixWorld)); box.union(tmp);
+  }
+  part._presetBbox = box.isEmpty() ? [0, 0, 0, 0, 0, 0] : [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].map(v => _prnd(v, 3));
+  part._presetKey = part.name + '|' + part._presetBbox.join(',');
+}
+async function presetEndAsset(pa) {
+  state.assets = state.assets || [];
+  const parts = state.parts.slice(pa.firstPart);
+  const asset = { id: 'a' + Date.now().toString(36) + state.assets.length, name: pa.name, bytes: pa.bytes, sha256: pa.sha256, source: pa.source, parts };
+  parts.forEach(p => { presetPartSig(p); p.assetId = asset.id; });
+  state.assets.push(asset);
+  presetRefreshScope();
+  const first = state.assets.length === 1;
+  let auto = false; try { auto = presetLsGet(PRESET_LS_AUTO) === '1'; } catch (e) {}
+  if (auto) {
+    const raw = presetLsGet(PRESET_LS_PREFIX + presetAssetKey(asset));
+    if (raw) { try { await presetApplyRaw(raw, { auto: true, skipGlobal: !first, onlyAssetId: asset.id, quiet: false }); } catch (e) { console.warn('preset auto-restore failed', e); } }
+  }
+  if (presetPending) await presetApplyPending(false);
+}
+function presetOnClear() { state.assets = []; state.forcedSeals = new Set(); presetRefreshScope(); }
+function presetRefreshScope() {
+  const sel = document.getElementById('presetScope'); if (!sel) return;
+  const cur = sel.value; sel.innerHTML = '';
+  const add = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+  add('all', 'Whole scene (' + (state.assets || []).length + ' asset' + ((state.assets || []).length === 1 ? '' : 's') + ')');
+  for (const a of state.assets || []) add(a.id, 'Asset: ' + a.name + (a.source === 'demo' ? ' (demo)' : ''));
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+// ── serialize ──
+function presetPartSettings(part) {
+  presetPartSig(part);
+  part.pivot.updateWorldMatrix(true, false);
+  const inv = part.pivot.matrixWorld.clone().invert();
+  const loc = v => { const r = v.clone().applyMatrix4(inv); return [_prnd(r.x), _prnd(r.y), _prnd(r.z)]; };
+  const dir = v => { const r = v.clone().transformDirection(inv); return [_prnd(r.x), _prnd(r.y), _prnd(r.z)]; };
+  const openings = (part.openings || []).map(o => {
+    const kind = String(o.id).startsWith('paint') ? 'paint' : 'auto';
+    let c = o.centroid, n = o.normal;
+    // A painted opening's marker reports its LIVE normal as the negation of the normal it was built from
+    // (attachOpeningMarker aims the marker's -Z at it, getWorldDirection returns +Z), so store the negated live
+    // normal: re-attaching on load then reproduces the identical live normal.
+    if (kind === 'paint' && o.marker) { c = openingLiveCentroid(o); n = openingLiveNormal(o).clone().negate(); }
+    const r = { id: String(o.id), kind, role: o.role || null, radius: _prnd(o.radius || 0), perimeter: _prnd(o.perimeter || 0), centroid: loc(c), normal: dir(n) };
+    if (kind === 'paint' && o.points && o.points.length) { const st = Math.max(1, Math.ceil(o.points.length / 256)); r.points = o.points.filter((_, i) => i % st === 0).map(loc); }
+    return r;
+  });
+  const sealTo = [];
+  for (const q of state.parts) if (q !== part && state.forcedSeals && state.forcedSeals.has(part.name + '|' + q.name)) { presetPartSig(q); sealTo.push(q._presetKey); }
+  const p = part.pivot;
+  return {
+    type: part.type || null, contents: part.contents, material: part.material, massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
+    internalPsi: _prnd(part.internalPsi), densityKgM3: _prnd(part.densityKgM3 || 0),
+    transform: { position: [p.position.x, p.position.y, p.position.z].map(v => _prnd(v, 6)), quaternion: [p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w].map(v => _prnd(v, 6)), scale: [p.scale.x, p.scale.y, p.scale.z].map(v => _prnd(v, 6)) },
+    hiddenMeshes: part.meshes.map((m, i) => (m.userData.nozzleCover && !m.visible) ? i : -1).filter(i => i >= 0),
+    openings, forcedSealTo: sealTo,
+  };
+}
+function presetControls() { return [...document.querySelectorAll('#leftPanel select[id], #leftPanel input[id]')].filter(el => el.type !== 'file' && !el.id.startsWith('preset')); }
+function presetGlobalSettings() {
+  const g = { atmosphere: {}, extra: {} };
+  for (const el of presetControls()) {
+    const v = el.type === 'checkbox' ? el.checked : (el.type === 'number' || el.type === 'range' ? parseFloat(el.value) : el.value);
+    const path = PRESET_KNOWN[el.id];
+    if (!path) g.extra[el.id] = v;
+    else if (path.indexOf('.') > 0) g[path.split('.')[0]][path.split('.')[1]] = v; else g[path] = v;
+  }
+  const c = camera.position, t = controls.target;
+  g.camera = { position: [c.x, c.y, c.z].map(v => _prnd(v, 4)), target: [t.x, t.y, t.z].map(v => _prnd(v, 4)), fov: camera.fov };
+  return g;
+}
+function presetAssetDescriptor(a) {
+  return { name: a.name, sha256: a.sha256 || null, bytes: a.bytes, source: a.source,
+           parts: a.parts.filter(p => state.parts.includes(p)).map(p => (presetPartSig(p), { key: p._presetKey, name: p.name, bbox: p._presetBbox.slice() })) };
+}
+function buildPreset(scope) {
+  const list = (scope && scope !== 'all') ? (state.assets || []).filter(a => a.id === scope) : (state.assets || []);
+  const out = { schema: PRESET_SCHEMA, version: PRESET_VERSION, module: PRESET_MODULE, createdAt: new Date().toISOString(), appVersion: 'web' };
+  const partsOf = a => { const m = {}; for (const p of a.parts) if (state.parts.includes(p)) m[p._presetKey] = presetPartSettings(p); return m; };
+  if (list.length <= 1) {
+    out.asset = list[0] ? presetAssetDescriptor(list[0]) : null;
+    out.settings = { global: presetGlobalSettings(), parts: list[0] ? partsOf(list[0]) : {} };
+  } else {
+    out.assets = list.map(a => Object.assign({ key: presetAssetKey(a) }, presetAssetDescriptor(a)));
+    out.settings = { global: presetGlobalSettings(), assets: {} };
+    for (const a of list) out.settings.assets[presetAssetKey(a)] = { parts: partsOf(a) };
+  }
+  return out;
+}
+function presetPersist(scopeAssets) {
+  for (const a of scopeAssets) { const p = buildPreset(a.id); presetLsSet(PRESET_LS_PREFIX + presetAssetKey(a), JSON.stringify(p)); }
+}
+function presetSave() {
+  const scope = document.getElementById('presetScope').value;
+  if (!state.parts.length) { presetStatus('Nothing to save yet — load the demo or import a model first.', 'warn'); return; }
+  const preset = buildPreset(scope), json = JSON.stringify(preset, null, 1);
+  const a0 = scope !== 'all' ? (state.assets || []).find(a => a.id === scope) : ((state.assets || []).length === 1 ? state.assets[0] : null);
+  const base = a0 ? a0.name.replace(/\.[^.]+$/, '') : 'scene';
+  const fn = ('arclake-fluid-preset-' + base.replace(/[^\w.-]+/g, '_') + '-' + preset.createdAt.replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-') + '.json');
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = fn; link.style.display = 'none';
+  document.body.appendChild(link); link.click();
+  setTimeout(() => { link.remove(); URL.revokeObjectURL(url); }, 5000);
+  presetPersist(scope === 'all' ? (state.assets || []) : (state.assets || []).filter(a => a.id === scope));
+  presetStatus('Saved ' + fn + ' (' + Math.round(json.length / 1024) + ' KB, ' + Object.keys(preset.settings.parts || {}).length + ' part entries).');
+  return { fn, json };
+}
+
+// ── validate ──
+function presetValidate(text) {
+  if (typeof text !== 'string' || text.length > 20e6) throw new Error('Preset file is empty or too large.');
+  let p; try { p = JSON.parse(text); } catch (e) { throw new Error('Not a valid JSON file.'); }
+  if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error('Not an Arc Lake preset (top level is not an object).');
+  if (p.schema !== PRESET_SCHEMA) throw new Error('Wrong schema "' + String(p.schema).slice(0, 60) + '" — expected "' + PRESET_SCHEMA + '".');
+  if (p.version !== PRESET_VERSION) throw new Error('Unsupported preset version ' + String(p.version).slice(0, 20) + ' (this build reads version ' + PRESET_VERSION + ').');
+  if (p.module !== PRESET_MODULE) throw new Error('This preset is for module "' + String(p.module).slice(0, 40) + '", not "' + PRESET_MODULE + '".');
+  const s = p.settings;
+  if (!s || typeof s !== 'object') throw new Error('Preset has no "settings" section.');
+  const checkAsset = a => { if (!a || typeof a !== 'object' || typeof a.name !== 'string') throw new Error('Preset asset entry is malformed.');
+    if (a.parts != null && !Array.isArray(a.parts)) throw new Error('Preset asset.parts must be a list.'); };
+  const entries = [];
+  if (Array.isArray(p.assets)) {
+    if (!s.assets || typeof s.assets !== 'object') throw new Error('Multi-asset preset is missing settings.assets.');
+    for (const a of p.assets) { checkAsset(a); const key = a.key || presetAssetKey({ name: a.name, bytes: a.bytes, sha256: a.sha256 });
+      entries.push({ asset: a, parts: (s.assets[key] && s.assets[key].parts) || {} }); }
+  } else if (p.asset) { checkAsset(p.asset); entries.push({ asset: p.asset, parts: s.parts || {} }); }
+  for (const e of entries) if (typeof e.parts !== 'object' || Array.isArray(e.parts)) throw new Error('Preset parts must be an object keyed by part key.');
+  if (s.global != null && (typeof s.global !== 'object' || Array.isArray(s.global))) throw new Error('settings.global must be an object.');
+  return { raw: p, global: s.global || null, entries };
+}
+
+// ── match ──
+function presetFindAsset(pa, used) {
+  let best = null, bestScore = 0;
+  for (const sa of state.assets || []) {
+    if (used.has(sa.id)) continue;
+    let sc = 0;
+    if (pa.sha256 && sa.sha256 && pa.sha256 === sa.sha256) sc = 4;
+    else if (pa.name === sa.name && pa.bytes === sa.bytes) sc = 3;
+    else if (pa.name === sa.name) sc = 2;
+    else if (Array.isArray(pa.parts) && pa.parts.length) {
+      const keys = new Set(sa.parts.map(p => p._presetKey)), names = new Set(sa.parts.map(p => p.name));
+      const hit = pa.parts.filter(x => keys.has(x.key) || names.has(x.name)).length;
+      if (hit / pa.parts.length >= 0.5) sc = 1;
+    }
+    if (sc > bestScore) { best = sa; bestScore = sc; }
+  }
+  return best ? { sa: best, score: bestScore } : null;
+}
+const presetBase = n => String(n).replace(/\s\(\d+\)$/, '');
+function presetBboxClose(a, b) {
+  if (!_pvec(a, 6) || !_pvec(b, 6)) return false;
+  const diag = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]), tol = Math.max(1e-3, diag * 0.01);
+  return a.every((v, i) => Math.abs(v - b[i]) <= tol);
+}
+function presetMatchParts(sceneParts, presetParts) {
+  const pairs = [], unmatched = [], warns = [], usedS = new Set();
+  const take = (pp, fn, note) => { const sp = sceneParts.find(s => !usedS.has(s) && fn(s)); if (!sp) return false; usedS.add(sp); pairs.push({ sp, pp, note }); return true; };
+  const rest = [];
+  for (const pp of presetParts) if (!take(pp, s => s._presetKey === pp.key)) rest.push(pp);
+  const rest2 = [];
+  for (const pp of rest) if (!take(pp, s => presetBase(s.name) === presetBase(pp.name) && presetBboxClose(s._presetBbox, pp.bbox))) rest2.push(pp);
+  const rest3 = [];
+  for (const pp of rest2) if (!take(pp, s => presetBboxClose(s._presetBbox, pp.bbox), 'matched by geometry (renamed)')) rest3.push(pp);
+  for (const pp of rest3) if (!take(pp, s => presetBase(s.name) === presetBase(pp.name), 'name only — geometry differs')) unmatched.push(pp);
+  for (const x of pairs) if (x.note) warns.push(x.pp.name + ' → ' + x.sp.name + ': ' + x.note);
+  return { pairs, unmatched, warns, unusedScene: sceneParts.filter(s => !usedS.has(s)) };
+}
+
+// ── apply ──
+function presetSetControl(el, v, warns) {
+  if (el.type === 'checkbox') { if (typeof v !== 'boolean') { warns.push(el.id + ': expected true/false'); return; } if (el.checked === v) return; el.checked = v; el.dispatchEvent(new Event('change', { bubbles: true })); return; }
+  if (el.tagName === 'SELECT') { const s = String(v); if (![...el.options].some(o => o.value === s)) { warns.push(el.id + ': option "' + s.slice(0, 40) + '" not available'); return; } if (el.value === s) return; el.value = s; el.dispatchEvent(new Event('change', { bubbles: true })); return; }
+  if (el.type === 'number' || el.type === 'range') {
+    let n = _pnum(v); if (n == null) { warns.push(el.id + ': expected a number'); return; }
+    if (el.min !== '' && isFinite(+el.min)) n = Math.max(+el.min, n); if (el.max !== '' && isFinite(+el.max)) n = Math.min(+el.max, n);
+    if (Math.abs(parseFloat(el.value) - n) < 1e-9) return; el.value = String(n);
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return;
+  }
+  if (typeof v !== 'string') { warns.push(el.id + ': expected text'); return; }
+  if (el.value === v) return; el.value = v.slice(0, 200); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+function presetApplyGlobal(g, warns) {
+  if (!g) return 0;
+  const vals = {};   // controlId -> value
+  for (const id in PRESET_KNOWN) { const path = PRESET_KNOWN[id].split('.'); let v = g; for (const k of path) v = (v && typeof v === 'object') ? v[k] : undefined; if (v !== undefined) vals[id] = v; }
+  if (g.extra && typeof g.extra === 'object') for (const id in g.extra) if (!(id in vals)) vals[id] = g.extra[id];
+  const els = presetControls(), byId = new Map(els.map(e => [e.id, e]));
+  // selects/checkboxes first (e.g. atmosphere preset), then numeric/text (ambient psi) so a custom value survives
+  const order = [...Object.keys(vals)].sort((a, b) => { const r = id => { const e = byId.get(id); return !e ? 2 : (e.tagName === 'SELECT' || e.type === 'checkbox') ? 0 : 1; }; return r(a) - r(b); });
+  let n = 0;
+  for (const id of order) { const el = byId.get(id); if (!el) { warns.push('control "' + id.slice(0, 40) + '" not present in this build — skipped'); continue; } presetSetControl(el, vals[id], warns); n++; }
+  const c = g.camera;
+  if (c && _pvec(c.position, 3) && _pvec(c.target, 3)) {
+    camera.position.set(c.position[0], c.position[1], c.position[2]); controls.target.set(c.target[0], c.target[1], c.target[2]);
+    const f = _pnum(c.fov, 10, 120); if (f != null) camera.fov = f; camera.updateProjectionMatrix(); controls.update();
+  }
+  return n;
+}
+async function presetApplyPart(part, s, warns) {
+  const tag = part.name + ': ';
+  if (s.type === null || PRESET_TYPES.includes(s.type)) part.type = s.type; else if (s.type !== undefined) warns.push(tag + 'unknown type "' + String(s.type).slice(0, 30) + '"');
+  if (PRESET_CONTENTS.includes(s.contents)) part.contents = s.contents; else if (s.contents !== undefined) warns.push(tag + 'unknown contents');
+  if (typeof s.material === 'string') part.material = s.material.slice(0, 200);
+  let v;
+  if ((v = _pnum(s.massKg, 0, 1e9)) != null) part.massKg = v;
+  if ((v = _pnum(s.tempK, 0, 1e5)) != null) part.tempK = v;
+  if ((v = _pnum(s.internalPsi, -1e6, 1e7)) != null) part.internalPsi = v;
+  if ((v = _pnum(s.densityKgM3, 0, 1e6)) != null && v > 0) part.densityKgM3 = v;
+  const t = s.transform;
+  if (t && _pvec(t.position, 3) && _pvec(t.quaternion, 4) && _pvec(t.scale, 3) && t.scale.every(x => Math.abs(x) > 1e-6)) {
+    part.pivot.position.fromArray(t.position); part.pivot.quaternion.fromArray(t.quaternion).normalize(); part.pivot.scale.fromArray(t.scale);
+    part.pivot.updateMatrixWorld(true); part.volumeM3 = null;
+    if (typeof _worldTriCache !== 'undefined') _worldTriCache.delete(part);
+  }
+  // nozzle-cover meshes hidden by the demo chamber setup
+  if (Array.isArray(s.hiddenMeshes)) {
+    part.meshes.forEach((m, i) => { const hide = s.hiddenMeshes.includes(i); if (hide) { m.visible = false; m.userData.nozzleCover = true; } else if (m.userData.nozzleCover) { m.visible = true; delete m.userData.nozzleCover; } });
+  }
+  // openings
+  for (const o of part.openings || []) if (o.marker) o.marker.removeFromParent();
+  part.openings = [];
+  if (Array.isArray(s.openings)) {
+    part.pivot.updateMatrixWorld(true);
+    const M = part.pivot.matrixWorld, W = a => new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(M);
+    const list = s.openings.filter(o => o && typeof o === 'object' && typeof o.id === 'string');
+    const det = list.some(o => o.kind === 'auto') ? detectOpenings(part) : [];
+    for (const so of list) {
+      const role = PRESET_ROLES.includes(so.role) ? so.role : null;
+      if (so.kind === 'paint') {
+        if (!_pvec(so.centroid, 3) || !_pvec(so.normal, 3)) { warns.push(tag + 'opening ' + so.id + ' malformed'); continue; }
+        const o = { id: so.id.slice(0, 80), points: Array.isArray(so.points) ? so.points.filter(a => _pvec(a, 3)).map(W) : [], centroid: W(so.centroid),
+                    normal: new THREE.Vector3(so.normal[0], so.normal[1], so.normal[2]).transformDirection(M), perimeter: _pnum(so.perimeter, 0) || 0, radius: _pnum(so.radius, 0) || 0, role };
+        if (!String(o.id).startsWith('paint')) o.id = 'paint-' + o.id;
+        attachOpeningMarker(part, o); part.openings.push(o);
+      } else {
+        const c = det.find(d => d.id === so.id);
+        if (!c) { warns.push(tag + 'opening ' + so.id + ' not found in this mesh'); continue; }
+        if (so.perimeter > 0 && Math.abs(c.perimeter - so.perimeter) / so.perimeter > 0.05) warns.push(tag + 'opening ' + so.id + ' size differs from the saved one');
+        part.openings.push(Object.assign(c, { role }));
+      }
+    }
+  }
+  if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+  await new Promise(r => setTimeout(r, 0));
+}
+async function presetApply(parsed, opts) {
+  opts = opts || {};
+  if (presetBusy) throw new Error('A preset is already being applied.');
+  if (state.simRunning) throw new Error('Stop the simulation before loading a preset.');
+  presetBusy = true;
+  const rep = { appliedParts: 0, warns: [], unmatched: [], missing: [], unusedScene: [], assets: [] };
+  try {
+    const used = new Set(), matched = [], missing = [];
+    for (const e of parsed.entries) {
+      if (opts.onlyAssetId) { const only = (state.assets || []).find(a => a.id === opts.onlyAssetId); const hit = presetFindAsset(e.asset, new Set((state.assets || []).filter(a => a !== only).map(a => a.id))); if (hit && hit.sa === only) { matched.push({ e, sa: only, score: hit.score }); used.add(only.id); } continue; }
+      const hit = presetFindAsset(e.asset, used);
+      if (hit) { used.add(hit.sa.id); matched.push({ e, sa: hit.sa, score: hit.score }); } else missing.push(e);
+    }
+    const noAssetsAtAll = parsed.entries.length === 0;
+    if (!matched.length && !noAssetsAtAll) {
+      rep.missing = missing.map(e => e.asset);
+      if (!opts.onlyAssetId) presetPending = { parsed, entries: missing, global: parsed.global, globalApplied: false };
+      return rep;
+    }
+    setLoading(true, 'Applying preset…');
+    await new Promise(r => setTimeout(r, 30));
+    if (!opts.skipGlobal && !(opts.pending && parsed.globalApplied)) { const n = presetApplyGlobal(parsed.global, rep.warns); rep.globalControls = n; }
+    const keyMap = new Map();   // presetKey -> scene part (for forced seals)
+    const all = [];
+    for (const { e, sa, score } of matched) {
+      const m = presetMatchParts(sa.parts.filter(p => state.parts.includes(p)), Array.isArray(e.asset.parts) ? e.asset.parts : Object.keys(e.parts).map(k => ({ key: k, name: k.split('|')[0], bbox: null })));
+      if (score < 3 && !(e.asset.sha256 && sa.sha256 && e.asset.sha256 === sa.sha256)) rep.warns.push('Asset "' + e.asset.name + '" matched "' + sa.name + '" but file ' + (e.asset.sha256 && sa.sha256 ? 'hash' : 'name/size') + ' differs.');
+      else if (e.asset.sha256 && sa.sha256 && e.asset.sha256 !== sa.sha256) rep.warns.push('Asset "' + sa.name + '": file hash differs from the one the preset was saved with.');
+      rep.warns.push(...m.warns);
+      rep.assets.push(sa.name);
+      for (const pp of m.unmatched) rep.unmatched.push(e.asset.name + ' / ' + pp.name);
+      for (const sp of m.unusedScene) rep.unusedScene.push(sp.name);
+      for (const { sp, pp } of m.pairs) { keyMap.set(pp.key, sp); all.push({ sp, s: e.parts[pp.key] }); }
+    }
+    for (const { sp, s } of all) { if (!s || typeof s !== 'object') { rep.warns.push(sp.name + ': no settings in preset'); continue; } await presetApplyPart(sp, s, rep.warns); rep.appliedParts++; }
+    // forced seals (second pass so every target part already exists/is configured)
+    if (!state.forcedSeals) state.forcedSeals = new Set();
+    for (const { sp, s } of all) {
+      if (!s) continue;
+      for (const q of state.parts) state.forcedSeals.delete(sp.name + '|' + q.name);
+      if (Array.isArray(s.forcedSealTo)) for (const k of s.forcedSealTo) { const tp = keyMap.get(k) || state.parts.find(p => p._presetKey === k); if (tp) state.forcedSeals.add(sp.name + '|' + tp.name); else rep.warns.push(sp.name + ': forced seal target "' + String(k).split('|')[0] + '" not in scene'); }
+    }
+    state.currentLinks = null;
+    buildPartListUI(); highlightSelection(); if (state.selectedPart) renderPartDetail();
+    if (typeof liveKick === 'function') try { liveKick(); } catch (e) {}
+    rep.missing = missing.map(e => e.asset);
+    if (missing.length && !opts.onlyAssetId) presetPending = { parsed, entries: missing, global: parsed.global, globalApplied: true };
+    if (!opts.auto) presetPersist(matched.map(x => x.sa));
+    return rep;
+  } finally { presetBusy = false; setLoading(false); }
+}
+function presetReport(rep, prefix) {
+  const lines = [], missingNames = rep.missing.map(a => a.name + ' (' + (a.bytes != null ? Math.round(a.bytes / 1024) + ' KB' : 'size ?') + (a.sha256 ? ', sha256 ' + a.sha256.slice(0, 8) + '…' : '') + ')');
+  if (rep.appliedParts || rep.assets.length || rep.globalControls != null) lines.push((prefix || 'Preset') + ' applied: ' + rep.appliedParts + ' part(s)' + (rep.assets.length ? ' from ' + rep.assets.join(', ') : '') + (rep.globalControls != null ? ', ' + rep.globalControls + ' global setting(s)' : '') + '.');
+  if (missingNames.length) lines.push('Import this asset first, then press "Apply pending preset now": ' + missingNames.join('; ') + '.');
+  if (rep.unmatched.length) lines.push('Preset parts with no match in the scene (' + rep.unmatched.length + '): ' + rep.unmatched.slice(0, 8).join(', ') + (rep.unmatched.length > 8 ? '…' : ''));
+  if (rep.unusedScene.length) lines.push('Scene parts not in the preset (left unchanged, ' + rep.unusedScene.length + '): ' + rep.unusedScene.slice(0, 8).join(', ') + (rep.unusedScene.length > 8 ? '…' : ''));
+  for (const w of rep.warns.slice(0, 12)) lines.push('Note: ' + w);
+  if (rep.warns.length > 12) lines.push('…and ' + (rep.warns.length - 12) + ' more notes.');
+  return lines;
+}
+async function presetApplyRaw(text, opts) {
+  const parsed = presetValidate(text);
+  const rep = await presetApply(parsed, opts);
+  const lines = presetReport(rep, opts && opts.auto ? 'Auto-restored preset' : 'Preset');
+  presetStatus(lines.length ? lines : ['Nothing to apply.'], (rep.unmatched.length || rep.missing.length || rep.warns.length) ? 'warn' : '');
+  return rep;
+}
+async function presetApplyPending(manual) {
+  if (!presetPending || presetBusy) return;
+  const pend = presetPending, has = pend.entries.some(e => presetFindAsset(e.asset, new Set()));
+  if (!has) { if (manual) presetStatus(['Pending preset still waiting for: ' + pend.entries.map(e => e.asset.name).join(', ') + '. Import it first.'], 'warn'); return; }
+  const parsed = { raw: pend.parsed.raw, global: pend.global, entries: pend.entries, globalApplied: pend.globalApplied };
+  presetPending = null;
+  try {
+    const rep = await presetApply(parsed, { pending: true, skipGlobal: pend.globalApplied });
+    const lines = presetReport(rep, 'Pending preset');
+    presetStatus(lines, (rep.unmatched.length || rep.missing.length || rep.warns.length) ? 'warn' : '');
+  } catch (e) { presetStatus('Could not apply pending preset: ' + e.message, 'error'); }
+}
+async function presetLoadFile(file) {
+  try {
+    if (file.size > 20e6) throw new Error('Preset file is too large.');
+    await presetApplyRaw(await file.text(), {});
+  } catch (e) { console.warn('preset load:', e.message); presetStatus('Could not load preset: ' + e.message, 'error'); }
+}
+
+// ── wiring ──
+(function presetWire() {
+  const $ = id => document.getElementById(id);
+  $('btnPresetSave').onclick = () => { try { presetSave(); } catch (e) { presetStatus('Save failed: ' + e.message, 'error'); } };
+  $('btnPresetLoad').onclick = () => $('presetFileInput').click();
+  $('presetFileInput').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) presetLoadFile(f); };
+  const auto = $('presetAutoRestore'); auto.checked = presetLsGet(PRESET_LS_AUTO) === '1';
+  auto.onchange = () => { presetLsSet(PRESET_LS_AUTO, auto.checked ? '1' : '0'); presetStatus(auto.checked ? 'Auto-restore on: the last saved/loaded preset for an asset is re-applied when that asset is imported.' : 'Auto-restore off.'); };
+  presetRefreshScope();
+  window.arcFlowPreset = { buildPreset, snapshot: () => { const p = buildPreset('all'); delete p.createdAt; return p; }, applyText: (t, o) => presetApplyRaw(t, o || {}), validate: presetValidate, save: presetSave, pending: () => presetPending };
+})();
+
+// ═══ /PRESET SAVE/LOAD ═══
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode };
