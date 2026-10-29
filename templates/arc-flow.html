@@ -245,6 +245,16 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     </select>
     <div class="sec-sub">Texture-space detail for the floor's heat-splash pattern and per-part thermal shading — independent of any object's own mesh density, so a low-poly import still gets crisp thermal detail. 512 is a solid default; raise it if you want finer detail and your device can spare the GPU memory, lower it if the simulation feels sluggish.</div>
 
+    <label class="field">Gas render mode</label>
+    <select id="renderMode">
+      <option value="points">Points — point sprites (cheapest)</option>
+      <option value="volumetric" selected>Volumetric — ray-marched density (default)</option>
+      <option value="gaussian">Gaussian splat — anisotropic billboards</option>
+    </select>
+    <div class="sec-sub">
+      <b>Gaussian splat</b> draws every particle (baked flow and live leaks) as its own soft 3D Gaussian billboard, stretched along its velocity so jets and plumes streak, blended additively with no sorting. It reuses the thermal colour ramp, the collision SDF (gas is faded out where it would sit inside a solid wall) and the X-ray glow, and swells with local pressure so pressurised gas looks denser. One instanced draw call, no density-grid rebuild and no ray-march — lighter than Volumetric, richer than Points.
+    </div>
+
     <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
       <input type="checkbox" id="volumetricToggle" checked style="width:auto;margin:0;">
       Volumetric Render (ray-marched)
@@ -259,7 +269,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       X-ray interior glow
     </label>
     <div class="sec-sub">
-      Gas inside a container, pipe or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the volumetric render; untick to see the gas only where the walls don't hide it.
+      Gas inside a container, pipe or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the Volumetric and Gaussian splat renders; untick to see the gas only where the walls don't hide it.
     </div>
   </div>
 
@@ -557,6 +567,7 @@ function animateBase() {
     // every frame like the rest of this loop, but it internally throttles
     // its own expensive work (CPU density rebuild) to VOL_REBUILD_INTERVAL_MS.
     if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
+    if (typeof updateGaussianRender === 'function') updateGaussianRender();
     if (typeof liveLeakFrame === 'function') liveLeakFrame(performance.now());
   }
   renderer.render(scene, camera);
@@ -3318,6 +3329,7 @@ function makeSDFUniformSet(collisionSDF) {
 
 async function buildParticleSystem() {
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
+  if (gsMesh) { scene.remove(gsMesh); gsMesh.geometry.dispose(); gsMesh.material.dispose(); gsMesh = null; }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
   state.particleCPU = null; // stale until rebuilt below — volumetric renderer checks for this
   liveReset(); // drop any live leak state from a previous bake
@@ -3496,8 +3508,9 @@ async function buildParticleSystem() {
   // point sprites on a fresh build — otherwise re-pressing Simulate while
   // the volumetric toggle is checked would briefly flash point sprites
   // back on until the next updateVolumetricRender() tick hides them again.
-  particleSystem.visible = !(typeof volEnabled !== 'undefined' && volEnabled);
+  particleSystem.visible = (typeof renderMode === 'undefined') ? false : renderMode === 'points';
   scene.add(particleSystem);
+  buildGaussianBaked(geo, mat.uniforms, sdfUniforms, collisionSDF, ownerPart, count);
 
   // Splat material for painting this same particle stream onto the floor's
   // heat-accumulation buffer (see initFloorHeatSystem) — identical position
@@ -4046,17 +4059,272 @@ function updateVolumetricRender(nowMs) {
   mesh.visible = true;
 }
 
-// Toggle wiring: flips volEnabled, hides/shows the point-sprite system so
-// the two renderers are mutually exclusive (never drawn double), and
-// leaves the underlying simulation (particleSystem's uTime-driven
-// computeParticlePosition, the SDF collision, the floor heat splat — all
-// untouched) running exactly as before either way, per the task's
-// "visual layer only" requirement.
-document.getElementById('volumetricToggle').onchange = (e) => {
-  volEnabled = e.target.checked;
-  if (particleSystem) particleSystem.visible = !volEnabled;
+// ═══════════════════════════════════════════════════════════════════════
+// GAUSSIAN SPLAT RENDERER — third gas render mode (Points / Volumetric /
+// Gaussian). Every particle, baked-GPU AND live-leak, is drawn directly as
+// an anisotropic 3D Gaussian billboard: one instanced quad per particle,
+// fragment alpha = exp(-k·r²), stretched in screen space along the
+// particle's velocity (so jets/plumes streak), blended additively with NO
+// depth sort (gas is emissive, additive blending commutes) and depthWrite
+// off. Nothing is rebuilt on the CPU: the baked splats run the same
+// waypoint/eddy/SDF-pushback vertex logic as the point sprites
+// (PARTICLE_SHADER_CORE), and the live leaks reuse the arrays liveUpdate-
+// Visuals already fills for its point layer.
+//
+//  colour     thermalRamp() (THERMAL_RAMP_GLSL), same vThermal as the sprites
+//  walls      uSDFCoarse / fine regions through sdfVolume() — the SAME call
+//             and the same smooth mask 1-smoothstep(-.5v,.5v,sd) the ray
+//             march uses. Evaluated at the 4 quad corners in the vertex
+//             shader and interpolated, so the fragment shader stays
+//             texture-free (gas past a wall fades out across the splat).
+//             Live leaks skip it exactly as the leak volume does
+//             (VOL_NO_WALL): they are CPU-collided and vent into open air.
+//  X-ray      same hue shift / interior glow / wall rim light as the
+//             ray-march, from the interpolated sd; depthTest off while on.
+//  pressure   per-particle aPress (log-scaled owner psi, falling along the
+//             path) swells the splat and raises its density; live leaks use
+//             the group's remaining dp.
+// ═══════════════════════════════════════════════════════════════════════
+let gsMesh = null;                  // baked-flow splats (one instanced draw call)
+const GS_SCREEN_BLEND = true;       // true: ONE,ONE_MINUS_SRC_COLOR (soft-saturating additive, still order independent); false: pure ONE,ONE
+const GS_PSI_MAX = 4500;            // top of the log pressure scale (COPV storage pressure)
+const gsPressure01 = (psi) => Math.max(0, Math.min(1, Math.log10(1 + Math.max(psi || 0, 0)) / Math.log10(1 + GS_PSI_MAX)));
+
+const GS_BILLBOARD_VERT = `
+  uniform float uGsTrail;       // seconds of motion smeared along the velocity
+  uniform float uGsMaxStretch;  // cap on length/width
+  varying vec2 vQ;              // quad coord in [-1,1]^2
+  varying float vAtten;         // elongated splats spread their light over more area
+  // Places the quad corner q (in [-1,1]^2) for a splat centred at world pos
+  // with world velocity vel and Gaussian sigma; returns the corner's world
+  // position (for the SDF taps). The quad spans 2.5 sigma each side.
+  vec3 gsPlace(vec3 pos, vec3 vel, float sigma, vec2 q) {
+    vec3 R = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+    vec3 U = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+    vec2 vxy = vec2(dot(R, vel), dot(U, vel));   // velocity projected onto the screen plane
+    float sp = length(vxy);
+    vec2 ax = sp > 1e-5 ? vxy / sp : vec2(1.0, 0.0);
+    float hb = 2.5 * sigma;
+    float ha = min(hb + sp * uGsTrail, hb * uGsMaxStretch);
+    vec2 off = ax * (q.x * ha) + vec2(-ax.y, ax.x) * (q.y * hb);
+    vec4 mv = viewMatrix * vec4(pos, 1.0);
+    gl_Position = projectionMatrix * (mv + vec4(off, 0.0, 0.0));
+    vQ = q;
+    vAtten = inversesqrt(ha / hb);
+    return pos + R * off.x + U * off.y;
+  }
+`;
+const GS_KERNEL_FRAG = `
+  varying vec2 vQ;
+  varying float vAtten;
+  // Gaussian exp(-k r^2) with k = 2.5^2/2 (the quad edge is 2.5 sigma), re-zeroed at the edge so the quad border never shows
+  float gsKernel() {
+    float r2 = dot(vQ, vQ);
+    if (r2 >= 1.0) discard;
+    return (exp(-3.125 * r2) - 0.0439) / 0.9561;
+  }
+`;
+
+const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
+  uniform float uGsSize;        // base sigma, world units
+  attribute float aPress;       // 0..1 log-scaled owner pressure
+  attribute vec4 aHue;          // contents hue (rgb) + weight (a)
+  varying float vSd;
+  varying float vSdVox;
+  varying float vDens;
+  varying vec4 vHue;
+  void main() {
+    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec3 pos = computeParticlePosition();           // also sets vThermal / vProgress
+    // path tangent + containment radius, re-read the cheap way (2 fetches)
+    float segF = vProgress * ${MAX_WAYPOINTS - 1}.0;
+    float seg = floor(segF), segT = fract(segF);
+    vec4 a4 = sampleWaypoint(aRow, seg);
+    vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
+    vec3 vel = (b4.xyz - a4.xyz) * (${MAX_WAYPOINTS - 1}.0 * aSpeed * 0.35);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
+    float rad = mix(a4.w, b4.w, segT);
+    float press = aPress * (1.0 - 0.35 * vProgress);
+    float sigma = clamp(rad * 0.25, uGsSize * 0.12, uGsSize * 3.0) * (0.8 + 0.55 * press);
+    vDens = (0.55 + 0.9 * press) * clamp(sqrt(sigma / uGsSize), 0.45, 1.8);   // wide splats in big tanks carry more light (sparse there), narrow ones in pipes less (dense there)
+    vHue = aHue;
+    vec2 q = position.xy;
+    vec3 wc = gsPlace(pos, vel, sigma, q);
+    float vox;
+    vSd = sdfVolume(wc, vox);
+    vSdVox = vox;
+  }
+`;
+const GS_BAKED_FRAG = THERMAL_RAMP_GLSL + GS_KERNEL_FRAG + `
+  uniform float uXray;
+  uniform float uXrayGlow;
+  uniform float uGsGain;
+  varying float vThermal;
+  varying float vSd;
+  varying float vSdVox;
+  varying float vDens;
+  varying vec4 vHue;
+  void main() {
+    float g = gsKernel();
+    float mask = 1.0 - smoothstep(-0.5 * vSdVox, 0.5 * vSdVox, vSd);   // same wall mask as the ray march
+    float a = g * vDens * vAtten * mask * uGsGain;
+    if (a < 0.002) discard;
+    vec3 col = thermalRamp(vThermal);
+    vec3 rgb;
+    if (uXray > 0.5) {
+      if (vHue.a > 0.0) col = mix(col, vHue.rgb, 0.35);
+      float depthIn = clamp(-vSd / (vSdVox * 5.0), 0.0, 1.0);
+      float rim = exp(-pow(vSd / (vSdVox * 1.2), 2.0));
+      float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);
+      vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm);
+      vec3 lit = mix(col, tint, 0.3);
+      float glow = uXrayGlow * (0.6 + 0.4 * depthIn);
+      rgb = (lit * (1.0 + 0.5 * glow) + vec3(0.02, 0.05, 0.08) * glow + tint * rim * 0.35 * uXrayGlow) * a;
+    } else {
+      rgb = col * (1.0 + 0.5 * g) * a;
+    }
+    gl_FragColor = vec4(rgb, a);
+  }
+`;
+
+// Live-leak splat shader: per-instance centre/velocity/alpha/size/heat/pressure
+// come from the arrays liveUpdateVisuals already maintains. No SDF (see header).
+const GS_LIVE_VERT = GS_BILLBOARD_VERT + `
+  uniform float uGsSize;
+  attribute vec3 aPos; attribute vec3 aVel; attribute float aAlpha; attribute float aSize; attribute float aHeat; attribute float aDens;
+  varying float vHeat; varying float vA; varying float vDens;
+  void main() {
+    if (aAlpha <= 0.002) { vQ = vec2(9.0); vAtten = 0.0; vHeat = 0.0; vA = 0.0; vDens = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vHeat = aHeat; vA = aAlpha;
+    vDens = 0.6 + 0.9 * aDens;
+    float sigma = uGsSize * aSize * (0.8 + 0.55 * aDens);
+    gsPlace(aPos, aVel, sigma, position.xy);
+  }
+`;
+const GS_LIVE_FRAG = THERMAL_RAMP_GLSL + GS_KERNEL_FRAG + `
+  uniform float uGsGain;
+  varying float vHeat; varying float vA; varying float vDens;
+  void main() {
+    float g = gsKernel();
+    float a = g * vA * vDens * vAtten * uGsGain;
+    if (a < 0.002) discard;
+    gl_FragColor = vec4(thermalRamp(vHeat) * (1.0 + 0.5 * g) * a, a);
+  }
+`;
+
+function gsApplyBlending(mat) {
+  mat.blending = THREE.CustomBlending;
+  mat.blendEquation = THREE.AddEquation;
+  mat.blendSrc = THREE.OneFactor;
+  mat.blendDst = GS_SCREEN_BLEND ? THREE.OneMinusSrcColorFactor : THREE.OneFactor;
+}
+function gsQuadGeometry() {
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 1,-1,0, 1,1,0, -1,1,0]), 3));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  return g;
+}
+function gsSceneSigma(sdf) {
+  const s = sdf && sdf.coarse ? sdf.coarse.boundsSize : null;
+  return s ? Math.max(Math.hypot(s.x, s.y, s.z) * 0.0055, 0.002) : 0.02;
+}
+
+// Called at the end of buildParticleSystem: builds the baked-flow splat mesh.
+// It SHARES the point system's instance attributes (so aLive hand-offs to the
+// live-leak system apply to both with one needsUpdate), its uTime uniform
+// and its SDF uniform objects — nothing is duplicated.
+function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart, count) {
+  const geo = gsQuadGeometry();
+  for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive']) geo.setAttribute(k, pointGeo.getAttribute(k));
+  const press = new Float32Array(count), hue = new Float32Array(count * 4);
+  const pCache = new Map();
+  for (let p = 0; p < count; p++) {
+    const part = ownerPart[p];
+    let c = pCache.get(part);
+    if (!c) {
+      const h = (part && VOL_CONTENT_HUE[part.type === 'chamber' ? 'chamber' : part.contents]) || null;
+      c = { press: gsPressure01(part ? part.internalPsi : 0), h };
+      pCache.set(part, c);
+    }
+    press[p] = c.press;
+    if (c.h) { hue[4 * p] = c.h[0]; hue[4 * p + 1] = c.h[1]; hue[4 * p + 2] = c.h[2]; hue[4 * p + 3] = 1; }
+  }
+  geo.setAttribute('aPress', new THREE.InstancedBufferAttribute(press, 1));
+  geo.setAttribute('aHue', new THREE.InstancedBufferAttribute(hue, 4));
+  geo.instanceCount = count;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({
+      uTime: pointUniforms.uTime,                // shared reference — one clock
+      uWaypoints: pointUniforms.uWaypoints, uTexHeight: pointUniforms.uTexHeight,
+      uGsSize: { value: gsSceneSigma(sdf) }, uGsTrail: { value: 0.03 }, uGsMaxStretch: { value: 3.5 }, uGsGain: { value: 0.35 },
+      uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 },
+    }, sdfUniforms),
+    vertexShader: GS_BAKED_VERT, fragmentShader: GS_BAKED_FRAG,
+    transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.DoubleSide,
+  });
+  gsApplyBlending(mat);
+  gsMesh = new THREE.Mesh(geo, mat);
+  gsMesh.frustumCulled = false;
+  gsMesh.renderOrder = 10;
+  gsMesh.visible = false;
+  scene.add(gsMesh);
+}
+
+function updateGaussianRender() {
+  if (gsMesh) gsMesh.visible = renderMode === 'gaussian' && state.simRunning && !!state.particleCPU;
+}
+
+// Live-leak splats: instanced quads over the SAME typed arrays the point layer
+// uses (position/alpha/size/heat), plus a velocity and a pressure array that
+// liveUpdateVisuals fills only while this mode is active.
+function liveEnsureGaussian() {
+  if (live.gsPoints) return live.gsPoints;
+  const geo = gsQuadGeometry();
+  const ia = (arr, n) => { const a = new THREE.InstancedBufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+  live.gsVel = new Float32Array(LIVE_MAX * 3); live.gsDens = new Float32Array(LIVE_MAX);
+  live.gsAttrs = [
+    ia(live.points.geometry.attributes.position.array, 3), ia(live.gsVel, 3), ia(live.pointAlpha.array, 1),
+    ia(live.pointSize.array, 1), ia(live.pointHeat.array, 1), ia(live.gsDens, 1),
+  ];
+  ['aPos', 'aVel', 'aAlpha', 'aSize', 'aHeat', 'aDens'].forEach((k, i) => geo.setAttribute(k, live.gsAttrs[i]));
+  geo.instanceCount = 0;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uGsSize: { value: gsSceneSigma(state.sdf) * 0.8 }, uGsTrail: { value: 0.07 }, uGsMaxStretch: { value: 6.0 }, uGsGain: { value: 0.3 } },
+    vertexShader: GS_LIVE_VERT, fragmentShader: GS_LIVE_FRAG,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+  });
+  gsApplyBlending(mat);
+  live.gsPoints = new THREE.Mesh(geo, mat);
+  live.gsPoints.frustumCulled = false; live.gsPoints.renderOrder = 11; live.gsPoints.visible = false;
+  scene.add(live.gsPoints);
+  return live.gsPoints;
+}
+
+// Render-mode wiring. renderMode is the single source of truth ('points' |
+// 'volumetric' | 'gaussian'); volEnabled mirrors it (true only for
+// 'volumetric') so every existing `volEnabled` check keeps its meaning. The
+// old #volumetricToggle checkbox still works: ticked = Volumetric, unticked
+// = Points, and it follows the selector. The underlying simulation
+// (uTime-driven computeParticlePosition, SDF collision, floor heat splat,
+// live leaks) is untouched — this only swaps the VISUAL layer.
+let renderMode = 'volumetric';      // default unchanged: Volumetric ON
+const renderModeEl = document.getElementById('renderMode');
+const volToggleEl = document.getElementById('volumetricToggle');
+function setRenderMode(mode) {
+  if (mode !== 'points' && mode !== 'gaussian') mode = 'volumetric';
+  renderMode = mode;
+  volEnabled = mode === 'volumetric';
+  if (renderModeEl.value !== mode) renderModeEl.value = mode;
+  if (volToggleEl.checked !== volEnabled) volToggleEl.checked = volEnabled;
+  if (particleSystem) particleSystem.visible = mode === 'points';
   if (!volEnabled && volMesh) volMesh.visible = false;
-};
+  if (live.leakMesh && !volEnabled) live.leakMesh.visible = false;
+  if (live.points && mode !== 'points') live.points.visible = false;
+  if (live.gsPoints && mode !== 'gaussian') live.gsPoints.visible = false;
+  updateGaussianRender();
+}
+renderModeEl.onchange = (e) => setRenderMode(e.target.value);
+volToggleEl.onchange = (e) => setRenderMode(e.target.checked ? 'volumetric' : 'points');
+// (initial sync with the checkbox runs at the end of setup, after `live` exists — see appReady)
 
 // X-ray toggle (default ON). Applies to the volumetric gas only: parts are
 // never made transparent. ON = depth test off + interior glow/hue shift so
@@ -4066,6 +4334,7 @@ document.getElementById('volumetricToggle').onchange = (e) => {
 // active (there the walls are already ~transparent; the glow still applies).
 function applyVolXray() {
   if (volMesh) { volMesh.material.uniforms.uXray.value = volXray ? 1 : 0; volMesh.material.depthTest = !volXray; }
+  if (gsMesh) { gsMesh.material.uniforms.uXray.value = volXray ? 1 : 0; gsMesh.material.depthTest = !volXray; }
   volLastBuildAt = -Infinity; // re-bake the splat colours (contents hue is only applied while X-ray is on)
 }
 document.getElementById('xrayToggle').onchange = (e) => { volXray = e.target.checked; applyVolXray(); };
@@ -4158,6 +4427,7 @@ function liveReset() {
   live.sdf = null; live.moved.clear(); live.firstChangeAt = 0; live.autoOk.clear();
   for (let i = 0; i < LIVE_MAX; i++) live.rref[i] = null;
   if (live.points) live.points.visible = false;
+  if (live.gsPoints) live.gsPoints.visible = false;
   if (live.leakMesh) live.leakMesh.visible = false;
   if (live.leakData) live.leakData.fill(0);
 }
@@ -4683,7 +4953,21 @@ function liveUpdateVisuals(now) {
   }
   L.points.geometry.setDrawRange(0, n);
   L.points.geometry.attributes.position.needsUpdate = true; L.pointAlpha.needsUpdate = true; L.pointSize.needsUpdate = true; L.pointHeat.needsUpdate = true;
-  L.points.visible = !volEnabled && active > 0;
+  L.points.visible = renderMode === 'points' && active > 0;
+  if (renderMode === 'gaussian') {
+    const gm = liveEnsureGaussian(), gv = L.gsVel, gd = L.gsDens;
+    const ln10 = Math.log(10), lmax = Math.log(1 + GS_PSI_MAX) / ln10;
+    for (let i = 0; i < n; i++) {
+      const s = L.st[i];
+      if (s !== 1 && s !== 2) continue;
+      gv[3 * i] = L.vx[i]; gv[3 * i + 1] = L.vy[i]; gv[3 * i + 2] = L.vz[i];
+      const g = L.byId.get(L.grp[i]), sp = s === 2 ? Math.min(L.age[i] / L.life[i], 1) : 0;
+      gd[i] = Math.min(Math.log(1 + Math.max(g ? g.dp : 0, 0)) / ln10 / lmax, 1) * (1 - 0.6 * sp);
+    }
+    for (const a of L.gsAttrs) a.needsUpdate = true;
+    gm.geometry.instanceCount = n;
+    gm.visible = active > 0;
+  } else if (L.gsPoints && L.gsPoints.visible) L.gsPoints.visible = false;
 
   const mesh = liveEnsureLeakMesh();
   if (mesh) {
@@ -4727,6 +5011,7 @@ function liveLeakFrame(now) {
   liveWatchTick(now);
   if (!live.n) {
     if (live.points && live.points.visible) live.points.visible = false;
+    if (live.gsPoints && live.gsPoints.visible) live.gsPoints.visible = false;
     if (live.leakMesh && live.leakMesh.visible) live.leakMesh.visible = false;
     return;
   }
@@ -4905,11 +5190,12 @@ document.getElementById('toggleLeft').onclick = () => document.getElementById('l
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
 // additional files alongside it (imports are additive; see onSceneLoaded).
+setRenderMode(volToggleEl.checked ? 'volumetric' : 'points'); // honour a browser-restored checkbox state
 appReady = true;
 loadDemo();
 </script>
