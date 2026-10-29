@@ -2019,7 +2019,8 @@ function renderChannelFlowReport() {
       `exit ${r.vExit.toFixed(1)} m/s${r.gas ? ' (Mach ' + r.mach.toFixed(2) + (r.choked ? ', choked' : '') + ')' : ''} · mass flow ${(r.mdot * 1000).toFixed(0)} g/s · ΔP ${(r.dP / PSI_PA).toFixed(0)} psi (friction ${(r.dpFric / PSI_PA).toFixed(1)}) · Re ${r.Re.toFixed(0)}<br>` +
       `v = Q/A: ${r.vMin.toFixed(1)}–${r.vMax.toFixed(1)} m/s along the bore · inlet pressure ${(r.dpInlet / PSI_PA).toFixed(1)} psi dynamic head</span></div>`);
   }
-  el.innerHTML = rows.join('') +
+  const dg = (state.linkDiagnostic || []).map(d => `<div class="${d.connected ? 'seal-ok' : 'seal-bad'}" style="display:block">${d.connected ? '✓' : '✗'} ${d.link} · bore Ø${d.minBoreDia} · ${d.voxelsAcrossBore == null ? '' : d.voxelsAcrossBore + ' voxels across · '}${d.connected ? 'cavities connect' : 'FIRST FAILURE at ' + JSON.stringify(d.firstFailure.at) + ' in ' + d.firstFailure.side}</div>`).join('');
+  el.innerHTML = rows.join('') + dg +
     `<div class="sec-sub">Assumes 1 model unit = ${(unit * 1000).toFixed(1)} mm and chamber back-pressure ${(CHAMBER_BACKPRESSURE_FRAC * 100).toFixed(0)}% of tank pressure. Particle speed along each path follows v ∝ 1/A (faster through narrow bores, compressed for display).</div>`;
 }
 
@@ -2181,8 +2182,8 @@ const SDF_MAX_FINE_REGIONS = 48; // hard cap (joint + per-part regions TOGETHER)
 // longer than ~SDF_VIRTUAL_EDGE_VOXELS voxels (see subdivideLargeTris).
 const SDF_MAX_PART_REGIONS = 24;          // part regions reserved out of SDF_MAX_FINE_REGIONS (joints get the rest)
 const SDF_PART_MIN_CELLS = 14;           // the part's thinnest bbox dimension gets at least this many voxels, budget permitting
-const SDF_PART_BUDGET = { chamber: 32000, container: 20000, pipe: 20000, other: 20000 }; // soft: accuracy first (builds are async/time-sliced); a heavy scene is the user's call to lighten // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
-const SDF_PART_MAX_AXIS = 160;            // per-axis cap for one part region
+const SDF_PART_BUDGET = { chamber: 4000, container: 2400, pipe: 1200, other: 1200 }; // soft: accuracy first (builds are async/time-sliced); a heavy scene is the user's call to lighten // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
+const SDF_PART_MAX_AXIS = 48;            // per-axis cap for one part region
 const SDF_VIRTUAL_EDGE_VOXELS = 2.5;     // ...but never split below this many voxels
 const SDF_VIRTUAL_EDGE_CELLS = 4;        // triangles longer than this many spatial-index cells (and > SDF_VIRTUAL_EDGE_VOXELS voxels) are virtually bisected
 const SDF_VIRTUAL_PHONG_ALPHA = 0.75;    // Phong-tessellation strength when a bisected edge's endpoints carry smooth vertex normals (0 = flat midpoints)
@@ -3152,6 +3153,61 @@ function fluidProps(part) {
   return FLUID_PROPS[c] || FLUID_PROPS.other;
 }
 
+
+// ── Link diagnostic: does each Container -> Pipe -> Chamber joint genuinely connect, at what resolution, and where does it fail? ──
+// For every baked link, the exit port is probed against BOTH parts' real meshes (signed distance, negative = inside that part's
+// cavity). If the coarse probe at the port misses, the search is refined adaptively (finer and finer point clouds inside the port
+// disc and along the flow axis, down to 1/64 of the port radius) until an interior point of the neighbour is found, i.e. a
+// resolution/detection miss is distinguished from a real gap. Tube bore data comes from the analytic fit.
+function diagnoseLinks() {
+  const links = state.currentLinks || new Map();
+  const rows = [];
+  const sdfAtPart = (part, v) => { const ix = penIndexForPart(part); return ix ? signedDistanceToMesh(v, ix) : Infinity; };
+  for (const [part, link] of links) {
+    const target = link.target, o = link.viaOpening;
+    const tubeA = state.sdf && state.sdf.tubes && state.sdf.tubes.byPart.get(part), tubeB = state.sdf && state.sdf.tubes && state.sdf.tubes.byPart.get(target);
+    const r = Math.max(o.radius, 1e-3);
+    const n = o.normal.clone().normalize();
+    const u = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0).cross(n).normalize() : new THREE.Vector3(1, 0, 0).cross(n).normalize();
+    const w = n.clone().cross(u);
+    const probe = (partX, scale, levels) => {
+      let best = Infinity, bestPt = null, tested = 0;
+      for (let lv = 0; lv <= levels; lv++) {
+        const k = lv === 0 ? 1 : Math.pow(2, lv); // 1,2,4,.. rings/steps: refinement
+        const rad = r * scale / (lv === 0 ? 1 : 1);
+        for (let ia = 0; ia <= k; ia++) for (let ib = 0; ib < Math.max(1, 2 * k); ib++) {
+          const rr = rad * (ia / k), th = (ib / Math.max(1, 2 * k)) * Math.PI * 2;
+          for (let ax = -2; ax <= 2; ax++) {
+            const p = o.centroid.clone().addScaledVector(u, rr * Math.cos(th)).addScaledVector(w, rr * Math.sin(th)).addScaledVector(n, ax * r * 0.5 / Math.max(1, lv));
+            const d = sdfAtPart(partX, p); tested++;
+            if (d < best) { best = d; bestPt = p; }
+          }
+        }
+        if (best < 0) break;
+      }
+      return { sd: best, pt: bestPt, tested };
+    };
+    const pa = probe(part, 0.8, 5), pb = probe(target, 0.8, 5);
+    // min bore along the whole path portion: fitted tubes if present, else the ports
+    let minBore = Math.min(o.radius, link.entrance ? link.entrance.radius : o.radius) * 2;
+    if (tubeA) minBore = Math.min(minBore, tubeA.minRIn * 2);
+    if (tubeB) minBore = Math.min(minBore, tubeB.minRIn * 2);
+    const jr = state.sdf && state.sdf.info.regions.filter(g => g.kind === 'joint');
+    const voxel = jr && jr.length ? Math.min(...jr.map(g => g.voxelEdge)) : null;
+    // strict: an interior sample exists at the port; skin: the nearest interior is within half a port radius (the port sits on the wall
+    // surface/neck lip, i.e. the mouth touches the cavity within wall thickness) - a real gap would be larger than that.
+    const tolSkin = Math.max(0.02, 0.5 * r), strict = pa.sd <= 0.02 && pb.sd <= 0.02;
+    const connected = pa.sd <= tolSkin && pb.sd <= tolSkin;
+    rows.push({ link: part.name + ' -> ' + target.name, auto: !!link.auto, portRadius: +o.radius.toFixed(3), minBoreDia: +minBore.toFixed(3),
+      jointVoxelEdgeMin: voxel, voxelsAcrossBore: voxel ? +(minBore / voxel).toFixed(1) : null,
+      sdAtPortInUpstream: +pa.sd.toFixed(4), sdAtPortInDownstream: +pb.sd.toFixed(4), probes: pa.tested + pb.tested, connected, strictInterior: strict,
+      firstFailure: connected ? null : { at: o.centroid.toArray().map(v => +v.toFixed(2)), side: pa.sd > 0.02 ? part.name : target.name, nearestSd: +Math.max(pa.sd, pb.sd).toFixed(4) },
+      tubeFitted: !!(tubeA || tubeB) });
+  }
+  state.linkDiagnostic = rows;
+  return rows;
+}
+
 // Per-tube numbers for the demo / any scene: bore area profile A(s), min bore, length, exit velocity, mass flow.
 function computeChannelFlows() {
   const tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.list : [];
@@ -4020,6 +4076,7 @@ async function buildParticleSystem() {
   state.sdf = collisionSDF;
   if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
   state.pathMeta = new Map();
+  setTimeout(() => { try { diagnoseLinks(); renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }, 0);
   state.channelFlows = computeChannelFlows(); // bore areas -> continuity / Bernoulli / Darcy-Weisbach per fitted channel
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
@@ -4814,7 +4871,7 @@ const TUBE_FRAGMENT_SHADER = `
           float rim = exp(-pow((rn - 0.9) / 0.12, 2.0));
           acc += transmittance * (1.0 - exp(-dens * 0.5)) * rim * tint * 0.5 * uXrayGlow;
         }
-        acc += transmittance * absorb * emit * 1.35;
+        acc += transmittance * absorb * emit * 1.0;
         transmittance *= (1.0 - absorb);
         if (transmittance < 0.02) break;
       }
@@ -4847,7 +4904,7 @@ function ensureTubeVolumes() {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uTubeTex: { value: ts.tex }, uTubeDens: { value: densTex }, uTubeIdx: { value: q }, uFirstSeg: { value: tube.firstSeg }, uSegCount: { value: tube.nSegs }, uLen: { value: tube.L },
-        uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.9 },
+        uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.55 },
       },
       vertexShader: TUBE_VERTEX_SHADER, fragmentShader: TUBE_FRAGMENT_SHADER,
       transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.BackSide,
@@ -4922,7 +4979,7 @@ function buildParticleCores(pointsObj) {
   if (particleCoreSystem) { scene.remove(particleCoreSystem); particleCoreSystem.material.dispose(); particleCoreSystem = null; }
   const base = pointsObj.material;
   const mat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({}, base.uniforms, { uSize: { value: 0.55 } }),   // shares uTime/waypoints/SDF with the main stream, own size
+    uniforms: Object.assign({}, base.uniforms, { uSize: { value: 0.45 } }),   // shares uTime/waypoints/SDF with the main stream, own size
     vertexShader: PARTICLE_VERTEX_SHADER,
     fragmentShader: THERMAL_RAMP_GLSL + `
       varying float vThermal;
@@ -4933,8 +4990,8 @@ function buildParticleCores(pointsObj) {
         if (d > 1.0) discard;
         float core = pow(1.0 - d, 2.2);
         vec3 col = thermalRamp(vThermal);
-        vec3 hot = mix(col, vec3(1.0), 0.55) * (0.9 + 1.4 * core);
-        gl_FragColor = vec4(hot, core * 0.85);
+        vec3 hot = mix(col, vec3(1.0), 0.3) * (0.8 + 1.0 * core);
+        gl_FragColor = vec4(hot, core * 0.55);
       }`,
     transparent: true, depthWrite: false, depthTest: !volXray, blending: THREE.AdditiveBlending,
   });
@@ -7307,7 +7364,7 @@ function debugReadParticlePositions(tOverride) {
 window.arcFlowDebug = { readParticles: debugReadParticlePositions };
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, fitTubeForPart, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
