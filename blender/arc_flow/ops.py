@@ -98,8 +98,8 @@ class AF_OT_add_phys(Operator):
     def execute(self, ctx):
         af = _af(ctx)
         c = af.physics_cards.add()
-        n = sum(1 for x in af.physics_cards if x.kind == self.kind)
         c.kind = self.kind
+        n = sum(1 for x in af.physics_cards if x.kind == self.kind)
         c.name = "%s %d" % (self.kind.title(), n)
         c.value = {'MASS': 1000.0, 'VOLUME': 1.0, 'WEIGHT': 9810.0, 'DENSITY': 997.0, 'TEMPERATURE': 293.15, 'VELOCITY': 1.0}[self.kind]
         if af.fluids:

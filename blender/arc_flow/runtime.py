@@ -312,28 +312,36 @@ def bind_objects(scene):
             mc = o.modifiers.get("AF Cards") or o.modifiers.new("AF Cards", 'NODES')
             mc.node_group = chain
             mr = o.modifiers.get("AF Render") or o.modifiers.new("AF Render", 'NODES')
-            mr.node_group = bpy.data.node_groups[gname]
+            kind = {'AF_Points': 'Points', 'AF_RayMarch': 'RayMarch', 'AF_Splat': 'Splat'}[gname]
+            mr.node_group = gn.render_group(kind, fl.name)
+            gn.set_group_material(mr.node_group, {'AF_Points': mats['points'], 'AF_RayMarch': mats['volume'], 'AF_Splat': mats['splat']}[gname])
             if gname == 'AF_Points':
                 gn.set_modifier_inputs(mr, {"Instance Object": fl.pt_object, "Use Object": fl.pt_object is not None,
                                             "Instance Collection": fl.pt_collection, "Use Collection": bool(fl.pt_use_collection and fl.pt_collection),
-                                            "Scale": fl.pt_scale, "Material": mats['points']})
+                                            "Scale": fl.pt_scale})
             elif gname == 'AF_RayMarch':
-                gn.set_modifier_inputs(mr, {"Density": fl.rm_density * 0.02, "Voxel Size": voxel, "Radius Scale": fl.rm_radius, "Material": mats['volume']})
+                gn.set_modifier_inputs(mr, {"Density": fl.rm_density * 0.02, "Voxel Size": voxel, "Radius Scale": fl.rm_radius})
             else:
                 gn.set_modifier_inputs(mr, {"Splat Object": fl.gs_object, "Use Object": fl.gs_object is not None, "Resolution": fl.gs_resolution,
-                                            "Density": fl.gs_density, "Scale": fl.gs_scale, "Material": mats['splat']})
+                                            "Density": fl.gs_density, "Scale": fl.gs_scale})
             on = fl.render_mode == {'Points': 'POINTS', 'Volume': 'RAYMARCH', 'Splat': 'SPLAT'}[label]
             o.hide_viewport = not on
             o.hide_render = not on
-        # shape key used to drive the ray-march colour blend
-        vo = fl.volume_obj
-        if me.shape_keys is None:
-            vo.shape_key_add(name="Basis")
-        if "AF_ColorBlend" not in me.shape_keys.key_blocks:
-            sk = vo.shape_key_add(name="AF_ColorBlend")
+        # shape key (on a separate 1-vertex control object, so it never overrides the particle positions)
+        cname = "AF_%s_Control" % fl.name
+        cme = bpy.data.meshes.get(cname) or bpy.data.meshes.new(cname)
+        if len(cme.vertices) == 0:
+            cme.vertices.add(1)
+        co = _obj(cname, cme, col)
+        co.hide_viewport = True
+        co.hide_render = True
+        if cme.shape_keys is None:
+            co.shape_key_add(name="Basis")
+        if "AF_ColorBlend" not in cme.shape_keys.key_blocks:
+            sk = co.shape_key_add(name="AF_ColorBlend")
             sk.slider_min, sk.slider_max = 0.0, 1.0
-        me.shape_keys.key_blocks["AF_ColorBlend"].value = fl.rm_blend
-        shading.bind_blend_driver(mats['volume'], vo)
+        cme.shape_keys.key_blocks["AF_ColorBlend"].value = fl.rm_blend
+        shading.bind_blend_driver(mats['volume'], co)
     apply_xray(scene)
 
 

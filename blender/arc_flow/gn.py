@@ -15,6 +15,41 @@ def slug(s):
     return re.sub(r'[^0-9a-zA-Z]+', '_', s).strip('_') or 'x'
 
 
+def _matnode(b):
+    n = b.node('GeometryNodeInputMaterial', label="Fluid shader", y=-650)
+    n.name = 'AF_Material'
+    return n
+
+
+def set_group_material(ng, mat):
+    n = ng.nodes.get('AF_Material')
+    if n is not None:
+        n.material = mat
+
+
+def render_group(kind, fluid_name):
+    """Per-fluid render group (created once; user edits are kept)."""
+    name = "AF_%s_%s" % (kind, slug(fluid_name))
+    ng = bpy.data.node_groups.get(name)
+    if ng is None or not ng.nodes:
+        ng = {'Points': points_group, 'RayMarch': raymarch_group, 'Splat': splat_group}[kind](name)
+    return ng
+
+
+def _any_in(node, *names):
+    for n in names:
+        if any(s.name == n for s in node.inputs):
+            return inp(node, n)
+    raise KeyError(names)
+
+
+def _any_out(node, *names):
+    for n in names:
+        if any(s.name == n for s in node.outputs):
+            return out(node, n)
+    raise KeyError(names)
+
+
 def _sw_geo(b, cond, false_geo, true_geo, y=0):
     n = b.node('GeometryNodeSwitch', input_type='GEOMETRY', y=y)
     b.link(cond, inp(n, 'Switch'))
@@ -40,8 +75,8 @@ def _alive_filter(b, gi, extra_cond=None, y=0):
     return out(d, 'Geometry'), out(rad, 'Attribute')
 
 
-def points_group():
-    ng = fresh_group("AF_Points")
+def points_group(name="AF_Points"):
+    ng = fresh_group(name)
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
     add_socket(ng, "Instance Object", 'NodeSocketObject', 'INPUT')
     add_socket(ng, "Use Object", 'NodeSocketBool', 'INPUT', False)
@@ -49,7 +84,6 @@ def points_group():
     add_socket(ng, "Use Collection", 'NodeSocketBool', 'INPUT', False)
     add_socket(ng, "Scale", 'NodeSocketFloat', 'INPUT', 1.0, 0.0)
     add_socket(ng, "Subdivisions", 'NodeSocketInt', 'INPUT', 2, 0, 5)
-    add_socket(ng, "Material", 'NodeSocketMaterial', 'INPUT')
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
     b = Builder(ng)
     gi, go = b.group_io()
@@ -63,7 +97,9 @@ def points_group():
     b.link(out(gi, 'Instance Collection'), inp(ci, 'Collection'))
     inp(ci, 'Separate Children').default_value = True
     inp(ci, 'Reset Children').default_value = True
-    s1 = _sw_geo(b, out(gi, 'Use Object'), out(ico, 'Mesh'), out(oi, 'Geometry'), y=-250)
+    smooth = b.node('GeometryNodeSetShadeSmooth', y=-200)
+    b.link(out(ico, 'Mesh'), _any_in(smooth, 'Geometry', 'Mesh'))
+    s1 = _sw_geo(b, out(gi, 'Use Object'), _any_out(smooth, 'Mesh', 'Geometry'), out(oi, 'Geometry'), y=-250)
     s2 = _sw_geo(b, out(gi, 'Use Collection'), s1, out(ci, 'Instances'), y=-400)
     mul = b.math('MULTIPLY', rad, out(gi, 'Scale'), y=100)
     iop = b.node('GeometryNodeInstanceOnPoints', y=0)
@@ -74,18 +110,17 @@ def points_group():
         b.link(out(gi, 'Use Collection'), inp(iop, 'Pick Instance'))
     sm = b.node('GeometryNodeSetMaterial', y=0)
     b.link(out(iop, 'Instances'), inp(sm, 'Geometry'))
-    b.link(out(gi, 'Material'), inp(sm, 'Material'))
+    b.link(out(_matnode(b), 'Material'), inp(sm, 'Material'))
     b.link(out(sm, 'Geometry'), inp(go, 'Geometry'))
     return ng
 
 
-def raymarch_group():
-    ng = fresh_group("AF_RayMarch")
+def raymarch_group(name="AF_RayMarch"):
+    ng = fresh_group(name)
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
     add_socket(ng, "Density", 'NodeSocketFloat', 'INPUT', 1.0, 0.0, desc="Density written into the volume grid")
     add_socket(ng, "Voxel Size", 'NodeSocketFloat', 'INPUT', 0.05, 1e-4)
     add_socket(ng, "Radius Scale", 'NodeSocketFloat', 'INPUT', 2.0, 0.01)
-    add_socket(ng, "Material", 'NodeSocketMaterial', 'INPUT')
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
     b = Builder(ng)
     gi, go = b.group_io()
@@ -102,13 +137,13 @@ def raymarch_group():
     b.link(out(mul, 'Value'), inp(p2v, 'Radius'))
     sm = b.node('GeometryNodeSetMaterial', y=0)
     b.link(out(p2v, 'Volume'), inp(sm, 'Geometry'))
-    b.link(out(gi, 'Material'), inp(sm, 'Material'))
+    b.link(out(_matnode(b), 'Material'), inp(sm, 'Material'))
     b.link(out(sm, 'Geometry'), inp(go, 'Geometry'))
     return ng
 
 
-def splat_group():
-    ng = fresh_group("AF_Splat")
+def splat_group(name="AF_Splat"):
+    ng = fresh_group(name)
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
     add_socket(ng, "Splat Object", 'NodeSocketObject', 'INPUT')
     add_socket(ng, "Use Object", 'NodeSocketBool', 'INPUT', False)
@@ -116,7 +151,6 @@ def splat_group():
     add_socket(ng, "Density", 'NodeSocketFloat', 'INPUT', 1.0, 0.0, 1.0)
     add_socket(ng, "Scale", 'NodeSocketFloat', 'INPUT', 2.5, 0.0)
     add_socket(ng, "Seed", 'NodeSocketInt', 'INPUT', 0)
-    add_socket(ng, "Material", 'NodeSocketMaterial', 'INPUT')
     add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
     b = Builder(ng)
     gi, go = b.group_io()
@@ -132,12 +166,14 @@ def splat_group():
     oi = b.node('GeometryNodeObjectInfo', y=-350, transform_space='ORIGINAL')
     b.link(out(gi, 'Splat Object'), inp(oi, 'Object'))
     inp(oi, 'As Instance').default_value = True
-    s1 = _sw_geo(b, out(gi, 'Use Object'), out(ico, 'Mesh'), out(oi, 'Geometry'), y=-250)
+    smooth = b.node('GeometryNodeSetShadeSmooth', y=-200)
+    b.link(out(ico, 'Mesh'), _any_in(smooth, 'Geometry', 'Mesh'))
+    s1 = _sw_geo(b, out(gi, 'Use Object'), _any_out(smooth, 'Mesh', 'Geometry'), out(oi, 'Geometry'), y=-250)
     mul = b.math('MULTIPLY', rad, out(gi, 'Scale'), y=100)
     iop = b.node('GeometryNodeInstanceOnPoints', y=0)
     b.link(geo, inp(iop, 'Points')); b.link(s1, inp(iop, 'Instance')); b.link(out(mul, 'Value'), inp(iop, 'Scale'))
     sm = b.node('GeometryNodeSetMaterial', y=0)
-    b.link(out(iop, 'Instances'), inp(sm, 'Geometry')); b.link(out(gi, 'Material'), inp(sm, 'Material'))
+    b.link(out(iop, 'Instances'), inp(sm, 'Geometry')); b.link(out(_matnode(b), 'Material'), inp(sm, 'Material'))
     b.link(out(sm, 'Geometry'), inp(go, 'Geometry'))
     return ng
 
@@ -295,6 +331,25 @@ def ensure_render_groups():
             fn()
 
 
+def _set_input(mod, ident, value):
+    """Blender <= 5.1: mod[identifier]; Blender 5.2+: mod.properties.inputs[identifier]."""
+    try:
+        mod[ident] = value
+        return True
+    except Exception:
+        pass
+    try:
+        mod.properties.inputs[ident] = value
+        return True
+    except Exception:
+        pass
+    try:
+        setattr(mod.properties.inputs, ident, value)
+        return True
+    except Exception:
+        return False
+
+
 def set_modifier_inputs(mod, values):
     """values: {socket display name: value}; resolves interface identifiers."""
     ng = mod.node_group
@@ -303,8 +358,5 @@ def set_modifier_inputs(mod, values):
     for item in ng.interface.items_tree:
         if getattr(item, 'item_type', '') != 'SOCKET' or item.in_out != 'INPUT':
             continue
-        if item.name in values:
-            try:
-                mod[item.identifier] = values[item.name]
-            except Exception:
-                pass
+        if item.name in values and values[item.name] is not None:
+            _set_input(mod, item.identifier, values[item.name])
