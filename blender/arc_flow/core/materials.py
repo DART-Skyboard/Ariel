@@ -39,7 +39,7 @@ def yield_at(m, temp_k):
     return m['yield_'] * (1.0 - 0.9 * f)
 
 
-def stress_state(m, temp_k, pressure_pa, radius_m, wall_m, t_ref=293.15, constrained=1.0):
+def stress_state(m, temp_k, pressure_pa, radius_m, wall_m, t_ref=293.15, constrained=0.25):
     """Return (sigma_vm_pa, utilisation) for a thin-walled pressurised, heated part.
 
     hoop stress  = P r / t       (thin-wall vessel)

@@ -1,4 +1,4 @@
-"""Small procedural test meshes (NumPy only)."""
+"""Small procedural meshes (NumPy only): used by tests and the demo rig."""
 import numpy as np
 
 

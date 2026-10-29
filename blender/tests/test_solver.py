@@ -3,9 +3,9 @@ import os, sys, time
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'arc_flow'))
-sys.path.insert(0, HERE)
+
 from core import sdf, world, fluids, materials, mathcards, units
-import meshes as MS
+from core import primitives as MS
 
 
 def ok(cond, msg):

@@ -301,16 +301,40 @@ def _trilerp(vals, i0, f):
     return (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz
 
 
-def _enclosure(material):
-    """Number (0..6) of axis directions in which each node is blocked by material further along."""
+def _thin_barriers(sd, ax, h):
+    """Walls thinner than one voxel fall between two nodes that are both outside the material.  Detect them
+    from the V-shape of the distance field along the axis: approaching, receding, and the two distances add up
+    to less than the node spacing.  Returns B (bool, length n-1 along `ax`): barrier between node k and k+1."""
+    m = np.moveaxis(sd, ax, 0)
+    if m.shape[0] < 4:
+        return np.zeros_like(m[:-1], bool)
+    d0, d1, d2, d3 = m[:-3], m[1:-2], m[2:-1], m[3:]
+    inner = (d1 > 0) & (d2 > 0) & ((d1 - d0) < -0.25 * h) & ((d3 - d2) > 0.25 * h) & ((d1 + d2) < 0.95 * h)
+    B = np.zeros_like(m[:-1], bool)
+    B[1:-1] = inner
+    return B
+
+
+def _enclosure(material, sd=None, h=None):
+    """Number (0..6) of axis directions in which each node is blocked by material (or a thin wall) further along."""
     cnt = np.zeros(material.shape, np.int8)
+    blocked = {}
     for ax in range(3):
         m = np.moveaxis(material, ax, 0)
-        fwd = np.flip(np.maximum.accumulate(np.flip(m, 0), 0), 0)        # any material at index >= i
-        bwd = np.maximum.accumulate(m, 0)                                  # any material at index <= i
-        fwd_ex = np.concatenate([fwd[1:], np.zeros_like(fwd[:1])], 0)      # strictly beyond
-        bwd_ex = np.concatenate([np.zeros_like(bwd[:1]), bwd[:-1]], 0)
+        B = np.moveaxis(_thin_barriers(sd, ax, h), 0, 0) if sd is not None else np.zeros_like(m[:-1], bool)
+        # forward: material strictly beyond node i, or a barrier between k,k+1 with k >= i
+        fwd_m = np.flip(np.maximum.accumulate(np.flip(m, 0), 0), 0)
+        fwd_ex = np.concatenate([fwd_m[1:], np.zeros_like(fwd_m[:1])], 0)
+        fwd_b = np.flip(np.maximum.accumulate(np.flip(B, 0), 0), 0)               # barrier at k >= i
+        fwd_ex = fwd_ex | np.concatenate([fwd_b, np.zeros_like(fwd_b[:1])], 0)
+        bwd_m = np.maximum.accumulate(m, 0)
+        bwd_ex = np.concatenate([np.zeros_like(bwd_m[:1]), bwd_m[:-1]], 0)
+        bwd_b = np.maximum.accumulate(B, 0)                                          # barrier at k <= i-1
+        bwd_ex = bwd_ex | np.concatenate([np.zeros_like(bwd_b[:1]), bwd_b], 0)
+        blocked[(ax, 1)] = np.moveaxis(fwd_ex, 0, ax)
+        blocked[(ax, -1)] = np.moveaxis(bwd_ex, 0, ax)
         cnt += np.moveaxis(fwd_ex.astype(np.int8), 0, ax) + np.moveaxis(bwd_ex.astype(np.int8), 0, ax)
+    _enclosure.last_blocked = blocked
     return cnt
 
 
@@ -333,13 +357,12 @@ class PartField:
         pad = 2.0 * self.h
         self.origin = lo - pad
         self.dims = np.maximum(np.ceil((hi + pad - self.origin) / self.h).astype(int) + 1, 4)
-        idx = np.stack(np.meshgrid(*[np.arange(d) for d in self.dims], indexing='ij'), -1).reshape(-1, 3)
-        pts = self.origin + idx * self.h
-        sd = signed_distance(self.soup, pts).reshape(self.dims)
+        sd = self._build_sd()
         self.sd = sd
         # --- cavity classification
         material = sd < 0.0
-        enc = _enclosure(material)
+        enc = _enclosure(material, sd, self.h)
+        self._blocked = _enclosure.last_blocked
         solid_cav = (sd > 0.0) & (enc >= 4)
         auto_solid = solid_cav.sum() >= max(20, int(0.005 * sd.size))
         self.mode = mode if mode in ('SHELL', 'SOLID') else ('SOLID' if auto_solid else 'SHELL')
@@ -365,6 +388,23 @@ class PartField:
         self.bricks = np.zeros((0, self.F + 1, self.F + 1, self.F + 1))
         self.n_refined = 0
         self._compute_openings()
+
+    def _build_sd(self):
+        """Exact signed distance on a half-resolution lattice, interpolated to full resolution, then recomputed
+        exactly wherever the surface is near (the only place accuracy matters)."""
+        dims, h = self.dims, self.h
+        cidx = [np.arange(0, d, 2) for d in dims]
+        cd = np.array([len(c) for c in cidx])
+        gi = np.stack(np.meshgrid(*cidx, indexing='ij'), -1).reshape(-1, 3)
+        coarse = signed_distance(self.soup, self.origin + gi * h).reshape(cd)
+        fi = np.stack(np.meshgrid(*[np.arange(d) for d in dims], indexing='ij'), -1).reshape(-1, 3)
+        g = np.clip(fi / 2.0, 0, cd - 1 - 1e-9)
+        i0 = np.floor(g).astype(np.int64)
+        sd = _trilerp(coarse, i0, g - i0)
+        near = np.flatnonzero(np.abs(sd) < 3.0 * h)
+        if len(near):
+            sd[near] = signed_distance(self.soup, self.origin + fi[near] * h)
+        return sd.reshape(dims)
 
     # ------------------------------------------------------------------ sampling
     def _locate(self, P):
@@ -470,7 +510,7 @@ class PartField:
                     edge = [slice(None)] * 3
                     edge[ax] = slice(-1, None) if sgn == 1 else slice(0, 1)
                     sh[tuple(edge)] = False
-                    mouth = cav & sh
+                    mouth = cav & sh & ~self._blocked[(ax, sgn)]
                     ii = np.argwhere(mouth)
                     if len(ii):
                         d = np.zeros(3); d[ax] = sgn
