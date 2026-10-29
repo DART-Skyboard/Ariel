@@ -472,8 +472,13 @@ const floorMat = new THREE.ShaderMaterial({
     uniform vec3 uBaseColor;
     varying vec2 vUv;
     void main() {
-      float heat = texture2D(uHeat, vUv).r;
-      vec3 col = mix(uBaseColor, thermalRamp(heat), clamp(heat * 1.6, 0.0, 1.0));
+      vec2 h = texture2D(uHeat, vUv).rg;
+      float energy = h.g;
+      float temp = clamp(h.r / max(energy, 1e-4), 0.0, 1.0);   // mean temperature of what landed here
+      float k = 1.0 - exp(-energy * 1.4);                      // soft-saturating intensity, never clips
+      // Cap the ramp below its near-white end: hot reads as orange-gold, not paper-white.
+      vec3 heatCol = thermalRamp(temp * 0.82);
+      vec3 col = uBaseColor + heatCol * (k * 0.85);
       gl_FragColor = vec4(col, 1.0);
     }
   `,
@@ -3054,7 +3059,11 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
     float floorProximity = smoothstep(3.0, 0.0, vHeightAboveFloor);
     if (floorProximity <= 0.001) discard;
     float edge = smoothstep(0.5, 0.0, length(c));
-    gl_FragColor = vec4(vThermal, 1.0, 1.0, edge * floorProximity * 0.35);
+    // Channel layout (additive): R = heat-weighted energy, G = energy.
+    // The floor shader divides them back into a mean temperature and
+    // tone-maps the energy, so thousands of overlapping splats can't
+    // saturate into a blown-out white slab.
+    gl_FragColor = vec4(vThermal, 1.0, 0.0, edge * floorProximity * 0.012);
   }
 `;
 
