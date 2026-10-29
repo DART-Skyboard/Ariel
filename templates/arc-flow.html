@@ -237,6 +237,21 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <div class="sec-h">◈ Joints</div>
     <div id="jointReport"><div class="sec-sub">Press Simulate to check how parts connect.</div></div>
 
+    <div class="sec-h">◈ Propulsion Preset</div>
+    <label class="field">Engine / Exhaust Model</label>
+    <select id="propPreset">
+      <option value="rocket_bell" selected>Rocket · supersonic bell nozzle</option>
+      <option value="thruster">Low-thrust thruster</option>
+      <option value="sl_engine">Sea-level engine · Earth (underexpanded plume)</option>
+      <option value="vac_in_atm">Vacuum engine · Earth sea level (overexpanded)</option>
+      <option value="vac_engine">Vacuum engine · hard vacuum (fan plume)</option>
+      <option value="off">Legacy soft plume (no nozzle model)</option>
+    </select>
+    <div class="readout" id="propReadout">select a preset</div>
+    <div class="sec-sub">
+      Sets the combustion chamber's pressure and temperature, the ambient atmosphere, the particle count and the thermal/emission scaling, then drives a live exhaust jet from the nozzle: exit velocity from the isentropic nozzle relations, a bell/cone plume that expands or contracts with the ambient pressure, Mach (shock) diamonds spaced by the nozzle exit diameter and the pressure ratio, turbulent edge mixing, and a real ground impingement with a radial wall jet. Drawn in both the point-sprite and the volumetric views. Edit the chamber's pressure/temperature or the atmosphere afterwards and the plume follows. The particle count applies to the baked flow on the next Simulate press.
+    </div>
+
     <div class="sec-h">◈ Atmosphere</div>
     <label class="field">Environment Preset</label>
     <select id="atmoPreset">
@@ -439,6 +454,7 @@ floorGeo.rotateX(-Math.PI / 2);
 // rendered its HTML/CSS fine but no scene ever loaded.
 let particleSystem = null;
 let particleSplatMaterial = null;
+const plumeHidePostUniform = { value: 0 }; // shared by the display + floor-splat materials and the CPU volume splat
 let partHeatEmissiveApplied = false;
 
 let floorHeatRes = 512; // "Thermal Resolution" — texture-space detail for
@@ -542,10 +558,16 @@ function renderFloorHeatPass() {
   floorDecayMat.uniforms.uPrev.value = readTarget.texture;
   renderer.render(floorDecayScene, floorOrthoCam2D);
 
-  const originalMaterial = particleSystem.material;
+  // The point-sprite layer is HIDDEN while the volumetric view is on (the default), and three.js skips an invisible
+  // root outright, so the baked-flow floor splat silently did nothing in that mode. Force it visible for this
+  // off-screen pass only.
+  const originalMaterial = particleSystem.material, wasVisible = particleSystem.visible;
+  particleSystem.visible = true;
   particleSystem.material = particleSplatMaterial;
   renderer.render(particleSystem, floorOrthoCam);
   particleSystem.material = originalMaterial;
+  particleSystem.visible = wasVisible;
+  if (typeof plumeFloorPass === 'function') plumeFloorPass();
 
   renderer.setRenderTarget(prevRenderTarget);
   renderer.autoClear = prevAutoClear;
@@ -586,6 +608,7 @@ function animateBase() {
     if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
     if (typeof updateGaussianRender === 'function') updateGaussianRender();
     if (typeof liveLeakFrame === 'function') liveLeakFrame(performance.now());
+    if (typeof plumeFrame === 'function') plumeFrame(performance.now());
   }
   renderer.render(scene, camera);
 }
@@ -827,6 +850,7 @@ function applyDefaultDemoConfiguration() {
     part.openings = top;
     applied++;
   }
+  if (applied > 0) { propPresetEl.value = 'rocket_bell'; applyPropPreset('rocket_bell'); } // the demo's default engine: supersonic bell nozzle at sea level
   buildPartListUI();
   highlightSelection();
   if (state.selectedPart) renderPartDetail();
@@ -1575,7 +1599,12 @@ function openingLiveCentroid(opening) {
   return opening.marker ? opening.marker.getWorldPosition(new THREE.Vector3()) : opening.centroid;
 }
 function openingLiveNormal(opening) {
-  return opening.marker ? opening.marker.getWorldDirection(new THREE.Vector3()) : opening.normal;
+  // attachOpeningMarker orients the marker so its local -Z is the opening's normal. Object3D.getWorldDirection returns the
+  // world +Z axis (it only flips for cameras), i.e. the REVERSED normal - which silently turned every painted opening's
+  // normal around once a seal check refreshed it (the nozzle then "pointed" up into the chamber). Use -Z.
+  if (!opening.marker) return opening.normal;
+  const q = opening.marker.getWorldQuaternion(new THREE.Quaternion());
+  return new THREE.Vector3(0, 0, -1).applyQuaternion(q).normalize();
 }
 
 // Re-derive current world-space opening data for a part right before it
@@ -2939,6 +2968,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   const radii = [partContainmentRadius(part)];
   let cur = part;
   let reachedNozzle = false;
+  let exitIdx = MAX_WAYPOINTS; // waypoint index of the nozzle exit plane (the live exhaust plume takes over from here)
 
   // A part's own particles might start directly in the chamber itself.
   if (cur.type === 'chamber') {
@@ -2975,6 +3005,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // each particle gets its own random landing offset, so the whole stream
   // together reads as a dispersing exhaust plume rather than a single line.
   if (reachedNozzle) {
+    exitIdx = path.length - 1;
     const exitPt = path[path.length - 1];
     const dropHeight = Math.max(exitPt.y, 0.1);
     const spreadX = (Math.random() - 0.5) * dropHeight * 0.7;
@@ -2994,7 +3025,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // the old per-part cylinder lerp was worst (joints), without having to
   // test every fine box against every particle every frame itself.
   const fineIdx = points.map(p => fineRegionIndexAt(p, collisionSDF));
-  return { points, radii: radiiOut, fineIdx };
+  return { points, radii: radiiOut, fineIdx, exitIdx };
 }
 
 // Shared GLSL for sampling the collision SDF — used by the particle vertex
@@ -3184,6 +3215,8 @@ const PARTICLE_SHADER_CORE = `
   attribute float aLatU;
   attribute float aLatV;
   attribute float aLive;   // 1 = this baked particle has been taken over by the live pressure-driven leak system (hidden here)
+  attribute float aExit;   // waypoint index of this particle's nozzle exit plane (>= MAX_WAYPOINTS: never reaches one)
+  uniform float uHidePost; // 1 = the live rocket-plume model draws everything past the nozzle, so hide the baked post-nozzle stretch
   varying float vThermal;
   varying float vProgress;
 
@@ -3265,7 +3298,7 @@ const PARTICLE_SHADER_CORE = `
 const PARTICLE_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSize;
   void main() {
-    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && floor(fract(uTime * aSpeed + aPhase) * ${MAX_WAYPOINTS - 1}.0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vec4 mv = modelViewMatrix * vec4(pos, 1.0);
     gl_Position = projectionMatrix * mv;
@@ -3282,7 +3315,7 @@ const PARTICLE_SPLAT_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSplatSize;
   varying float vHeightAboveFloor;
   void main() {
-    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && floor(fract(uTime * aSpeed + aPhase) * ${MAX_WAYPOINTS - 1}.0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
     vHeightAboveFloor = pos.y; // floor is always at world y = 0 in this tool
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -3381,6 +3414,7 @@ async function buildParticleSystem() {
   const radiusData = [];   // MAX_WAYPOINTS floats per particle (containment radius at that waypoint)
   const fineIdxData = [];  // MAX_WAYPOINTS floats per particle (which fine SDF region, or -1, covers that waypoint)
   const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
+  const exitIdxData = []; // per particle: waypoint index of the nozzle exit plane
   const phase = [];
   const speed = [];
   const thermalSeed = [];
@@ -3394,6 +3428,7 @@ async function buildParticleSystem() {
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
       for (const r of path.radii) radiusData.push(r);
       for (const fi of path.fineIdx) fineIdxData.push(fi);
+      exitIdxData.push(path.exitIdx);
       ownerPart.push(part);
       phase.push(Math.random());
       speed.push(0.15 + Math.random() * 0.25);
@@ -3431,7 +3466,7 @@ async function buildParticleSystem() {
   // decoding the tiled packing back out) since they're the same arrays
   // already built above.
   state.particleCPU = {
-    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart,
+    count, waypointData, radiusData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData,
     liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
     affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
   };
@@ -3497,6 +3532,7 @@ async function buildParticleSystem() {
   const liveAttr = new THREE.InstancedBufferAttribute(state.particleCPU.liveArr, 1);
   liveAttr.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('aLive', liveAttr);
+  geo.setAttribute('aExit', new THREE.InstancedBufferAttribute(new Float32Array(exitIdxData), 1));
   state.particleCPU.liveAttr = liveAttr;
   geo.instanceCount = count;
 
@@ -3506,6 +3542,7 @@ async function buildParticleSystem() {
       uWaypoints: { value: waypointTex },
       uTexHeight: { value: texHeight },
       uSize: { value: 1.5 },
+      uHidePost: plumeHidePostUniform,
       ...sdfUniforms,
     },
     vertexShader: PARTICLE_VERTEX_SHADER,
@@ -3545,6 +3582,7 @@ async function buildParticleSystem() {
       uWaypoints: { value: waypointTex },
       uTexHeight: { value: texHeight },
       uSplatSize: { value: floorHeatRes / 24 },
+      uHidePost: plumeHidePostUniform,
       // SAME SDF uniforms (not a second copy built independently) as the
       // main material — computeParticlePosition()'s collision correction
       // must land on the identical position in both passes, exactly like
@@ -3933,6 +3971,7 @@ function rebuildVolumetricDensity() {
     const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
     const segF = progress * (MW - 1);
     const seg = Math.floor(segF);
+    if (plumeHidePostUniform.value > 0.5 && seg >= cpu.exitIdx[p]) continue; // past the nozzle: the live exhaust plume draws that
     const segT = segF - seg;
     const segB = Math.min(seg + 1, MW - 1);
     const baseA = (p * MW + seg) * 3, baseB = (p * MW + segB) * 3;
@@ -5064,6 +5103,651 @@ function liveLeakFrame(now) {
   if (now - live.lastReportAt > 500 && live.groups.size) { live.lastReportAt = now; renderJointReport(); }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ROCKET EXHAUST PLUME
+//
+//  The baked flow ends at the nozzle exit plane; everything past it is this
+//  live, nozzle-physics-driven jet (the baked post-nozzle stretch is hidden
+//  while it is active - see uHidePost). One particle set drives BOTH views:
+//  a point-sprite layer (point mode) and a dedicated ray-marched volume
+//  (volumetric mode, the default), plus the floor's heat map.
+//
+//   NOZZLE   chamber pc / Tc (the chamber part's own fields) + the preset's
+//            gamma, molar mass and area ratio give, by the isentropic
+//            relations:  Me from A/A*,  pe = pc (1+(g-1)/2 Me^2)^(-g/(g-1)),
+//            Te = Tc / (1+(g-1)/2 Me^2),
+//            v_e = sqrt( 2g/(g-1) R Tc (1 - (pe/pc)^((g-1)/g)) ).
+//   REGIME   pe vs the live ambient pressure pa: fully-expanded jet Mach Mj
+//            from pc/pa, equilibrium radius rj/re from the area-Mach relation
+//            (>1 underexpanded: barrel plume; <1 overexpanded: pinched). As
+//            pa -> 0 the cells wash out into a wide Prandtl-Meyer fan cone.
+//   CELLS    shock-cell length scales with the exit diameter and sqrt(Mj^2-1)
+//            (Tam's L ~ 1.1 Dj sqrt(Mj^2-1), compressed here so 2-4 diamonds
+//            fit between a ground-test nozzle and the floor); the diamonds'
+//            strength scales with |ln(pe/pa)|. Each diamond brightens + heats
+//            + slows (so piles up) the core flow.
+//   MIXING   each particle's normalised radius s random-walks outward in the
+//            shear layer with distance (entrainment), cooling as it goes, so
+//            the edge is turbulent, red and transparent.
+//   GROUND   jet particles reaching the stagnation height are deflected with
+//            momentum conservation: the normal momentum is split into a small
+//            restitution bounce and a radial tangential wall jet (sqrt(1-e^2),
+//            with a loss factor), which then decays by drag (ambient-pressure
+//            scaled: in vacuum it just keeps going), and lifts/billows (hot gas
+//            buoyancy + a vortex-ring lift behind the front), cooling into
+//            dust-grey smoke.
+// ═══════════════════════════════════════════════════════════════════════
+const PLUME_MAX = 12000;
+const PLUME_VSCALE = 0.011;           // visual speed (world units / s) per m/s of nozzle exit velocity
+const PLUME_GRID_MAX = [80, 56, 80];
+const PLUME_VOL_INTERVAL_MS = 80;
+const PLUME_TLO = 900, PLUME_THI = 2950; // luminous-temperature window mapped onto the 0..1 flame ramp
+
+// Per-preset: chamber pc [psi] / Tc [K], gas gamma + molar mass [g/mol], nozzle area ratio, ambient, baked particle
+// count per container, plume pool size, exit-disc scale, luminous temperature mix (static exit .. total), emission
+// gain and shock-cell length factor (x exit diameter x sqrt(Mj^2-1)).
+const PROP_PRESETS = {
+  rocket_bell: { label: 'Rocket · supersonic bell nozzle',                  pcPsi: 1200, Tc: 3500, gamma: 1.22, mw: 22, eps: 6,  atmo: 'earth',  baked: 1000, count: 9000,  exitScale: 1.0,  lum: 0.55, emis: 1.0,  cell: 0.26 },
+  thruster:    { label: 'Low-thrust thruster',                              pcPsi: 120,  Tc: 2800, gamma: 1.25, mw: 20, eps: 3,  atmo: 'earth',  baked: 500,  count: 4500,  exitScale: 0.45, lum: 0.55, emis: 0.85, cell: 0.26 },
+  sl_engine:   { label: 'Sea-level engine · Earth (underexpanded plume)',   pcPsi: 1500, Tc: 3600, gamma: 1.20, mw: 22, eps: 5,  atmo: 'earth',  baked: 1000, count: 10000, exitScale: 1.0,  lum: 0.55, emis: 1.0,  cell: 0.26 },
+  vac_in_atm:  { label: 'Vacuum engine · Earth sea level (overexpanded)',   pcPsi: 300,  Tc: 3400, gamma: 1.20, mw: 18, eps: 40, atmo: 'earth',  baked: 1000, count: 8000,  exitScale: 1.0,  lum: 0.62, emis: 1.0,  cell: 0.26 },
+  vac_engine:  { label: 'Vacuum engine · hard vacuum (fan plume)',          pcPsi: 300,  Tc: 3400, gamma: 1.20, mw: 18, eps: 40, atmo: 'vacuum', baked: 1000, count: 9000,  exitScale: 1.0,  lum: 0.62, emis: 1.0,  cell: 0.26 },
+};
+const _ss = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+
+function plumeAreaRatio(M, g) { const a = (g - 1) / 2; return (1 / M) * Math.pow((1 + a * M * M) / (1 + a), (g + 1) / (2 * (g - 1))); }
+function plumeSolveMach(eps, g) { let lo = 1, hi = 16; for (let i = 0; i < 60; i++) { const m = 0.5 * (lo + hi); if (plumeAreaRatio(m, g) < eps) lo = m; else hi = m; } return 0.5 * (lo + hi); }
+
+// All nozzle/plume quantities for a preset at the chamber's current pc/Tc and the live ambient pressure.
+function plumeDerive(cfg, pcPsi, Tc, paPsi, re) {
+  const g = cfg.gamma, a = (g - 1) / 2, R = 8314.46 / cfg.mw;
+  const Me = plumeSolveMach(cfg.eps, g);
+  const pr = Math.pow(1 + a * Me * Me, -g / (g - 1));                 // pe/pc
+  const pe = pcPsi * pr, Te = Tc / (1 + a * Me * Me);
+  const ve = Math.sqrt(2 * g / (g - 1) * R * Tc * (1 - Math.pow(pr, (g - 1) / g)));   // m/s
+  const pa = Math.max(paPsi, 0);
+  const ratio = pe / Math.max(pa, 1e-3);                                // pe/pa: >1 underexpanded
+  let Mj;
+  if (pa < 0.02) Mj = 8; else Mj = Math.min(Math.sqrt(Math.max(2 / (g - 1) * (Math.pow(pcPsi / pa, (g - 1) / g) - 1), 1.05)), 8);
+  const AjAe = (Me / Mj) * Math.pow((1 + a * Mj * Mj) / (1 + a * Me * Me), (g + 1) / (2 * (g - 1)));
+  const rj0 = Math.min(Math.max(Math.sqrt(AjAe), 0.55), 2.4);
+  const rjre = rj0 > 1 ? 1 + 1.5 * (rj0 - 1) : Math.max(1 - 1.2 * (1 - rj0), 0.45);   // barrel swing exaggerated a little for legibility
+  const De = 2 * re;
+  const Ls = Math.min(Math.max(cfg.cell * Math.sqrt(Math.max(Mj * Mj - 1, 0.5)), 0.4), 1.0) * De;
+  const vacBlend = _ss(0.12, 0.015, pa / Math.max(pe, 1e-3));
+  const thetaDeg = 12 + 22 * Math.min(Math.max(Math.log10(Math.max(ratio, 1)) / 2.5, 0), 1);
+  const diam = Math.min(Math.abs(Math.log(ratio)) * 2.2, 1) * (1 - vacBlend);
+  const regime = vacBlend > 0.6 ? 'vacuum fan' : Math.abs(Math.log(ratio)) < 0.06 ? 'matched' : ratio > 1 ? 'underexpanded' : 'overexpanded';
+  return { cfg, g, Me, pe, Te, ve, pa, ratio, Mj, rjre, Ls, De, re, vacBlend, tanTheta: Math.tan(thetaDeg * Math.PI / 180), diam, regime,
+           veVis: ve * PLUME_VSCALE, Tc, pc: pcPsi, atmo: Math.min(pa / 14.696, 1), hs: 0.5 * re + 0.1, lcore: 5.5 * De };
+}
+// Plume boundary radius at axial distance x: damped barrel cells about the equilibrium radius, or a PM-fan cone in vacuum.
+function plumeBoundary(x, D) {
+  const re = D.re, Rj = D.rjre * re;
+  const cell = Rj + (re - Rj) * Math.cos(2 * Math.PI * x / D.Ls) * Math.exp(-x / (3.2 * D.Ls));
+  const cone = re + x * D.tanTheta;
+  return (cell + (cone - cell) * D.vacBlend) * (1 + 0.07 * x / re * (1 - D.vacBlend));
+}
+function plumeShock(x, s, D) {
+  if (D.diam < 0.01) return 0;
+  const c = 0.5 + 0.5 * Math.cos(2 * Math.PI * x / D.Ls);
+  return Math.pow(c, plume.tune.shockPow) * _ss(0.55 * D.Ls, 1.0 * D.Ls, x) * Math.exp(-x / (5 * D.Ls)) * (1 - _ss(0.25, 0.85, s)) * D.diam;
+}
+
+const plume = {
+  key: 'rocket_bell', n: 0, cursor: 0, live: 0, acc: 0, lastAt: 0, active: false, D: null, F: null, tclock: 0, needPreroll: true, sizeK: 0.45,
+  // live-tunable wall-jet / billow / weighting knobs
+  tune: { kd0: 0.45, kd1: 0.9, buoy: 0.9, lift: 2.4, spring: 3.0, tcool: 0.4, jetW: 2.5, smkRate: 0.6, smkMax: 0.45, life0: 1.4, life1: 1.4, restit: 0.18, kappa: 0.85, shockPow: 9, coolK: 0.34, edgeK: 0.85, groundSplats: 3, keep: 0.55, jetSprite: 3.0 },
+  px: new Float32Array(PLUME_MAX), py: new Float32Array(PLUME_MAX), pz: new Float32Array(PLUME_MAX),
+  vx: new Float32Array(PLUME_MAX), vy: new Float32Array(PLUME_MAX), vz: new Float32Array(PLUME_MAX),
+  ax: new Float32Array(PLUME_MAX), sr: new Float32Array(PLUME_MAX), ph: new Float32Array(PLUME_MAX),
+  tn: new Float32Array(PLUME_MAX), sh: new Float32Array(PLUME_MAX), smk: new Float32Array(PLUME_MAX),
+  gw: new Float32Array(PLUME_MAX), tg: new Float32Array(PLUME_MAX), life: new Float32Array(PLUME_MAX), sd: new Float32Array(PLUME_MAX), st: new Uint8Array(PLUME_MAX),
+  points: null, aT: null, aSh: null, aSmk: null, aSz: null, aAl: null,
+  vol: null, grid: null, volTex: null, lastVolAt: 0,
+  floorMesh: null, floorTex: null, floorData: null, floorMat: null, floorOn: false,
+  stats: { impacts: 0, maxWall: 0, maxHeightRing: 0 },
+};
+
+function plumeChamber() {
+  const ch = state.parts.find(p => p.type === 'chamber');
+  if (!ch) return null;
+  const noz = ch.openings.find(o => o.role === 'nozzle');
+  return noz ? { ch, noz } : null;
+}
+// Current nozzle frame in world space (live: follows the part if it is dragged with the gimbal).
+function plumeFrameOf(c, cfg) {
+  const O = (c.noz.marker ? openingLiveCentroid(c.noz) : c.noz.centroid).clone();
+  const d = (c.noz.marker ? openingLiveNormal(c.noz) : c.noz.normal).clone().normalize();
+  const ref = Math.abs(d.y) > 0.95 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const U = new THREE.Vector3().crossVectors(d, ref).normalize(), W = new THREE.Vector3().crossVectors(d, U).normalize();
+  const re = Math.max(c.noz.radius * cfg.exitScale, 0.05);
+  // foot of the axis on the floor plane (y = 0)
+  const C = new THREE.Vector3(O.x, 0, O.z);
+  if (d.y < -0.05) { const t = O.y / -d.y; C.set(O.x + d.x * t, 0, O.z + d.z * t); }
+  return { O, d, U, W, re, C, H: Math.max(O.y, 0.1) };
+}
+
+function plumePlace(i, x, s, phi, D, F, t) {
+  const rb = plumeBoundary(x, D), xs = x / D.De;
+  const wob = 1 + 0.09 * Math.sin(xs * 11.0 - t * 17.0 + plume.sd[i] * 6.2832) * _ss(0.3, 1.0, s);
+  const R = s * rb * wob, c = Math.cos(phi) * R, sn = Math.sin(phi) * R;
+  plume.px[i] = F.O.x + F.d.x * x + F.U.x * c + F.W.x * sn;
+  plume.py[i] = F.O.y + F.d.y * x + F.U.y * c + F.W.y * sn;
+  plume.pz[i] = F.O.z + F.d.z * x + F.U.z * c + F.W.z * sn;
+}
+function plumeThermo(i, x, s, sh, D) {
+  const xs = x / D.De;
+  const Tl = (D.Te * (1 - D.cfg.lum) + D.Tc * D.cfg.lum) * (1 - plume.tune.coolK * _ss(0.3, 3.0, xs)) * (1 - plume.tune.edgeK * _ss(0.4, 1.4, s)) * (1 + 0.14 * sh);
+  plume.tn[i] = Math.min(Math.max((Tl - PLUME_TLO) / (PLUME_THI - PLUME_TLO), 0), 1);
+}
+
+function plumeEmit(nEmit, D, F, dt) {
+  const P = plume, cap = Math.min(D.cfg.count, PLUME_MAX);
+  for (let k = 0; k < nEmit && P.live < cap; k++) {
+    let tries = 0;
+    while (P.st[P.cursor] && tries < PLUME_MAX) { P.cursor = (P.cursor + 1) % PLUME_MAX; tries++; }
+    if (tries >= PLUME_MAX) break;
+    const i = P.cursor; P.cursor = (P.cursor + 1) % PLUME_MAX;
+    if (i + 1 > P.n) P.n = i + 1;
+    P.sd[i] = Math.random();
+    const s = Math.sqrt(Math.random()), phi = Math.random() * 6.2832, x = Math.random() * D.veVis * dt;
+    P.ax[i] = x; P.sr[i] = s; P.ph[i] = phi; P.st[i] = 1; P.tg[i] = 0; P.smk[i] = 0; P.gw[i] = 1;
+    P.life[i] = P.tune.life0 + Math.random() * P.tune.life1;
+    const sh = plumeShock(x, s, D); P.sh[i] = sh; plumeThermo(i, x, s, sh, D);
+    plumePlace(i, x, s, phi, D, F, P.tclock);
+    P.vx[i] = F.d.x * D.veVis; P.vy[i] = F.d.y * D.veVis; P.vz[i] = F.d.z * D.veVis;
+    P.live++;
+  }
+}
+
+function plumeStep(h, D, F) {
+  const P = plume, De = D.De, ve = D.veVis, atmo = D.atmo, t = P.tclock, hsFloor = D.hs;
+  const half = FLOOR_SIZE * 0.5 - 1;
+  for (let i = 0; i < P.n; i++) {
+    const st = P.st[i];
+    if (!st) continue;
+    const ox = P.px[i], oy = P.py[i], oz = P.pz[i];
+    if (st === 1) {
+      let ax = P.ax[i], s = P.sr[i];
+      const xs = ax / De, sh = P.sh[i];
+      const core = ax < D.lcore ? 1 : 1 / (1 + Math.pow((ax - D.lcore) / (2.5 * De), 1.2));
+      const u = ve * core * (1 - 0.55 * _ss(0.75, 1.6, s)) * (1 - 0.16 * sh);       // top-hat core, shear-layer lag, slowed through each shock
+      ax += u * h;
+      const edgew = _ss(0.35, 1.1, s), xc = Math.min(xs, 3);
+      s += (Math.random() + Math.random() - 1) * 1.6 * Math.sqrt(h) * edgew * (0.25 + 0.5 * xc) + 0.10 * h * xc * edgew;   // shear-layer mixing + entrainment
+      if (s < 0) s = -s;
+      if (s > 2.3 || ax > 70) { P.st[i] = 0; P.live--; continue; }
+      P.ph[i] += h * (1.2 + 2.2 * s) * (0.6 + 0.8 * P.sd[i]);
+      P.ax[i] = ax; P.sr[i] = s;
+      const nsh = plumeShock(ax, s, D); P.sh[i] = nsh; plumeThermo(i, ax, s, nsh, D);
+      plumePlace(i, ax, s, P.ph[i], D, F, t);
+      const nx = P.px[i], ny = P.py[i], nz = P.pz[i];
+      const vx = (nx - ox) / h, vy = (ny - oy) / h, vz = (nz - oz) / h;
+      if (ny <= hsFloor) {
+        // ── impingement: split the incoming momentum into a restitution bounce + a radial wall jet ──
+        // only a fraction of the stream continues as discrete wall-jet particles, each standing for 1/keep of them
+        // (keeps the jet column dense within the particle budget while the ground layer stays well sampled)
+        if (Math.random() > P.tune.keep) { P.st[i] = 0; P.live--; continue; }
+        P.gw[i] = 1 / P.tune.keep;
+        const e = P.tune.restit, kappa = P.tune.kappa;
+        const vn = Math.max(-vy, 0);
+        let rx = nx - F.C.x, rz = nz - F.C.z;
+        let rl = Math.hypot(rx, rz);
+        if (rl < 0.05) { const a = Math.random() * 6.2832; rx = Math.cos(a); rz = Math.sin(a); rl = 1; }
+        rx /= rl; rz /= rl;
+        const jit = (Math.random() - 0.5) * 0.3, cj = Math.cos(jit), sj = Math.sin(jit);
+        const rjx = rx * cj - rz * sj, rjz = rx * sj + rz * cj;
+        const wall = Math.sqrt(1 - e * e) * vn * kappa * (0.75 + 0.35 * Math.random());
+        P.vx[i] = vx * 0.5 + rjx * wall; P.vz[i] = vz * 0.5 + rjz * wall;
+        P.vy[i] = e * vn;
+        P.py[i] = Math.max(ny, 0.06);
+        P.st[i] = 2; P.tg[i] = 0; P.smk[i] = 0.12;
+        P.stats.impacts++;
+      } else { P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz; }
+    } else {
+      // ── ground state: wall jet ──
+      let vx = P.vx[i], vy = P.vy[i], vz = P.vz[i];
+      const tg = P.tg[i] + h; P.tg[i] = tg;
+      const kd = P.tune.kd0 + P.tune.kd1 * atmo;
+      const dec = Math.exp(-kd * h); vx *= dec; vz *= dec;
+      const sp = Math.hypot(vx, vz);
+      const tn = P.tn[i], smk = P.smk[i], sd = P.sd[i];
+      const lift = P.tune.lift * atmo * Math.min(sp / (0.4 * ve), 1) * (0.25 + 0.75 * sd) * _ss(0, 0.1, tg) * (1 - _ss(0.6, 1.5, tg));
+      const ay = P.tune.buoy * tn * atmo - 2.2 * smk * (1 - tn) * (0.3 + 0.7 * atmo) + lift;
+      // a wall jet is a layer whose thickness grows with radius (~0.1 r): pull toward that, so the billow lifts off it but the
+      // bulk stays hugging the ground
+      const rr0 = Math.hypot(ox - F.C.x, oz - F.C.z);
+      vy = (vy + (ay - P.tune.spring * atmo * Math.max(oy - (0.1 * rr0 + 0.4), 0)) * h) * Math.exp(-1.6 * h);
+      let nx = ox + vx * h, ny = oy + vy * h, nz = oz + vz * h;
+      if (ny < 0.05) { ny = 0.05; if (vy < 0) vy *= -0.2; const f = Math.exp(-0.9 * h); vx *= f; vz *= f; }
+      P.tn[i] = tn * Math.exp(-h * P.tune.tcool); P.smk[i] = smk + h * P.tune.smkRate * (P.tune.smkMax - smk);
+      P.sh[i] = 0;
+      P.px[i] = nx; P.py[i] = ny; P.pz[i] = nz; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
+      if (tg > P.life[i] || Math.abs(nx) > half || Math.abs(nz) > half) { P.st[i] = 0; P.live--; continue; }
+      const rr = Math.hypot(nx - F.C.x, nz - F.C.z);
+      if (rr > P.stats.maxWall) P.stats.maxWall = rr;
+      if (ny > P.stats.maxHeightRing && tg > 0.3) P.stats.maxHeightRing = ny;
+    }
+  }
+}
+
+// ── point-sprite layer ──
+const FLAME_RAMP_GLSL = `
+  vec3 flameRamp(float t) {
+    t = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.16, 0.015, 0.01), c1 = vec3(0.75, 0.08, 0.02), c2 = vec3(1.0, 0.40, 0.06),
+         c3 = vec3(1.0, 0.72, 0.20), c4 = vec3(1.0, 0.92, 0.60), c5 = vec3(1.0, 0.98, 0.90);
+    return t < 0.20 ? mix(c0, c1, t / 0.20) : t < 0.45 ? mix(c1, c2, (t - 0.20) / 0.25) : t < 0.70 ? mix(c2, c3, (t - 0.45) / 0.25)
+         : t < 0.88 ? mix(c3, c4, (t - 0.70) / 0.18) : mix(c4, c5, (t - 0.88) / 0.12);
+  }
+`;
+function plumeEnsurePoints() {
+  if (plume.points) return;
+  const geo = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(PLUME_MAX * 3), 3);
+  const mk = () => { const a = new THREE.BufferAttribute(new Float32Array(PLUME_MAX), 1); a.setUsage(THREE.DynamicDrawUsage); return a; };
+  plume.aT = mk(); plume.aSh = mk(); plume.aSmk = mk(); plume.aSz = mk(); plume.aAl = mk();
+  pos.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', pos);
+  geo.setAttribute('aT', plume.aT); geo.setAttribute('aSh', plume.aSh); geo.setAttribute('aSmk', plume.aSmk); geo.setAttribute('aSz', plume.aSz); geo.setAttribute('aAl', plume.aAl);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uPx: { value: 600 }, uGain: { value: 0.055 }, uHeat: { value: null } },
+    vertexShader: `
+      uniform float uPx; attribute float aT; attribute float aSh; attribute float aSmk; attribute float aSz; attribute float aAl;
+      varying float vT; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
+      void main() {
+        vT = aT; vSh = aSh; vSmk = aSmk; vAl = aAl; vH = position.y;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = clamp(aSz * uPx / max(-mv.z, 0.1), 1.0, 160.0);
+      }`,
+    fragmentShader: FLAME_RAMP_GLSL + `
+      uniform float uGain; uniform sampler2D uHeat;
+      varying float vT; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
+      void main() {
+        vec2 c = gl_PointCoord - vec2(0.5);
+        float r2 = dot(c, c) * 4.0;
+        if (r2 > 1.0 || vAl < 0.002) discard;
+        float fall = exp(-r2 * 3.2);
+        float em = pow(vT, 2.1) * (1.0 + 2.4 * vSh) * (1.0 - 0.7 * vSmk);
+        vec3 flame = flameRamp(vT) * em * uGain;
+        float lit = 0.22 + 0.9 * exp(-vH * 0.35) * (0.4 + 0.6 * vT);
+        vec3 smoke = vec3(0.34, 0.30, 0.27) * lit * vSmk * 0.5;
+        float a = vSmk * 0.42;
+        // premultiplied: flame adds light without hiding what is behind; smoke occludes
+        gl_FragColor = vec4((flame + smoke) * fall * vAl, a * fall * vAl);
+      }`,
+    transparent: true, depthWrite: false, depthTest: true,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  });
+  plume.points = new THREE.Points(geo, mat);
+  plume.points.frustumCulled = false; plume.points.renderOrder = 13; plume.points.visible = false;
+  scene.add(plume.points);
+}
+
+// ── plume volume (ray-marched) ──
+const PLUME_VOL_VERTEX = `
+  varying vec3 vLocalPos;
+  void main() { vLocalPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const PLUME_VOL_FRAGMENT = `
+  precision highp float;
+  uniform sampler2D uVolDensity;   // r = particles per voxel, g = temperature (0..1 flame scale), b = shock factor, a = smoke fraction
+  uniform vec3 uVolRes; uniform float uVolTilesPerRow; uniform vec2 uVolTexSize;
+  uniform vec3 uVolMin; uniform vec3 uVolSize; uniform mat4 uInverseModelMatrix;
+  uniform sampler2D uHeat; uniform float uFloorSize;
+  uniform float uEmis, uEmisK, uExposure, uAbsorb, uFloorLit;
+  varying vec3 vLocalPos;
+  ${FLAME_RAMP_GLSL}
+  vec4 sampleVol(vec3 uv01) {
+    vec3 voxel = clamp(uv01, 0.0, 1.0) * uVolRes - 0.5;
+    vec3 v0 = floor(voxel); vec3 f = voxel - v0;
+    float d = 0.0; vec3 a = vec3(0.0);
+    for (int dz = 0; dz < 2; dz++) for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) {
+      vec3 c = clamp(v0 + vec3(float(dx), float(dy), float(dz)), vec3(0.0), uVolRes - 1.0);
+      float tileX = mod(c.z, uVolTilesPerRow) * uVolRes.x;
+      float tileY = floor(c.z / uVolTilesPerRow) * uVolRes.y;
+      vec4 s = texture2D(uVolDensity, (vec2(tileX + c.x, tileY + c.y) + 0.5) / uVolTexSize);
+      float w = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y) * (dz == 0 ? 1.0 - f.z : f.z);
+      d += s.r * w; a += s.gba * (s.r * w);
+    }
+    return vec4(d, a / max(d, 1e-5));
+  }
+  void main() {
+    vec3 ro = (uInverseModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+    vec3 rd = normalize(vLocalPos - ro);
+    vec3 invRd = 1.0 / max(abs(rd), vec3(1e-5)) * sign(rd);
+    vec3 tA = (vec3(-0.5) - ro) * invRd, tB = (vec3(0.5) - ro) * invRd;
+    vec3 tMin = min(tA, tB), tMax = max(tA, tB);
+    float tNear = max(max(tMin.x, tMin.y), max(tMin.z, 0.0));
+    float tFar = min(min(tMax.x, tMax.y), tMax.z);
+    if (tFar <= tNear) discard;
+    vec3 ard = abs(rd);
+    float dtVox = 0.6 / max(max(uVolRes.x * ard.x, uVolRes.y * ard.y), max(uVolRes.z * ard.z, 1e-4));
+    float dt = max(dtVox, (tFar - tNear) / 110.0);
+    float worldPerT = length(rd * uVolSize);
+    vec3 vsz = uVolSize / uVolRes;
+    float vox = (vsz.x + vsz.y + vsz.z) / 3.0;
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float t = tNear + jit * dt;
+    float trans = 1.0;
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < 110; i++) {
+      if (t >= tFar) break;
+      vec3 uv = ro + rd * t + 0.5;
+      vec4 s = sampleVol(uv);
+      float d = s.x;
+      if (d > 0.015) {
+        vec3 wp = uVolMin + uv * uVolSize;
+        float T = s.y, sh = s.z, smk = s.w;
+        float stepVox = dt * worldPerT / vox;
+        // floor glow: heat map under this point, falling off with height (gas lit by the ground)
+        vec2 fuv = vec2(wp.x / uFloorSize + 0.5, -wp.z / uFloorSize + 0.5);
+        vec2 fh = texture2D(uHeat, fuv).rg;
+        float fk = 1.0 - exp(-fh.g * 1.4);
+        float tnF = clamp((fh.r / max(fh.g, 1e-4) - 0.62) / 0.38, 0.0, 1.0);
+        vec3 floorLight = flameRamp(tnF) * fk * exp(-wp.y / 3.0) * uFloorLit;
+        // hot gas emits (transparent), smoke occludes + is lit by the flame, the floor and the sky
+        float em = pow(T, 2.1) * uEmis * (1.0 + 4.0 * sh) * (1.0 - 0.7 * smk) * d * stepVox * uEmisK;
+        acc += trans * flameRamp(T) * em;
+        float kap = uAbsorb * (0.10 + 1.7 * smk);
+        float a = 1.0 - exp(-d * stepVox * kap);
+        vec3 smkLit = vec3(0.30, 0.27, 0.25) * (0.30 + 1.1 * T) + floorLight * 1.4;
+        acc += trans * a * smkLit;
+        acc += trans * floorLight * d * stepVox * 0.03;
+        trans *= 1.0 - a;
+        if (trans < 0.02) break;
+      }
+      t += dt;
+    }
+    float alpha = 1.0 - trans;
+    vec3 rgb = 1.0 - exp(-acc * uExposure);     // tone-mapped: no blown-out slabs
+    if (alpha < 0.003 && max(rgb.r, max(rgb.g, rgb.b)) < 0.004) discard;
+    gl_FragColor = vec4(rgb, alpha);
+  }
+`;
+function plumeEnsureVolume() {
+  if (plume.vol) return plume.vol;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uVolDensity: { value: null }, uVolRes: { value: new THREE.Vector3(8, 8, 8) }, uVolTilesPerRow: { value: 1 }, uVolTexSize: { value: new THREE.Vector2(8, 8) },
+      uVolMin: { value: new THREE.Vector3() }, uVolSize: { value: new THREE.Vector3(1, 1, 1) }, uInverseModelMatrix: { value: new THREE.Matrix4() },
+      uHeat: { value: null }, uFloorSize: { value: FLOOR_SIZE },
+      uEmis: { value: 1.0 }, uEmisK: { value: 0.2 }, uExposure: { value: 1.6 }, uAbsorb: { value: 0.18 }, uFloorLit: { value: 2.0 },
+    },
+    vertexShader: PLUME_VOL_VERTEX, fragmentShader: PLUME_VOL_FRAGMENT,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.FrontSide,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  });
+  plume.vol = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+  plume.vol.frustumCulled = false; plume.vol.renderOrder = 12; plume.vol.visible = false;
+  scene.add(plume.vol);
+  return plume.vol;
+}
+
+// (Re)shape the density grid + box to the plume's current footprint: horizontally centred on the axis foot, vertically
+// from the FLOOR (y = 0, so the volume's lower boundary is the ground and the ray march clips there) up to the nozzle.
+function plumeFitGrid(D, F) {
+  const W = Math.min(Math.max(1.35 * F.H + 2 * F.re, 5 * F.re, 8), 24);
+  const top = Math.max(F.O.y + 0.4, 1);
+  const size = new THREE.Vector3(2 * W, top, 2 * W);
+  const cell = Math.max(size.x / PLUME_GRID_MAX[0], 0.4);
+  const nx = Math.min(Math.max(Math.round(size.x / cell), 16), PLUME_GRID_MAX[0]);
+  const ny = Math.min(Math.max(Math.round(size.y / cell), 8), PLUME_GRID_MAX[1]);
+  const nz = nx;
+  let g = plume.grid;
+  const min = new THREE.Vector3(F.C.x - W, 0, F.C.z - W);
+  if (!g || g.nx !== nx || g.ny !== ny || g.nz !== nz) {
+    const lay = tiledLayout([nx, ny, nz]), N = nx * ny * nz;
+    g = plume.grid = { nx, ny, nz, N, tpr: lay.tpr, texW: lay.w, texH: lay.h,
+      dens: new Float32Array(N), tw: new Float32Array(N), shw: new Float32Array(N), smw: new Float32Array(N), tmp: new Float32Array(N),
+      data: new Float32Array(lay.w * lay.h * 4), min, size, fgas: new Float32Array(nx * nz * 4) };
+    if (plume.volTex) { plume.volTex.dispose(); plume.volTex = null; }
+    if (plume.floorTex) { plume.floorTex.dispose(); plume.floorTex = null; }
+  }
+  g.min = min; g.size = size;
+  const m = plume.vol;
+  m.scale.copy(size); m.position.set(min.x + size.x / 2, size.y / 2, min.z + size.z / 2); m.updateMatrixWorld(true);
+  const u = m.material.uniforms;
+  u.uVolMin.value.copy(min); u.uVolSize.value.copy(size);
+  u.uInverseModelMatrix.value.copy(m.matrixWorld).invert();
+  u.uVolRes.value.set(nx, ny, nz); u.uVolTilesPerRow.value = g.tpr; u.uVolTexSize.value.set(g.texW, g.texH);
+  return g;
+}
+
+function plumeBlur1D(src, dst, nx, ny, nz, axis) {
+  const sx = 1, sy = nx, sz = nx * ny, st = axis === 0 ? sx : axis === 1 ? sy : sz, n = axis === 0 ? nx : axis === 1 ? ny : nz;
+  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+    const i = x + y * sy + z * sz, c = axis === 0 ? x : axis === 1 ? y : z;
+    const a = c > 0 ? src[i - st] : src[i], b = c < n - 1 ? src[i + st] : src[i];
+    dst[i] = 0.25 * a + 0.5 * src[i] + 0.25 * b;
+  }
+}
+
+function plumeRebuildVolume(D, F) {
+  const g = plumeFitGrid(D, F), P = plume;
+  const { nx, ny, nz, dens, tw, shw, smw, tmp } = g;
+  dens.fill(0); tw.fill(0); shw.fill(0); smw.fill(0);
+  const ix = nx / g.size.x, iy = ny / g.size.y, iz = nz / g.size.z, cy = g.size.y / ny;
+  for (let i = 0; i < P.n; i++) {
+    if (!P.st[i]) continue;
+    const fadeOut = P.st[i] === 2 ? 1 - _ss(0.65, 1.0, P.tg[i] / P.life[i]) : 1;
+    const w = fadeOut * (P.st[i] === 1 ? P.tune.jetW : P.gw[i]);
+    const tn = P.tn[i], sh = P.sh[i], smk = P.smk[i];
+    // wall-jet / billow particles are sparse, so each is spread over a few jittered samples (no speckle); jet particles stay sharp
+    const ns = P.st[i] === 2 ? P.tune.groundSplats : 1, wS = w / ns, jx = 0.9 / ix, jz = 0.9 / iz, jy = 0.5 / iy;
+    for (let q = 0; q < ns; q++) {
+      const ox = ns > 1 ? (Math.random() - 0.5) * 2 * jx : 0, oz = ns > 1 ? (Math.random() - 0.5) * 2 * jz : 0, oy = ns > 1 ? (Math.random() - 0.5) * 2 * jy : 0;
+      const fx = (P.px[i] + ox - g.min.x) * ix - 0.5, fy = (Math.max(P.py[i] + oy, 0.5 * cy) - g.min.y) * iy - 0.5, fz = (P.pz[i] + oz - g.min.z) * iz - 0.5;
+      const x0 = Math.floor(fx), y0 = Math.floor(fy), z0 = Math.floor(fz), wx = fx - x0, wy = fy - y0, wz = fz - z0;
+      for (let k = 0; k < 8; k++) {
+        const cx = x0 + (k & 1), cyy = y0 + ((k >> 1) & 1), cz = z0 + ((k >> 2) & 1);
+        if (cx < 0 || cyy < 0 || cz < 0 || cx >= nx || cyy >= ny || cz >= nz) continue;
+        const wt = wS * ((k & 1) ? wx : 1 - wx) * (((k >> 1) & 1) ? wy : 1 - wy) * (((k >> 2) & 1) ? wz : 1 - wz);
+        if (wt <= 0) continue;
+        const di = cx + cyy * nx + cz * nx * ny;
+        dens[di] += wt; tw[di] += wt * tn; shw[di] += wt * sh; smw[di] += wt * smk;
+      }
+    }
+  }
+  // one [1 2 1] smoothing pass per axis (turns the particle speckle into a continuous field)
+  for (const arr of [dens, tw, shw, smw]) {
+    for (let pass = 0; pass < 1; pass++) { plumeBlur1D(arr, tmp, nx, ny, nz, 0); plumeBlur1D(tmp, arr, nx, ny, nz, 1); plumeBlur1D(arr, tmp, nx, ny, nz, 2); arr.set(tmp); }
+  }
+  // pack tiled RGBA + build the floor-gas map from the two lowest layers
+  const data = g.data, fg = g.fgas;
+  let floorSum = 0;
+  for (let z = 0; z < nz; z++) {
+    const tileX = (z % g.tpr) * nx, tileY = Math.floor(z / g.tpr) * ny;
+    for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+      const si = x + y * nx + z * nx * ny, di = ((tileY + y) * g.texW + tileX + x) * 4, d = dens[si];
+      data[di] = d;
+      if (d > 1e-4) { const inv = 1 / d; data[di + 1] = tw[si] * inv; data[di + 2] = shw[si] * inv; data[di + 3] = smw[si] * inv; }
+      else { data[di + 1] = 0; data[di + 2] = 0; data[di + 3] = 0; }
+    }
+    for (let x = 0; x < nx; x++) {
+      const s0 = x + 0 * nx + z * nx * ny, s1 = x + Math.min(1, ny - 1) * nx + z * nx * ny;
+      const d = dens[s0] + 0.5 * dens[s1], tt = d > 1e-4 ? (tw[s0] + 0.5 * tw[s1]) / d : 0;
+      const fi = (z * nx + x) * 4;
+      fg[fi] = d; fg[fi + 1] = tt; fg[fi + 2] = 0; fg[fi + 3] = 1;
+      floorSum += d;
+    }
+  }
+  if (!plume.volTex) {
+    plume.volTex = new THREE.DataTexture(data, g.texW, g.texH, THREE.RGBAFormat, THREE.FloatType);
+    plume.volTex.magFilter = THREE.NearestFilter; plume.volTex.minFilter = THREE.NearestFilter;
+    plume.volTex.wrapS = THREE.ClampToEdgeWrapping; plume.volTex.wrapT = THREE.ClampToEdgeWrapping;
+    plume.vol.material.uniforms.uVolDensity.value = plume.volTex;
+  }
+  plume.volTex.needsUpdate = true;
+  // floor gas texture (volumetric density near the ground -> the floor's thermal map)
+  if (!plume.floorTex) {
+    plume.floorTex = new THREE.DataTexture(fg, nx, nz, THREE.RGBAFormat, THREE.FloatType);
+    plume.floorTex.magFilter = THREE.NearestFilter; plume.floorTex.minFilter = THREE.NearestFilter;
+    plume.floorTex.wrapS = THREE.ClampToEdgeWrapping; plume.floorTex.wrapT = THREE.ClampToEdgeWrapping;
+  }
+  plume.floorTex.needsUpdate = true;
+  plume.floorSum = floorSum;
+}
+
+// Adds the gas lying on the ground (from the SAME density grid the ray march reads, so it works with the particle layer
+// hidden) to the floor's heat-accumulation buffer. Called from renderFloorHeatPass while that target is bound.
+function plumeFloorPass() {
+  if (!plume.active || !plume.floorTex || !plume.grid) return;
+  const g = plume.grid;
+  if (!plume.floorMesh) {
+    plume.floorMat = new THREE.ShaderMaterial({
+      uniforms: { uGas: { value: null }, uTexel: { value: new THREE.Vector2(1, 1) }, uGain: { value: 0.06 } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform sampler2D uGas; uniform vec2 uTexel; uniform float uGain; varying vec2 vUv;
+        vec4 tap(vec2 p) { return texture2D(uGas, (floor(p) + 0.5) * uTexel); }
+        void main() {
+          vec2 p = vec2(vUv.x, 1.0 - vUv.y) / uTexel - 0.5; vec2 f = fract(p);
+          vec4 g = mix(mix(tap(p), tap(p + vec2(1.0, 0.0)), f.x), mix(tap(p + vec2(0.0, 1.0)), tap(p + vec2(1.0, 1.0)), f.x), f.y);
+          float hot = smoothstep(0.0, 0.25, g.g);                       // cooled gas leaves little heat behind
+          float e = g.r * hot * uGain;
+          float tF = 0.62 + 0.38 * g.g;                                  // onto the floor ramp's orange-gold range
+          gl_FragColor = vec4(tF, 1.0, 0.0, e);
+        }`,
+      transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
+    plume.floorMesh = new THREE.Mesh(geo, plume.floorMat);
+    plume.floorMesh.frustumCulled = false;
+    plume.floorScene = new THREE.Scene(); plume.floorScene.add(plume.floorMesh);
+  }
+  plume.floorMesh.scale.set(g.size.x, 1, g.size.z);
+  plume.floorMesh.position.set(g.min.x + g.size.x / 2, 0.2, g.min.z + g.size.z / 2);
+  plume.floorMesh.updateMatrixWorld(true);
+  plume.floorMat.uniforms.uGas.value = plume.floorTex;
+  plume.floorMat.uniforms.uTexel.value.set(1 / g.nx, 1 / g.nz);
+  renderer.render(plume.floorScene, floorOrthoCam);
+}
+
+// ── preset UI + per-frame driver ──
+const propPresetEl = document.getElementById('propPreset');
+const propReadoutEl = document.getElementById('propReadout');
+function plumeReadout() {
+  const D = plume.D;
+  if (plume.key === 'off' || !D) { propReadoutEl.innerHTML = 'legacy baked exhaust <span class="u">(no nozzle model)</span>'; return; }
+  propReadoutEl.innerHTML = `v<sub>e</sub> ${Math.round(D.ve)} m/s · M<sub>e</sub> ${D.Me.toFixed(2)} · T<sub>e</sub> ${Math.round(D.Te)} K<br>` +
+    `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
+    `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
+}
+function plumeCurrentDerived() {
+  const cfg = PROP_PRESETS[plume.key];
+  const c = plumeChamber();
+  if (!cfg || !c) return null;
+  const F = plumeFrameOf(c, cfg);
+  const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
+  const pcIn = c.ch.internalPsi; // 60 psi is the generic untouched part default, not a chosen chamber pressure
+  const D = plumeDerive(cfg, (pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+  return { D, F, c };
+}
+function applyPropPreset(key) {
+  plume.key = key;
+  if (propPresetEl.value !== key) propPresetEl.value = key;
+  const cfg = PROP_PRESETS[key];
+  if (cfg) {
+    const c = state.parts.find(p => p.type === 'chamber');
+    if (c) { c.internalPsi = cfg.pcPsi; c.tempK = cfg.Tc; if (state.selectedPart === c) renderPartDetail(); }
+    atmoPresetEl.value = cfg.atmo; atmoPsiEl.value = ATMO[cfg.atmo].psi;
+    atmoReadout.innerHTML = `${ATMO[cfg.atmo].psi} psi <span class="u">= ${ATMO[cfg.atmo].label}</span>`;
+    document.getElementById('particlesPerContainer').value = cfg.baked;
+  }
+  plumeReset();
+  const r = plumeCurrentDerived(); plume.D = r ? r.D : null; plumeReadout();
+}
+propPresetEl.onchange = () => applyPropPreset(propPresetEl.value);
+
+// Run the jet forward off-screen so a fresh activation (Simulate, preset change) shows the established plume + ground
+// wall jet straight away instead of a column slowly filling in.
+// One sub-step: emit this step's share of particles (each jittered along the axis by the distance it would have flown
+// within the step, so a long frame never leaves a gap below the nozzle), then integrate.
+function plumeAdvance(h, D, F, cap, tFlight) {
+  plume.acc += cap / (tFlight + plume.tune.keep * (plume.tune.life0 + 0.5 * plume.tune.life1)) * h;
+  const n = Math.floor(plume.acc); plume.acc -= n;
+  plumeEmit(n, D, F, h);
+  plumeStep(h, D, F);
+}
+function plumePreroll(D, F, seconds) {
+  const dt = 1 / 30, cap = Math.min(D.cfg.count, PLUME_MAX), tFlight = Math.max(F.H / Math.max(D.veVis, 1), 0.05);
+  for (let t = 0; t < seconds; t += dt) {
+    plume.tclock += dt;
+    for (let k = 0; k < 2; k++) plumeAdvance(dt / 2, D, F, cap, tFlight);
+  }
+}
+
+function plumeReset() {
+  plume.needPreroll = true;
+  plume.st.fill(0); plume.n = 0; plume.live = 0; plume.cursor = 0; plume.acc = 0; plume.lastAt = 0;
+  plume.stats.impacts = 0; plume.stats.maxWall = 0; plume.stats.maxHeightRing = 0;
+  if (plume.points) plume.points.visible = false;
+  if (plume.vol) plume.vol.visible = false;
+  if (plume.grid) { plume.grid.dens.fill(0); plume.grid.data.fill(0); plume.grid.fgas.fill(0); }
+  plumeHidePostUniform.value = 0;
+}
+
+let _plumeReadoutAt = 0;
+function plumeFrame(now) {
+  const ready = state.simRunning && state.particleCPU && plume.key !== 'off' && plumeChamber();
+  if (!ready) {
+    if (plume.active) { plume.active = false; plumeReset(); }
+    return;
+  }
+  const r = plumeCurrentDerived();
+  if (!r) return;
+  const { D, F } = r;
+  plume.D = D; plume.F = F;
+  if (!plume.active) { plume.active = true; plume.lastAt = now; }
+  plumeHidePostUniform.value = 1;
+  if (now - _plumeReadoutAt > 400) { _plumeReadoutAt = now; plumeReadout(); }
+  let dt = (now - plume.lastAt) / 1000; plume.lastAt = now;
+  if (!(dt > 0)) dt = 0.016;
+  dt = Math.min(dt, 0.1);
+  if (plume.needPreroll) { plume.needPreroll = false; plumePreroll(D, F, 3.2); }
+  plume.tclock += dt;
+  const cap = Math.min(D.cfg.count, PLUME_MAX);
+  const tFlight = Math.max(F.H / Math.max(D.veVis, 1), 0.05);
+  const sub = Math.max(1, Math.ceil(dt / 0.02)), h = dt / sub;
+  for (let k = 0; k < sub; k++) plumeAdvance(h, D, F, cap, tFlight);
+  plumeEnsurePoints();
+  plumeEnsureVolume();
+  const P = plume, pa = P.points.geometry.attributes.position.array;
+  const asz = P.aSz.array, aal = P.aAl.array, at = P.aT.array, ash = P.aSh.array, asm = P.aSmk.array;
+  const re = F.re;
+  for (let i = 0; i < P.n; i++) {
+    const st = P.st[i];
+    if (!st) { pa[3 * i + 1] = -1000; aal[i] = 0; continue; }
+    pa[3 * i] = P.px[i]; pa[3 * i + 1] = P.py[i]; pa[3 * i + 2] = P.pz[i];
+    at[i] = P.tn[i]; ash[i] = P.sh[i]; asm[i] = P.smk[i];
+    if (st === 1) { asz[i] = P.sizeK * re * (0.55 + 0.35 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]); aal[i] = P.tune.jetSprite; }
+    else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
+  }
+  P.points.geometry.setDrawRange(0, P.n);
+  for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl]) a.needsUpdate = true;
+  const camFov = camera.fov * Math.PI / 180;
+  P.points.material.uniforms.uPx.value = renderer.domElement.height / (2 * Math.tan(camFov / 2));
+  P.points.material.uniforms.uHeat.value = floorMat.uniforms.uHeat.value;
+  P.points.visible = !volEnabled;
+
+  // volume grid is built in BOTH modes (it also feeds the floor's heat map); only drawn in volumetric mode
+  if (now - P.lastVolAt >= PLUME_VOL_INTERVAL_MS) { P.lastVolAt = now; plumeRebuildVolume(D, F); }
+  const vm = P.vol;
+  vm.visible = volEnabled && !!P.volTex;
+  if (vm.visible) {
+    const u = vm.material.uniforms, g = P.grid;
+    u.uHeat.value = floorMat.uniforms.uHeat.value;
+    u.uEmis.value = D.cfg.emis;
+    // camera inside the box -> back faces, no depth test; outside -> front faces, depth-tested against the scene
+    const inside = camera.position.x > g.min.x && camera.position.x < g.min.x + g.size.x && camera.position.y > 0 && camera.position.y < g.size.y && camera.position.z > g.min.z && camera.position.z < g.min.z + g.size.z;
+    const wantSide = inside ? THREE.BackSide : THREE.FrontSide;
+    if (vm.material.side !== wantSide) { vm.material.side = wantSide; vm.material.depthTest = !inside; vm.material.needsUpdate = true; }
+  }
+}
+
 let simClock = new THREE.Clock();
 function animateParticles() {
   requestAnimationFrame(animateParticles);
@@ -5203,6 +5887,7 @@ playBtn.onclick = async () => {
   } else {
     state.simRunning = false;
     liveReset();
+    plumeReset();
     setPartsGlass(false);
     playBtn.textContent = '▶ Simulate';
     playBtn.classList.remove('playing');
@@ -5629,7 +6314,7 @@ async function presetLoadFile(file) {
 // ═══ /PRESET SAVE/LOAD ═══
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, liveUpdate, liveKick, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
