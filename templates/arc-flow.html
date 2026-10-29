@@ -307,6 +307,15 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <div class="sec-sub">
       Gas inside a container, pipe or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the Volumetric and Gaussian splat renders; untick to see the gas only where the walls don't hide it.
     </div>
+
+    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="continuousFlow" checked style="width:auto;margin:0;">
+      Continuous flow
+    </label>
+    <div class="sec-sub">
+      Only containers hold fluid, with a finite fill from their volume, density, pressure and temperature; pipes and chambers start empty and only conduct. On (default): containers are replenished as fluid is used, so the steady state can be studied indefinitely. Off: the fixed amounts deplete, container pressure falls with the mass that leaves, and the flow stops when they are empty. Separated openings spill into the atmosphere; an opening pressed against another surface is plugged.
+    </div>
+    <div id="massStatus" class="sec-sub" style="font-size:10px;line-height:1.6"></div>
   </div>
 
   <div id="viewport">
@@ -602,6 +611,7 @@ function animateBase() {
   // so use a plain flag that's genuinely false until setup finishes.
   if (appReady) {
     if (state.simRunning && particleSystem) renderFloorHeatPass();
+    if (typeof massFrame === 'function') massFrame(performance.now());
     if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
     // Volumetric ray-march pass — see "VOLUMETRIC RAY-MARCH RENDERER"
     // below buildParticleSystem for the full design. Declared via
@@ -825,6 +835,7 @@ function applyDefaultDemoConfiguration() {
     if (!cfg) continue;
 
     part.type = cfg.type;
+    applyMaterial(part, cfg.type === 'chamber' ? 'inconel' : cfg.type === 'pipe' ? 'stainless' : (cfg.contents === 'helium' ? 'cfrp' : 'al2195'));
     if (cfg.contents) part.contents = cfg.contents;
     if (cfg.internalPsi) part.internalPsi = cfg.internalPsi;
     if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
@@ -966,7 +977,7 @@ function onSceneLoaded(object) {
       // instead, since there's no "re-detect" for a hand-traced region.
       openings: [],
       volumeM3: null,
-      material: 'Al-Li 2195 (aerospace alloy)', densityKgM3: 2630,
+      material: 'Aluminum-lithium 2195 (aerospace alloy)', matId: 'al2195', wallMm: 0, densityKgM3: 2630,
     };
     // Tag original materials (for x-ray/highlight restore) and the owning
     // part (so a tap on this mesh in the viewport can select it directly).
@@ -1202,8 +1213,7 @@ function renderPartDetail() {
         <option value="helium" ${part.contents==='helium'?'selected':''}>Pressurant — Helium</option>
       </select>
 
-      <label class="field">Material (default: aerospace alloy)</label>
-      <input type="text" id="f_material" value="${part.material}">
+      ${matBlockHtml(part)}
 
       <label class="field">Auto-Computed Volume</label>
       <div class="readout">${part.volumeM3.toFixed(4)} <span class="u">m³</span></div>
@@ -1226,12 +1236,7 @@ function renderPartDetail() {
     `;
   } else if (part.type === 'pipe') {
     html += `
-      <label class="field">Hose / Pipe Material</label>
-      <select id="f_material">
-        <option ${part.material.includes('braided')?'selected':''}>Stainless-steel braided flex hose</option>
-        <option ${part.material.includes('PTFE')?'selected':''}>PTFE-lined composite hose</option>
-        <option ${part.material.includes('Inconel')?'selected':''}>Inconel rigid line</option>
-      </select>
+      ${matBlockHtml(part)}
       <div class="sec-sub">Pipes inherit internal pressure from whichever containers they connect — no manual pressure entry needed. A thermal/stress compute map runs along this part during simulation.</div>
 
       <div class="sec-h">Openings</div>
@@ -1240,8 +1245,7 @@ function renderPartDetail() {
     `;
   } else if (part.type === 'chamber') {
     html += `
-      <label class="field">Alloy (default: chamber/nozzle superalloy)</label>
-      <input type="text" id="f_material" value="${part.material.includes('Inconel') ? part.material : 'Inconel 718 (chamber/nozzle superalloy)'}">
+      ${matBlockHtml(part)}
       <div class="sec-sub">All non-nozzle openings are entrances (propellant inlets). The nozzle opening is marked separately as <b>Nozzle Exit</b>.</div>
 
       <div class="sec-h">Openings</div>
@@ -1284,7 +1288,15 @@ function wireDetailEvents(part) {
   });
   const f = id => document.getElementById(id);
   if (f('f_contents')) f('f_contents').onchange = e => part.contents = e.target.value;
-  if (f('f_material')) f('f_material').onchange = e => part.material = e.target.value;
+  const matRefresh = () => {
+    const st = massStress(part, 288, Math.max(parseFloat(atmoPsiEl.value) || 0, 0)), pr = f('f_matprops'), sx = f('f_stress');
+    if (pr) pr.innerHTML = matPropsText(matOf(part));
+    if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${partRadiusM(part).toFixed(2)} m · t ${(partWallM(part) * 1000).toFixed(1)} mm · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
+    if (mass.on && mass.th.get(part)) mass.th.get(part).Tw = Math.min(mass.th.get(part).Tw, 6000);
+    updatePartThermalTint(state.currentLinks);
+  };
+  if (f('f_matid')) { f('f_matid').onchange = e => { applyMaterial(part, e.target.value); matRefresh(); }; matRefresh(); }
+  if (f('f_wall')) f('f_wall').oninput = e => { part.wallMm = Math.max(0, parseFloat(e.target.value) || 0); matRefresh(); };
   if (f('f_mass')) f('f_mass').oninput = e => {
     part.massKg = parseFloat(e.target.value) || 0;
     const r = f('f_densityReadout');
@@ -2068,17 +2080,36 @@ function computePartHeatLevels(links) {
 
 // partHeatEmissiveApplied is declared near the top (used by the render loop).
 function updatePartThermalTint(links) {
-  const heat = computePartHeatLevels(links);
+  const heat = computePartHeatLevels(links || new Map());
+  const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
   for (const part of state.parts) {
-    const level = state.simRunning ? (heat.get(part) || 0) : 0;
-    const [r, g, b] = jsThermalRamp(level);
+    if (!part.type) continue;
+    // Wall thermal state + hoop stress (see FINITE MASS ... MATERIALS): level = wall temperature, danger = stress or overheat.
+    const th = mass.on ? mass.th.get(part) : null;
+    let level, danger = 0;
+    if (th) {
+      const mx = Math.min(matOf(part)[7], 1500);
+      level = Math.max(0, Math.min(1, (th.Tw - 288) / (mx - 288)));
+      danger = Math.max(Math.max(0, Math.min(1, (th.s - 0.6) / 0.4)), th.oh);
+    } else {
+      level = state.simRunning ? (heat.get(part) || 0) : 0;
+      const st = massStress(part, 288, pa);
+      danger = Math.max(0, Math.min(1, (st.s - 0.6) / 0.4));
+    }
+    let [r, g, b] = jsThermalRamp(level);
+    r += (1.0 - r) * danger; g += (0.08 - g) * danger; b += (0.04 - b) * danger;
+    const glass = state.simRunning ? 2.2 : 1;   // the walls are translucent while simulating: lift the tint so it still reads
+    const inten = Math.min((level * 0.55 + danger * 0.75) * glass, 2.5);
     for (const m of part.meshes) {
-      if (!m.material || !m.material.emissive) continue;
-      m.material.emissive.setRGB(r, g, b);
-      m.material.emissiveIntensity = level * 0.55;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mt of mats) {
+        if (!mt || !mt.emissive) continue;
+        mt.emissive.setRGB(r, g, b);
+        mt.emissiveIntensity = inten;
+      }
     }
   }
-  partHeatEmissiveApplied = state.simRunning;
+  partHeatEmissiveApplied = state.simRunning || state.parts.some(p => p.type && massStress(p, 288, pa).s > 0.6);
 }
 
 function partCentroid(part) {
@@ -4340,7 +4371,7 @@ async function buildParticleSystem() {
 
   const goldenAngle = 2.399963; // sunflower/Fibonacci disc spacing
   for (const part of containers) {
-    const n = part.type === 'chamber' ? Math.round(perContainer * 0.5) : perContainer;
+    const n = part.type === 'chamber' ? 0 : perContainer;   // only containers hold fluid; the chamber just conducts
     for (let i = 0; i < n; i++) {
       const path = buildParticlePath(part, links, 0, collisionSDF);
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
@@ -5661,7 +5692,7 @@ const live = {
   sdf: null,
   bakedM: new Map(), snap: new Map(), chainCache: new Map(),
   moved: new Set(), firstChangeAt: 0, lastChangeAt: 0, lastWatch: 0,
-  busy: false, pending: false, autoOk: new Map(),
+  busy: false, pending: false, autoOk: new Map(), plugged: new Set(),
   pendIdx: null, pendT: null, pendN: 0,
   points: null, pointAlpha: null, pointSize: null, pointHeat: null,
   leakMesh: null, leakTex: null, leakData: null, leakTpr: 1, leakTexRes: LEAK_RES, leakDomainRef: null,
@@ -5737,6 +5768,7 @@ function liveExitOpening(part) { return part.openings.find(o => o.role === 'exit
 // Returns Map(exitingPart -> { gap: Vector3, gapDist, radius }) for broken ones.
 function liveEvalLinks(movedSet) {
   const out = new Map();
+  live.plugged.clear(); mass.plugged.clear();
   const links = state.currentLinks;
   if (!links) return out;
   for (const [part, link] of links) {
@@ -5770,7 +5802,8 @@ function liveEvalLinks(movedSet) {
         if (!ok) { gap = ex.centroid.clone(); radius = ex.radius; }
       }
     }
-    if (!ok) out.set(part, { gap, gapDist, radius });
+    if (!ok && gap && massPointPlugged(gap, [part, target])) { live.plugged.add(part); mass.plugged.add(part); }   // pressed against another surface: plugged, no leak
+    else if (!ok) out.set(part, { gap, gapDist, radius });
   }
   return out;
 }
@@ -6383,6 +6416,236 @@ function liveLeakFrame(now) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  FINITE MASS, CONTINUOUS-FLOW OPTION, MATERIALS, WALL THERMAL + STRESS
+//
+//  Only CONTAINERS hold fluid. Each container gets a finite fill from its volume x density at its own pressure /
+//  temperature (helium: ideal gas; propellants: 90% of the liquid density), or the explicit Mass field when set (bounded
+//  by what the volume can physically hold). Pipes and chambers start empty and only conduct. Nothing emits: the baked
+//  flow of a container is thinned in proportion to its remaining mass (the particle's fixed random rank vs the fill
+//  fraction), the live leak system and the exhaust plume are gated by the same flow ledger, and a container whose
+//  path has no open end (no nozzle, or the opening is plugged by another surface) has no flow at all.
+//
+//    drain   dm/dt = -(m0/tau) * sqrt((P - Pamb)/(P0 - Pamb))   (orifice-law shape), tau = orifice-time clamped 30..120 s
+//    P       = Pamb + (P0 - Pamb) * (m/m0) * (Tgas/T0)          pressure falls with the mass that leaves
+//    open    the chain container -> ... -> chamber reaches an open nozzle, or a broken link (live leak) = open to the
+//            environment; a plugged link / plugged nozzle / dead end = no flow, mass stays
+//  Continuous flow (default ON) replenishes what is used so the steady state can be studied indefinitely.
+//
+//  Walls: a lumped wall temperature per part (convection from the gas, radiation, accelerated conduction along the
+//  links) and hoop stress P*r/t against the temperature-derated yield strength of the chosen material.
+// ═══════════════════════════════════════════════════════════════════════
+const PSI2PA = 6894.757;
+// id: [label, density kg/m3, Young's modulus GPa, yield MPa, conductivity W/mK, specific heat J/kgK, emissivity, max service temp K]
+const MATERIALS = {
+  steel:     ['Industrial steel (ASTM A516-70)',            7850, 200,  260,  50, 490, 0.80,  720],
+  stainless: ['Stainless steel 316L',                       8000, 193,  290,  16, 500, 0.35, 1150],
+  titanium:  ['Titanium Ti-6Al-4V (aerospace grade)',       4430, 114,  880, 6.7, 526, 0.30,  800],
+  al7075:    ['Aluminum 7075-T6 (aerospace grade)',         2810,  72,  503, 130, 960, 0.10,  420],
+  al2195:    ['Aluminum-lithium 2195 (aerospace alloy)',    2630,  76,  540,  85, 900, 0.10,  450],
+  copper:    ['Copper CuCrZr (regen chamber liner)',        8900, 130,  380, 320, 390, 0.05,  800],
+  inconel:   ['Inconel 718 (chamber/nozzle superalloy)',    8190, 200, 1035, 11.4, 435, 0.70, 1200],
+  cfrp:      ['Carbon-fibre composite (COPV)',              1600, 140, 1500,   5, 800, 0.85,  450],
+  glass:     ['Borosilicate glass',                         2230,  64,   50, 1.1, 830, 0.90,  750],
+};
+const MAT_DEFAULT = 'al2195';
+function matOf(part) { return MATERIALS[part.matId] || MATERIALS[MAT_DEFAULT]; }
+function applyMaterial(part, id) {
+  if (!MATERIALS[id]) return false;
+  part.matId = id; part.material = MATERIALS[id][0]; part.densityKgM3 = MATERIALS[id][1];
+  return true;
+}
+function matOptionsHtml(part) {
+  return Object.keys(MATERIALS).map(k => `<option value="${k}" ${(part.matId || MAT_DEFAULT) === k ? 'selected' : ''}>${MATERIALS[k][0]}</option>`).join('');
+}
+function matBlockHtml(part) {
+  const m = matOf(part);
+  return `<label class="field">Wall material</label>
+    <select id="f_matid">${matOptionsHtml(part)}</select>
+    <label class="field">Wall thickness (mm, 0 = auto)</label>
+    <input type="number" id="f_wall" value="${part.wallMm || 0}" min="0" step="0.5">
+    <div class="readout" id="f_matprops" style="font-size:10px;line-height:1.5">${matPropsText(m)}</div>
+    <div class="readout" id="f_stress" style="font-size:11px;line-height:1.5"></div>`;
+}
+function matPropsText(m) {
+  return `ρ ${m[1]} kg/m³ · E ${m[2]} GPa · yield ${m[3]} MPa<br>k ${m[4]} W/m·K · cp ${m[5]} J/kg·K · ε ${m[6]} · max ${m[7]} K`;
+}
+function partRadiusM(part) {
+  const b = partWorldAABB(part), s = b.getSize(new THREE.Vector3());
+  const d = [s.x, s.y, s.z].sort((a, c) => a - c);
+  return Math.max(0.5 * 0.5 * (d[0] + d[1]), 0.01);
+}
+function partWallM(part) { return part.wallMm > 0 ? part.wallMm / 1000 : 0.04 * partRadiusM(part); }
+
+const mass = { on: false, c: new Map(), K: 1, lastAt: 0, lastSync: 0, lastUI: 0, plugged: new Set(), nozPlugged: false, nozAt: 0, th: new Map() };
+const continuousEl = document.getElementById('continuousFlow');
+function massContinuous() { return !continuousEl || continuousEl.checked; }
+
+function massInitialFor(part) {
+  if (part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+  const V = part.volumeM3, P0 = Math.max(part.internalPsi || 0, 0), T0 = part.tempK || 288;
+  const he = part.contents === 'helium';
+  const rho = he ? (P0 + 14.696) * PSI2PA * 4.0026e-3 / (8.314 * T0) : (part.contents === 'fuel' ? 810 : 1141);
+  const cap = V * rho * (he ? 1.0 : 1.0), nominal = V * rho * (he ? 1.0 : 0.9);
+  return part.massKg > 0 ? Math.min(part.massKg, cap) : nominal;
+}
+function massBuild() {
+  mass.c.clear(); mass.th.clear(); mass.K = 1; mass.lastAt = 0; mass.plugged.clear(); mass.nozPlugged = false;
+  const cpu = state.particleCPU;
+  for (const part of state.parts) {
+    if (part.type === 'container') {
+      const m0 = massInitialFor(part);
+      const ex = part.openings.find(o => o.role === 'exit');
+      const A = Math.PI * Math.pow(ex ? ex.radius : 0.2, 2), P0 = Math.max(part.internalPsi || 0, 0), pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
+      const rhoF = Math.max(m0 / Math.max(part.volumeM3, 1e-6), 1);
+      const mdot = 0.6 * A * Math.sqrt(2 * rhoF * Math.max(P0 - pa, 1) * PSI2PA);
+      mass.c.set(part, { m0, m: m0, P0, T0: part.tempK || 288, P: P0, flow: 0, tau: Math.min(120, Math.max(30, m0 / Math.max(mdot, 1e-9))), kind: 'closed' });
+    }
+  }
+  if (cpu) { cpu.rank = new Float32Array(cpu.count); for (let i = 0; i < cpu.count; i++) cpu.rank[i] = Math.random(); }
+  for (const part of state.parts) if (part.type) mass.th.set(part, { Tw: 288, s: 0, P: 0, oh: 0 });
+  mass.on = true;
+}
+function massReset() {
+  mass.on = false; mass.c.clear(); mass.th.clear(); mass.K = 1; mass.plugged.clear(); mass.nozPlugged = false;
+  const cpu = state.particleCPU; if (cpu) cpu.rank = null;
+}
+function massPointPlugged(P, exclude) {
+  for (const q of state.parts) {
+    if (!q.type || exclude.includes(q)) continue;
+    if (partWorldAABB(q).expandByScalar(0.02).containsPoint(P)) return true;
+  }
+  return false;
+}
+function massNozzlePlugged(now) {
+  if (now - mass.nozAt < 200) return mass.nozPlugged;
+  mass.nozAt = now;
+  const ch = state.parts.find(p => p.type === 'chamber'), noz = ch && ch.openings.find(o => o.role === 'nozzle');
+  if (!noz) { mass.nozPlugged = false; return false; }
+  const O = (noz.marker ? openingLiveCentroid(noz) : noz.centroid).clone(), d = (noz.marker ? openingLiveNormal(noz) : noz.normal).clone().normalize();
+  mass.nozPlugged = massPointPlugged(O.addScaledVector(d, 0.1 * noz.radius + 0.05), [ch]);
+  return mass.nozPlugged;
+}
+function massGate(part, now) {
+  const links = state.currentLinks; let cur = part, guard = 0;
+  while (guard++ < 8) {
+    if (live.groups.has(cur)) return 'leak';
+    if (mass.plugged.has(cur)) return 'plugged';
+    if (cur.type === 'chamber') return massNozzlePlugged(now) ? 'plugged' : 'nozzle';
+    const l = links && links.get(cur);
+    if (!l) return 'closed';
+    cur = l.target;
+  }
+  return 'closed';
+}
+function massPartPressure(part) {   // psi (absolute) currently inside this part
+  const c = mass.c.get(part);
+  if (c) return c.P;
+  let P = 0, Phe = 0; const links = state.currentLinks;
+  if (part.type === 'chamber') return (part.internalPsi || 0) * (mass.on ? Math.max(0, Math.min(1, mass.K)) : 1);
+  if (links) for (const [cp, cc] of mass.c) {
+    let cur = cp, g = 0;
+    while (cur && g++ < 8) { if (cur === part) { if (cp.contents === 'helium') Phe = Math.max(Phe, cc.P); else P = Math.max(P, cc.P); break; } const l = links.get(cur); cur = l && l.target; }
+  }
+  return P || Phe || part.internalPsi || 0;   // lines carry the regulated propellant-tank pressure, not the pressurant storage pressure
+}
+function massStress(part, Tw, pamb) {
+  const m = matOf(part);
+  const P = massPartPressure(part), sigma = Math.max(P - pamb, 0) * PSI2PA * partRadiusM(part) / partWallM(part) / 1e6;
+  const der = Tw >= m[7] ? 0.05 : Math.max(0.1, 1 - 0.0009 * Math.max(Tw - 293, 0));
+  return { P, s: sigma / (m[3] * der), sigma, yEff: m[3] * der };
+}
+
+function massStep(dt, now) {
+  const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0), cont = massContinuous();
+  let K = 0;
+  for (const [part, c] of mass.c) {
+    c.kind = massGate(part, now);
+    const th = mass.th.get(part);
+    const Tgas = c.T0 + 0.5 * ((th ? th.Tw : c.T0) - c.T0);
+    const x = c.m0 > 0 ? c.m / c.m0 : 0;
+    c.P = pa + Math.max(c.P0 - pa, 0) * x * (Tgas / c.T0);
+    const open = c.kind === 'leak' || c.kind === 'nozzle';
+    const dp = Math.max(c.P - pa, 0), dp0 = Math.max(c.P0 - pa, 1e-6);
+    c.flow = (open && c.m > 0) ? Math.sqrt(dp / dp0) : 0;
+    if (!cont && c.flow > 0) { c.m = Math.max(0, c.m - c.m0 / c.tau * c.flow * dt); if (c.m < 0.002 * c.m0) { c.m = 0; c.flow = 0; } }
+    if (cont && c.m < c.m0) c.m = c.m0;
+    if (c.kind === 'nozzle') K = Math.max(K, c.flow);
+  }
+  mass.K = K;
+  // wall thermal state + stress
+  const chamberHot = K > 0.02;
+  const ch = state.parts.find(p => p.type === 'chamber');
+  const cfg = PROP_PRESETS[plume.key];
+  const Tch = ch ? (ch.tempK > 300 ? ch.tempK : (cfg ? cfg.Tc : 288)) : 288;
+  const links = state.currentLinks, Ta = 288, TS = 2;
+  const dT = new Map();
+  for (const [part, th] of mass.th) {
+    const m = matOf(part), P = massPartPressure(part), t = partWallM(part);
+    let Tg = Ta;
+    if (part.type === 'chamber') Tg = chamberHot ? Tch : Ta;
+    else if (part.type === 'container') Tg = part.tempK || Ta;
+    else if (links) for (const [cp] of mass.c) { let cur = cp, g = 0; while (cur && g++ < 8) { if (cur === part) { Tg = Math.max(Tg, cp.tempK || Ta); break; } const l = links.get(cur); cur = l && l.target; } }
+    const h0 = part.type === 'chamber' ? 120 : 40, h = h0 * Math.pow(1 + Math.max(P - pa, 0) / 200, 0.8);
+    const C = m[1] * m[5] * t;
+    let rate = h * (Tg - th.Tw) / C - m[6] * 5.67e-8 * (Math.pow(th.Tw, 4) - Math.pow(Ta, 4)) / C;
+    const alpha = m[4] / (m[1] * m[5]), cc = Math.min(0.15, alpha * 1e4);
+    if (links) { const l = links.get(part); if (l) { const o = mass.th.get(l.target); if (o) { rate += cc * (o.Tw - th.Tw); dT.set(l.target, (dT.get(l.target) || 0) + cc * (th.Tw - o.Tw)); } } }
+    dT.set(part, (dT.get(part) || 0) + rate);
+  }
+  for (const [part, th] of mass.th) {
+    th.Tw = Math.max(Ta * 0.2, Math.min(th.Tw + (dT.get(part) || 0) * dt * TS, 6000));
+    const st = massStress(part, th.Tw, pa); th.s = st.s; th.P = st.P;
+    const mx = matOf(part)[7]; th.oh = Math.max(0, Math.min(1, (th.Tw - 0.8 * mx) / (0.2 * mx)));
+  }
+}
+// Hide / show baked particles to match each container's remaining mass; nothing re-emits.
+function massSync() {
+  const cpu = state.particleCPU;
+  if (!cpu || !cpu.rank || !cpu.liveArr) return;
+  const vis = new Map(), cont = massContinuous();
+  for (const [part, c] of mass.c) {
+    const open = c.kind === 'leak' || c.kind === 'nozzle';
+    vis.set(part, open ? (cont ? 1 : (c.m0 > 0 ? c.m / c.m0 : 0)) : (c.kind === 'leak' ? 1 : 0));
+  }
+  let dirty = false;
+  for (let p = 0; p < cpu.count; p++) {
+    if (cpu.affGroup[p] !== -1) continue;
+    const v = vis.get(cpu.ownerPart[p]);
+    if (v === undefined) continue;
+    const want = cpu.rank[p] >= v ? 1 : 0;
+    if (cpu.liveArr[p] !== want) { cpu.liveArr[p] = want; dirty = true; }
+  }
+  if (dirty && cpu.liveAttr) cpu.liveAttr.needsUpdate = true;
+}
+function massStatusHtml() {
+  const rows = [], warn = [];
+  for (const [part, c] of mass.c) {
+    const lab = { nozzle: 'flowing', leak: 'LEAKING', plugged: 'plugged — no flow', closed: 'closed — no flow' }[c.kind];
+    rows.push(`<div>${part.name}: <b>${c.m.toFixed(1)}</b> / ${c.m0.toFixed(1)} kg · <b>${c.P.toFixed(0)}</b> psi · ${c.m <= 0 ? '<span style="color:#ff6b6b">EMPTY</span>' : lab}</div>`);
+  }
+  for (const [part, th] of mass.th) {
+    if (th.s >= 1) warn.push(`<div style="color:#ff6b6b">⚠ ${part.name}: hoop stress ${(th.s * 100).toFixed(0)}% of yield — design a stronger container to hold this pressure</div>`);
+    if (th.oh > 0.5) warn.push(`<div style="color:#ffc861">⚠ ${part.name}: wall ${th.Tw.toFixed(0)} K near the ${matOf(part)[0]} limit</div>`);
+  }
+  return rows.join('') + warn.join('');
+}
+function massFrame(now) {
+  if (!state.simRunning || !mass.on) { if (mass.lastUI) { mass.lastUI = 0; const el = document.getElementById('massStatus'); if (el) el.innerHTML = ''; } return; }
+  if (!mass.lastAt) mass.lastAt = now;
+  const dt = Math.min((now - mass.lastAt) / 1000, 0.1); mass.lastAt = now;
+  if (dt > 0) massStep(dt, now);
+  if (now - mass.lastSync > 100) { mass.lastSync = now; massSync(); }
+  if (now - mass.lastUI > 300) {
+    mass.lastUI = now;
+    const el = document.getElementById('massStatus'); if (el) el.innerHTML = massStatusHtml();
+    const sel = state.selectedPart, st = document.getElementById('f_stress');
+    if (sel && st) { const th = mass.th.get(sel); if (th) st.innerHTML = `Wall ${th.Tw.toFixed(0)} K · P ${th.P.toFixed(0)} psi · stress ${(th.s * 100).toFixed(0)}% of yield` + (th.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : ''); }
+  }
+}
+if (continuousEl) continuousEl.onchange = () => { if (continuousEl.checked) for (const c of mass.c.values()) c.m = c.m0; };
+window.arcFlowMass = { mass, MATERIALS, applyMaterial, step: (dt) => massStep(dt, performance.now()) };
+
+// ═══════════════════════════════════════════════════════════════════════
 //  ROCKET EXHAUST PLUME
 //
 //  The baked flow ends at the nozzle exit plane; everything past it is this
@@ -6922,7 +7185,8 @@ function plumeCurrentDerived() {
   const F = plumeFrameOf(c, cfg);
   const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
   const pcIn = c.ch.internalPsi; // 60 psi is the generic untouched part default, not a chosen chamber pressure
-  const D = plumeDerive(cfg, (pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+  const kPc = mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1;
+  const D = plumeDerive(cfg, ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi) * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
   return { D, F, c };
 }
 function applyPropPreset(key) {
@@ -6946,7 +7210,7 @@ propPresetEl.onchange = () => applyPropPreset(propPresetEl.value);
 // One sub-step: emit this step's share of particles (each jittered along the axis by the distance it would have flown
 // within the step, so a long frame never leaves a gap below the nozzle), then integrate.
 function plumeAdvance(h, D, F, cap, tFlight) {
-  plume.acc += cap / (tFlight + plume.tune.keep * (plume.tune.life0 + 0.5 * plume.tune.life1)) * h;
+  plume.acc += cap / (tFlight + plume.tune.keep * (plume.tune.life0 + 0.5 * plume.tune.life1)) * h * (mass.on ? (mass.K > 0.02 ? Math.min(1, mass.K) : 0) : 1);
   const n = Math.floor(plume.acc); plume.acc -= n;
   plumeEmit(n, D, F, h);
   plumeStep(h, D, F);
@@ -7159,12 +7423,14 @@ playBtn.onclick = async () => {
       );
     }
     state.simRunning = true;
+    massBuild();
     liveWatchStart();
     setPartsGlass(true);
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
   } else {
     state.simRunning = false;
+    massReset();
     liveReset();
     plumeReset();
     setPartsGlass(false);
@@ -7208,7 +7474,7 @@ const PRESET_SCHEMA = 'arclake.module-preset', PRESET_VERSION = 1, PRESET_MODULE
 const PRESET_LS_PREFIX = 'arcflow.preset.v1:', PRESET_LS_AUTO = 'arcflow.preset.autoRestore';
 const PRESET_TYPES = ['container', 'pipe', 'chamber'], PRESET_CONTENTS = ['oxidizer', 'fuel', 'helium'], PRESET_ROLES = ['entrance', 'exit', 'nozzle'];
 const PRESET_KNOWN = { atmoPreset: 'atmosphere.preset', atmoPsi: 'atmosphere.ambientPsi', particlesPerContainer: 'particlesPerContainer',
-                       thermalResolution: 'thermalResolution', volumetricToggle: 'volumetric', xrayToggle: 'xray' };
+                       thermalResolution: 'thermalResolution', volumetricToggle: 'volumetric', xrayToggle: 'xray', continuousFlow: 'continuousFlow' };
 let presetPending = null;     // { preset, entries, global, globalApplied } waiting for an asset import
 let presetBusy = false;
 
@@ -7296,7 +7562,7 @@ function presetPartSettings(part) {
   for (const q of state.parts) if (q !== part && state.forcedSeals && state.forcedSeals.has(part.name + '|' + q.name)) { presetPartSig(q); sealTo.push(q._presetKey); }
   const p = part.pivot;
   return {
-    type: part.type || null, contents: part.contents, material: part.material, massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
+    type: part.type || null, contents: part.contents, material: part.material, matId: part.matId || MAT_DEFAULT, wallMm: _prnd(part.wallMm || 0), massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
     internalPsi: _prnd(part.internalPsi), densityKgM3: _prnd(part.densityKgM3 || 0),
     transform: { position: [p.position.x, p.position.y, p.position.z].map(v => _prnd(v, 6)), quaternion: [p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w].map(v => _prnd(v, 6)), scale: [p.scale.x, p.scale.y, p.scale.z].map(v => _prnd(v, 6)) },
     hiddenMeshes: part.meshes.map((m, i) => (m.userData.nozzleCover && !m.visible) ? i : -1).filter(i => i >= 0),
@@ -7449,7 +7715,9 @@ async function presetApplyPart(part, s, warns) {
   if (s.type === null || PRESET_TYPES.includes(s.type)) part.type = s.type; else if (s.type !== undefined) warns.push(tag + 'unknown type "' + String(s.type).slice(0, 30) + '"');
   if (PRESET_CONTENTS.includes(s.contents)) part.contents = s.contents; else if (s.contents !== undefined) warns.push(tag + 'unknown contents');
   if (typeof s.material === 'string') part.material = s.material.slice(0, 200);
+  if (typeof s.matId === 'string' && MATERIALS[s.matId]) { applyMaterial(part, s.matId); if (s.material) part.material = String(s.material).slice(0, 200); }
   let v;
+  if ((v = _pnum(s.wallMm, 0, 1e4)) != null) part.wallMm = v;
   if ((v = _pnum(s.massKg, 0, 1e9)) != null) part.massKg = v;
   if ((v = _pnum(s.tempK, 0, 1e5)) != null) part.tempK = v;
   if ((v = _pnum(s.internalPsi, -1e6, 1e7)) != null) part.internalPsi = v;
