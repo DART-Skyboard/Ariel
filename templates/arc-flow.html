@@ -1596,6 +1596,312 @@ function runSealCheck() {
   return results;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  AUTO-PENETRATION JOINT DETECTION
+//
+//  WHY THIS EXISTS: runSealCheck()/buildFlowGraph() above only ever connect
+//  two parts if a human (or detectOpenings()'s boundary-loop scan) has
+//  already MARKED a matching exit/entrance opening pair on each side, and
+//  even then they match by comparing the two ALREADY-MARKED centroids'
+//  distance — never by looking at the parts' real mesh geometry. That's a
+//  fine model for an assembly exported with genuinely cut-open mating
+//  faces (the bundled demo), but it breaks down for the case Justin
+//  described: parts modeled SEPARATE but PHYSICALLY PUSHED INTO each other
+//  at the joint, exactly like a real hose fitting pushed into a bulkhead —
+//  e.g. a plain cylindrical pipe whose end was never cut open at all (no
+//  boundary loop at its tip for detectOpenings() to find), but whose own
+//  hollow interior happens to reach all the way to, and past, the point
+//  where its wall geometrically overlaps the tank wall it's plugged into.
+//  There, the ONLY evidence a joint exists at all is the two parts' real
+//  triangle sets actually intersecting in 3D space — no marked opening on
+//  either side, because the user doesn't want to (or can't) hand-paint a
+//  ring there.
+//
+//  ALGORITHM (AABB prefilter → cavity-continuity sampling → flood-fill):
+//  1. Cheap first pass: two parts can only matter here if their world-
+//     space AABBs actually overlap at all. For a real assembly this
+//     rejects almost every pair in O(parts²) bounding-box tests — trivial
+//     next to any real geometric work — before anything triangle-level
+//     happens. This is the same "bbox first, triangles only if that
+//     passes" discipline buildCollisionSDF's fine-region triangle filter
+//     already uses, just one level up (part pairs instead of triangles).
+//  2. For a pair that passes, take the AABB *intersection* box (padded
+//     slightly) as the candidate joint region — this is, by construction,
+//     the only 3D region where the two parts' surfaces could possibly
+//     cross, so it's also the only region cavity-continuity needs to be
+//     tested in.
+//  3. Sample a small 3D grid of points across that overlap box (resolution
+//     scaled to the box's own size, capped — see PEN_SAMPLE_RES) and
+//     classify EACH point independently against EACH part's own triangle
+//     set using the exact same signedDistanceToMesh() pseudo-normal test
+//     collectJointRegions'/buildCollisionSDF's fine SDFs already rely on —
+//     same sign convention (sd<0 ⇒ inside that part's own hollow interior),
+//     so this reuses the file's one existing notion of "inside" rather
+//     than inventing a second one. A sample point is labeled:
+//       insideA  — sd_A < 0 (inside part A's cavity), sd_B >= 0
+//       insideB  — sd_B < 0 (inside part B's cavity), sd_A >= 0
+//       insideBoth — inside both (exactly at/near the true overlap seam)
+//       solid    — outside both (sitting in solid wall material or dead air
+//                   between the two shells — NOT a fluid path)
+//  4. Flood-fill (6-connected) over the sample grid, allowing a step
+//     between any two "inside something" samples (insideA/insideB/
+//     insideBoth all connect to each other and to themselves) but NEVER
+//     through a "solid" sample. If any insideA-labeled sample ends up
+//     connected to any insideB-labeled sample, there is a continuous
+//     hollow path through the overlap region linking the two parts'
+//     cavities — the joint is geometrically SEALED, exactly as if the user
+//     had painted matching entrance/exit rings there. If no such
+//     connectivity exists, the parts genuinely touch/overlap but there is
+//     no fluid path (e.g. a truly solid part, or a pipe whose wall is
+//     solid at the exact crossing point) — surfaced as a rejection, not
+//     silently ignored and not silently treated as sealed.
+//
+//  This runs ALONGSIDE, not instead of, the manual opening-pair system:
+//  buildFlowGraph() below only calls this for a part that doesn't already
+//  have a manually-resolved exit link, so a part with real painted/
+//  detected openings keeps behaving exactly as it does today.
+// ═══════════════════════════════════════════════════════════════════════
+
+const PEN_SAMPLE_RES = 9;      // samples per axis across an overlap box — small on purpose, see cost note below
+const PEN_MAX_SAMPLES_AXIS = 14; // hard cap even for a large overlap box, so cost stays bounded
+const PEN_MIN_OVERLAP = 1e-6;   // degenerate/zero-volume AABB "overlap" (parts merely touching at a face) isn't a penetration
+
+function partWorldAABB(part) {
+  const box = new THREE.Box3();
+  for (const m of part.meshes) box.expandByObject(m);
+  return box;
+}
+
+// Flood-fill connectivity between two label sets over a 3D sample grid,
+// 6-connected (face-adjacent voxels only — the cheapest connectivity that
+// still can't "leak" diagonally through a solid corner). `labels` is a
+// flat Int8Array (0=solid, 1=insideA-only, 2=insideB-only, 3=insideBoth),
+// indexed (z*res+y)*res+x to match sampleSDFGrid's own convention
+// elsewhere in this file. Returns true iff some single connected
+// component of "inside something" samples contains BOTH a genuine
+// insideA-only (1) sample AND a genuine insideB-only (2) sample — i.e. the
+// path actually reaches into each part's own exclusive interior, not just
+// the ambiguous seam between them.
+//
+// IMPORTANT — why label 3 (insideBoth) must NOT satisfy "saw A" or "saw B"
+// on its own: an earlier version of this function treated any insideBoth
+// sample as proof of both at once, on the reasoning that a point inside
+// both parts simultaneously must be sitting in a real shared cavity. That
+// reasoning is wrong whenever B's own "inside" region, by itself, is just
+// B's single enclosed volume with no actual bore (e.g. a solid rod, or —
+// the case this directly cost real testing time to discover — a pipe
+// whose bore IS real but is PLUGGED before it ever reaches this overlap
+// region): B merely sitting physically inside A's open cavity (its solid
+// body submerged in the tank, or its sealed-off bore end poking in) makes
+// every sample across that whole submerged region read as insideBoth,
+// with NO requirement that the path continue on to reach A's own
+// unambiguous bulk interior through B's bore. Confirmed empirically while
+// building this feature's own test scenes: a solid rod AND a pipe with an
+// internal plug sealing its bore right at the crossing both produced
+// insideBoth samples throughout the region where they're physically
+// embedded in the tank — exactly the false "sealed" positive this
+// function must not produce. Requiring the connected component to reach a
+// pure-A-only AND a pure-B-only sample forces the path to actually pass
+// INTO each part's exclusive interior (A's open tank space beyond the
+// joint, and B's own bore beyond where it overlaps A) rather than
+// stopping at the ambiguous shared seam — which is exactly what happens
+// for a genuine through-fitting (the bore continues past the wall
+// crossing into A's open interior on one side, and out the pipe's own far
+// end on the other) and exactly what does NOT happen for a submerged
+// solid body or a plugged bore (there is no "B-only" region beyond the
+// plug/body for the component to ever reach, because B's own hollow
+// interior simply doesn't extend past that point).
+function cavitiesAreConnected(labels, res) {
+  const idx = (x, y, z) => (z * res + y) * res + x;
+  const isInside = (v) => v !== 0; // insideA(1) / insideB(2) / insideBoth(3) all count as "something's hollow interior here"
+  const visited = new Uint8Array(labels.length);
+  const neighborsOf = (i) => {
+    const z = Math.floor(i / (res * res));
+    const y = Math.floor((i - z * res * res) / res);
+    const x = i - z * res * res - y * res;
+    const out = [];
+    if (x > 0) out.push(idx(x-1,y,z)); if (x < res-1) out.push(idx(x+1,y,z));
+    if (y > 0) out.push(idx(x,y-1,z)); if (y < res-1) out.push(idx(x,y+1,z));
+    if (z > 0) out.push(idx(x,y,z-1)); if (z < res-1) out.push(idx(x,y,z+1));
+    return out;
+  };
+  // Walk EACH connected component separately (not one merged fill across
+  // every seed at once) — a component is checked for its OWN saw-1/saw-2
+  // evidence, since two genuinely disjoint blobs must never "share credit"
+  // for connectivity neither one actually has on its own.
+  for (let start = 0; start < labels.length; start++) {
+    if (!isInside(labels[start]) || visited[start]) continue;
+    const stack = [start];
+    visited[start] = 1;
+    let sawAOnly = false, sawBOnly = false;
+    while (stack.length) {
+      const i = stack.pop();
+      const v = labels[i];
+      if (v === 1) sawAOnly = true;
+      if (v === 2) sawBOnly = true;
+      for (const ni of neighborsOf(i)) {
+        if (!visited[ni] && isInside(labels[ni])) { visited[ni] = 1; stack.push(ni); }
+      }
+    }
+    if (sawAOnly && sawBOnly) return true; // this component alone proves a real through-path
+  }
+  return false;
+}
+
+// Tests ONE part pair for a geometric penetration joint. Returns:
+//   { sealed:true,  centroid, radius, partsInvolved }   — continuous cavity found, treat as a sealed joint
+//   { sealed:false, centroid, radius, partsInvolved }   — surfaces genuinely overlap but no fluid path through them
+//   null                                                 — AABBs don't actually overlap (not a penetration case at all)
+function detectPenetrationJoint(partA, partB) {
+  const boxA = partWorldAABB(partA), boxB = partWorldAABB(partB);
+  if (!boxA.intersectsBox(boxB)) return null;
+  const overlap = boxA.clone().intersect(boxB);
+  const size = new THREE.Vector3(); overlap.getSize(size);
+  // A zero/near-zero-volume "overlap" means the AABBs merely share a face
+  // (common for two parts that just sit side by side) rather than one
+  // actually passing into the other — nothing to sample.
+  if (size.x <= PEN_MIN_OVERLAP || size.y <= PEN_MIN_OVERLAP || size.z <= PEN_MIN_OVERLAP) return null;
+
+  // Pad the overlap box slightly past the raw AABB intersection — the
+  // actual curved/cylindrical surfaces can poke a little outside their own
+  // AABB-intersection box right at the seam (e.g. a round pipe's silhouette
+  // vs. its AABB), and a few extra voxels of margin costs little at this
+  // sample resolution while avoiding clipping the real crossing region.
+  const pad = Math.max(size.length() * 0.08, 0.01);
+  overlap.expandByScalar(pad);
+  overlap.getSize(size);
+
+  // Resolution scales with the overlap box's own size (relative to each
+  // part's local triangle density isn't tracked here, but the box is by
+  // definition small — the region where two specific parts' surfaces
+  // cross — so a modest fixed-ish sample count per axis is both cheap and
+  // enough to resolve a joint's cross-section, same reasoning as
+  // SDF_FINE_RES for the fine collision grids above), capped so an
+  // unusually large overlap (e.g. two big parts almost fully co-located by
+  // a bad import) can't blow the sample budget.
+  const res = Math.min(PEN_MAX_SAMPLES_AXIS, Math.max(5, PEN_SAMPLE_RES));
+
+  // Only the two parts' own triangles matter for classifying "inside A" vs
+  // "inside B" — pulling in the rest of the scene would just add irrelevant
+  // nearest-triangle candidates to signedDistanceToMesh's search. Critically,
+  // this must NOT hand buildTriangleSpatialIndex a part's FULL triangle set
+  // (worldTrianglesForPart's cache is the whole part, e.g. a 100k+-triangle
+  // tank) — that is exactly the same cost mistake collectJointRegions'
+  // comment already documents having fixed once before (rebuilding a
+  // 100k-triangle index just to answer queries confined to a tiny local
+  // box dominated that profiled cost). Pre-filter down to triangles whose
+  // own bounding box actually touches the (already-small, padded) overlap
+  // region first, same discipline as buildCollisionSDF's fine-region pass.
+  const queryBox = overlap.clone().expandByScalar(size.length() * 0.25);
+  const filterNearOverlap = (allTris) => {
+    const out = [];
+    const triBox = new THREE.Box3();
+    for (let i = 0; i < allTris.length; i += 3) {
+      const a = allTris[i], b = allTris[i+1], c = allTris[i+2];
+      triBox.makeEmpty().expandByPoint(a).expandByPoint(b).expandByPoint(c);
+      if (queryBox.intersectsBox(triBox)) out.push(a, b, c);
+    }
+    return out;
+  };
+  const allTrisA = worldTrianglesForPart(partA);
+  const allTrisB = worldTrianglesForPart(partB);
+  const trisA = filterNearOverlap(allTrisA);
+  const trisB = filterNearOverlap(allTrisB);
+  if (!trisA.length || !trisB.length) return null;
+  const indexA = buildTriangleSpatialIndex(trisA);
+  const indexB = buildTriangleSpatialIndex(trisB);
+
+  const labels = new Int8Array(res * res * res);
+  const p = new THREE.Vector3();
+  // Small, deterministic, irrational-ratio per-axis jitter on top of the
+  // regular (x+0.5)/res grid offset. WITHOUT this, a perfectly regular
+  // sample grid can land exactly ON a rotationally-symmetric part's own
+  // centerline/axis — e.g. a pipe's bore axis, if the overlap box this
+  // grid spans happens to be centered on that same axis (a common real
+  // case: a straight pipe entering a tank dead-on, or — as hit directly
+  // while testing this feature — this function's own overlap-box
+  // centering math landing exactly on a tube's local symmetry axis for
+  // several rows of the grid at once). AT that exact axial point, a
+  // faceted cylinder's bore surface is EQUIDISTANT from every one of its
+  // n side facets by construction, so signedDistanceToMesh's "tied
+  // nearest feature" normal-accumulation sums all of them — which cancel
+  // to ~zero by symmetry — and the resulting sign is decided by raw
+  // floating-point noise rather than any real geometric signal (confirmed
+  // directly while building this feature's own test scenes: an on-axis
+  // bore sample read as "outside" purely from this degeneracy, which
+  // would have silently corrupted this function's "insideB" sample count
+  // along an entire centered row of the grid). Nudging every sample off
+  // any such axis by a small, fixed, non-grid-aligned fraction of a voxel
+  // avoids ever landing exactly on one, at negligible cost to the
+  // sampling's own accuracy (the offset is a small fraction of a voxel,
+  // far below the resolution this grid is already approximating at).
+  const jitter = (n) => (n * 0.61803398875 % 1) * 0.3 - 0.15; // golden-ratio-based, irrational relative to any small integer grid period
+  // A loose "near either surface" distance gate: samples far from BOTH
+  // parts' triangles (e.g. empty air pocket inside a big overlap box that
+  // isn't actually near either shell) are classified solid/neither by the
+  // sign test anyway, but gating first on absolute distance means a sample
+  // that's unambiguously nowhere near either mesh doesn't get a chance to
+  // misreport under near-tie epsilon noise in signedDistanceToMesh.
+  for (let z = 0; z < res; z++) {
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        p.set(
+          overlap.min.x + (x + 0.5 + jitter(x+1)) / res * size.x,
+          overlap.min.y + (y + 0.5 + jitter(y+2)) / res * size.y,
+          overlap.min.z + (z + 0.5 + jitter(z+3)) / res * size.z,
+        );
+        const sdA = signedDistanceToMesh(p, indexA);
+        const sdB = signedDistanceToMesh(p, indexB);
+        const inA = sdA < 0, inB = sdB < 0;
+        let label = 0; // solid / neither
+        if (inA && inB) label = 3;
+        else if (inA) label = 1;
+        else if (inB) label = 2;
+        labels[(z * res + y) * res + x] = label;
+      }
+    }
+  }
+
+  const connected = cavitiesAreConnected(labels, res);
+  const centroid = new THREE.Vector3(); overlap.getCenter(centroid);
+  const radius = size.length() * 0.5;
+  return { sealed: connected, centroid, radius, partsInvolved: [partA, partB] };
+}
+
+// Runs detectPenetrationJoint across every pair within `candidateParts`
+// (AABB prefiltered — see header comment above) and returns
+// { sealedPairs: [{partA, partB, centroid, radius}], rejectedPairs: [...] }.
+// sealedPairs feeds buildFlowGraph()'s links and collectJointRegions()'s
+// fine-SDF boxes; rejectedPairs is surfaced to the seal-check UI so a
+// genuinely solid intersection is reported rather than silently ignored.
+// `candidateParts` defaults to every classified part, but buildFlowGraph()
+// passes only the parts NOT already covered by a manual exit/entrance
+// link — see its own comment for why that scoping matters for both
+// correctness (no false-positive rejections on already-working manual
+// joints) and cost (fewer pairs to test on a scene where most parts are
+// already manually wired, like the bundled demo).
+function detectAutoPenetrationJoints(candidateParts) {
+  const classified = candidateParts || state.parts.filter(p => p.type);
+  const sealedPairs = [], rejectedPairs = [];
+  for (let i = 0; i < classified.length; i++) {
+    for (let j = i + 1; j < classified.length; j++) {
+      const a = classified[i], b = classified[j];
+      // AABB prefilter happens again right here (detectPenetrationJoint
+      // also checks, but bailing BEFORE even caching this pair's triangles
+      // via worldTrianglesForPart matters for a scene with many parts —
+      // most pairs in a real assembly are nowhere near each other, and
+      // this keeps the O(parts²) outer loop itself cheap: just two Box3
+      // tests per pair, no triangle access at all for the common case).
+      if (!partWorldAABB(a).intersectsBox(partWorldAABB(b))) continue;
+      const result = detectPenetrationJoint(a, b);
+      if (!result) continue;
+      if (result.sealed) sealedPairs.push({ partA: a, partB: b, centroid: result.centroid, radius: result.radius });
+      else rejectedPairs.push({ partA: a, partB: b, centroid: result.centroid, radius: result.radius });
+    }
+  }
+  return { sealedPairs, rejectedPairs };
+}
+
 // ── Particle flow simulation ─────────────────────────────────────
 // Compute-shader-driven flow: each particle's path (its container's
 // interior → its exit → the connected part's interior → ... → the
@@ -1622,6 +1928,7 @@ function buildFlowGraph() {
   refreshAllOpenings();
   // part -> { entrancePart, exitTargetPart } via nearest opening match
   const links = new Map(); // exitingPart -> { targetPart, viaOpening }
+  const manuallyLinked = new Set(); // parts already covered by a REAL marked exit/entrance pair
   for (const part of state.parts) {
     const exitOpening = part.openings.find(o => o.role === 'exit');
     if (!exitOpening) continue;
@@ -1633,7 +1940,57 @@ function buildFlowGraph() {
       const d = exitOpening.centroid.distanceTo(entrance.centroid);
       if (d < bestDist) { bestDist = d; best = { other, entrance }; }
     }
-    if (best) links.set(part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
+    if (best) {
+      links.set(part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
+      manuallyLinked.add(part);
+      manuallyLinked.add(best.other);
+    }
+  }
+
+  // Auto-penetration pass (see "AUTO-PENETRATION JOINT DETECTION" above):
+  // for parts that are geometrically fitted together but have NO manually
+  // marked exit/entrance pair at all, look for a continuous hollow path
+  // through where their meshes actually overlap and synthesize an
+  // equivalent link — same `links` Map, same { target, viaOpening,
+  // entrance } shape buildParticlePath/collectJointRegions already
+  // consume, so everything downstream treats it exactly like a manually
+  // sealed joint. detectAutoPenetrationJoints() is only asked about pairs
+  // where NEITHER part already has a real marked exit/entrance link — for
+  // two reasons: (1) so the existing, working manual path (e.g. the
+  // bundled demo's 7-part feed system, where mating faces also happen to
+  // geometrically overlap a little) is completely unaffected, never
+  // overridden or second-guessed; and (2) so a pair the manual system
+  // ALREADY resolved correctly never gets reported as a false-positive
+  // "touching but no fluid path" rejection just because this geometric
+  // pass, run on its own without that context, couldn't find a cavity
+  // path through their actual overlap (confirmed happening on the
+  // bundled demo's pressure-tank/propellant-tank joints during testing —
+  // real, correctly-flowing joints that are NOT solid intersections, just
+  // ones this geometric test alone can't resolve the same way the
+  // boundary-loop + manual opening pair already does).
+  const unlinkedParts = state.parts.filter(p => p.type && !manuallyLinked.has(p));
+  const { sealedPairs, rejectedPairs } = detectAutoPenetrationJoints(unlinkedParts);
+  state.autoPenetrationRejected = rejectedPairs; // surfaced in the seal-check UI — see runSealCheck's caller
+  for (const { partA, partB, centroid, radius } of sealedPairs) {
+    // Direction is arbitrary (the geometry alone doesn't say which part is
+    // "upstream") unless one side is already a known entrance (e.g. a
+    // chamber) — prefer feeding INTO a chamber/container over out of one,
+    // and otherwise default to A->B. Either part already being manually
+    // linked as an exit source is left alone (manuallyLinked skip below);
+    // this only decides direction for the genuinely-unlinked pairs this
+    // pass is for.
+    let from = partA, to = partB;
+    if (partB.type === 'chamber' && partA.type !== 'chamber') { from = partA; to = partB; }
+    else if (partA.type === 'chamber' && partB.type !== 'chamber') { from = partB; to = partA; }
+    if (manuallyLinked.has(from)) continue; // `from` already has a real exit link — don't shadow it
+    // Synthetic opening objects in the exact shape buildParticlePath/
+    // collectJointRegions read (centroid, radius; normal/role aren't
+    // consulted by either downstream consumer for an already-resolved
+    // link, only centroid+radius are, per their own code above).
+    const viaOpening = { id: 'autopen', centroid, radius, normal: new THREE.Vector3(0, 1, 0), role: 'exit' };
+    const entrance = { id: 'autopen', centroid, radius, normal: new THREE.Vector3(0, 1, 0), role: 'entrance' };
+    links.set(from, { target: to, viaOpening, entrance, auto: true });
+    manuallyLinked.add(from); manuallyLinked.add(to); // one auto link per part, same as the manual pass
   }
   return links;
 }
@@ -3633,6 +3990,24 @@ playBtn.onclick = async () => {
       setLoading(false);
       playBtn.disabled = false;
     }
+    // Auto-penetration detection (see buildFlowGraph -> detectAutoPenetrationJoints)
+    // runs as part of the bake just finished and stashes any REJECTED pairs
+    // — parts whose meshes genuinely overlap but have no continuous hollow
+    // path between them — on state.autoPenetrationRejected. Surface those
+    // clearly rather than silently doing nothing: this is exactly case 3
+    // from the brief ("these parts touch/intersect but there's no fluid
+    // path between them"), distinct from a normal unconnected part that
+    // was never meant to join anything.
+    const rejected = state.autoPenetrationRejected || [];
+    if (rejected.length) {
+      const msg = rejected.map(r => `${r.partA.name} ↔ ${r.partB.name}`).join('\n');
+      console.warn('[arc-flow] Parts touch/intersect with no fluid path between them:\n' + msg);
+      alert(
+        `${rejected.length} part pair(s) physically touch or overlap, but no continuous hollow ` +
+        `interior connects them — so no fluid path was created there:\n\n${msg}\n\n` +
+        `If these should actually connect, mark matching Entrance/Exit openings on them manually.`
+      );
+    }
     state.simRunning = true;
     setPartsGlass(true);
     playBtn.textContent = '■ Stop';
@@ -3650,7 +4025,7 @@ document.getElementById('toggleLeft').onclick = () => document.getElementById('l
 document.getElementById('toggleRight').onclick = () => document.getElementById('rightPanel').classList.toggle('open');
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, THREE, worldTrianglesForPart, partWorldAABB };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
