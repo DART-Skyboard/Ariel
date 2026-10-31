@@ -7532,19 +7532,35 @@ function plumeReadout() {
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
     `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
 }
-function chamberInflowPsi(ch) {
-  // Sum mass flow from channels that feed this chamber; convert to an
-  // effective chamber pressure so the plume reflects the real inflow.
-  if (!state.channelFlows) return 0;
-  let mdot = 0;
-  for (const f of state.channelFlows) {
-    if (f && f.to === ch && f.mdot > 0) mdot += f.mdot;
+function chamberMixture(ch) {
+  // Combustion needs both fuel and oxidizer. Sum the mass flow of each
+  // arriving at the chamber and return the O/F ratio and total mdot.
+  if (!state.channelFlows) return { mFuel: 0, mOx: 0, of: 0, mdot: 0 };
+  let mFuel = 0, mOx = 0;
+  for (const [part, f] of state.channelFlows) {
+    if (!f || !(f.mdot > 0)) continue;
+    // Only count channels that feed this chamber.
+    const links = state.currentLinks;
+    if (links && firstLink(links, part) !== ch && !allLinks(links, part).includes(ch)) continue;
+    const src = f.srcName || '';
+    const contents = (part.contents) || (state.parts.find(p => p.name === src) || {}).contents || '';
+    if (contents === 'fuel' || /fuel/i.test(src)) mFuel += f.mdot;
+    else if (contents === 'oxidizer' || /ox/i.test(src)) mOx += f.mdot;
   }
-  if (mdot <= 0) return 0;
-  // Rough: pressure scales with mass flow against the nozzle throat.
+  const mdot = mFuel + mOx;
+  const of = mFuel > 0 ? mOx / mFuel : 0;
+  return { mFuel, mOx, of, mdot };
+}
+function chamberInflowPsi(ch) {
+  const mix = chamberMixture(ch);
+  if (mix.mdot <= 0) return 0;
+  // Stoichiometric O/F for RP-1/LOX is about 2.3. Combustion strength
+  // peaks there and falls off as the mix goes fuel-rich or ox-rich.
+  const stoich = 2.3;
+  const mixK = mix.of > 0 ? Math.exp(-Math.pow(Math.log(mix.of / stoich), 2)) : 0;
   const noz = ch.openings.find(o => o.role === 'nozzle');
   const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
-  return Math.min(3000, mdot * 120 / Math.max(At, 1e-4));
+  return Math.min(3000, mix.mdot * 120 * mixK / Math.max(At, 1e-4));
 }
 function plumeCurrentDerived() {
   const cfg = PROP_PRESETS[plume.key];
