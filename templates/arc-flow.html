@@ -3891,12 +3891,15 @@ function buildParticlePath(part, links, depth, collisionSDF) {
       radii.push(partContainmentRadius(cur)); flowR.push(Math.max(radii[radii.length - 1], 1e-3)); exhaust.push(cur.type === 'chamber'); partOfWp.push(chainIdx);
     }
     if (cur.type === 'chamber') {
-      const nozzle = cur.openings.find(o => o.role === 'nozzle');
-      if (nozzle) {
-        path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
-        radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(chainIdx);
-        reachedNozzle = true;
+      let nozzle = cur.openings.find(o => o.role === 'nozzle');
+      // Fallback: any chamber gets a downward exit so the exhaust and ground hit show.
+      if (!nozzle) {
+        const c = partCentroid(cur);
+        nozzle = { centroid: c.clone().setY(c.y - partContainmentRadius(cur)), normal: new THREE.Vector3(0, -1, 0), radius: Math.max(partContainmentRadius(cur) * 0.3, 0.2) };
       }
+      path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
+      radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(chainIdx);
+      reachedNozzle = true;
       break;
     }
   }
@@ -7574,11 +7577,13 @@ function plumeReset() {
 
 let _plumeReadoutAt = 0;
 function plumeFrame(now) {
-  const ready = state.simRunning && state.particleCPU && plume.key !== 'off' && plumeChamber();
+  const chambers = plumeChambers();
+  const ready = state.simRunning && state.particleCPU && plume.key !== 'off' && chambers.length;
   if (!ready) {
     if (plume.active) { plume.active = false; plumeReset(); }
     return;
   }
+  // Drive the plume from the first chamber; additional chambers get their own exhaust via the baked path extension.
   const r = plumeCurrentDerived();
   if (!r) return;
   const { D, F } = r;
