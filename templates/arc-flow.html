@@ -7822,10 +7822,30 @@ function labelSpawn(kind, n, group) {
 }
 async function spawnDemo(which) {
   const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
-  if (!state.root || !state.root.children.length) {
+  const cur = tabs[activeTab];
+  const empty = !state.root || !state.root.children.length;
+  const same = cur && cur.kind === (which === 1 ? 'demo' : 'demo2');
+  // Different model in a filled tab → open a new tab and load fresh there.
+  if (!empty && !same) {
+    addTab(kind, which === 1 ? 'demo' : 'demo2');
+    if (typeof clearScene === 'function') clearScene();
     if (which === 1) await loadDemo(); else await loadDemo2();
+    if (tabs[activeTab]) tabs[activeTab].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null };
+    renderTabs();
+    if (which === 1) spawnState.demo = 1; else spawnState.demo2 = 1;
+    labelSpawn(kind, 1, state.root && state.root.children[0]);
     return;
   }
+  // Empty tab → load the original.
+  if (empty) {
+    if (which === 1) await loadDemo(); else await loadDemo2();
+    if (cur) { cur.kind = which === 1 ? 'demo' : 'demo2'; cur.name = kind; }
+    if (which === 1) spawnState.demo = 1; else spawnState.demo2 = 1;
+    labelSpawn(kind, 1, state.root && state.root.children[0]);
+    renderTabs();
+    return;
+  }
+  // Same model → clone into this tab.
   const src = state.root.children[0];
   const clone = src.clone(true);
   clone.position.set(0, 0, 0);
@@ -7833,7 +7853,6 @@ async function spawnDemo(which) {
   state.root.updateMatrixWorld(true);
   if (which === 1) spawnState.demo++; else spawnState.demo2++;
   const n = which === 1 ? spawnState.demo : spawnState.demo2;
-  // Measure the previous copy and place this one 5 grid squares clear.
   layoutSpawns();
   frameAllSpawns();
   labelSpawn(kind, n, clone);
