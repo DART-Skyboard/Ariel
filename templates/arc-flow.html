@@ -793,7 +793,10 @@ async function loadDemo2() {
           const ops = detectOpenings(part);
           if (!ops.length) continue;
           ops.sort((a, b) => a.centroid.y - b.centroid.y);
-          if (!ops.some(o => o.role === 'nozzle')) ops[0].role = 'nozzle';
+          if (!ops.some(o => o.role === 'nozzle')) {
+            ops[0].role = 'nozzle';
+            if (ops[0].normal.y > -0.3) ops[0].normal.set(0, -1, 0);
+          }
           part.openings = ops;
         }
       }
@@ -998,6 +1001,8 @@ function onSceneLoaded(object) {
   if (maxDim > 40 || maxDim < 2) {
     importGroup.scale.setScalar(20 / maxDim);
   }
+  importGroup.userData.spawnId = state.root.children.length;
+  importGroup.userData.spawnName = (object.name || 'Import') + ' ' + (state.root.children.length + 1);
   state.root.add(importGroup);
 
   if (firstImport) {
@@ -1225,6 +1230,44 @@ function buildPartListUI() {
   listEl.innerHTML = '';
   const tree = state.groupTree || [];
   const partIndex = new Map(state.parts.map((p, i) => [p, i]));
+
+  // Group by spawn/import when there are multiple copies.
+  const bySpawn = new Map();
+  for (const part of state.parts) {
+    let g = part.object3d;
+    while (g && g.parent && g.parent !== state.root) g = g.parent;
+    const sid = (g && g.userData && g.userData.spawnId != null) ? g.userData.spawnId : 0;
+    const sname = (g && g.userData && g.userData.spawnName) || ('System ' + (sid + 1));
+    if (!bySpawn.has(sid)) bySpawn.set(sid, { name: sname, parts: [] });
+    bySpawn.get(sid).parts.push(part);
+  }
+  if (bySpawn.size > 1) {
+    for (const [sid, grp] of bySpawn) {
+      const hdr = document.createElement('div');
+      hdr.className = 'part-row group-row';
+      hdr.innerHTML = `<span class="caret">▾</span><span class="dot"></span><span class="nm">${grp.name}</span><span class="tg">${grp.parts.length}</span>`;
+      const kids = document.createElement('div');
+      kids.className = 'group-kids';
+      hdr.onclick = () => {
+        const open = hdr.classList.toggle('collapsed');
+        kids.style.display = open ? 'none' : 'block';
+        hdr.querySelector('.caret').textContent = open ? '▸' : '▾';
+      };
+      for (const part of grp.parts) {
+        const i = partIndex.get(part);
+        const row = document.createElement('div');
+        row.className = 'part-row' + (part.type ? ' type-' + part.type : '');
+        row.style.paddingLeft = '22px';
+        row.innerHTML = `<span class="dot"></span><span class="nm">${part.name}</span><span class="tg">${part.type === 'pipe' ? 'channel' : (part.type || '—')}</span>`;
+        row.onclick = () => selectPart(i);
+        kids.appendChild(row);
+      }
+      listEl.appendChild(hdr);
+      listEl.appendChild(kids);
+    }
+    highlightSelection();
+    return;
+  }
 
   // Flat fallback: no groups, or tree empty — just list the simulation parts.
   if (!tree.length) {
@@ -7035,11 +7078,18 @@ const plume = {
   stats: { impacts: 0, maxWall: 0, maxHeightRing: 0 },
 };
 
+function plumeChambers() {
+  const out = [];
+  for (const ch of state.parts) {
+    if (ch.type !== 'chamber') continue;
+    const noz = ch.openings.find(o => o.role === 'nozzle');
+    if (noz) out.push({ ch, noz });
+  }
+  return out;
+}
 function plumeChamber() {
-  const ch = state.parts.find(p => p.type === 'chamber');
-  if (!ch) return null;
-  const noz = ch.openings.find(o => o.role === 'nozzle');
-  return noz ? { ch, noz } : null;
+  const all = plumeChambers();
+  return all.length ? all[0] : null;
 }
 // Current nozzle frame in world space (live: follows the part if it is dragged with the gimbal).
 function plumeFrameOf(c, cfg) {
@@ -7603,7 +7653,7 @@ document.getElementById('btnCloneImport').onclick = async () => {
   await loadFile(spawnState.lastFile);
   if (state.root && state.root.children.length) {
     const g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset() - 8;
+    g.position.x = nextSpawnOffset() - 4;
   }
   const cb = labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length, g);
   if (cb && cb.checked && typeof presetApplyPending === 'function') {
@@ -7622,7 +7672,7 @@ document.getElementById('btnResetDefaults').onclick = () => {
 const spawnState = { demo: 0, demo2: 0, imports: [], lastFile: null, lastPreset: null };
 function nextSpawnOffset() {
   const n = state.root ? state.root.children.length : 0;
-  return n * 8; // a few units — close, not overlapping
+  return n * 4; // close, just clear of the last copy
 }
 function labelSpawn(kind, n, group) {
   const el = document.getElementById('spawnList');
@@ -7632,8 +7682,9 @@ function labelSpawn(kind, n, group) {
   const cb = document.createElement('input');
   cb.type = 'checkbox'; cb.checked = true; cb.title = 'Use same preset as original';
   const lab = document.createElement('span');
-  lab.textContent = kind + ' ' + n;
+  lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— same preset</span>';
   lab.style.color = 'var(--acc)';
+  cb.onchange = () => { lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— ' + (cb.checked ? 'same preset' : 'custom') + '</span>'; };
   cb.onchange = async () => {
     if (!group || !cb.checked) return;
     if (typeof presetApplyPending === 'function') {
@@ -7652,7 +7703,7 @@ async function spawnDemo(which) {
   let g = null;
   if (state.root && state.root.children.length) {
     g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset() - 8;
+    g.position.x = nextSpawnOffset() - 4;
   }
   const cb = labelSpawn(kind, n, g);
   if (cb && cb.checked && typeof presetApplyPending === 'function') {
