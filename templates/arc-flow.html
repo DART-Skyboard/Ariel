@@ -96,6 +96,8 @@ body{display:flex;flex-direction:column;}
   color:var(--acc);text-transform:uppercase;margin:16px 0 8px;display:flex;align-items:center;gap:6px;}
 .sec-h:first-child{margin-top:0;}
 .sec-sub{font-size:10px;color:var(--txt-d);line-height:1.5;margin-bottom:10px;}
+.chk{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--txt);margin:6px 0;}
+#spawnList div{padding:2px 0;color:var(--acc);}
 
 /* Part list rows */
 .part-row{
@@ -211,9 +213,13 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <div class="sec-h">◈ Demos</div>
     <div class="btnrow">
       <button class="btn" id="btnLoadDemo">Quick Rocket</button>
+      <button class="btn" id="btnAddDemo" title="Spawn another Quick Rocket">+</button>
       <button class="btn" id="btnLoadDemo2">AJ-10C Quick</button>
+      <button class="btn" id="btnAddDemo2" title="Spawn another AJ-10C Quick">+</button>
     </div>
-    <div class="sec-sub">Loads the chosen demo as a fresh scene.</div>
+    <label class="chk"><input type="checkbox" id="useSamePreset" checked> Use same preset as original</label>
+    <div id="spawnList" class="sec-sub"></div>
+    <div class="sec-sub">+ spawns another copy, spaced so it does not overlap. Fresh load replaces the scene.</div>
     <div class="sec-h">◈ Scene</div>
     <div class="btnrow">
       <button class="btn" id="btnImport">Import File</button>
@@ -221,6 +227,8 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     </div>
     <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip,.json,application/json" style="display:none">
     <div class="sec-sub">glb · gltf · obj · fbx · stl · dae · zip</div>
+    <label class="chk"><input type="checkbox" id="importSamePreset"> Use same preset as last import</label>
+    <button class="btn full" id="btnCloneImport" disabled>Clone last import</button>
     <button class="btn full" id="btnResetDefaults">Reset to Default Settings</button>
     <div class="sec-sub">Snaps the demo propulsion parts (if loaded) back to their pre-configured types, contents, pressures, and opening roles — without re-importing the file.</div>
 
@@ -7562,7 +7570,28 @@ animateParticles();
 
 // ── UI wiring ─────────────────────────────────────────────────
 document.getElementById('btnImport').onclick = () => document.getElementById('fileInput').click();
-document.getElementById('fileInput').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+document.getElementById('fileInput').onchange = (e) => {
+  if (e.target.files[0]) {
+    spawnState.lastFile = e.target.files[0];
+    const cb = document.getElementById('btnCloneImport');
+    if (cb) cb.disabled = false;
+    loadFile(e.target.files[0]);
+  }
+};
+document.getElementById('btnCloneImport').onclick = async () => {
+  if (!spawnState.lastFile) return;
+  const usePreset = document.getElementById('importSamePreset') && document.getElementById('importSamePreset').checked;
+  spawnState.imports.push(spawnState.lastFile.name);
+  await loadFile(spawnState.lastFile);
+  if (state.root && state.root.children.length) {
+    const g = state.root.children[state.root.children.length - 1];
+    g.position.x = nextSpawnOffset() - 28;
+  }
+  labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length);
+  if (usePreset && typeof presetApplyPending === 'function') {
+    try { await presetApplyPending(false); } catch (e) { console.warn('preset on clone', e); }
+  }
+};
 document.getElementById('btnClear').onclick = () => { if (confirm('Clear the scene?')) clearScene(); };
 document.getElementById('btnResetDefaults').onclick = () => {
   const n = applyDefaultDemoConfiguration();
@@ -7570,6 +7599,43 @@ document.getElementById('btnResetDefaults').onclick = () => {
     ? `Reset ${n} part(s) to their default configuration.`
     : `No parts in the current scene match the demo's named parts — nothing to reset. (This only affects the demo propulsion parts, by name.)`);
 };
+
+// ── Multi-spawn: additional demo / import copies, auto-spaced ──
+const spawnState = { demo: 0, demo2: 0, imports: [], lastFile: null, lastPreset: null };
+function nextSpawnOffset() {
+  const n = state.root ? state.root.children.length : 0;
+  return n * 28; // model units; keeps copies from overlapping
+}
+function labelSpawn(kind, n) {
+  const el = document.getElementById('spawnList');
+  if (!el) return;
+  const row = document.createElement('div');
+  row.textContent = kind + ' ' + n + ' loaded';
+  el.appendChild(row);
+}
+async function spawnDemo(which) {
+  const usePreset = document.getElementById('useSamePreset') && document.getElementById('useSamePreset').checked;
+  if (which === 1) {
+    spawnState.demo++;
+    await loadDemo();
+    labelSpawn('Quick Rocket', spawnState.demo);
+  } else {
+    spawnState.demo2++;
+    await loadDemo2();
+    labelSpawn('AJ-10C Quick', spawnState.demo2);
+  }
+  // Offset the newest import group
+  if (state.root && state.root.children.length) {
+    const g = state.root.children[state.root.children.length - 1];
+    g.position.x = nextSpawnOffset() - 28;
+  }
+  if (usePreset && typeof presetApplyPending === 'function') {
+    try { await presetApplyPending(false); } catch (e) { console.warn('preset on spawn', e); }
+  }
+}
+document.getElementById('btnAddDemo').onclick = () => spawnDemo(1);
+document.getElementById('btnAddDemo2').onclick = () => spawnDemo(2);
+
 document.getElementById('btnLoadDemo').onclick = async () => { if (typeof clearScene === 'function') clearScene(); await loadDemo(); };
 document.getElementById('btnLoadDemo2').onclick = async () => { if (typeof clearScene === 'function') clearScene(); await loadDemo2(); };
 document.getElementById('thermalResolution').onchange = (e) => {
