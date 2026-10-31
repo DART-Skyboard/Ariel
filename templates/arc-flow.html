@@ -217,7 +217,6 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <button class="btn" id="btnLoadDemo2">AJ-10C Quick</button>
       <button class="btn" id="btnAddDemo2" title="Spawn another AJ-10C Quick">+</button>
     </div>
-    <label class="chk"><input type="checkbox" id="useSamePreset" checked> Use same preset as original</label>
     <div id="spawnList" class="sec-sub"></div>
     <div class="sec-sub">+ spawns another copy, spaced so it does not overlap. Fresh load replaces the scene.</div>
     <div class="sec-h">◈ Scene</div>
@@ -7604,10 +7603,10 @@ document.getElementById('btnCloneImport').onclick = async () => {
   await loadFile(spawnState.lastFile);
   if (state.root && state.root.children.length) {
     const g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset() - 28;
+    g.position.x = nextSpawnOffset() - 8;
   }
-  labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length);
-  if (usePreset && typeof presetApplyPending === 'function') {
+  const cb = labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length, g);
+  if (cb && cb.checked && typeof presetApplyPending === 'function') {
     try { await presetApplyPending(false); } catch (e) { console.warn('preset on clone', e); }
   }
 };
@@ -7623,32 +7622,40 @@ document.getElementById('btnResetDefaults').onclick = () => {
 const spawnState = { demo: 0, demo2: 0, imports: [], lastFile: null, lastPreset: null };
 function nextSpawnOffset() {
   const n = state.root ? state.root.children.length : 0;
-  return n * 28; // model units; keeps copies from overlapping
+  return n * 8; // a few units — close, not overlapping
 }
-function labelSpawn(kind, n) {
+function labelSpawn(kind, n, group) {
   const el = document.getElementById('spawnList');
   if (!el) return;
   const row = document.createElement('div');
-  row.textContent = kind + ' ' + n + ' loaded';
+  row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:3px 0;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = true; cb.title = 'Use same preset as original';
+  const lab = document.createElement('span');
+  lab.textContent = kind + ' ' + n;
+  lab.style.color = 'var(--acc)';
+  cb.onchange = async () => {
+    if (!group || !cb.checked) return;
+    if (typeof presetApplyPending === 'function') {
+      try { await presetApplyPending(false); } catch (e) { console.warn('preset on toggle', e); }
+    }
+  };
+  row.appendChild(cb); row.appendChild(lab);
   el.appendChild(row);
+  return cb;
 }
 async function spawnDemo(which) {
-  const usePreset = document.getElementById('useSamePreset') && document.getElementById('useSamePreset').checked;
-  if (which === 1) {
-    spawnState.demo++;
-    await loadDemo();
-    labelSpawn('Quick Rocket', spawnState.demo);
-  } else {
-    spawnState.demo2++;
-    await loadDemo2();
-    labelSpawn('AJ-10C Quick', spawnState.demo2);
-  }
-  // Offset the newest import group
+  const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
+  if (which === 1) { spawnState.demo++; await loadDemo(); }
+  else { spawnState.demo2++; await loadDemo2(); }
+  const n = which === 1 ? spawnState.demo : spawnState.demo2;
+  let g = null;
   if (state.root && state.root.children.length) {
-    const g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset() - 28;
+    g = state.root.children[state.root.children.length - 1];
+    g.position.x = nextSpawnOffset() - 8;
   }
-  if (usePreset && typeof presetApplyPending === 'function') {
+  const cb = labelSpawn(kind, n, g);
+  if (cb && cb.checked && typeof presetApplyPending === 'function') {
     try { await presetApplyPending(false); } catch (e) { console.warn('preset on spawn', e); }
   }
 }
