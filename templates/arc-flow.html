@@ -111,6 +111,10 @@ body{display:flex;flex-direction:column;}
 .part-row.type-chamber .dot{background:var(--err);}
 .part-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .part-row .tg{font-size:8px;color:var(--txt-d);text-transform:uppercase;letter-spacing:1px;}
+.part-row.group-row{background:rgba(255,255,255,0.03);}
+.part-row .caret{width:12px;flex:0 0 12px;font-size:9px;color:var(--txt-d);text-align:center;}
+.group-kids{margin-left:0;}
+
 
 /* Buttons / inputs */
 .btnrow{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;}
@@ -325,6 +329,8 @@ input[type=range]{width:100%;accent-color:var(--acc);}
         <div class="small">Drop a .glb / .gltf / .obj / .fbx / .stl / .dae / .zip file here,<br>or tap to browse — or load the propulsion demo file.</div>
       </div>
       <button class="btn" id="btnLoadDemo" style="max-width:260px;">Load Demo — Propellant Feed System</button>
+      <button class="btn" id="btnLoadDemo2" style="max-width:260px;margin-top:8px;">Load Demo 2 — Custom Rocket</button>
+      <button class="btn danger" id="btnResetApp" style="max-width:260px;margin-top:8px;">Reset & Load Demo</button>
     </div>
     <div id="loadingOverlay" class="hidden">
       <div class="spinner"></div>
@@ -386,6 +392,7 @@ const THERMAL_RAMP_GLSL = `
 `;
 
 const DEMO_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/CombustionChamber.glb";
+const DEMO2_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/aj10cquick.glb";
 
 // ── Renderer / scene / camera ──────────────────────────────────
 const viewportEl = document.getElementById('viewport');
@@ -753,6 +760,30 @@ async function loadDemo() {
   }
 }
 
+async function loadDemo2() {
+  setLoading(true, 'Downloading Demo 2 — Custom Rocket…');
+  try {
+    const res = await fetch(DEMO2_URL);
+    if (!res.ok) throw new Error('Demo 2 file not found on server.');
+    const buf = await res.arrayBuffer();
+    const _pa = await presetBeginAsset('aj10cquick.glb', buf, 'demo2');
+    const object = await loadFromArrayBuffer('aj10cquick.glb', buf, null);
+    onSceneLoaded(object);
+    // No hard-coded demo config: the auto Boolean / adaptive path resolves it.
+    await presetEndAsset(_pa);
+  } catch (err) {
+    console.error(err);
+    alert('Could not load Demo 2: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function resetAndLoadDemo() {
+  if (typeof clearScene === 'function') clearScene();
+  await loadDemo();
+}
+
 // Pre-configured defaults for the demo propulsion file — classification,
 // contents, realistic pressures, and opening roles (entrance/exit/nozzle),
 // all matching the real flow topology of this specific file: two parallel
@@ -879,6 +910,7 @@ function clearScene() {
   transformControls.detach();
   if (state.root) { scene.remove(state.root); state.root = null; }
   state.parts = [];
+  state.groupTree = [];
   state.selectedPart = null;
   if (typeof presetOnClear === 'function') presetOnClear();   // PRESET SAVE/LOAD
   exitFlowMode();
@@ -924,69 +956,78 @@ function onSceneLoaded(object) {
     state.root.position.y += clearance;
   }
 
-  // Collect named top-level parts from just the NEW object. If the loader
-  // gave us one node per part (glTF/GLB with named nodes, like the demo
-  // file), each direct child is a part. If it's a single flat mesh (raw
-  // OBJ/STL), treat the whole thing as one part named after the file.
+  // Collect every mesh as its own independent part. Groups (named parents
+  // that contain children) are preserved only for the collapsible outline
+  // tree in the Parts panel — they are never collapsed into a single
+  // simulation part. This lets an exported GLB keep its Blender/Maya
+  // groups while still letting every mesh be classified and opened
+  // separately.
   const candidates = [];
   object.traverse(n => { if (n.isMesh) candidates.push(n); });
 
-  const byName = new Map();
-  for (const mesh of candidates) {
-    let owner = mesh;
-    while (owner.parent && owner.parent !== object && owner.parent.name) owner = owner.parent;
-    const key = owner.name || mesh.name || ('Part ' + (byName.size + 1));
-    if (!byName.has(key)) byName.set(key, []);
-    byName.get(key).push(mesh);
-  }
-  if (byName.size === 0) {
-    byName.set(object.name || 'Imported Part', candidates);
-  }
-
   const existingNames = new Set(state.parts.map(p => p.name));
-  for (const [rawName, meshes] of byName.entries()) {
-    // Disambiguate if this name already exists in the scene (e.g. the
-    // demo file imported twice, or two files that both name a part "Body").
+  const meshToPart = new Map();
+
+  for (const mesh of candidates) {
+    let rawName = mesh.name || ('Part ' + (state.parts.length + 1));
     let name = rawName, n = 2;
     while (existingNames.has(name)) { name = `${rawName} (${n++})`; }
     existingNames.add(name);
 
-    // Every part gets its own pivot Group, and every one of its meshes is
-    // re-parented into it via .attach() (which preserves world transform
-    // across the reparent). This is what makes a part translatable/
-    // rotatable/scalable as one rigid unit via the gimbal below, regardless
-    // of however the source file's own hierarchy happened to nest things —
-    // and it's what lets an opening's world position stay correct forever
-    // afterward: since the pivot is a real scene-graph node, moving it
-    // moves everything parented under it automatically, for free.
     const pivot = new THREE.Group();
     pivot.name = name;
     state.root.add(pivot);
-    for (const m of meshes) pivot.attach(m);
+    pivot.attach(mesh);
 
     const part = {
-      name, meshes, pivot, type: null,
-      // Container fields
+      name, meshes: [mesh], pivot, type: null,
       contents: 'oxidizer', massKg: 0, tempK: 288, internalPsi: 60,
-      // Openings: [{ id, centroid(world Vec3 at detection time), normal(world Vec3), perimeter, role }]
-      // NOTE: for auto-detected openings, centroid/normal are re-derived
-      // fresh (see refreshPartOpenings) whenever it matters — right before
-      // running the simulation or a seal check — so translating a part
-      // with the gimbal after marking its openings still works correctly.
-      // Manually painted openings (Paint Mode) get a live-tracking marker
-      // instead, since there's no "re-detect" for a hand-traced region.
       openings: [],
       volumeM3: null,
       material: 'Aluminum-lithium 2195 (aerospace alloy)', matId: 'al2195', wallMm: 0, densityKgM3: 2630,
+      // hierarchy helpers (filled below)
+      groupPath: [],
     };
-    // Tag original materials (for x-ray/highlight restore) and the owning
-    // part (so a tap on this mesh in the viewport can select it directly).
-    for (const m of meshes) {
-      m.userData.origMaterial = m.material;
-      m.userData.ownerPart = part;
-      m.castShadow = true; m.receiveShadow = true;
-    }
+    mesh.userData.origMaterial = mesh.material;
+    mesh.userData.ownerPart = part;
+    mesh.castShadow = true; mesh.receiveShadow = true;
     state.parts.push(part);
+    meshToPart.set(mesh, part);
+  }
+
+  // Build the group outline tree (for the collapsible UI). Walk parents
+  // of each mesh; any named non-root parent becomes a group node.
+  state.groupTree = state.groupTree || [];
+  const groupNodes = new Map(); // name path key -> node
+  function ensureGroup(path) {
+    const key = path.join('/');
+    if (groupNodes.has(key)) return groupNodes.get(key);
+    const node = { name: path[path.length-1], path, children: [], parts: [], isGroup: true };
+    groupNodes.set(key, node);
+    if (path.length === 1) state.groupTree.push(node);
+    else {
+      const parent = ensureGroup(path.slice(0, -1));
+      parent.children.push(node);
+    }
+    return node;
+  }
+  for (const mesh of candidates) {
+    const part = meshToPart.get(mesh);
+    const path = [];
+    let owner = mesh.parent;
+    while (owner && owner !== object) {
+      if (owner.name) path.unshift(owner.name);
+      owner = owner.parent;
+    }
+    part.groupPath = path.slice();
+    if (path.length) {
+      const g = ensureGroup(path);
+      g.parts.push(part);
+    } else {
+      // ungrouped leaf — add a synthetic top-level entry so the tree
+      // renderer can treat everything uniformly
+      state.groupTree.push({ name: part.name, path: [part.name], children: [], parts: [part], isGroup: false });
+    }
   }
 
   buildPartListUI();
@@ -1125,14 +1166,50 @@ function computeVolume(part) {
 function buildPartListUI() {
   const listEl = document.getElementById('partList');
   listEl.innerHTML = '';
-  state.parts.forEach((part, i) => {
+  const tree = state.groupTree || [];
+  const partIndex = new Map(state.parts.map((p, i) => [p, i]));
+
+  function renderNode(node, depth) {
     const row = document.createElement('div');
-    row.className = 'part-row' + (part.type ? ' type-' + part.type : '');
-    row.innerHTML = `<span class="dot"></span><span class="nm">${part.name}</span>
-      <span class="tg">${part.type ? part.type : '—'}</span>`;
-    row.onclick = () => selectPart(i);
-    listEl.appendChild(row);
-  });
+    row.className = 'part-row' + (node.isGroup ? ' group-row' : (node.parts[0]?.type ? ' type-' + node.parts[0].type : ''));
+    row.style.paddingLeft = (8 + depth * 14) + 'px';
+    const caret = node.isGroup ? '<span class="caret">▸</span>' : '<span class="caret" style="visibility:hidden">▸</span>';
+    const label = node.isGroup ? node.name : node.parts[0].name;
+    const tag = node.isGroup ? 'GROUP' : (node.parts[0].type || '—');
+    row.innerHTML = `${caret}<span class="dot"></span><span class="nm">${label}</span><span class="tg">${tag}</span>`;
+    if (node.isGroup) {
+      row.classList.add('collapsed');
+      const kids = document.createElement('div');
+      kids.className = 'group-kids';
+      kids.style.display = 'none';
+      row.onclick = (e) => {
+        if (e.target.closest('.group-kids')) return;
+        const open = row.classList.toggle('collapsed');
+        kids.style.display = open ? 'none' : 'block';
+        row.querySelector('.caret').textContent = open ? '▸' : '▾';
+      };
+      for (const ch of node.children) renderNode(ch, depth + 1).forEach(el => kids.appendChild(el));
+      for (const part of node.parts) {
+        const pr = document.createElement('div');
+        pr.className = 'part-row' + (part.type ? ' type-' + part.type : '');
+        pr.style.paddingLeft = (8 + (depth+1) * 14) + 'px';
+        pr.innerHTML = `<span class="caret" style="visibility:hidden">▸</span><span class="dot"></span><span class="nm">${part.name}</span><span class="tg">${part.type || '—'}</span>`;
+        pr.onclick = () => selectPart(partIndex.get(part));
+        kids.appendChild(pr);
+      }
+      listEl.appendChild(row);
+      listEl.appendChild(kids);
+      return [row, kids];
+    } else {
+      row.onclick = () => selectPart(partIndex.get(node.parts[0]));
+      listEl.appendChild(row);
+      return [row];
+    }
+  }
+
+  for (const node of tree) renderNode(node, 0);
+  // highlight currently selected
+  highlightSelection();
 }
 
 function highlightSelection() {
@@ -1735,13 +1812,14 @@ function runSealCheck() {
 //  3. No label-3 sample at all => the cavities never share volume (the
 //     boxes overlap but the meshes don't, e.g. a diagonal pipe passing a
 //     tank corner). That is NOT a touching pair: return null, stay silent.
-//  4. Otherwise flood-fill (6-connected) the non-zero samples per component.
-//     SEALED iff one component holds both a label-1 and a label-2 sample:
-//     the hollow space runs from A's exclusive interior across the overlap
-//     into B's exclusive interior — a pipe whose cavity continues through
-//     the tank wall. Label 3 alone never counts (see cavitiesAreConnected).
-//     Overlap with no such bridge (e.g. one cavity wholly inside the other,
-//     so no wall is crossed) is REJECTED and reported to the user.
+//  4. Flood-fill (6-connected) the non-zero samples. A classic through-going
+//     bridge (one component holding both label-1 and label-2) is sealed.
+//     ADDITIONALLY, pure intersecting cavities (substantial label-3 volume
+//     with no exclusive bridge — two sealed volumes stuck through each
+//     other) are treated as a Boolean intersection joint: the shared
+//     overlap volume itself becomes the connecting opening. This is the
+//     automatic "expose the intersecting cavities" path so users can drop
+//     closed meshes together without manual hole-cutting.
 //  5. The joint centre is the mean of the label-3 samples touching a label-2
 //     (or label-1) neighbour, i.e. the wall-crossing zone, not the middle
 //     of the whole overlap box; radius comes from that zone's cross-section.
@@ -1867,7 +1945,14 @@ function detectPenetrationJoint(partA, partB) {
     pts[i] = p;
   }
 
-  const sealed = cavitiesAreConnected(labels, res);
+  let sealed = cavitiesAreConnected(labels, res);
+  // Boolean intersection: pure cavity overlap (label-3) with no exclusive
+  // bridge still counts as a connecting joint. Count label-3 samples; if
+  // the overlap volume is more than a few voxels, expose it as an opening.
+  let label3 = 0;
+  for (let i = 0; i < labels.length; i++) if (labels[i] === 3) label3++;
+  const overlapVoxels = label3;
+  if (!sealed && overlapVoxels >= 4) sealed = true; // auto Boolean port
 
   // Wall-crossing zone. The part that passes THROUGH the other has
   // exclusive samples only at its cross-section (the pipe outside the
@@ -1984,7 +2069,11 @@ function buildFlowGraph() {
     // Synthetic openings: buildParticlePath/collectJointRegions only read
     // centroid + radius from a resolved link.
     const mk = (role) => ({ id: 'autopen', centroid: centroid.clone(), radius, normal: new THREE.Vector3(0, 1, 0), role });
-    links.set(from, { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true });
+    // Tag both parts so collectJointRegions can request higher tessellation
+    // for this Boolean intersection joint (seal the walls, open the cavity).
+    from.userData = from.userData || {}; from.userData._autoJoint = true;
+    to.userData = to.userData || {}; to.userData._autoJoint = true;
+    links.set(from, { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true });
     state.autoPenetrationSealed.push({ partA: from, partB: to, centroid, radius });
   }
   return links;
@@ -2006,7 +2095,8 @@ function renderJointReport() {
       rows.push(`<div class="seal-bad">✗ ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${lk.vJet.toFixed(0)} m/s${lk.jetChoked ? ' (choked)' : ''}, ${(lk.mdot * 1000).toFixed(0)} g/s through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
       continue;
     }
-    rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${link.auto ? 'auto, from mesh overlap' : 'marked openings'})</span></div>`);
+    const kind = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
+    rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${kind})</span></div>`);
   }
   for (const r of (state.autoPenetrationRejected || [])) {
     rows.push(`<div class="seal-bad">✕ ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">touch/overlap, but no fluid path between them</span></div>`);
@@ -2217,7 +2307,7 @@ const SDF_MAX_PART_REGIONS = 24;          // part regions reserved out of SDF_MA
 const SDF_PART_MIN_CELLS = 14;           // the part's thinnest bbox dimension gets at least this many voxels, budget permitting
 const SDF_PART_BUDGET = { chamber: 4000, container: 2400, pipe: 1200, other: 1200 }; // soft: accuracy first (builds are async/time-sliced); a heavy scene is the user's call to lighten // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
 const SDF_PART_MAX_AXIS = 48;            // per-axis cap for one part region
-const SDF_VIRTUAL_EDGE_VOXELS = 2.5;     // ...but never split below this many voxels
+const SDF_VIRTUAL_EDGE_VOXELS = 1.8; // tighter for better fluid-collision resolution on coarse faces     // ...but never split below this many voxels
 const SDF_VIRTUAL_EDGE_CELLS = 4;        // triangles longer than this many spatial-index cells (and > SDF_VIRTUAL_EDGE_VOXELS voxels) are virtually bisected
 const SDF_VIRTUAL_PHONG_ALPHA = 0.75;    // Phong-tessellation strength when a bisected edge's endpoints carry smooth vertex normals (0 = flat midpoints)
 const SDF_VIRTUAL_EXTRA_TRI_CAP = 200000; // hard cap on virtual triangles ADDED per grid build
@@ -3309,7 +3399,15 @@ function collectJointRegions(links, cap, tubeSet) {
       new THREE.Vector3(center.x - pad, center.y - pad, center.z - pad),
       new THREE.Vector3(center.x + pad, center.y + pad, center.z + pad),
     );
-    regions.push({ box, parts: partsInvolved, kind: 'joint', res: [SDF_FINE_RES, SDF_FINE_RES, SDF_FINE_RES] });
+    // Automatic iterative refinement for Boolean / small joints.
+    // Intersecting-cavity joints (auto) and tight bores get a denser
+    // local grid so the collision body seals the mesh intersection
+    // while leaving the cavity connection open. The bake uses this
+    // higher resolution; the live fluid then sees a clean, leak-free
+    // path at the assigned physics.
+    const isAuto = partsInvolved.some(pt => pt && pt.userData && pt.userData._autoJoint);
+    const fine = (isAuto || radius < 0.06) ? 22 : (radius < 0.1 ? 18 : SDF_FINE_RES);
+    regions.push({ box, parts: partsInvolved, kind: 'joint', res: [fine, fine, fine], autoRefine: true });
   };
 
   for (const [part, link] of links.entries()) {
@@ -5802,8 +5900,12 @@ function liveEvalLinks(movedSet) {
         if (!ok) { gap = ex.centroid.clone(); radius = ex.radius; }
       }
     }
-    if (!ok && gap && massPointPlugged(gap, [part, target])) { live.plugged.add(part); mass.plugged.add(part); }   // pressed against another surface: plugged, no leak
-    else if (!ok) out.set(part, { gap, gapDist, radius });
+    if (!ok && gap && massPointPlugged(gap, [part, target])) {
+      // Opening pressed against a surface whose cavity does not intersect:
+      // treat as a temporary plug so fluid does not spill if the user re-seats
+      // the tank quickly enough.
+      live.plugged.add(part); mass.plugged.add(part);
+    } else if (!ok) out.set(part, { gap, gapDist, radius });
   }
   return out;
 }
@@ -6512,7 +6614,18 @@ function massReset() {
 function massPointPlugged(P, exclude) {
   for (const q of state.parts) {
     if (!q.type || exclude.includes(q)) continue;
-    if (partWorldAABB(q).expandByScalar(0.02).containsPoint(P)) return true;
+    const box = partWorldAABB(q).expandByScalar(0.04);
+    if (!box.containsPoint(P)) continue;
+    // Proximity is not enough: only plug if the cavities do NOT intersect.
+    // A true cavity intersection should re-connect (handled by detectPenetrationJoint
+    // on the original pair or a new pair), not seal.
+    let intersects = false;
+    for (const src of exclude) {
+      if (!src || !src.type) continue;
+      const r = detectPenetrationJoint(src, q);
+      if (r && r.sealed) { intersects = true; break; }
+    }
+    if (!intersects) return true; // pressed against a non-intersecting surface: plug
   }
   return false;
 }
@@ -7313,6 +7426,8 @@ document.getElementById('btnResetDefaults').onclick = () => {
     : `No parts in the current scene match the demo's named parts — nothing to reset. (This only affects the demo propulsion parts, by name.)`);
 };
 document.getElementById('btnLoadDemo').onclick = loadDemo;
+document.getElementById('btnLoadDemo2').onclick = loadDemo2;
+document.getElementById('btnResetApp').onclick = resetAndLoadDemo;
 document.getElementById('thermalResolution').onchange = (e) => {
   initFloorHeatSystem(parseInt(e.target.value));
 };
