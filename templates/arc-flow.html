@@ -1983,8 +1983,11 @@ function detectPenetrationJoint(partA, partB) {
   // fingertip nick, not a fitting.
   // Denser probe for pipe-through-wall (thin cavity). A 5^3 grid can miss
   // a closed pipe pushed into a tank; use 7^3 when either part is a pipe.
-  const isPipePair = (partA.type === 'pipe' || partB.type === 'pipe');
-  const PROBE = isPipePair ? 7 : 5;
+  // Denser probe for any pipe or chamber pair — a precision chamber with
+  // a pipe fitted into it needs the same thin-cavity detection as a tank.
+  const isFlowPair = (partA.type === 'pipe' || partB.type === 'pipe' ||
+                      partA.type === 'chamber' || partB.type === 'chamber');
+  const PROBE = isFlowPair ? 7 : 5;
   let overlapsInVolume = false;
   for (let z = 0; z < PROBE && !overlapsInVolume; z++) for (let y = 0; y < PROBE && !overlapsInVolume; y++) for (let x = 0; x < PROBE; x++) {
     const p = sampleAt(PROBE, x, y, z);
@@ -3465,7 +3468,10 @@ function collectJointRegions(links, cap, tubeSet) {
     // higher resolution; the live fluid then sees a clean, leak-free
     // path at the assigned physics.
     const isAuto = partsInvolved.some(pt => pt && pt.userData && pt.userData._autoJoint);
-    const fine = (isAuto || radius < 0.06) ? 22 : (radius < 0.1 ? 18 : SDF_FINE_RES);
+    const hasChamber = partsInvolved.some(pt => pt && pt.type === 'chamber');
+    // Chamber fittings (pipe into combustion / pressure chamber) get the
+    // same high-resolution Boolean treatment as tank joints.
+    const fine = (isAuto || hasChamber || radius < 0.06) ? 22 : (radius < 0.1 ? 18 : SDF_FINE_RES);
     regions.push({ box, parts: partsInvolved, kind: 'joint', res: [fine, fine, fine], autoRefine: true });
   };
 
