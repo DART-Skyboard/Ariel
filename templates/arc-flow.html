@@ -788,6 +788,15 @@ async function loadDemo2() {
       if (pr.ok) {
         const raw = await pr.text();
         if (typeof presetApplyRaw === 'function') await presetApplyRaw(raw, { quiet: true });
+        // Ensure every chamber has a nozzle so the plume can fire.
+        for (const part of state.parts) {
+          if (part.type !== 'chamber') continue;
+          const ops = detectOpenings(part);
+          if (!ops.length) continue;
+          ops.sort((a, b) => a.centroid.y - b.centroid.y);
+          if (!ops.some(o => o.role === 'nozzle')) ops[0].role = 'nozzle';
+          part.openings = ops;
+        }
       }
     } catch (pe) { console.warn('Demo 2 preset apply failed', pe); }
     await presetEndAsset(_pa);
@@ -1423,6 +1432,16 @@ function wireDetailEvents(part) {
     btn.onclick = () => {
       part.type = btn.dataset.settype;
       if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+      // Any chamber gets a nozzle: lowest opening is the exhaust so the plume can fire.
+      if (part.type === 'chamber') {
+        const ops = detectOpenings(part);
+        if (ops.length) {
+          ops.sort((a, b) => a.centroid.y - b.centroid.y);
+          ops[0].role = 'nozzle';
+          for (let i = 1; i < ops.length; i++) if (!ops[i].role || ops[i].role === 'exit') ops[i].role = 'entrance';
+          part.openings = ops;
+        }
+      }
       buildPartListUI(); highlightSelection(); renderPartDetail();
     };
   });
