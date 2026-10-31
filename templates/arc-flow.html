@@ -7846,30 +7846,34 @@ function labelSpawn(kind, n, group) {
   return cb;
 }
 async function spawnDemo(which) {
-  // + always works inside the current tab. It never opens a new tab.
-  const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
-  const empty = !state.root || !state.root.children.length;
-  if (empty) {
-    // Nothing here yet — load the original into this tab.
-    if (which === 1) await loadDemo(); else await loadDemo2();
-    const cur = tabs[activeTab];
-    if (cur) { cur.kind = which === 1 ? 'demo' : 'demo2'; cur.name = kind; }
-    labelSpawn(kind, 1, state.root && state.root.children[0]);
-    renderTabs();
-    return;
+  try {
+    const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
+    const empty = !state.root || !state.root.children.length;
+    if (empty) {
+      if (which === 1) await loadDemo(); else await loadDemo2();
+      const cur = tabs[activeTab];
+      if (cur) { cur.kind = which === 1 ? 'demo' : 'demo2'; cur.name = kind; }
+      labelSpawn(kind, 1, state.root && state.root.children[0]);
+      renderTabs();
+      return;
+    }
+    // Mark the original as an assembly if it is not already.
+    const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
+    if (src) src.userData.isAssembly = true;
+    const clone = src.clone(true);
+    clone.userData.isAssembly = true;
+    clone.position.set(0, 0, 0);
+    state.root.add(clone);
+    state.root.updateMatrixWorld(true);
+    const n = state.root.children.filter(c => c.userData && c.userData.isAssembly).length;
+    layoutSpawns();
+    frameAllSpawns();
+    labelSpawn(kind, n, clone);
+    buildPartListUI();
+  } catch (err) {
+    console.error('spawnDemo', err);
+    alert('Clone failed: ' + err.message);
   }
-  // Clone the first assembly in this tab and space it.
-  const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
-  const clone = src.clone(true);
-  clone.userData.isAssembly = true;
-  clone.position.set(0, 0, 0);
-  state.root.add(clone);
-  state.root.updateMatrixWorld(true);
-  const n = state.root.children.length;
-  layoutSpawns();
-  frameAllSpawns();
-  labelSpawn(kind, n, clone);
-  buildPartListUI();
 }
 document.getElementById('btnAddDemo').onclick = () => spawnDemo(1);
 document.getElementById('btnAddDemo2').onclick = () => spawnDemo(2);
