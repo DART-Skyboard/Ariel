@@ -7792,7 +7792,7 @@ function plumeFrame(now) {
     if (!st) { pa[3 * i + 1] = -1000; aal[i] = 0; continue; }
     pa[3 * i] = P.px[i]; pa[3 * i + 1] = P.py[i]; pa[3 * i + 2] = P.pz[i];
     at[i] = P.tn[i]; ash[i] = P.sh[i]; asm[i] = P.smk[i];
-    if (st === 1) { asz[i] = P.sizeK * re * (1.4 + 0.9 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]); aal[i] = P.tune.jetSprite; }
+    if (st === 1) { asz[i] = P.sizeK * re * (1.4 + 0.9 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]) * (1 + 0.6 * Math.min(P.ax[i] / Math.max(F.H, 0.1), 1)); aal[i] = P.tune.jetSprite * (1 - 0.7 * Math.min(P.ax[i] / Math.max(F.H, 0.1), 1)); }
     else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
   }
   // Append a plume for every other chamber so each clone fires on its own.
@@ -7816,6 +7816,31 @@ function plumeFrame(now) {
         asz[write] = P.sizeK * iF.re * (0.5 + 0.4 * s); aal[write] = P.tune.jetSprite * (1 - x / Math.max(iF.H, 0.1));
       }
       inst.tclock = (inst.tclock || 0) + dt;
+    }
+  }
+  // Clones: fire a plume at each extra assembly's nozzle, offset from the original.
+  if (state.root && state.root.children.length > 1 && F) {
+    const assemblies = state.root.children.filter(c => c.userData && c.userData.isAssembly);
+    const base = assemblies[0];
+    const maxVerts = pa.length / 3;
+    for (let ai = 1; ai < assemblies.length; ai++) {
+      const dx = assemblies[ai].position.x - (base ? base.position.x : 0);
+      const dz = assemblies[ai].position.z - (base ? base.position.z : 0);
+      const count = 300;
+      for (let k = 0; k < count && write < maxVerts; k++, write++) {
+        const x = (k / count) * F.H;
+        const s = (k % 7) / 7;
+        const phi = (k * 2.399) % (Math.PI * 2);
+        const rb = plumeBoundary(x, D) * (1 + 0.4 * x / Math.max(F.H, 0.1));
+        const R = s * rb, cc = Math.cos(phi) * R, sn = Math.sin(phi) * R;
+        pa[3 * write] = F.O.x + dx + F.d.x * x + F.U.x * cc + F.W.x * sn;
+        pa[3 * write + 1] = F.O.y + F.d.y * x + F.U.y * cc + F.W.y * sn;
+        pa[3 * write + 2] = F.O.z + dz + F.d.z * x + F.U.z * cc + F.W.z * sn;
+        at[write] = x / Math.max(D.De, 0.1);
+        ash[write] = 0; asm[write] = 0.2 + 0.5 * (x / Math.max(F.H, 0.1));
+        asz[write] = P.sizeK * F.re * (0.8 + 1.2 * s) * (1 + 0.5 * x / Math.max(F.H, 0.1));
+        aal[write] = P.tune.jetSprite * (1 - x / Math.max(F.H, 0.1));
+      }
     }
   }
   P.points.geometry.setDrawRange(0, write);
