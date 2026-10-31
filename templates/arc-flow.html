@@ -297,6 +297,12 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <input type="number" id="atmoPsi" value="14.696" step="0.01">
     <div class="readout" id="atmoReadout">14.696 psi <span class="u">= 1 atm · Earth sea level</span></div>
 
+    <div class="sec-h">◈ Combustion</div>
+    <label class="field">Master O/F Ratio <span class="u">(oxidizer ÷ fuel)</span></label>
+    <input type="range" id="ofMaster" min="0.5" max="5" step="0.1" value="2.3" style="width:100%">
+    <div class="readout" id="ofReadout">2.3 <span class="u">stoichiometric for RP-1/LOX · strength peaks here</span></div>
+    <div id="ofPerSystem"></div>
+
     <div class="sec-h">◈ Particles</div>
     <label class="field">Particles per Container</label>
     <input type="number" id="particlesPerContainer" value="2000" min="10" max="4000" step="10">
@@ -1242,7 +1248,7 @@ function computeVolume(part) {
 }
 
 // ── Part list UI ─────────────────────────────────────────────
-function buildPartListUI() {
+function buildPartListUI() { if (typeof renderOfPerSystem === 'function') renderOfPerSystem();
   const listEl = document.getElementById('partList');
   listEl.innerHTML = '';
   const tree = state.groupTree || [];
@@ -7556,7 +7562,7 @@ function chamberInflowPsi(ch) {
   if (mix.mdot <= 0) return 0;
   // Stoichiometric O/F for RP-1/LOX is about 2.3. Combustion strength
   // peaks there and falls off as the mix goes fuel-rich or ox-rich.
-  const stoich = 2.3;
+  const stoich = (window.ofPerSystem && window.ofPerSystem[ch.name] != null) ? window.ofPerSystem[ch.name] : (window.ofTarget || 2.3);
   const mixK = mix.of > 0 ? Math.exp(-Math.pow(Math.log(mix.of / stoich), 2)) : 0;
   const noz = ch.openings.find(o => o.role === 'nozzle');
   const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
@@ -7591,6 +7597,29 @@ function applyPropPreset(key) {
   const r = plumeCurrentDerived(); plume.D = r ? r.D : null; plumeReadout();
 }
 propPresetEl.onchange = () => applyPropPreset(propPresetEl.value);
+const ofMasterEl = document.getElementById('ofMaster');
+const ofReadoutEl = document.getElementById('ofReadout');
+const ofPerSystemEl = document.getElementById('ofPerSystem');
+window.ofTarget = 2.3;
+window.ofPerSystem = {};
+function ofUpdateReadout() {
+  const v = parseFloat(ofMasterEl.value);
+  window.ofTarget = v;
+  ofReadoutEl.innerHTML = v.toFixed(1) + ' <span class="u">' + (Math.abs(v - 2.3) < 0.15 ? 'stoichiometric for RP-1/LOX · strength peaks here' : (v < 2.3 ? 'fuel-rich' : 'oxidizer-rich')) + '</span>';
+}
+ofMasterEl.oninput = ofUpdateReadout;
+function renderOfPerSystem() {
+  if (!ofPerSystemEl) return;
+  const chambers = state.parts.filter(p => p.type === 'chamber');
+  if (chambers.length < 2) { ofPerSystemEl.innerHTML = ''; return; }
+  ofPerSystemEl.innerHTML = chambers.map((c, i) => {
+    const val = window.ofPerSystem[c.name] != null ? window.ofPerSystem[c.name] : window.ofTarget;
+    return '<label class="field" style="margin-top:6px">' + c.name + '</label>' +
+      '<input type="range" min="0.5" max="5" step="0.1" value="' + val + '" data-ch="' + c.name + '" style="width:100%" oninput="window.ofPerSystem[this.dataset.ch]=parseFloat(this.value)">';
+  }).join('');
+}
+
+
 
 // Run the jet forward off-screen so a fresh activation (Simulate, preset change) shows the established plume + ground
 // wall jet straight away instead of a column slowly filling in.
