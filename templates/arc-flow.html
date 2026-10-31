@@ -7745,7 +7745,7 @@ document.getElementById('btnCloneImport').onclick = async () => {
   let g = null;
   if (state.root && state.root.children.length) {
     g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset(g);
+    layoutSpawns();
     g.userData.spawnId = state.root.children.length - 1;
     g.userData.spawnName = spawnState.lastFile.name.replace(/\.[^.]+$/, '') + ' ' + spawnState.imports.length;
     frameAllSpawns();
@@ -7766,15 +7766,25 @@ document.getElementById('btnResetDefaults').onclick = () => {
 
 // ── Multi-spawn: additional demo / import copies, auto-spaced ──
 const spawnState = { demo: 0, demo2: 0, imports: [], lastFile: null, lastPreset: null };
-function nextSpawnOffset(newGroup) {
-  // Grid is 60 units / 60 divisions = 1 unit per square.
-  // Place the new copy so its closest edge is 5 grid squares from the previous.
-  if (!state.root || state.root.children.length < 2) return 0;
-  const prev = state.root.children[state.root.children.length - 2];
-  const prevBox = new THREE.Box3().setFromObject(prev);
-  const newBox = new THREE.Box3().setFromObject(newGroup);
-  const gap = 5; // 5 grid squares between closest edges
-  return prevBox.max.x + gap - newBox.min.x;
+function layoutSpawns() {
+  // Arrange all copies evenly around the origin.
+  // 1 at origin, 2 side by side, 3 a triangle, 4 a square, and so on.
+  if (!state.root) return;
+  const kids = state.root.children.filter(c => c.userData && c.userData.isSpawn !== false);
+  const n = state.root.children.length;
+  if (n === 0) return;
+  state.root.updateMatrixWorld(true);
+  // Measure one copy to size the ring.
+  const sample = state.root.children[0];
+  const sb = new THREE.Box3().setFromObject(sample);
+  const sz = new THREE.Vector3(); sb.getSize(sz);
+  const radius = n === 1 ? 0 : Math.max(sz.x, sz.z) * 0.7 + 5;
+  for (let i = 0; i < n; i++) {
+    const g = state.root.children[i];
+    if (n === 1) { g.position.set(0, 0, 0); continue; }
+    const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
+    g.position.set(Math.cos(ang) * radius, 0, Math.sin(ang) * radius);
+  }
 }
 function frameAllSpawns() {
   if (!state.root || !camera || !controls) return;
@@ -7822,15 +7832,7 @@ async function spawnDemo(which) {
   if (which === 1) spawnState.demo++; else spawnState.demo2++;
   const n = which === 1 ? spawnState.demo : spawnState.demo2;
   // Measure the previous copy and place this one 5 grid squares clear.
-  const prev = state.root.children[state.root.children.length - 2];
-  prev.updateMatrixWorld(true);
-  clone.updateMatrixWorld(true);
-  const prevBox = new THREE.Box3().setFromObject(prev);
-  const cloneBox = new THREE.Box3().setFromObject(clone);
-  const gap = 5;
-  const dx = prevBox.max.x + gap - cloneBox.min.x;
-  clone.position.x = dx;
-  clone.updateMatrixWorld(true);
+  layoutSpawns();
   frameAllSpawns();
   labelSpawn(kind, n, clone);
   buildPartListUI();
