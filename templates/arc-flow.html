@@ -7872,7 +7872,13 @@ async function spawnDemo(which) {
     // Mark the original as an assembly if it is not already.
     const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
     if (src) src.userData.isAssembly = true;
+    // Strip circular userData before clone (ownerPart <-> meshes cycle),
+    // then restore. Three.js clone copies userData and a later serialize
+    // trips on the cycle.
+    const saved = [];
+    src.traverse(o => { if (o.userData && o.userData.ownerPart) { saved.push([o, o.userData.ownerPart]); delete o.userData.ownerPart; } });
     const clone = src.clone(true);
+    for (const [o, op] of saved) o.userData.ownerPart = op;
     clone.userData.isAssembly = true;
     clone.position.set(0, 0, 0);
     state.root.add(clone);
