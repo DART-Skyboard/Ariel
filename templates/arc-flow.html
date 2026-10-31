@@ -7810,18 +7810,27 @@ function labelSpawn(kind, n, group) {
 }
 async function spawnDemo(which) {
   const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
-  if (which === 1) { spawnState.demo++; await loadDemo(); }
-  else { spawnState.demo2++; await loadDemo2(); }
+  if (!state.root || !state.root.children.length) {
+    // Nothing to clone — load fresh.
+    if (which === 1) await loadDemo(); else await loadDemo2();
+    return;
+  }
+  // Clone the first (original) group so the copy matches the imported scene.
+  const src = state.root.children[0];
+  const clone = src.clone(true);
+  clone.position.set(0, 0, 0);
+  state.root.add(clone);
+  if (which === 1) spawnState.demo++; else spawnState.demo2++;
   const n = which === 1 ? spawnState.demo : spawnState.demo2;
-  let g = null;
-  if (state.root && state.root.children.length) {
-    g = state.root.children[state.root.children.length - 1];
-    g.position.x = nextSpawnOffset(g); frameAllSpawns();
-  }
-  const cb = labelSpawn(kind, n, g);
-  if (cb && cb.checked && typeof presetApplyPending === 'function') {
-    try { await presetApplyPending(false); } catch (e) { console.warn('preset on spawn', e); }
-  }
+  // Offset so closest edges are well clear.
+  const gap = 12;
+  const prev = state.root.children[state.root.children.length - 2];
+  const prevBox = new THREE.Box3().setFromObject(prev);
+  const newBox = new THREE.Box3().setFromObject(clone);
+  clone.position.x = prevBox.max.x + gap - newBox.min.x;
+  frameAllSpawns();
+  labelSpawn(kind, n, clone);
+  buildPartListUI();
 }
 document.getElementById('btnAddDemo').onclick = () => spawnDemo(1);
 document.getElementById('btnAddDemo2').onclick = () => spawnDemo(2);
