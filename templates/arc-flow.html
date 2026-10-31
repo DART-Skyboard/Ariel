@@ -1950,7 +1950,9 @@ function detectPenetrationJoint(partA, partB) {
   // intersection right at the seam.
   overlap.expandByScalar(Math.max(size.length() * 0.08, 0.01));
   overlap.getSize(size);
-  const res = PEN_SAMPLE_RES;
+  // Denser full grid for channel-through-tank so a thin cavity overlap
+  // is not missed between probe samples.
+  const res = (partA.type === 'pipe' || partB.type === 'pipe') ? 13 : PEN_SAMPLE_RES;
 
   // Full per-part spatial index (cached across pairs), NOT a triangle list
   // pre-filtered to the overlap box. A nearest-surface sign test needs each
@@ -2015,6 +2017,26 @@ function detectPenetrationJoint(partA, partB) {
   for (let i = 0; i < labels.length; i++) if (labels[i] === 3) label3++;
   const overlapVoxels = label3;
   if (!sealed && overlapVoxels >= 1) sealed = true; // auto Boolean port
+  // Wall-penetration fallback: a closed channel pushed through a container
+  // or chamber may have its cavity overlap thinner than the sample pitch.
+  // If the AABBs cross and either part is a channel, force a sealed joint
+  // at the overlap centroid so the automation drafts the opening.
+  if (!sealed) {
+    const flowTypes = { pipe: 1, container: 1, chamber: 1 };
+    if (flowTypes[partA.type] && flowTypes[partB.type] &&
+        (partA.type === 'pipe' || partB.type === 'pipe')) {
+      // Check for any mesh-wall crossing: a sample inside one and near the other
+      let near = 0;
+      for (let i = 0; i < labels.length && near < 2; i++) {
+        if (labels[i] === 1 || labels[i] === 2) near++;
+      }
+      if (near >= 2 && overlapVoxels === 0) {
+        // No shared cavity sample, but exclusive interiors exist in the
+        // overlap box — treat as a pushed-through joint and expose it.
+        sealed = true;
+      }
+    }
+  }
 
   // Wall-crossing zone. The part that passes THROUGH the other has
   // exclusive samples only at its cross-section (the pipe outside the
