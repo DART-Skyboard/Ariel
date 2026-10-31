@@ -1394,9 +1394,9 @@ function showNoSelection() {
 }
 
 const ATMO = {
-  earth:  { psi: 14.696, label: '1 atm · Earth sea level' },
-  mars:   { psi: 0.087,  label: '≈0.6% Earth · Mars surface' },
-  vacuum: { psi: 0.0,    label: 'hard vacuum · deep space' },
+  earth:  { psi: 14.696, o2: 0.21, label: '1 atm · Earth sea level · 21% O₂' },
+  mars:   { psi: 0.087,  o2: 0.001, label: '≈0.6% Earth · Mars surface · trace O₂' },
+  vacuum: { psi: 0.0,    o2: 0.0, label: 'hard vacuum · deep space · no atmosphere' },
 };
 
 // ── Part detail / classification panel ──────────────────────────
@@ -7590,9 +7590,14 @@ function chamberInflowPsi(ch) {
   // peaks there and falls off as the mix goes fuel-rich or ox-rich.
   const stoich = (window.ofPerSystem && window.ofPerSystem[ch.name] != null) ? window.ofPerSystem[ch.name] : (window.ofTarget || 2.3);
   const mixK = mix.of > 0 ? Math.exp(-Math.pow(Math.log(mix.of / stoich), 2)) : 0;
+  // Afterburning: atmospheric oxygen lets unburnt propellant finish burning
+  // outside the chamber. Vacuum has none, so the plume stays the core only.
+  const atmoKey = (document.getElementById('atmoPreset') || {}).value || 'earth';
+  const o2 = (ATMO[atmoKey] && ATMO[atmoKey].o2 != null) ? ATMO[atmoKey].o2 : 0.21;
+  const afterburn = 0.6 + 0.4 * Math.min(o2 / 0.21, 1);
   const noz = ch.openings.find(o => o.role === 'nozzle');
   const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
-  return Math.min(3000, mix.mdot * 120 * mixK / Math.max(At, 1e-4));
+  return Math.min(3000, mix.mdot * 120 * mixK * afterburn / Math.max(At, 1e-4));
 }
 function plumeCurrentDerived() {
   const cfg = PROP_PRESETS[plume.key];
