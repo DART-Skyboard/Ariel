@@ -7549,24 +7549,35 @@ function plumeReadout() {
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
     `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
 }
+function upstreamContents(part, depth) {
+  // Walk the flow graph back to the container that feeds this part and
+  // return its contents setting. Names are ignored; only the assigned
+  // type and contents matter.
+  if (!part || depth > 8) return '';
+  if (part.type === 'container' && part.contents) return part.contents;
+  const links = state.currentLinks;
+  if (!links) return part.contents || '';
+  for (const [src, tgt] of links) {
+    const targets = Array.isArray(tgt) ? tgt : [tgt];
+    if (targets.includes(part)) {
+      const c = upstreamContents(src, (depth || 0) + 1);
+      if (c) return c;
+    }
+  }
+  return part.contents || '';
+}
 function chamberMixture(ch) {
   // Combustion needs both fuel and oxidizer. Sum the mass flow of each
-  // arriving at the chamber and return the O/F ratio and total mdot.
+  // arriving at the chamber, traced from the container contents setting.
   if (!state.channelFlows) return { mFuel: 0, mOx: 0, of: 0, mdot: 0 };
   let mFuel = 0, mOx = 0;
   for (const [part, f] of state.channelFlows) {
     if (!f || !(f.mdot > 0)) continue;
-    // Only count channels that feed this chamber.
     const links = state.currentLinks;
     if (links && firstLink(links, part) !== ch && !allLinks(links, part).includes(ch)) continue;
-    const src = f.srcName || '';
-    const name = part.name || '';
-    const contents = (part.contents) || (state.parts.find(p => p.name === src) || {}).contents || '';
-    // Match by contents tag, source name, or the channel's own name (f1, o1).
-    const isFuel = contents === 'fuel' || /fuel|^f\d/i.test(src) || /^f\d/i.test(name);
-    const isOx = contents === 'oxidizer' || /ox|^o\d/i.test(src) || /^o\d/i.test(name);
-    if (isFuel) mFuel += f.mdot;
-    else if (isOx) mOx += f.mdot;
+    const contents = upstreamContents(part, 0);
+    if (contents === 'fuel') mFuel += f.mdot;
+    else if (contents === 'oxidizer') mOx += f.mdot;
   }
   const mdot = mFuel + mOx;
   const of = mFuel > 0 ? mOx / mFuel : 0;
