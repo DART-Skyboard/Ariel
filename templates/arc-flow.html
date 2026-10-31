@@ -1032,6 +1032,31 @@ function onSceneLoaded(object) {
   importGroup.userData.spawnName = (object.name || 'Import') + ' ' + (state.root.children.length + 1);
   state.root.add(importGroup);
 
+  // Force every mesh normal to point outward. Inward normals trap
+  // particles inside walls. A face whose normal points toward the mesh
+  // center is flipped.
+  importGroup.traverse(o => {
+    if (!o.isMesh || !o.geometry) return;
+    const g = o.geometry;
+    if (!g.attributes.normal) g.computeVertexNormals();
+    const pos = g.attributes.position, nrm = g.attributes.normal;
+    const c = new THREE.Vector3();
+    g.computeBoundingBox(); g.boundingBox.getCenter(c);
+    o.localToWorld(c);
+    const inv = new THREE.Matrix4().copy(o.matrixWorld).invert();
+    const lc = c.clone().applyMatrix4(inv);
+    let inward = 0, total = 0;
+    for (let i = 0; i < pos.count; i += 8) {
+      const dx = pos.getX(i) - lc.x, dy = pos.getY(i) - lc.y, dz = pos.getZ(i) - lc.z;
+      const dot = nrm.getX(i) * dx + nrm.getY(i) * dy + nrm.getZ(i) * dz;
+      if (dot < 0) inward++; total++;
+    }
+    if (total && inward / total > 0.6) {
+      for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, -nrm.getX(i), -nrm.getY(i), -nrm.getZ(i));
+      nrm.needsUpdate = true;
+    }
+  });
+
   if (firstImport) {
     // Elevate above the floor rather than sitting flush on it — the
     // combustion chamber's nozzle needs real clearance underneath for its
