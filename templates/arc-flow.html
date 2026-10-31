@@ -824,7 +824,7 @@ async function loadDemo2() {
 
 async function resetAndLoadDemo() {
   if (typeof clearScene === 'function') clearScene();
-  await addTab('Quick Rocket', 'demo'); loadDemo().then(() => { if (tabs[0]) tabs[0].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null }; renderTabs(); });
+  await loadDemo();
 }
 
 // Pre-configured defaults for the demo propulsion file — classification,
@@ -7739,7 +7739,7 @@ function labelSpawn(kind, n, group) {
 }
 async function spawnDemo(which) {
   const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
-  if (which === 1) { spawnState.demo++; await addTab('Quick Rocket', 'demo'); loadDemo().then(() => { if (tabs[0]) tabs[0].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null }; renderTabs(); }); }
+  if (which === 1) { spawnState.demo++; await loadDemo(); }
   else { spawnState.demo2++; await loadDemo2(); }
   const n = which === 1 ? spawnState.demo : spawnState.demo2;
   let g = null;
@@ -7805,24 +7805,19 @@ function findClearedTab() {
   return tabs.findIndex(t => t.snapshot && (!t.snapshot.parts || !t.snapshot.parts.length));
 }
 
-document.getElementById('btnLoadDemo').onclick = async () => {
-  const cleared = findClearedTab();
-  if (cleared >= 0) { activeTab = cleared; tabs[cleared].name = 'Quick Rocket'; }
-  else addTab('Quick Rocket', 'demo');
+async function loadIntoTab(name, kind, loader) {
+  // Use the current tab if it is empty; otherwise open a new one.
+  const cur = tabs[activeTab];
+  const empty = cur && cur.snapshot && (!cur.snapshot.parts || !cur.snapshot.parts.length);
+  if (empty) { cur.name = name; cur.kind = kind; }
+  else addTab(name, kind);
   if (typeof clearScene === 'function') clearScene();
-  await addTab('Quick Rocket', 'demo'); loadDemo().then(() => { if (tabs[0]) tabs[0].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null }; renderTabs(); });
+  await loader();
   if (tabs[activeTab]) tabs[activeTab].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null };
   renderTabs();
-};
-document.getElementById('btnLoadDemo2').onclick = async () => {
-  const cleared = findClearedTab();
-  if (cleared >= 0) { activeTab = cleared; tabs[cleared].name = 'AJ-10C Quick'; }
-  else addTab('AJ-10C Quick', 'demo2');
-  if (typeof clearScene === 'function') clearScene();
-  await loadDemo2();
-  if (tabs[activeTab]) tabs[activeTab].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null };
-  renderTabs();
-};
+}
+document.getElementById('btnLoadDemo').onclick = () => loadIntoTab('Quick Rocket', 'demo', loadDemo);
+document.getElementById('btnLoadDemo2').onclick = () => loadIntoTab('AJ-10C Quick', 'demo2', loadDemo2);
 document.getElementById('thermalResolution').onchange = (e) => {
   initFloorHeatSystem(parseInt(e.target.value));
 };
