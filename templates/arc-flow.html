@@ -964,20 +964,27 @@ function onSceneLoaded(object) {
     state.root.position.y += clearance;
   }
 
-  // Collect every mesh as its own independent part. Groups (named parents
-  // that contain children) are preserved only for the collapsible outline
-  // tree in the Parts panel — they are never collapsed into a single
-  // simulation part. This lets an exported GLB keep its Blender/Maya
-  // groups while still letting every mesh be classified and opened
-  // separately.
+  // Collect named top-level parts from just the NEW object. If the loader
+  // gave us one node per part (glTF/GLB with named nodes, like the demo
+  // file), each direct child is a part. If it's a single flat mesh (raw
+  // OBJ/STL), treat the whole thing as one part named after the file.
   const candidates = [];
   object.traverse(n => { if (n.isMesh) candidates.push(n); });
 
-  const existingNames = new Set(state.parts.map(p => p.name));
-  const meshToPart = new Map();
-
+  const byName = new Map();
   for (const mesh of candidates) {
-    let rawName = mesh.name || ('Part ' + (state.parts.length + 1));
+    let owner = mesh;
+    while (owner.parent && owner.parent !== object && owner.parent.name) owner = owner.parent;
+    const key = owner.name || mesh.name || ('Part ' + (byName.size + 1));
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(mesh);
+  }
+  if (byName.size === 0) {
+    byName.set(object.name || 'Imported Part', candidates);
+  }
+
+  const existingNames = new Set(state.parts.map(p => p.name));
+  for (const [rawName, meshes] of byName.entries()) {
     let name = rawName, n = 2;
     while (existingNames.has(name)) { name = `${rawName} (${n++})`; }
     existingNames.add(name);
@@ -985,63 +992,57 @@ function onSceneLoaded(object) {
     const pivot = new THREE.Group();
     pivot.name = name;
     state.root.add(pivot);
-    pivot.attach(mesh);
+    for (const m of meshes) pivot.attach(m);
 
     const part = {
-      name, meshes: [mesh], pivot, type: null,
+      name, meshes, pivot, type: null,
       contents: 'oxidizer', massKg: 0, tempK: 288, internalPsi: 60,
       openings: [],
       volumeM3: null,
       material: 'Aluminum-lithium 2195 (aerospace alloy)', matId: 'al2195', wallMm: 0, densityKgM3: 2630,
-      // hierarchy helpers (filled below)
-      groupPath: [],
     };
-    mesh.userData.origMaterial = mesh.material;
-    mesh.userData.ownerPart = part;
-    mesh.castShadow = true; mesh.receiveShadow = true;
+    for (const m of meshes) {
+      m.userData.origMaterial = m.material;
+      m.userData.ownerPart = part;
+      m.castShadow = true; m.receiveShadow = true;
+    }
     state.parts.push(part);
-    meshToPart.set(mesh, part);
   }
 
-  // Build the group outline tree (for the collapsible UI). Walk parents
-  // of each mesh; any named non-root parent becomes a group node.
+  // Non-destructive group tree: if the GLB has named parent groups, record
+  // them so the Parts panel can show the hierarchy. Simulation parts stay
+  // as formed above (named-owner grouping) so the original demo is unchanged.
   state.groupTree = state.groupTree || [];
-  const groupNodes = new Map(); // name path key -> node
+  const groupNodes = new Map();
   function ensureGroup(path) {
     const key = path.join('/');
     if (groupNodes.has(key)) return groupNodes.get(key);
     const node = { name: path[path.length-1], path, children: [], parts: [], isGroup: true };
     groupNodes.set(key, node);
     if (path.length === 1) state.groupTree.push(node);
-    else {
-      const parent = ensureGroup(path.slice(0, -1));
-      parent.children.push(node);
-    }
+    else { const parent = ensureGroup(path.slice(0, -1)); parent.children.push(node); }
     return node;
   }
-  for (const mesh of candidates) {
-    const part = meshToPart.get(mesh);
+  // Map each part to its originating group path (if any) without re-splitting.
+  for (const part of state.parts) {
+    if (!part.meshes || !part.meshes.length) continue;
+    const mesh = part.meshes[0];
     const path = [];
     let owner = mesh.parent;
-    while (owner && owner !== object) {
-      if (owner.name) path.unshift(owner.name);
+    while (owner && owner !== object && owner !== state.root) {
+      if (owner.name && owner.name !== part.name) path.unshift(owner.name);
       owner = owner.parent;
     }
-    part.groupPath = path.slice();
     if (path.length) {
       const g = ensureGroup(path);
       g.parts.push(part);
-    } else {
-      // ungrouped leaf — add a synthetic top-level entry so the tree
-      // renderer can treat everything uniformly
-      state.groupTree.push({ name: part.name, path: [part.name], children: [], parts: [part], isGroup: false });
     }
   }
 
   buildPartListUI();
   document.getElementById('partCount').textContent = state.parts.length + ' part' + (state.parts.length===1?'':'s');
   document.getElementById('playBtn').disabled = false;
-  emptyState.classList.add('hidden');
+    emptyState.classList.add('hidden');
 
   // Frame camera on the loaded model
   const box3 = new THREE.Box3().setFromObject(state.root);
@@ -1176,6 +1177,20 @@ function buildPartListUI() {
   listEl.innerHTML = '';
   const tree = state.groupTree || [];
   const partIndex = new Map(state.parts.map((p, i) => [p, i]));
+
+  // Flat fallback: no groups, or tree empty — just list the simulation parts.
+  if (!tree.length) {
+    for (let i = 0; i < state.parts.length; i++) {
+      const part = state.parts[i];
+      const row = document.createElement('div');
+      row.className = 'part-row' + (part.type ? ' type-' + part.type : '');
+      row.innerHTML = `<span class="dot"></span><span class="nm">${part.name}</span><span class="tg">${part.type || '—'}</span>`;
+      row.onclick = () => selectPart(i);
+      listEl.appendChild(row);
+    }
+    highlightSelection();
+    return;
+  }
 
   function renderNode(node, depth) {
     const row = document.createElement('div');
