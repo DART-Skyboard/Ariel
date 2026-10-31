@@ -7696,7 +7696,27 @@ function plumeFrame(now) {
     return;
   }
   // Each chamber with a nozzle drives its own exhaust from its own location.
-  const r = plumeCurrentDerived();
+  if (!plume.perChamber) plume.perChamber = new Map();
+  // Build a derived frame for every chamber and keep one plume state each.
+  for (const c of chambers) {
+    const cfg = PROP_PRESETS[plume.key];
+    if (!cfg) continue;
+    const F = plumeFrameOf(c, cfg);
+    const fromFlow = chamberInflowPsi(c.ch);
+    const pcIn = c.ch.internalPsi;
+    const pc = fromFlow > 0 ? fromFlow : ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi);
+    const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
+    const D = plumeDerive(cfg, pc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+    let inst = plume.perChamber.get(c.ch);
+    if (!inst) {
+      inst = { px:[],py:[],pz:[],vx:[],vy:[],vz:[],ax:[],tn:[],sh:[],smk:[],st:[],tg:[],life:[],sr:[],gw:[],n:0,tclock:0,needPreroll:true,lastAt:now,sizeK:1 };
+      plume.perChamber.set(c.ch, inst);
+    }
+    inst.D = D; inst.F = F;
+  }
+  // Use the first for the shared readout and the legacy single-plume path.
+  const first = chambers[0];
+  const r = first ? { D: plume.perChamber.get(first.ch).D, F: plume.perChamber.get(first.ch).F, c: first } : null;
   if (!r) return;
   const { D, F } = r;
   plume.D = D; plume.F = F;
@@ -7725,7 +7745,30 @@ function plumeFrame(now) {
     if (st === 1) { asz[i] = P.sizeK * re * (0.55 + 0.35 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]); aal[i] = P.tune.jetSprite; }
     else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
   }
-  P.points.geometry.setDrawRange(0, P.n);
+  // Append a plume for every other chamber so each clone fires on its own.
+  let write = P.n;
+  if (plume.perChamber && plume.perChamber.size > 1) {
+    const maxVerts = pa.length / 3;
+    for (const [ch, inst] of plume.perChamber) {
+      if (ch === first.ch) continue;
+      const iF = inst.F, iD = inst.D;
+      const count = Math.min(iD.cfg.count, 400);
+      for (let k = 0; k < count && write < maxVerts; k++, write++) {
+        const x = (k / count) * iF.H;
+        const s = (k % 7) / 7;
+        const phi = (k * 2.399) % (Math.PI * 2);
+        const rb = plumeBoundary(x, iD);
+        const R = s * rb, cc = Math.cos(phi) * R, sn = Math.sin(phi) * R;
+        pa[3 * write] = iF.O.x + iF.d.x * x + iF.U.x * cc + iF.W.x * sn;
+        pa[3 * write + 1] = iF.O.y + iF.d.y * x + iF.U.y * cc + iF.W.y * sn;
+        pa[3 * write + 2] = iF.O.z + iF.d.z * x + iF.U.z * cc + iF.W.z * sn;
+        at[write] = x / Math.max(iD.De, 0.1); ash[write] = 0; asm[write] = 0.3;
+        asz[write] = P.sizeK * iF.re * (0.5 + 0.4 * s); aal[write] = P.tune.jetSprite * (1 - x / Math.max(iF.H, 0.1));
+      }
+      inst.tclock = (inst.tclock || 0) + dt;
+    }
+  }
+  P.points.geometry.setDrawRange(0, write);
   for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl]) a.needsUpdate = true;
   const camFov = camera.fov * Math.PI / 180;
   P.points.material.uniforms.uPx.value = renderer.domElement.height / (2 * Math.tan(camFov / 2));
