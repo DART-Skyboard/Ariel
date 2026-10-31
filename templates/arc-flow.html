@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v51</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v52</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -1087,6 +1087,32 @@ function onSceneLoaded(object) {
       if (dot < 0) inward++; total++;
     }
     if (total && inward / total > 0.6) {
+      for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, -nrm.getX(i), -nrm.getY(i), -nrm.getZ(i));
+      nrm.needsUpdate = true;
+    }
+  });
+  // Chambers: the nozzle opening must face outward (down). If the
+  // chamber's lowest opening normal points up, the mesh is inside-out
+  // and particles will sit in the wall. Flip it.
+  importGroup.traverse(o => {
+    if (!o.isMesh || !o.geometry) return;
+    const name = (o.name || '').toLowerCase();
+    if (!name.includes('chamber') && !name.includes('nozzle') && !name.includes('bell')) return;
+    const g = o.geometry;
+    g.computeBoundingBox();
+    const box = g.boundingBox;
+    const nrm = g.attributes.normal;
+    if (!nrm) return;
+    // Sample normals near the bottom of the mesh (the nozzle end)
+    let downCount = 0, upCount = 0;
+    const pos = g.attributes.position;
+    const yThreshold = box.min.y + (box.max.y - box.min.y) * 0.3;
+    for (let i = 0; i < pos.count; i += 4) {
+      if (pos.getY(i) > yThreshold) continue;
+      if (nrm.getY(i) < -0.3) downCount++;
+      else if (nrm.getY(i) > 0.3) upCount++;
+    }
+    if (upCount > downCount) {
       for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, -nrm.getX(i), -nrm.getY(i), -nrm.getZ(i));
       nrm.needsUpdate = true;
     }
