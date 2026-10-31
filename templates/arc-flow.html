@@ -666,6 +666,26 @@ function animateBase() {
     if (typeof updateGaussianRender === 'function') updateGaussianRender();
     if (typeof liveLeakFrame === 'function' && running) liveLeakFrame(performance.now());
     if (typeof plumeFrame === 'function' && running) plumeFrame(performance.now());
+    // Mirror the particle system to each extra assembly so clones show flow.
+    if (particleSystem && state.root && state.root.children.length > 1) {
+      if (!window._cloneParticles) window._cloneParticles = [];
+      const assemblies = state.root.children.filter(c => c.userData && c.userData.isAssembly);
+      while (window._cloneParticles.length < assemblies.length - 1) {
+        const cp = particleSystem.clone();
+        cp.material = particleSystem.material;
+        scene.add(cp);
+        window._cloneParticles.push(cp);
+      }
+      const base = assemblies[0];
+      for (let i = 1; i < assemblies.length; i++) {
+        const cp = window._cloneParticles[i - 1];
+        if (!cp) continue;
+        const dx = assemblies[i].position.x - base.position.x;
+        const dz = assemblies[i].position.z - base.position.z;
+        cp.position.set(dx, 0, dz);
+        cp.visible = particleSystem.visible;
+      }
+    }
   }
   renderer.render(scene, camera);
 }
@@ -2013,7 +2033,7 @@ function runSealCheck() {
 // ═══════════════════════════════════════════════════════════════════════
 
 const PEN_SAMPLE_RES = 9;        // samples per axis across an overlap box — small on purpose: the box is just the region two surfaces cross in
-const PEN_MIN_OVERLAP = 1e-6;    // a zero-volume AABB "overlap" (boxes merely sharing a face) isn't a penetration
+const PEN_MIN_OVERLAP = 0.15;    // require real overlap; a sliver or shared face is not a penetration
 
 let _penIndexCache = new WeakMap(); // part -> spatial index (reset with the world-triangle cache)
 function penIndexForPart(part) {
