@@ -7532,15 +7532,33 @@ function plumeReadout() {
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
     `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
 }
+function chamberInflowPsi(ch) {
+  // Sum mass flow from channels that feed this chamber; convert to an
+  // effective chamber pressure so the plume reflects the real inflow.
+  if (!state.channelFlows) return 0;
+  let mdot = 0;
+  for (const f of state.channelFlows) {
+    if (f && f.to === ch && f.mdot > 0) mdot += f.mdot;
+  }
+  if (mdot <= 0) return 0;
+  // Rough: pressure scales with mass flow against the nozzle throat.
+  const noz = ch.openings.find(o => o.role === 'nozzle');
+  const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
+  return Math.min(3000, mdot * 120 / Math.max(At, 1e-4));
+}
 function plumeCurrentDerived() {
   const cfg = PROP_PRESETS[plume.key];
   const c = plumeChamber();
   if (!cfg || !c) return null;
   const F = plumeFrameOf(c, cfg);
   const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
-  const pcIn = c.ch.internalPsi; // 60 psi is the generic untouched part default, not a chosen chamber pressure
+  // Prefer the pressure the inflow actually produces; fall back to the
+  // part setting, then the preset. No synthetic override.
+  const fromFlow = chamberInflowPsi(c.ch);
+  const pcIn = c.ch.internalPsi;
+  const pc = fromFlow > 0 ? fromFlow : ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi);
   const kPc = mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1;
-  const D = plumeDerive(cfg, ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi) * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+  const D = plumeDerive(cfg, pc * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
   return { D, F, c };
 }
 function applyPropPreset(key) {
@@ -7548,8 +7566,7 @@ function applyPropPreset(key) {
   if (propPresetEl.value !== key) propPresetEl.value = key;
   const cfg = PROP_PRESETS[key];
   if (cfg) {
-    const c = state.parts.find(p => p.type === 'chamber');
-    if (c) { c.internalPsi = cfg.pcPsi; c.tempK = cfg.Tc; if (state.selectedPart === c) renderPartDetail(); }
+    // Do not overwrite the chamber's own pressure — the plume reads it.
     atmoPresetEl.value = cfg.atmo; atmoPsiEl.value = ATMO[cfg.atmo].psi;
     atmoReadout.innerHTML = `${ATMO[cfg.atmo].psi} psi <span class="u">= ${ATMO[cfg.atmo].label}</span>`;
     document.getElementById('particlesPerContainer').value = cfg.baked;
@@ -7956,11 +7973,7 @@ playBtn.onclick = async () => {
       );
     }
     state.simRunning = true;
-    // Any chamber drives the combustive plume, same as the original demo.
-    if (state.parts.some(p => p.type === 'chamber') && plume.key === 'off') {
-      propPresetEl.value = 'rocket_bell';
-      applyPropPreset('rocket_bell');
-    }
+    // Plume follows the chamber that has inflow; no forced preset.
     massBuild();
     liveWatchStart();
     setPartsGlass(true);
