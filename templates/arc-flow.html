@@ -7846,39 +7846,26 @@ function labelSpawn(kind, n, group) {
   return cb;
 }
 async function spawnDemo(which) {
+  // + always works inside the current tab. It never opens a new tab.
   const kind = which === 1 ? 'Quick Rocket' : 'AJ-10C Quick';
-  const cur = tabs[activeTab];
   const empty = !state.root || !state.root.children.length;
-  const same = cur && cur.kind === (which === 1 ? 'demo' : 'demo2');
-  // Different model in a filled tab → open a new tab and load fresh there.
-  if (!empty && !same) {
-    addTab(kind, which === 1 ? 'demo' : 'demo2');
-    if (typeof clearScene === 'function') clearScene();
-    if (which === 1) await loadDemo(); else await loadDemo2();
-    if (tabs[activeTab]) tabs[activeTab].snapshot = { parts: state.parts.slice(), root: state.root, selectedPart: null };
-    renderTabs();
-    if (which === 1) spawnState.demo = 1; else spawnState.demo2 = 1;
-    labelSpawn(kind, 1, state.root && state.root.children[0]);
-    return;
-  }
-  // Empty tab → load the original.
   if (empty) {
+    // Nothing here yet — load the original into this tab.
     if (which === 1) await loadDemo(); else await loadDemo2();
+    const cur = tabs[activeTab];
     if (cur) { cur.kind = which === 1 ? 'demo' : 'demo2'; cur.name = kind; }
-    if (which === 1) spawnState.demo = 1; else spawnState.demo2 = 1;
     labelSpawn(kind, 1, state.root && state.root.children[0]);
     renderTabs();
     return;
   }
-  // Same model → clone into this tab.
+  // Clone the first assembly in this tab and space it.
   const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
   const clone = src.clone(true);
   clone.userData.isAssembly = true;
   clone.position.set(0, 0, 0);
   state.root.add(clone);
   state.root.updateMatrixWorld(true);
-  if (which === 1) spawnState.demo++; else spawnState.demo2++;
-  const n = which === 1 ? spawnState.demo : spawnState.demo2;
+  const n = state.root.children.length;
   layoutSpawns();
   frameAllSpawns();
   labelSpawn(kind, n, clone);
@@ -7893,6 +7880,8 @@ const tabs = [];
 let activeTab = -1;
 function saveTabState() {
   if (activeTab < 0 || !tabs[activeTab]) return;
+  const list = document.getElementById('spawnList');
+  tabs[activeTab].spawnHTML = list ? list.innerHTML : '';
   tabs[activeTab].snapshot = {
     parts: state.parts.slice(),
     root: state.root,
@@ -7908,10 +7897,16 @@ function restoreTabState(i) {
   }
   state.parts = t.snapshot.parts;
   state.root = t.snapshot.root;
-  if (state.root) state.root.visible = true;
+  if (state.root) {
+    if (!state.root.parent) scene.add(state.root);
+    state.root.visible = true;
+  }
   state.selectedPart = t.snapshot.selectedPart;
   buildPartListUI();
   highlightSelection();
+  // Restore this tab's spawn list
+  const list = document.getElementById('spawnList');
+  if (list) list.innerHTML = t.spawnHTML || '';
 }
 function addTab(name, kind) {
   saveTabState();
