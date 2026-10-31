@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v58</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v59</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -237,6 +237,10 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     </div>
     <div id="spawnList" class="sec-sub"></div>
     <div class="sec-sub">+ spawns another copy, spaced so it does not overlap. Fresh load replaces the scene.</div>
+    <div class="sec-h">◈ Rocket Height</div>
+    <label class="field">Height (m)</label>
+    <input type="number" id="rocketHeight" value="50" step="1" min="1" max="500">
+    <div class="sec-sub">Quick Rocket: 50 m. AJ-10C: 60 m. Custom imports: enter the height. Exhaust fades at 300 m.</div>
     <div class="sec-h">◈ Scene</div>
     <div class="btnrow">
       <button class="btn" id="btnImport">Import File</button>
@@ -820,6 +824,7 @@ async function loadDemo() {
     const object = await loadFromArrayBuffer('CombustionChamber.glb', buf, null);
     onSceneLoaded(object);
     applyDefaultDemoConfiguration();
+    const hEl = document.getElementById('rocketHeight'); if (hEl) hEl.value = 50;
     await presetEndAsset(_pa);
   } catch (err) {
     console.error(err);
@@ -844,6 +849,7 @@ async function loadDemo2() {
       if (pr.ok) {
         const raw = await pr.text();
         if (typeof presetApplyRaw === 'function') await presetApplyRaw(raw, { quiet: true });
+        const hEl2 = document.getElementById('rocketHeight'); if (hEl2) hEl2.value = 60;
         // Ensure every chamber has a nozzle so the plume can fire.
         for (const part of state.parts) {
           if (part.type !== 'chamber') continue;
@@ -7312,7 +7318,7 @@ function plumeStep(h, D, F) {
       const edgew = _ss(0.35, 1.1, s), xc = Math.min(xs, 3);
       s += (Math.random() + Math.random() - 1) * 1.6 * Math.sqrt(h) * edgew * (0.25 + 0.5 * xc) + 0.10 * h * xc * edgew;   // shear-layer mixing + entrainment
       if (s < 0) s = -s;
-      if (s > 2.3 || ax > 70) { P.st[i] = 0; P.live--; continue; }
+      const maxDist = 11800; if (s > 2.3 || ax > maxDist) { P.st[i] = 0; P.live--; continue; }
       P.ph[i] += h * (1.2 + 2.2 * s) * (0.6 + 0.8 * P.sd[i]);
       P.ax[i] = ax; P.sr[i] = s;
       const nsh = plumeShock(ax, s, D); P.sh[i] = nsh; plumeThermo(i, ax, s, nsh, D);
@@ -7878,7 +7884,7 @@ function plumeFrame(now) {
     if (!st) { pa[3 * i + 1] = -1000; aal[i] = 0; continue; }
     pa[3 * i] = P.px[i]; pa[3 * i + 1] = P.py[i]; pa[3 * i + 2] = P.pz[i];
     at[i] = Math.min(P.ax[i] / Math.max(F.H, 0.1), 1); ash[i] = P.sh[i]; asm[i] = P.smk[i];
-    if (st === 1) { asz[i] = P.sizeK * re * 8.0 * (1 + 3.0 * Math.min(P.ax[i] / Math.max(F.H, 0.1), 1)); aal[i] = P.tune.jetSprite * Math.pow(1 - Math.min(P.ax[i] / Math.max(F.H, 0.1), 1), 1.5); }
+    if (st === 1) { const distFade = Math.max(0, 1 - P.ax[i] / 11800); asz[i] = P.sizeK * re * 8.0 * (1 + 3.0 * Math.min(P.ax[i] / Math.max(F.H, 0.1), 1)); aal[i] = P.tune.jetSprite * Math.pow(distFade, 1.2); }
     else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
   }
   // Append a plume for every other chamber so each clone fires on its own.
