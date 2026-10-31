@@ -1085,6 +1085,14 @@ function onSceneLoaded(object) {
     state.parts.push(part);
   }
 
+  // Wrap this import's parts into one assembly so clones move as a unit.
+  const assembly = new THREE.Group();
+  assembly.name = 'assembly';
+  assembly.userData.isAssembly = true;
+  const newPivots = state.parts.slice(-byName.size).map(p => p.pivot);
+  for (const pv of newPivots) assembly.attach(pv);
+  state.root.add(assembly);
+
   // Non-destructive group tree: if the GLB has named parent groups, record
   // them so the Parts panel can show the hierarchy. Simulation parts stay
   // as formed above (named-owner grouping) so the original demo is unchanged.
@@ -7767,21 +7775,20 @@ document.getElementById('btnResetDefaults').onclick = () => {
 // ── Multi-spawn: additional demo / import copies, auto-spaced ──
 const spawnState = { demo: 0, demo2: 0, imports: [], lastFile: null, lastPreset: null };
 function layoutSpawns() {
-  // Arrange copies evenly around the origin on the floor plane.
-  // 1 at origin. 2+ form a ring so nothing overlaps and the origin stays clear.
+  // Move whole assemblies, never individual parts.
   if (!state.root) return;
-  const n = state.root.children.length;
+  const assemblies = state.root.children.filter(c => c.userData && c.userData.isAssembly);
+  const n = assemblies.length;
   if (n === 0) return;
   state.root.updateMatrixWorld(true);
-  const sample = state.root.children[0];
+  const sample = assemblies[0];
   sample.updateMatrixWorld(true);
   const sb = new THREE.Box3().setFromObject(sample);
   const sz = new THREE.Vector3(); sb.getSize(sz);
   const footprint = Math.max(sz.x, sz.z, 4);
-  // Radius so closest edges are at least 5 grid squares apart.
   const radius = n === 1 ? 0 : (footprint + 5) / (2 * Math.sin(Math.PI / n));
   for (let i = 0; i < n; i++) {
-    const g = state.root.children[i];
+    const g = assemblies[i];
     if (n === 1) { g.position.set(0, 0, 0); continue; }
     const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
     g.position.set(Math.cos(ang) * radius, 0, Math.sin(ang) * radius);
@@ -7846,8 +7853,9 @@ async function spawnDemo(which) {
     return;
   }
   // Same model → clone into this tab.
-  const src = state.root.children[0];
+  const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
   const clone = src.clone(true);
+  clone.userData.isAssembly = true;
   clone.position.set(0, 0, 0);
   state.root.add(clone);
   state.root.updateMatrixWorld(true);
