@@ -650,8 +650,9 @@ function animateBase() {
   // undeclared variable). animateBase() starts before `state` is declared,
   // so use a plain flag that's genuinely false until setup finishes.
   if (appReady) {
-    if (state.simRunning && particleSystem) renderFloorHeatPass();
-    if (typeof massFrame === 'function') massFrame(performance.now());
+    const running = state.simRunning && !simPaused;
+    if (running && particleSystem) renderFloorHeatPass();
+    if (typeof massFrame === 'function' && running) massFrame(performance.now());
     if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
     // Volumetric ray-march pass — see "VOLUMETRIC RAY-MARCH RENDERER"
     // below buildParticleSystem for the full design. Declared via
@@ -663,8 +664,8 @@ function animateBase() {
     if (typeof followTick === 'function') followTick(false);
     if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
     if (typeof updateGaussianRender === 'function') updateGaussianRender();
-    if (typeof liveLeakFrame === 'function') liveLeakFrame(performance.now());
-    if (typeof plumeFrame === 'function') plumeFrame(performance.now());
+    if (typeof liveLeakFrame === 'function' && running) liveLeakFrame(performance.now());
+    if (typeof plumeFrame === 'function' && running) plumeFrame(performance.now());
   }
   renderer.render(scene, camera);
 }
@@ -7944,6 +7945,18 @@ document.getElementById('btnAddDemo2').onclick = () => spawnDemo(2);
 
 
 // ── Drag the whole assembly; plume follows because it reads the nozzle live ──
+let simPaused = false;
+const pauseBtn = document.createElement('button');
+pauseBtn.id = 'pauseBtn'; pauseBtn.className = 'hback'; pauseBtn.textContent = '❚❚ Pause';
+pauseBtn.style.marginRight = '6px';
+const playBtnEl = document.getElementById('playBtn');
+if (playBtnEl && playBtnEl.parentNode) playBtnEl.parentNode.insertBefore(pauseBtn, playBtnEl.nextSibling);
+pauseBtn.onclick = () => {
+  if (!state.simRunning) return;
+  simPaused = !simPaused;
+  pauseBtn.textContent = simPaused ? '▶ Resume' : '❚❚ Pause';
+  pauseBtn.style.background = simPaused ? 'var(--warm)' : '';
+};
 let dragMode = false, dragObj = null, dragPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0), dragOffset = new THREE.Vector3();
 const moveBtn = document.getElementById('moveBtn');
 moveBtn.onclick = () => {
@@ -7984,7 +7997,9 @@ function saveTabState() {
   tabs[activeTab].snapshot = {
     parts: state.parts.slice(),
     root: state.root,
-    selectedPart: state.selectedPart
+    selectedPart: state.selectedPart,
+    simRunning: state.simRunning,
+    simPaused: simPaused
   };
 }
 function restoreTabState(i) {
@@ -8001,6 +8016,10 @@ function restoreTabState(i) {
     state.root.visible = true;
   }
   state.selectedPart = t.snapshot.selectedPart;
+  state.simRunning = !!t.snapshot.simRunning;
+  simPaused = state.simRunning ? (t.snapshot.simPaused !== false) : false;
+  if (pauseBtn) { pauseBtn.textContent = simPaused ? '▶ Resume' : '❚❚ Pause'; pauseBtn.style.background = simPaused ? 'var(--warm)' : ''; }
+  if (playBtnEl) { playBtnEl.textContent = state.simRunning ? '■ Stop' : '▶ Simulate'; playBtnEl.classList.toggle('playing', state.simRunning); }
   buildPartListUI();
   highlightSelection();
   // Restore this tab's spawn list
