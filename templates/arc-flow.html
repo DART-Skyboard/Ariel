@@ -1981,7 +1981,10 @@ function detectPenetrationJoint(partA, partB) {
   // "inside") rejects those pairs for a fraction of the cost. Trade-off: a
   // sliver overlap thinner than the coarse pitch can be missed — a
   // fingertip nick, not a fitting.
-  const PROBE = 5;
+  // Denser probe for pipe-through-wall (thin cavity). A 5^3 grid can miss
+  // a closed pipe pushed into a tank; use 7^3 when either part is a pipe.
+  const isPipePair = (partA.type === 'pipe' || partB.type === 'pipe');
+  const PROBE = isPipePair ? 7 : 5;
   let overlapsInVolume = false;
   for (let z = 0; z < PROBE && !overlapsInVolume; z++) for (let y = 0; y < PROBE && !overlapsInVolume; y++) for (let x = 0; x < PROBE; x++) {
     const p = sampleAt(PROBE, x, y, z);
@@ -2002,12 +2005,13 @@ function detectPenetrationJoint(partA, partB) {
 
   let sealed = cavitiesAreConnected(labels, res);
   // Boolean intersection: pure cavity overlap (label-3) with no exclusive
-  // bridge still counts as a connecting joint. Count label-3 samples; if
-  // the overlap volume is more than a few voxels, expose it as an opening.
+  // bridge still counts as a connecting joint. Closed pipes pushed through
+  // a tank (no manual hole) often have only a thin shared cavity, so any
+  // label-3 sample is enough to expose an opening.
   let label3 = 0;
   for (let i = 0; i < labels.length; i++) if (labels[i] === 3) label3++;
   const overlapVoxels = label3;
-  if (!sealed && overlapVoxels >= 4) sealed = true; // auto Boolean port
+  if (!sealed && overlapVoxels >= 1) sealed = true; // auto Boolean port
 
   // Wall-crossing zone. The part that passes THROUGH the other has
   // exclusive samples only at its cross-section (the pipe outside the
