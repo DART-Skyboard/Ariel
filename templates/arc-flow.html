@@ -2121,6 +2121,20 @@ const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture
 // particleSystem / particleSplatMaterial are declared near the floor-heat
 // system above (they're referenced during initial setup).
 
+
+// A part may feed several downstream parts (multiple channels, multiple
+// chambers). links values are either a single link object or an array.
+// Consumers that only need one path call firstLink; the joint report
+// and region collector walk all of them.
+function firstLink(links, part) {
+  const v = links && links.get(part);
+  return Array.isArray(v) ? v[0] : v;
+}
+function allLinks(links, part) {
+  const v = links && links.get(part);
+  return !v ? [] : (Array.isArray(v) ? v : [v]);
+}
+
 function buildFlowGraph() {
   refreshAllOpenings();
   // part -> { entrancePart, exitTargetPart } via nearest opening match
@@ -2151,7 +2165,7 @@ function buildFlowGraph() {
   // testing on the bundled demo — re-testing them would report working
   // joints as "touching with no fluid path". A part may still gain an auto
   // link to a neighbour if it has no manual link to THAT neighbour.
-  const manualPair = (a, b) => (links.get(a) && links.get(a).target === b) || (links.get(b) && links.get(b).target === a);
+  const manualPair = (a, b) => allLinks(links, a).some(l => l.target === b) || allLinks(links, b).some(l => l.target === a);
   const { sealedPairs, rejectedPairs } = detectAutoPenetrationJoints(null, manualPair);
   state.autoPenetrationSealed = [];
   state.autoPenetrationRejected = rejectedPairs; // shown by renderJointReport + the post-bake notice
@@ -2175,8 +2189,14 @@ function buildFlowGraph() {
     // for this Boolean intersection joint (seal the walls, open the cavity).
     from.userData = from.userData || {}; from.userData._autoJoint = true;
     to.userData = to.userData || {}; to.userData._autoJoint = true;
-    if (links.has(from)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
-    links.set(from, { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true });
+    const entry = { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true };
+    const existing = links.get(from);
+    if (!existing) links.set(from, entry);
+    else if (Array.isArray(existing)) {
+      if (existing.some(l => l.target === to)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
+      existing.push(entry);
+    } else if (existing.target === to) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
+    else links.set(from, [existing, entry]);
     state.autoPenetrationSealed.push({ partA: from, partB: to, centroid, radius });
   }
   return links;
@@ -2191,7 +2211,9 @@ function renderJointReport() {
   if (!el) return;
   const links = state.currentLinks || new Map();
   const rows = [];
-  for (const [part, link] of links.entries()) {
+  for (const [part, linkOrArr] of links.entries()) {
+    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    for (const link of linkList) {
     const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
     if (lk) {
       // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
@@ -2200,6 +2222,7 @@ function renderJointReport() {
     }
     const kind = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
     rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${kind})</span></div>`);
+    }
   }
   for (const r of (state.autoPenetrationRejected || [])) {
     rows.push(`<div class="seal-bad">✕ ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">touch/overlap, but no fluid path between them</span></div>`);
@@ -3390,7 +3413,9 @@ function diagnoseLinks() {
   const links = state.currentLinks || new Map();
   const rows = [];
   const sdfAtPart = (part, v) => { const ix = penIndexForPart(part); return ix ? signedDistanceToMesh(v, ix) : Infinity; };
-  for (const [part, link] of links) {
+  for (const [part, linkOrArr] of links) {
+    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    for (const link of linkList) {
     const target = link.target, o = link.viaOpening;
     const tubeA = state.sdf && state.sdf.tubes && state.sdf.tubes.byPart.get(part), tubeB = state.sdf && state.sdf.tubes && state.sdf.tubes.byPart.get(target);
     const r = Math.max(o.radius, 1e-3);
@@ -3430,6 +3455,7 @@ function diagnoseLinks() {
       sdAtPortInUpstream: +pa.sd.toFixed(4), sdAtPortInDownstream: +pb.sd.toFixed(4), probes: pa.tested + pb.tested, connected, strictInterior: strict,
       firstFailure: connected ? null : { at: o.centroid.toArray().map(v => +v.toFixed(2)), side: pa.sd > 0.02 ? part.name : target.name, nearestSd: +Math.max(pa.sd, pb.sd).toFixed(4) },
       tubeFitted: !!(tubeA || tubeB) });
+    }
   }
   state.linkDiagnostic = rows;
   return rows;
@@ -3517,7 +3543,9 @@ function collectJointRegions(links, cap, tubeSet) {
     regions.push({ box, parts: partsInvolved, kind: 'joint', res: [fine, fine, fine], autoRefine: true });
   };
 
-  for (const [part, link] of links.entries()) {
+  for (const [part, linkOrArr] of links.entries()) {
+    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    for (const link of linkList) {
     const mid = part === link.target ? link.viaOpening.centroid
       : link.viaOpening.centroid.clone().lerp(link.entrance.centroid, 0.5);
     let r = Math.max(link.viaOpening.radius, link.entrance.radius);
@@ -3525,6 +3553,7 @@ function collectJointRegions(links, cap, tubeSet) {
     // the joint keeps >= ~6 voxels across that bore (the nominal port radius can be larger than a fitted pipe's bore).
     if (tubeSet) for (const p of [part, link.target]) { const tb = tubeSet.byPart.get(p); if (tb) r = Math.min(r, tb.minRIn); }
     addRegion(mid, r, [part, link.target]);
+    }
   }
   // Chambers: every opening (entrances converging + the nozzle throat) is a
   // tight, high-density junction region in its own right.
@@ -3769,7 +3798,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
 
   // Reserve 2 slots at the end for the floor-impact + floor-spread points.
   while (!reachedNozzle && path.length < MAX_WAYPOINTS - 2) {
-    const link = links.get(cur);
+    const link = firstLink(links, cur);
     if (!link) break;
     const curTube = tubes && tubes.get(cur), nextTube = tubes && tubes.get(link.target);
     let rPort = link.viaOpening.radius;
@@ -5955,7 +5984,7 @@ function liveChainOf(part) {
   const links = state.currentLinks;
   let cur = part;
   while (links && c.length < 5 && cur.type !== 'chamber') {
-    const l = links.get(cur);
+    const l = firstLink(links, cur);
     if (!l) break;
     cur = l.target; c.push(cur);
   }
@@ -5982,7 +6011,9 @@ function liveEvalLinks(movedSet) {
   live.plugged.clear(); mass.plugged.clear();
   const links = state.currentLinks;
   if (!links) return out;
-  for (const [part, link] of links) {
+  for (const [part, linkOrArr] of links) {
+    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    for (const link of linkList) {
     const target = link.target;
     let ok = true, gapDist = 0, radius = link.viaOpening.radius;
     let gap = null;
@@ -6019,6 +6050,7 @@ function liveEvalLinks(movedSet) {
       // the tank quickly enough.
       live.plugged.add(part); mass.plugged.add(part);
     } else if (!ok) out.set(part, { gap, gapDist, radius });
+    }
   }
   return out;
 }
@@ -6052,7 +6084,7 @@ function liveFillRoute(r, g, origin) {
       r.pts[6 * i] = c.x; r.pts[6 * i + 1] = c.y; r.pts[6 * i + 2] = c.z;
       let ex = null;
       if (i === k) ex = g.gap;
-      else { const o = liveExitOpening(chain[i]); ex = o ? o.centroid : state.currentLinks.get(chain[i]).viaOpening.centroid; }
+      else { const o = liveExitOpening(chain[i]); ex = o ? o.centroid : firstLink(state.currentLinks, chain[i]).viaOpening.centroid; }
       r.pts[6 * i + 3] = ex.x; r.pts[6 * i + 4] = ex.y; r.pts[6 * i + 5] = ex.z;
     }
     r.thr.fill(0.8);
@@ -6201,7 +6233,7 @@ function liveApplyVerdict(verdict) {
   for (const [part, v] of verdict) {
     let g = live.groups.get(part);
     if (!g) {
-      g = { id: live.nextId++, part, target: state.currentLinks.get(part).target, gap: new THREE.Vector3(), dir: new THREE.Vector3(),
+      g = { id: live.nextId++, part, target: firstLink(state.currentLinks, part).target, gap: new THREE.Vector3(), dir: new THREE.Vector3(),
             gapDist: 0, ap: 0.5, P0: 0, nTotal: 0, nInside: 0, weight: 1, dp: LIVE_DP_MIN, routes: new Map(), fresh: true };
       live.groups.set(part, g); live.byId.set(g.id, g);
       fresh.push(g);
@@ -6757,7 +6789,7 @@ function massGate(part, now) {
     if (live.groups.has(cur)) return 'leak';
     if (mass.plugged.has(cur)) return 'plugged';
     if (cur.type === 'chamber') return massNozzlePlugged(now) ? 'plugged' : 'nozzle';
-    const l = links && links.get(cur);
+    const l = links && firstLink(links, cur);
     if (!l) return 'closed';
     cur = l.target;
   }
@@ -6770,7 +6802,7 @@ function massPartPressure(part) {   // psi (absolute) currently inside this part
   if (part.type === 'chamber') return (part.internalPsi || 0) * (mass.on ? Math.max(0, Math.min(1, mass.K)) : 1);
   if (links) for (const [cp, cc] of mass.c) {
     let cur = cp, g = 0;
-    while (cur && g++ < 8) { if (cur === part) { if (cp.contents === 'helium') Phe = Math.max(Phe, cc.P); else P = Math.max(P, cc.P); break; } const l = links.get(cur); cur = l && l.target; }
+    while (cur && g++ < 8) { if (cur === part) { if (cp.contents === 'helium') Phe = Math.max(Phe, cc.P); else P = Math.max(P, cc.P); break; } const l = firstLink(links, cur); cur = l && l.target; }
   }
   return P || Phe || part.internalPsi || 0;   // lines carry the regulated propellant-tank pressure, not the pressurant storage pressure
 }
@@ -6810,12 +6842,12 @@ function massStep(dt, now) {
     let Tg = Ta;
     if (part.type === 'chamber') Tg = chamberHot ? Tch : Ta;
     else if (part.type === 'container') Tg = part.tempK || Ta;
-    else if (links) for (const [cp] of mass.c) { let cur = cp, g = 0; while (cur && g++ < 8) { if (cur === part) { Tg = Math.max(Tg, cp.tempK || Ta); break; } const l = links.get(cur); cur = l && l.target; } }
+    else if (links) for (const [cp] of mass.c) { let cur = cp, g = 0; while (cur && g++ < 8) { if (cur === part) { Tg = Math.max(Tg, cp.tempK || Ta); break; } const l = firstLink(links, cur); cur = l && l.target; } }
     const h0 = part.type === 'chamber' ? 120 : 40, h = h0 * Math.pow(1 + Math.max(P - pa, 0) / 200, 0.8);
     const C = m[1] * m[5] * t;
     let rate = h * (Tg - th.Tw) / C - m[6] * 5.67e-8 * (Math.pow(th.Tw, 4) - Math.pow(Ta, 4)) / C;
     const alpha = m[4] / (m[1] * m[5]), cc = Math.min(0.15, alpha * 1e4);
-    if (links) { const l = links.get(part); if (l) { const o = mass.th.get(l.target); if (o) { rate += cc * (o.Tw - th.Tw); dT.set(l.target, (dT.get(l.target) || 0) + cc * (th.Tw - o.Tw)); } } }
+    if (links) { const l = firstLink(links, part); if (l) { const o = mass.th.get(l.target); if (o) { rate += cc * (o.Tw - th.Tw); dT.set(l.target, (dT.get(l.target) || 0) + cc * (th.Tw - o.Tw)); } } }
     dT.set(part, (dT.get(part) || 0) + rate);
   }
   for (const [part, th] of mass.th) {
