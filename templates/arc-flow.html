@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
   <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
-  <a class="hback" href="/">← Grid</a>
+  <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
 </div>
 
 <div id="tabBar"></div>
@@ -1038,7 +1038,7 @@ function onSceneLoaded(object) {
     // disperses against the floor plane, not clip straight into it.
     const box2 = new THREE.Box3().setFromObject(state.root);
     const modelHeight = box2.max.y - box2.min.y;
-    const clearance = Math.max(modelHeight * 0.35, 3);
+    const clearance = Math.max(modelHeight * 0.12, 1.5);
     state.root.position.y -= box2.min.y;
     state.root.position.y += clearance;
   }
@@ -7745,7 +7745,7 @@ function plumeFrame(now) {
     if (!st) { pa[3 * i + 1] = -1000; aal[i] = 0; continue; }
     pa[3 * i] = P.px[i]; pa[3 * i + 1] = P.py[i]; pa[3 * i + 2] = P.pz[i];
     at[i] = P.tn[i]; ash[i] = P.sh[i]; asm[i] = P.smk[i];
-    if (st === 1) { asz[i] = P.sizeK * re * (0.55 + 0.35 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]); aal[i] = P.tune.jetSprite; }
+    if (st === 1) { asz[i] = P.sizeK * re * (1.4 + 0.9 * Math.min(P.ax[i] / D.De, 2.5)) * (0.7 + 0.6 * P.sr[i]); aal[i] = P.tune.jetSprite; }
     else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
   }
   // Append a plume for every other chamber so each clone fires on its own.
@@ -7942,6 +7942,37 @@ async function spawnDemo(which) {
 document.getElementById('btnAddDemo').onclick = () => spawnDemo(1);
 document.getElementById('btnAddDemo2').onclick = () => spawnDemo(2);
 
+
+// ── Drag the whole assembly; plume follows because it reads the nozzle live ──
+let dragMode = false, dragObj = null, dragPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0), dragOffset = new THREE.Vector3();
+const moveBtn = document.getElementById('moveBtn');
+moveBtn.onclick = () => {
+  dragMode = !dragMode;
+  moveBtn.style.background = dragMode ? 'var(--acc)' : '';
+  moveBtn.style.color = dragMode ? '#06110c' : '';
+  controls.enabled = !dragMode;
+};
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!dragMode || !state.root) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
+  const ray = new THREE.Raycaster(); ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObject(state.root, true);
+  if (!hits.length) return;
+  dragObj = state.root;
+  const hit = hits[0].point;
+  dragPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0,1,0), hit);
+  dragOffset.copy(dragObj.position).sub(hit);
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!dragMode || !dragObj) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
+  const ray = new THREE.Raycaster(); ray.setFromCamera(ndc, camera);
+  const pt = new THREE.Vector3();
+  if (ray.ray.intersectPlane(dragPlane, pt)) dragObj.position.copy(pt.add(dragOffset));
+});
+renderer.domElement.addEventListener('pointerup', () => { dragObj = null; });
 
 // ── Scene tabs: each demo / import gets its own independent scene ──
 const tabs = [];
