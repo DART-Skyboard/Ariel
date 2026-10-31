@@ -2077,8 +2077,24 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
     if (skipPair && skipPair(a, b)) continue;
     if (!boxes.get(a).intersectsBox(boxes.get(b))) continue; // before any triangle access
     const r = detectPenetrationJoint(a, b);
-    if (!r) continue;
-    (r.sealed ? sealedPairs : rejectedPairs).push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius });
+    if (r && r.sealed) { sealedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius }); continue; }
+    // Channel pushed through a container or chamber: even if the cavity
+    // sample missed, a significant AABB cross means the automation should
+    // draft the joint. Use the overlap centroid and a bore-sized radius.
+    const isChan = (a.type === 'pipe' || b.type === 'pipe');
+    const isRecv = (a.type === 'container' || a.type === 'chamber' || b.type === 'container' || b.type === 'chamber');
+    if (isChan && isRecv) {
+      const boxA = boxes.get(a), boxB = boxes.get(b);
+      const overlap = boxA.clone().intersect(boxB);
+      if (!overlap.isEmpty()) {
+        const c = new THREE.Vector3(); overlap.getCenter(c);
+        const sz = new THREE.Vector3(); overlap.getSize(sz);
+        const radius = Math.max(Math.min(sz.x, sz.y, sz.z) * 0.35, 0.03);
+        sealedPairs.push({ partA: a, partB: b, centroid: c, radius });
+        continue;
+      }
+    }
+    if (r) rejectedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius });
   }
   return { sealedPairs, rejectedPairs };
 }
@@ -2149,7 +2165,12 @@ function buildFlowGraph() {
   for (const { partA, partB, centroid, radius } of sealedPairs) {
     let from = partA, to = partB;
     if ((rank[partB.type] ?? 1) < (rank[partA.type] ?? 1)) { from = partB; to = partA; }
-    if (links.has(from)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
+    // A container may feed several channels. Only skip if this exact
+    // pair is already linked; otherwise allow the additional channel.
+    const existing = links.get(from);
+    const existingList = existing ? (Array.isArray(existing) ? existing : [existing]) : [];
+    if (existingList.some(l => l.target === to)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
+    if (existingList.length && from.type !== 'container') { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
     // Synthetic openings: buildParticlePath/collectJointRegions only read
     // centroid + radius from a resolved link.
     const mk = (role) => ({ id: 'autopen', centroid: centroid.clone(), radius, normal: new THREE.Vector3(0, 1, 0), role });
@@ -2157,7 +2178,13 @@ function buildFlowGraph() {
     // for this Boolean intersection joint (seal the walls, open the cavity).
     from.userData = from.userData || {}; from.userData._autoJoint = true;
     to.userData = to.userData || {}; to.userData._autoJoint = true;
-    links.set(from, { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true });
+    const entry = { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true };
+    if (!links.has(from)) links.set(from, entry);
+    else {
+      const cur = links.get(from);
+      if (!Array.isArray(cur)) links.set(from, [cur, entry]);
+      else cur.push(entry);
+    }
     state.autoPenetrationSealed.push({ partA: from, partB: to, centroid, radius });
   }
   return links;
@@ -2172,7 +2199,9 @@ function renderJointReport() {
   if (!el) return;
   const links = state.currentLinks || new Map();
   const rows = [];
-  for (const [part, link] of links.entries()) {
+  for (const [part, linkOrArr] of links.entries()) {
+    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    for (const link of linkList) {
     const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
     if (lk) {
       // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
@@ -2181,6 +2210,7 @@ function renderJointReport() {
     }
     const kind = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
     rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${kind})</span></div>`);
+    }
   }
   for (const r of (state.autoPenetrationRejected || [])) {
     rows.push(`<div class="seal-bad">✕ ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">touch/overlap, but no fluid path between them</span></div>`);
@@ -3750,7 +3780,8 @@ function buildParticlePath(part, links, depth, collisionSDF) {
 
   // Reserve 2 slots at the end for the floor-impact + floor-spread points.
   while (!reachedNozzle && path.length < MAX_WAYPOINTS - 2) {
-    const link = links.get(cur);
+    let link = links.get(cur);
+    if (Array.isArray(link)) link = link[0];
     if (!link) break;
     const curTube = tubes && tubes.get(cur), nextTube = tubes && tubes.get(link.target);
     let rPort = link.viaOpening.radius;
