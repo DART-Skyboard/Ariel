@@ -2895,7 +2895,8 @@ function sampleSDFGrid(bounds, res, tris, opts) {
     // when a big face would otherwise be bucketed into dozens of cells of a
     // finer index built for the dense geometry around it.)
     const cellEst = estimateSpatialIndexCell(tris);
-    const maxEdge = Math.max(SDF_VIRTUAL_EDGE_CELLS * cellEst, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+    const voxelMul = (opts && opts.booleanTight) ? 1.2 : SDF_VIRTUAL_EDGE_VOXELS;
+    const maxEdge = Math.max(SDF_VIRTUAL_EDGE_CELLS * cellEst, voxelMul * voxelEdge);
     const cap = (opts && opts.cap) || { left: SDF_VIRTUAL_EXTRA_TRI_CAP };
     // Sub-triangles beyond half a grid-diagonal from the grid are dropped
     // (same widening the joint/part triangle pre-filter uses): a huge
@@ -3648,7 +3649,11 @@ async function buildCollisionSDF(links) {
       _triBoxTmp.makeEmpty().expandByPoint(a).expandByPoint(b).expandByPoint(c);
       if (queryBox.intersectsBox(_triBoxTmp)) localTris.push(a, b, c);
     }
-    const voxels = sampleSDFGrid(region.box, region.res, localTris.length ? localTris : allLocalTris, { stats, clipBox: queryBox });
+    // Boolean / auto-refine joints request tighter virtual subdivision so
+    // the collision body tessellation follows the higher joint resolution.
+    const bakeOpts = { stats, clipBox: queryBox };
+    if (region.autoRefine) bakeOpts.booleanTight = true;
+    const voxels = sampleSDFGrid(region.box, region.res, localTris.length ? localTris : allLocalTris, bakeOpts);
     const L = layouts[i], [originX, originY] = origins[i];
     writeTiledGrid(fineAtlasData, atlasW, originX, originY, region.res, L.tpr, voxels);
     const size = new THREE.Vector3(); region.box.getSize(size);
