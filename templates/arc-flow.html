@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v56</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v57</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -1506,9 +1506,16 @@ function renderPartDetail() {
     <button class="btn ${gm==='scale'?'on':''}" data-gimbal="scale">Scale</button>
   </div>`;
 
-  html += `<div class="btnrow">
+  html += `<div class="sec-h" style="margin-top:12px;color:var(--acc)">Required</div>
+  <div class="sec-sub">At least one of each is needed for the simulation to build.</div>
+  <div class="btnrow">
     <button class="btn ${part.type==='container'?'on':''}" data-settype="container">Container</button>
     <button class="btn warn ${part.type==='pipe'?'on':''}" data-settype="pipe">Channel</button>
+    <button class="btn ${part.type==='pressure'?'on':''}" data-settype="pressure">Pressure Chamber</button>
+  </div>
+  <div class="sec-h" style="margin-top:14px;color:var(--txt-d)">Enhanced Simulation</div>
+  <div class="sec-sub">Optional. Adds combustion and nozzle behaviour.</div>
+  <div class="btnrow">
     <button class="btn danger ${part.type==='chamber'?'on':''}" data-settype="chamber">Combustion Chamber</button>
   </div>`;
 
@@ -1544,6 +1551,18 @@ function renderPartDetail() {
 
       <div class="sec-h">Openings</div>
       <div class="sec-sub">Enter Flow Selection to detect and mark this part's openings (entrance/exit).</div>
+      <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
+      ${renderOpeningsSummary(part)}
+    `;
+  } else if (part.type === 'pressure') {
+    if (part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+    html += `
+      <div class="sec-h">Pressurant</div>
+      <div class="sec-sub">Forces the propellant through the system. Higher pressure = faster flow.</div>
+      <label class="field">Internal Pressure (psi)</label>
+      <input type="number" id="f_psi" value="${part.internalPsi || 12000}" step="100" max="100000">
+      <input type="range" id="f_psi_slider" min="0" max="50000" step="100" value="${part.internalPsi || 12000}" style="width:100%;margin-top:4px">
+      <div class="sec-h">Openings</div>
       <button class="btn full" id="btnFlowMode">Enter Flow Selection Mode</button>
       ${renderOpeningsSummary(part)}
     `;
@@ -8267,6 +8286,17 @@ function setPartsGlass(on) {
 const playBtn = document.getElementById('playBtn');
 playBtn.onclick = async () => {
   if (!state.simRunning) {
+    const hasContainer = state.parts.some(p => p.type === 'container');
+    const hasChannel = state.parts.some(p => p.type === 'pipe');
+    const hasPressure = state.parts.some(p => p.type === 'pressure' || (p.type === 'container' && p.contents === 'helium'));
+    if (!hasContainer || !hasChannel || !hasPressure) {
+      const missing = [];
+      if (!hasContainer) missing.push('Container');
+      if (!hasChannel) missing.push('Channel');
+      if (!hasPressure) missing.push('Pressure Chamber');
+      alert('Required parts missing: ' + missing.join(', ') + '.\nAssign at least one of each before simulating.');
+      return;
+    }
     const sealResults = runSealCheck();
     const bad = sealResults.filter(r => !r.ok);
     if (bad.length) {
