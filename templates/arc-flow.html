@@ -719,6 +719,9 @@ const state = {
   openingCandidates: [],  // candidates for the part currently in flow-selection mode
   selectedOpening: null,
   simRunning: false,
+  instances: [],          // Instance[] (see <instances:begin>)
+  activeInstanceId: null,
+  instanceOrphans: [],    // parts that belong to no multi-part component
 };
 window._arcFlowState = state; // for debugging from console
 window._arcFlowView = { camera, controls, renderer, scene }; // debug/test hook (camera framing from automation)
@@ -2487,6 +2490,111 @@ function buildFlowGraph() {
   return links;
 }
 // <flowgraph:end>
+
+// <instances:begin>
+// ── Instance registry (multi-instance step 2: registry + detection only; simulation behaviour is unchanged) ──
+// An Instance is one independent, complete fluid system: a connected component of typed parts under the flow links
+// (+ sealed penetration joints). Today every sim module still reads the global singletons (`mass`, `live`, `plume`,
+// state.sdf, particleSystem...), so the per-instance slots below (sdf / particles / mass / live / plume / solver) are
+// intentionally empty placeholders that later steps fill in. detectInstances() only maintains the registry.
+let _instanceSeq = 0;
+class Instance {
+  constructor(id) {
+    this.id = id || ('i' + (++_instanceSeq));
+    this.name = this.id;
+    this.root = null;            // THREE.Group (assembly) containing the parts, else state.root
+    this.parts = [];             // Part[] (subset of state.parts)
+    this.assetIds = [];          // state.assets ids the parts came from
+    this.links = new Map();      // Map<Part, Link|Link[]> restricted to this instance
+    this.joints = { sealed: [], rejected: [] };   // auto-penetration pairs with both parts inside this instance
+    this.forcedSeals = new Set();                  // 'a|b' keys restricted to this instance
+    this.sdf = null;             // baked collision SDF (future: buildCollisionSDF(inst))
+    this.particles = null;       // { points, waypoints, meta } (future: buildParticleSystem(inst))
+    this.mass = null;            // mass/pressure sim state (future)
+    this.live = null;            // live-leak sim state (future)
+    this.plume = null;           // plume sim state incl. perChamber (future)
+    this.of = { global: null, perChamber: new Map() };   // O/F
+    this.bounds = new THREE.Box3();                      // world AABB of the parts
+    this.dirty = { links: false, network: true, sdf: true, particles: true };   // invariant: links => network
+    this.active = false;
+    // Slots requested by the Solver worker (all empty until PressureFlowSim lands):
+    this.solver = null;          // PressureFlowSim: network nodes/edges, ATM node, per-cavity P/m/T, per-edge mdot
+    this.solverMode = 'baked';   // 'baked' | 'pressure'
+    this.ltcbp = [];             // events for fluid that crossed into the outside air
+  }
+  // what: 'links' (also dirties network, sdf, particles) | 'network' | 'sdf' | 'particles' | 'all'
+  markDirty(what) {
+    const d = this.dirty;
+    if (what === 'links' || what === 'all') { d.links = true; d.network = true; d.sdf = true; d.particles = true; }
+    else if (what === 'network') d.network = true;
+    else if (what === 'sdf') d.sdf = true;
+    else if (what === 'particles') d.particles = true;
+  }
+}
+function invalidateInstances(what) { for (const i of state.instances) i.markDirty(what || 'links'); }
+function resetInstances() { state.instances = []; state.activeInstanceId = null; state.instanceOrphans = []; }
+
+// Union-find over typed parts: an edge for every flow link and every sealed penetration joint.
+// Returns { components: Part[][] (size >= 2, ordered by first part in `parts`), orphans: Part[] }.
+function instanceComponents(parts, links) {
+  parts = parts || state.parts;
+  const typed = parts.filter(p => p.type), idx = new Map(typed.map((p, i) => [p, i])), uf = typed.map((_, i) => i);
+  const find = a => { while (uf[a] !== a) { uf[a] = uf[uf[a]]; a = uf[a]; } return a; };
+  const union = (a, b) => { if (!idx.has(a) || !idx.has(b)) return; const ra = find(idx.get(a)), rb = find(idx.get(b)); if (ra !== rb) uf[Math.max(ra, rb)] = Math.min(ra, rb); };
+  if (links) for (const p of typed) for (const l of allLinks(links, p)) union(p, l.target);
+  for (const j of state.autoPenetrationSealed || []) union(j.partA, j.partB);
+  const groups = new Map();
+  for (const p of typed) { const r = find(idx.get(p)); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(p); }
+  const components = [], orphans = parts.filter(p => !p.type);
+  for (const g of groups.values()) (g.length >= 2 ? components : orphans).push(...(g.length >= 2 ? [g] : g));
+  return { components, orphans };
+}
+
+// Rebuilds state.instances from the current flow links. Existing Instance objects are reused (by largest part overlap) so
+// their ids and caches survive; an instance whose part set changed is marked dirty. Returns the Instance[].
+function detectInstances(parts, links) {
+  parts = parts || state.parts; links = links || state.currentLinks || new Map();
+  const { components, orphans } = instanceComponents(parts, links);
+  const old = state.instances || [], claimed = new Set(), out = [];
+  components.forEach((comp, n) => {
+    const set = new Set(comp);
+    let inst = null, best = 0;
+    for (const o of old) { if (claimed.has(o)) continue; const ov = o.parts.filter(p => set.has(p)).length; if (ov > best) { best = ov; inst = o; } }
+    const fresh = !inst;
+    if (inst) claimed.add(inst); else inst = new Instance();
+    const same = !fresh && inst.parts.length === comp.length && inst.parts.every(p => set.has(p));
+    inst.parts = comp;
+    inst.links = new Map(); for (const p of comp) { const ls = allLinks(links, p).filter(l => set.has(l.target)); if (ls.length) inst.links.set(p, ls.length === 1 && !Array.isArray(links.get(p)) ? ls[0] : ls); }
+    const sealed = (state.autoPenetrationSealed || []).filter(j => set.has(j.partA) && set.has(j.partB));
+    const rejected = (state.autoPenetrationRejected || []).filter(j => set.has(j.partA) && set.has(j.partB));
+    inst.joints = { sealed, rejected };
+    const names = new Set(comp.map(p => p.name));
+    inst.forcedSeals = new Set([...(state.forcedSeals || [])].filter(k => { const [a, b] = String(k).split('|'); return names.has(a) && names.has(b); }));
+    inst.assetIds = [...new Set(comp.map(p => p.assetId).filter(Boolean))];
+    let top = null, mixed = false;
+    for (const p of comp) { let g = p.pivot; while (g && g.parent && g.parent !== state.root) g = g.parent; if (!g) continue; if (top && top !== g) mixed = true; top = top || g; }
+    inst.root = (!mixed && top) || state.root || null;
+    inst.name = (!mixed && top && top.userData && top.userData.spawnName) || ('System ' + (n + 1));
+    inst.bounds.makeEmpty(); for (const p of comp) { const b = partWorldAABB(p); if (b && !b.isEmpty()) inst.bounds.union(b); }
+    if (!fresh && !same) inst.markDirty('links');
+    out.push(inst);
+  });
+  for (const o of old) if (!claimed.has(o)) { o.active = false; }   // dropped; its (future) caches are released by the owner
+  state.instances = out;
+  state.instanceOrphans = orphans;
+  if (!out.some(i => i.id === state.activeInstanceId)) state.activeInstanceId = out.length ? out[0].id : null;
+  return out;
+}
+function getActiveInstance() {
+  if (!state.instances.length && state.currentLinks) { try { detectInstances(); } catch (e) { console.warn('detectInstances', e); } }
+  const L = state.instances; if (!L.length) return null;
+  return L.find(i => i.id === state.activeInstanceId)
+    || (state.selectedPart && L.find(i => i.parts.includes(state.selectedPart)))
+    || L[0];
+}
+function setActiveInstance(id) { const i = state.instances.find(x => x.id === id); if (i) state.activeInstanceId = i.id; return i || null; }
+// <instances:end>
+
 
 // <jointreport:begin>
 // Joint report (left panel): every link buildFlowGraph resolved, marked "marked" (manual opening pair) or "auto"
