@@ -10063,12 +10063,10 @@ function wallFrame(dt, chambers) {
     wallStepPart(R.S, E, step, i => wallEmit(part, R, i, E.alloy));
   }
 }
+// A region reaching its melting point is recorded as DATA only (R.ev history + region.melted); no DOM/melt event is emitted (melting is deferred).
 function wallEmit(part, R, i, alloy) {
-  const inst = wallInstanceNow(), rs = wallRegionState(R, i);
-  const detail = { inst: inst ? (inst.id != null ? inst.id : inst) : null, part, partName: part.name, regionId: rs.id, alloy: { id: part.matId || MAT_DEFAULT, label: alloy.label, Tm: alloy.Tm, Tliq: alloy.Tliq },
-    region: { type: 'aabb', min: rs.aabb.min, max: rs.aabb.max, center: rs.center, id: rs.id }, temperature: rs.T, T: rs.T, area: rs.area };
+  const rs = wallRegionState(R, i);
   R.ev.push({ id: rs.id, T: rs.T, at: performance.now() }); if (R.ev.length > 64) R.ev.shift();
-  try { window.dispatchEvent(new CustomEvent('arcflow:region-melt', { detail })); } catch (e) { console.warn('arcflow:region-melt', e); }
 }
 function wallRegionState(R, i) {
   return { id: R.part.name + '#' + R.ids[i], a: R.band[i], b: R.sect[i], area: R.area[i], center: [R.center[i * 3], R.center[i * 3 + 1], R.center[i * 3 + 2]],
@@ -10089,7 +10087,7 @@ window.arcFlowWall = {
   setPurity(part, p) { if (part) { part.purity = p == null ? undefined : Math.min(Math.max(+p, 0), 1); wallReset(part); } },
   setCooling(part, o) { if (!part) return; if (o && 'regen' in o) part.regen = !!o.regen; if (o && 'film' in o) part.film = o.film; wallReset(part); },
   forEachInstance(fn) { const insts = state.instances || []; if (!insts.length) return fn(null); for (const i of insts) if (i.ctx || i === _ctxCur) withInstance(i, () => fn(i)); },
-  event: 'arcflow:region-melt'
+  events: part => { const R = wallRegions(part); return R ? R.ev.slice() : []; }   // data hook: [{id,T,at}] regions that reached melting (no event is dispatched)
 };
 // <melt-app:end>
 function plumeCurrentDerived() {

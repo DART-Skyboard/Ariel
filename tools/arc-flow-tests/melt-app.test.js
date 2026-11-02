@@ -61,13 +61,13 @@ const src = ex.load();
     assert(hot.T > 700 && hot.T < 1533, 'throat T ' + hot.T);
     assert(g.wallGlow(part).T === hot.T);
   });
-  t('uncooled chamber melts in seconds and fires arcflow:region-melt once per region with a world AABB', () => {
+  t('uncooled chamber melts in seconds; regions are recorded as data (no event dispatched) with a world AABB', () => {
     const r = run(30, { regen: false });
     const m = r.filter(x => x.melted); if (process.env.V) console.log('melted', m.length, Math.max(...r.map(x=>x.T)));
     assert(m.length > 5, 'melted ' + m.length);
-    assert.strictEqual(events.length, m.length);
-    const d = events[0].detail; assert.strictEqual(events[0].type, 'arcflow:region-melt');
-    assert(d.region.type === 'aabb' && d.region.min.length === 3 && d.temperature >= 1533 && d.alloy.Tm === 1533 && d.partName === 'Ch' && d.part.name === 'Ch');
+    assert.strictEqual(events.length, 0, 'no melt events are dispatched');
+    const ev = g.window.arcFlowWall.events(part); assert.strictEqual(ev.length, Math.min(m.length, 64));
+    assert(m[0].aabb.min.length === 3 && m[0].aabb.max.length === 3 && m[0].T >= 1533 && g.window.arcFlowWall.alloyFor('inconel').meltK === 1533);
   });
   t('higher propellant purity heats the wall (monotonic)', () => {
     const lo = run(40, { regen: undefined, purity: 0.9 }), hi = run(40, { regen: undefined, purity: 0.9 });
