@@ -1037,6 +1037,7 @@ function clearScene() {
   }
   state.sdf = null;
   state.currentLinks = null;
+  resetInstances();
   state.autoPenetrationSealed = [];
   state.autoPenetrationRejected = [];
   state.autoPenetrationSkipped = [];
@@ -1061,6 +1062,7 @@ function clearScene() {
 }
 
 function onSceneLoaded(object) {
+  invalidateInstances('links');   // parts are being added: the registry is stale until the next bake
   // Additive import — each call ADDS to the existing scene rather than
   // replacing it. Only the explicit Clear Scene button wipes everything
   // (see clearScene() above). This lets someone build up a scene from
@@ -5035,6 +5037,7 @@ async function buildParticleSystem() {
   await new Promise(r => requestAnimationFrame(r));
   const links = buildFlowGraph();
   state.currentLinks = links; // kept for the per-frame thermal tint update
+  try { detectInstances(state.parts, links); } catch (e) { console.warn('detectInstances failed', e); }   // registry only; sims still use the globals
 
   // Build the real-geometry collision SDFs for THIS configuration (mesh
   // positions, classifications and openings as they stand right now) —
@@ -9082,6 +9085,7 @@ async function presetApply(parsed, opts) {
       if (Array.isArray(s.forcedSealTo)) for (const k of s.forcedSealTo) { const tp = keyMap.get(k) || state.parts.find(p => p._presetKey === k); if (tp) state.forcedSeals.add(sp.name + '|' + tp.name); else rep.warns.push(sp.name + ': forced seal target "' + String(k).split('|')[0] + '" not in scene'); }
     }
     state.currentLinks = null;
+    invalidateInstances('links');
     buildPartListUI(); highlightSelection(); if (state.selectedPart) renderPartDetail();
     if (typeof liveKick === 'function') try { liveKick(); } catch (e) {}
     rep.missing = missing.map(e => e.asset);
