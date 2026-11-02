@@ -2401,6 +2401,8 @@ function addFlowLink(links, from, link) {
   if (arr.some(l => l.target === link.target && (l.viaOpening && l.viaOpening.id) === id)) return false;
   arr.push(link);
   return true;
+// The part a link points at. Link values are link records, never parts: always go through this, never compare a link to a part.
+function linkTarget(l) { return l ? (l.target || l.to || null) : null; }
 }
 
 // Tags every edge and node pressurant / propellant (see the block above). Mutates the links in place.
@@ -7978,29 +7980,34 @@ function plumeReadout() {
 function upstreamContents(part, depth) {
   // Walk the flow graph back to the container that feeds this part and
   // return its contents setting. Names are ignored; only the assigned
-  // type and contents matter.
+  // type and contents matter. Link values are link records ({target, kind, ...}),
+  // so match on the part behind each link; pressurant edges never carry propellant.
   if (!part || depth > 8) return '';
   if (part.type === 'container' && part.contents) return part.contents;
   const links = state.currentLinks;
   if (!links) return part.contents || '';
   for (const [src, tgt] of links) {
-    const targets = Array.isArray(tgt) ? tgt : [tgt];
-    if (targets.includes(part)) {
+    for (const l of asLinkArray(tgt)) {
+      if (linkTarget(l) !== part) continue;
       const c = upstreamContents(src, (depth || 0) + 1);
-      if (c) return c;
+      if (!c) continue;
+      if (l.kind === 'pressurant') { fallback = fallback || c; continue; }
+      return c;
     }
   }
-  return part.contents || '';
+  return fallback || part.contents || '';
 }
 function chamberMixture(ch) {
   // Combustion needs both fuel and oxidizer. Sum the mass flow of each
   // arriving at the chamber, traced from the container contents setting.
+  let fallback = '';
   if (!state.channelFlows) return { mFuel: 0, mOx: 0, of: 0, mdot: 0 };
   let mFuel = 0, mOx = 0;
   for (const [part, f] of state.channelFlows) {
     if (!f || !(f.mdot > 0)) continue;
     const links = state.currentLinks;
-    if (links && firstLink(links, part) !== ch && !allLinks(links, part).includes(ch)) continue;
+    // Only channels that actually feed this chamber (compare the link's target part, not the link record).
+    if (links && !allLinks(links, part).some(l => linkTarget(l) === ch && l.kind !== 'pressurant')) continue;
     const contents = upstreamContents(part, 0);
     if (contents === 'fuel') mFuel += f.mdot;
     else if (contents === 'oxidizer') mOx += f.mdot;
