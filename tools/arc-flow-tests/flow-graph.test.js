@@ -221,4 +221,13 @@ test('renderJointReport: the "touching, no fluid path" section only renders when
   assert.ok(/Touching, no fluid path/.test(el.innerHTML) && el.innerHTML.includes('✕ LOX ↔ He'));
 });
 
+test('Boolean/joint detection stays volumetric and render-mode independent (it only decides which parts form which system)', () => {
+  const { fn } = require('./extract');
+  const code = [region(src, 'flowgraph'), fn(src, 'detectPenetrationJoint'), fn(src, 'detectAutoPenetrationJoints'), fn(src, 'refineThinOverlap')].join('\n')
+    .replace(/\/\/.*$/gm, '');  // ignore comments
+  for (const bad of ['renderMode', 'setRenderMode', 'gaussian', 'gsMesh', 'particleSystem', 'raymarch'])
+    assert.ok(!code.includes(bad), 'joint detection must not depend on ' + bad);
+  assert.ok(code.includes('signedDistanceToMesh'), 'cavity test is signed-distance (volumetric)');
+});
+
 console.log(`\n${n} tests passed`);
