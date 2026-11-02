@@ -1378,7 +1378,9 @@ function buildPartListUI() { if (typeof renderOfPerSystem === 'function') render
     let g = part.pivot;
     while (g && g.parent && g.parent !== state.root) g = g.parent;
     const sid = (g && g.userData && g.userData.spawnId != null) ? g.userData.spawnId : 0;
-    const sname = (g && g.userData && g.userData.spawnName) || ('System ' + (sid + 1));
+    let sname = (g && g.userData && g.userData.spawnName) || ('System ' + (sid + 1));
+    const gi = state.instances.find(i => i.root === g);
+    if (gi) sname += gi.built ? (gi.sharedFrom ? ' · shared bake' : ' · own bake') + (gi.active ? ' · running' : '') : gi.baking ? ' · building…' : '';
     if (!bySpawn.has(sid)) bySpawn.set(sid, { name: sname, parts: [] });
     bySpawn.get(sid).parts.push(part);
   }
@@ -2489,7 +2491,36 @@ function crossAssemblyLinkLimit(a, b) {
   return 0.5 * (m || 1);
 }
 
-function buildFlowGraph() {
+// buildFlowGraph(inst): with an Instance it builds that instance's OWN graph over inst.parts only (links to other instances are
+// impossible by construction) and stores it on inst.links / inst.joints, merging into the scene-wide records; without one it is the
+// whole-scene graph (detectInstances then splits it). SDF Boolean joints / tagFlowGraph / collision projection are untouched.
+function buildFlowGraph(inst) {
+  if (!inst) return buildFlowGraphCore();
+  const sv = { parts: state.parts, sealed: state.autoPenetrationSealed, rejected: state.autoPenetrationRejected, skipped: state.autoPenetrationSkipped, nodes: state.flowNodes };
+  const mine = new Set(inst.parts);
+  state.parts = inst.parts;
+  let links;
+  try {
+    links = buildFlowGraphCore();
+    inst.links = links;
+    inst.joints = { sealed: state.autoPenetrationSealed || [], rejected: state.autoPenetrationRejected || [] };
+    inst.skipped = state.autoPenetrationSkipped || [];
+    inst.flowNodes = state.flowNodes;
+  } finally {
+    state.parts = sv.parts;
+    const keep = (arr, f) => (arr || []).filter(j => !(mine.has(j.partA) || mine.has(j.partB))).concat(f || []);
+    state.autoPenetrationSealed = keep(sv.sealed, inst.joints && inst.joints.sealed);
+    state.autoPenetrationRejected = keep(sv.rejected, inst.joints && inst.joints.rejected);
+    state.autoPenetrationSkipped = keep(sv.skipped, inst.skipped);
+    state.flowNodes = sv.nodes;
+  }
+  if (_ctxDepth === 0 && state.currentLinks && state.currentLinks !== links) {
+    for (const [p, v] of links) state.currentLinks.set(p, v);
+    if (links.nodes) { state.currentLinks.nodes = state.currentLinks.nodes || new Map(); for (const [p, n] of links.nodes) state.currentLinks.nodes.set(p, n); }
+  }
+  return links;
+}
+function buildFlowGraphCore() {
   refreshAllOpenings();
   // fromPart -> Link[] (directed, branching). Manual pass: EVERY exit opening links to its nearest entrance on
   // another part. (This used to be one link per part: only the first exit was looked at.)
@@ -2785,12 +2816,23 @@ class Instance {
     this.built = false;          // its sim build (SDF + particles) exists and may be ticked
     this.baking = false;         // build in progress: the frame loop skips it
     this.frames = 0;             // sim frames advanced since it started (test hook)
+    this.bakeMatrix = null;      // root.matrixWorld at the time its build was baked (instance-local frame = inverse of it)
     this.ctx = null;             // its context (see ctxCapture)
     // Slots requested by the Solver worker (all empty until PressureFlowSim lands):
     this.solver = null;          // PressureFlowSim: network nodes/edges, ATM node, per-cavity P/m/T, per-edge mdot
+    // Supply (Solver owns the semantics): mode 'continuous' = Continuous Fill (default) | 'fixed'; amounts null = demo / part defaults.
+    // A shared-build clone ALIASES its original's object (follows it); an own-build clone gets a separate copy (see applySupplyLink).
+    this.supply = { mode: 'continuous', oxAmount: null, fuelAmount: null };
     this.solverMode = 'baked';   // 'baked' | 'pressure'
     this.ltcbp = [];             // events for fluid that crossed into the outside air
   }
+  // World transform of the instance (its assembly's matrixWorld) and the instance-local frame (inverse of the world transform it was
+  // baked at): instance-local space = frame * world. Flow Graph caches collision-body projections in this space and re-transforms
+  // them with worldMatrix() * (bakeMatrix^-1), so a moved / cloned instance needs no re-bake.
+  worldMatrix() { if (!this.root) return new THREE.Matrix4(); this.root.updateWorldMatrix(true, false); return this.root.matrixWorld; }
+  get frame() { return (this.bakeMatrix || this.worldMatrix()).clone().invert(); }
+  toLocal(v) { return v.clone().applyMatrix4(this.frame); }
+  toWorld(v) { return v.clone().applyMatrix4(this.bakeMatrix || this.worldMatrix()); }
   // what: 'links' (also dirties network, sdf, particles) | 'network' | 'sdf' | 'particles' | 'all'
   markDirty(what) {
     const d = this.dirty;
@@ -2982,8 +3024,176 @@ function ctxDisposeSceneObjects() {
   if (tubeVol && tubeVol.meshes) for (const m of tubeVol.meshes) kill(m);
 }
 // A clone that reuses its original's baked build returns that original (null = it has its own bake). Filled in by the clone step.
-function instanceShareRoot(inst) { return null; }
-function shareInstanceBake(inst, root) { throw new Error('shared bake not available yet'); }
+// ── Real part duplicates (clones) ──
+// A clone is a deep copy of an assembly: new pivots / meshes (geometry shared by reference) / materials / openings, registered as
+// real parts (state.parts) and as their own asset, each part remembering its original in `cloneOf`. It becomes its OWN Instance
+// (own mass / live / plume / volumetric / floor state, own flow graph) bound to the clone's world position (inst.root).
+function assemblyOf(obj) { for (let o = obj; o; o = o.parent) if (o.userData && o.userData.isAssembly) return o; return null; }
+function assemblyParts(group) { return state.parts.filter(p => p.pivot && assemblyOf(p.pivot) === group); }
+function cloneAssemblyParts(srcGroup) {
+  if (!srcGroup) throw new Error('nothing to clone');
+  const srcParts = assemblyParts(srcGroup);
+  if (!srcParts.length) throw new Error('the source assembly has no parts');
+  state.root.updateMatrixWorld(true);
+  const group = new THREE.Group();
+  group.name = 'assembly'; group.userData.isAssembly = true;
+  group.position.copy(srcGroup.position); group.quaternion.copy(srcGroup.quaternion); group.scale.copy(srcGroup.scale);
+  state.root.add(group); group.updateMatrixWorld(true);
+  const srcInv = new THREE.Matrix4().copy(srcGroup.matrixWorld).invert();
+  const rel = new THREE.Matrix4(), tmpS = new THREE.Vector3();
+  const names = new Set(state.parts.map(p => p.name)), out = [];
+  const putLocal = (o, m4) => { m4.decompose(o.position, o.quaternion, o.scale); };
+  for (const sp of srcParts) {
+    const base = sp.name.replace(/ \(\d+\)$/, '');
+    let name = base, k = 2; while (names.has(name)) name = `${base} (${k++})`; names.add(name);
+    sp.pivot.updateWorldMatrix(true, false);
+    const pivot = new THREE.Group(); pivot.name = name;
+    group.add(pivot); putLocal(pivot, rel.multiplyMatrices(srcInv, sp.pivot.matrixWorld)); pivot.updateMatrixWorld(true);
+    const pivInv = new THREE.Matrix4().copy(sp.pivot.matrixWorld).invert();
+    const meshes = sp.meshes.map(m => {
+      m.updateWorldMatrix(true, false);
+      const op = m.userData.ownerPart; delete m.userData.ownerPart;      // break the part <-> mesh cycle for Object3D.clone's userData copy
+      const c = m.clone(false); m.userData.ownerPart = op;
+      c.material = Array.isArray(m.material) ? m.material.map(x => x.clone()) : m.material.clone();
+      pivot.add(c); putLocal(c, rel.multiplyMatrices(pivInv, m.matrixWorld));
+      c.userData.origMaterial = c.material;
+      return c;
+    });
+    const np = Object.assign({}, sp, { name, meshes, pivot, userData: {}, cloneOf: sp.cloneOf || sp });
+    delete np._presetKey; delete np._presetBbox;
+    for (const m of meshes) m.userData.ownerPart = np;
+    // Openings: markers are re-created under the new pivot; auto-detected ones are re-derived from the clone's own mesh on the next graph build.
+    np.openings = sp.openings.map(o => {
+      const c = Object.assign({}, o);
+      if (o.centroid) c.centroid = o.centroid.clone();
+      if (o.normal) c.normal = o.normal.clone();
+      if (o.marker) { const mk = new THREE.Object3D(); mk.position.copy(o.marker.position); mk.quaternion.copy(o.marker.quaternion); mk.scale.copy(o.marker.scale); pivot.add(mk); c.marker = mk; }
+      return c;
+    });
+    out.push(np);
+  }
+  group.updateMatrixWorld(true);
+  for (const np of out) for (const o of np.openings) if (o.marker) { o.centroid = openingLiveCentroid(o); o.normal = openingLiveNormal(o); }
+  // asset record (so presets / sibling matching treat the clone like another import of the same file)
+  state.assets = state.assets || [];
+  const srcAsset = (state.assets || []).find(a => a.parts && a.parts.includes(srcParts[0]));
+  state.parts.push(...out);
+  if (srcAsset) {
+    const asset = { id: 'a' + Date.now().toString(36) + state.assets.length, name: srcAsset.name, bytes: srcAsset.bytes, sha256: srcAsset.sha256, source: srcAsset.source, parts: out };
+    out.forEach(p => { presetPartSig(p); p.assetId = asset.id; });
+    state.assets.push(asset); presetRefreshScope();
+  } else out.forEach(p => { delete p.assetId; });
+  group.userData.cloneOfGroup = srcGroup;
+  return { group, parts: out };
+}
+// First free slot beside the existing assemblies (used mid-run: nothing that is already simulating is moved).
+function placeNewAssembly(group) {
+  const others = state.root.children.filter(c => c !== group && c.userData && c.userData.isAssembly);
+  const box = g => { g.updateMatrixWorld(true); return new THREE.Box3().setFromObject(g); };
+  const mine = box(group), sz = mine.getSize(new THREE.Vector3());
+  const step = Math.max(sz.x, sz.z, 4) + 5, home = group.position.clone();
+  for (let ring = 0; ring < 40; ring++) {
+    for (let i = 0; i < 8 * Math.max(ring, 1); i++) {
+      const a = ring === 0 ? 0 : (i / (8 * ring)) * Math.PI * 2, r = ring * step;
+      group.position.set(home.x + Math.cos(a) * r, home.y, home.z + Math.sin(a) * r);
+      const b = box(group).expandByScalar(1.5);
+      if (!others.some(o => box(o).intersectsBox(b))) return;
+    }
+  }
+}
+// A clone reuses its original's baked build (SDF / waypoints / links by reference, offset by the clone's world transform) unless the
+// user unchecked "same preset" for it (group.userData.shareBuild === false), its parts no longer match the original's, or the original
+// has no build. Returns the original's Instance, else null (= give it its own bake).
+function applySupplyLink(inst, root) {
+  if (root) inst.supply = root.supply;                                                   // shared build: follows the original
+  else if (inst.supply && state.instances.some(o => o !== inst && o.supply === inst.supply)) inst.supply = Object.assign({}, inst.supply);   // own build: separate copy
+}
+function instanceShareRoot(inst) {
+  if (!inst || !inst.parts.length) return null;
+  if (inst.root && inst.root.userData && inst.root.userData.shareBuild === false) return null;
+  const rp0 = inst.parts[0].cloneOf; if (!rp0) return null;
+  const root = state.instances.find(o => o !== inst && o.parts.includes(rp0));
+  if (!root || root.parts.length !== inst.parts.length || root.parts.some(p => p.cloneOf)) return null;
+  const rs = new Set(root.parts);
+  for (const cp of inst.parts) { const rp = cp.cloneOf; if (!rp || !rs.has(rp) || rp.type !== cp.type || rp.contents !== cp.contents) return null; }
+  return root;
+}
+function shareInstanceBake(inst, rootInst) {
+  const R = ctxView(rootInst), rc = R && R.particleCPU;
+  if (!rc) throw new Error('original has no baked build to share');
+  const rp2cp = new Map(inst.parts.map(cp => [cp.cloneOf, cp]));
+  const mapP = x => (x && typeof x === 'object' && rp2cp.get(x)) || x;
+  // drop whatever this context had (a previous own bake)
+  if (particleCoreSystem) { scene.remove(particleCoreSystem); particleCoreSystem.material.dispose(); particleCoreSystem = null; }
+  if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); particleSystem = null; }
+  if (gsMesh) { scene.remove(gsMesh); gsMesh.geometry.dispose(); gsMesh.material.dispose(); gsMesh = null; }
+  if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
+  liveReset();
+  for (const cp of inst.parts) cp.followId = cp.cloneOf.followId;
+  state.sdf = R.sdf; inst.sdf = R.sdf;
+  state.pathMeta = new Map(); for (const [p, m] of (R.pathMeta || [])) state.pathMeta.set(mapP(p), Object.assign({}, m, { partOfWp: Array.isArray(m.partOfWp) ? m.partOfWp.map(mapP) : m.partOfWp }));
+  state.channelFlows = new Map(); for (const [p, f] of (R.channelFlows || [])) state.channelFlows.set(mapP(p), f);
+  state.particleCPU = Object.assign({}, rc, { ownerPart: rc.ownerPart.map(mapP), liveArr: new Float32Array(rc.count), affGroup: new Int16Array(rc.count).fill(-1), liveAttr: null, rank: null, shared: true });
+  state.root.updateMatrixWorld(true);
+  live.bakedM.clear(); live.snap.clear(); live.chainCache.clear(); live.autoOk.clear();
+  for (const cp of inst.parts) {
+    const b = R.live.bakedM.get(cp.cloneOf);
+    live.bakedM.set(cp, b ? b.clone() : cp.pivot.matrixWorld.clone());
+    live.snap.set(cp, Float32Array.from(cp.pivot.matrixWorld.elements));
+  }
+  // fluid-follows-parts: reset, then measure every delta from the ORIGINAL's bake state (box / centroid are bake-space, shared by value)
+  const d = follow.data; d.fill(0);
+  for (let r = 0; r < FOLLOW_ROWS; r++) { const o = r * 5 * 4; d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1; }
+  follow.tex.needsUpdate = true;
+  follow.mats.fill(null); follow.shift.fill(null); follow.last.clear(); follow.box.clear(); follow.c0.clear();
+  follow.on = false; follow.moved = []; follow.dom = null; follow.domVer++;
+  followU.uFollowOn.value = 0; followU.uMvCount.value = 0;
+  for (const [rp, cp] of rp2cp) { const bx = R.follow.box.get(rp), c0 = R.follow.c0.get(rp); if (bx) follow.box.set(cp, bx); if (c0) follow.c0.set(cp, c0); }
+  inst.bakeMatrix = rootInst.bakeMatrix ? rootInst.bakeMatrix.clone() : new THREE.Matrix4();
+  inst.sharedFrom = rootInst.id;
+  bakeInstanceRender(R.sdf, { count: rc.count, waypointData: rc.waypointData, radiusData: rc.radiusData, knotData: rc.knotData, wpPart: rc.wpPart, wpGround: rc.wpGround, phase: rc.phase, speed: rc.speed, thermalSeed: rc.thermalSeed, latU: rc.latU, latV: rc.latV, exitIdxData: rc.exitIdx, ownerPart: state.particleCPU.ownerPart }, rc.tex);
+  followTick(true);
+}
+// (Re)build one instance on its own, without touching any other: shared bake when allowed, else its own bake. Starts it when a run is on.
+async function buildInstanceNow(inst) {
+  inst.built = false; inst.baking = true; inst.frames = 0;
+  try {
+    await withInstanceAsync(inst, async () => {
+      const root = instanceShareRoot(inst);
+      if (root && root.built) shareInstanceBake(inst, root); else await bakeInstanceCore(inst, inst.links);
+      applySupplyLink(inst, root && root.built ? root : null);
+      inst.built = !!state.particleCPU;
+    });
+  } finally { inst.baking = false; }
+  if (inst.built && state.simRunning) startInstanceSim(inst);
+  return inst;
+}
+// Add one clone of `srcGroup`. Before a run it only adds the parts (Simulate detects + bakes every instance). During a run it ALSO
+// builds the clone's flow graph, creates its Instance, builds it (shared or own) and starts it, leaving every running instance alone.
+async function addCloneInstance(srcGroup, opts) {
+  opts = opts || {};
+  const c = cloneAssemblyParts(srcGroup);
+  c.group.userData.shareBuild = opts.share !== false;
+  c.group.userData.spawnId = state.root.children.indexOf(c.group);
+  c.group.userData.spawnName = (srcGroup.userData.spawnName || 'System').replace(/ \d+$/, '') + ' ' + (state.root.children.filter(x => x.userData && x.userData.isAssembly).length);
+  if (state.simRunning) placeNewAssembly(c.group);
+  state.root.updateMatrixWorld(true);
+  invalidateInstances('links');
+  let inst = null;
+  if (state.simRunning) {
+    inst = new Instance(); inst.parts = c.parts; inst.root = c.group; inst.assetIds = [...new Set(c.parts.map(p => p.assetId).filter(Boolean))];
+    const srcInst = state.instances.find(i => i.root === srcGroup);
+    inst.name = (srcInst ? srcInst.name.replace(/ clone \d+$/, '') : 'System') + ' clone ' + state.instances.length;
+    inst.name = c.group.userData.spawnName;
+    inst.baking = true;
+    state.instances.push(inst);
+    buildFlowGraph(inst);   // scoped to the clone's parts: no links to other assemblies
+    inst.bounds.makeEmpty(); for (const p of inst.parts) { const b = partWorldAABB(p); if (b && !b.isEmpty()) inst.bounds.union(b); }
+    await buildInstanceNow(inst);
+  }
+  buildPartListUI();
+  return { group: c.group, parts: c.parts, inst };
+}
 function ctxAll(fn) { if (state.instances.length) ctxEach(fn); else fn(); }
 // Start one built instance simulating (mass network, live-leak watch, glass walls). Safe mid-run: touches only this instance.
 function startInstanceSim(inst) {
@@ -4433,7 +4643,7 @@ function collectPartRegions(classified) {
 // (union of every nearby triangle, same semantics as the coarse grid, just
 // finer). Regions have independent per-axis resolutions and are shelf-packed
 // into the atlas, so one extra sampler still carries everything.
-async function buildCollisionSDF(links, parts) {
+async function buildCollisionSDF(links, parts, inst) {
   const classified = (parts || state.parts).filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
   const tStart = performance.now();
@@ -4460,7 +4670,8 @@ async function buildCollisionSDF(links, parts) {
   const tubeSet = buildTubeSet(classified);
 
   const partRegions = collectPartRegions(classified);
-  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet, classified);
+  // per-instance: LTCBP regions cached in instance-local space and re-projected from the instance's world transform
+  const jointRegions = inst ? instanceJointRegions(inst, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet) : collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet, classified);
   const regions = jointRegions.concat(partRegions);
   const fineCount = regions.length;
   const partStart = jointRegions.length;
@@ -5451,6 +5662,7 @@ async function buildParticleSystem() {
       await withInstanceAsync(inst, async () => {
         const root = instanceShareRoot(inst);
         if (root && root.built) shareInstanceBake(inst, root); else await bakeInstanceCore(inst, inst.links);
+        applySupplyLink(inst, root && root.built ? root : null);
         inst.built = !!state.particleCPU;
       });
     } catch (e) { console.error('bake failed for ' + inst.name, e); }
@@ -5478,8 +5690,8 @@ async function bakeInstanceCore(inst, links) {
   // frame between its coarse and each fine-region pass so the loading
   // overlay's progress text is actually visible instead of the whole
   // bake running as one unbroken block (see that function's own comment).
-  const collisionSDF = await buildCollisionSDF(links);
-  state.sdf = collisionSDF;
+  const collisionSDF = await buildCollisionSDF(links, inst.parts, inst);
+  state.sdf = collisionSDF; inst.sdf = collisionSDF;
   if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
   state.pathMeta = new Map();
   setTimeout(() => withInstance(inst, () => { try { diagnoseLinks(); if (inst.id === state.activeInstanceId) renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }), 0);
@@ -5556,14 +5768,24 @@ async function bakeInstanceCore(inst, links) {
   };
   liveSnapshotBaked(); // remember each part's pivot transform at bake time (live leaks measure movement against it)
   followRebase();      // fluid-follows-parts: deltas are measured from this same bake state
-
+  inst.sharedFrom = null;
+  inst.bakeMatrix = inst.root ? (inst.root.updateWorldMatrix(true, false), inst.root.matrixWorld.clone()) : new THREE.Matrix4();
+  bakeInstanceRender(collisionSDF, { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, ownerPart }, null);
+}
+// Everything after the path bake: GPU textures + the point / Gaussian / core / floor-splat render objects for the CURRENT context.
+// `shared` ({waypointTex, waypointFineTex, texHeight}) reuses another instance's baked textures (a shared-bake clone).
+function bakeInstanceRender(collisionSDF, A, shared) {
+  const { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, ownerPart } = A;
+  let waypointTex, waypointFineTex, texHeight;
+  if (shared) { waypointTex = shared.waypointTex; waypointFineTex = shared.waypointFineTex; texHeight = shared.texHeight; }
+  else {
   // Pack waypoints into a DataTexture: width = MAX_WAYPOINTS, height = count,
   // RGB = xyz position, A = containment radius at that waypoint. This radius
   // is what keeps particles inside the tank/pipe cross-section instead of
   // traveling as a bare line through empty space — a cylindrical collision-
   // proxy approximation rather than true per-triangle mesh collision, which
   // would be far too costly for real-time particle counts in a browser.
-  const texWidth = MAX_WAYPOINTS * TEX_COLS, texHeight = Math.ceil(count / TEX_COLS);
+  const texWidth = MAX_WAYPOINTS * TEX_COLS; texHeight = Math.ceil(count / TEX_COLS);
   const data = new Float32Array(texWidth * texHeight * 4);
   for (let p = 0; p < count; p++) {
     const line = Math.floor(p / TEX_COLS), colOff = (p % TEX_COLS) * MAX_WAYPOINTS;
@@ -5576,7 +5798,7 @@ async function bakeInstanceCore(inst, links) {
       data[dstIdx+3] = radiusData[p * MAX_WAYPOINTS + w];
     }
   }
-  const waypointTex = new THREE.DataTexture(data, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
+  waypointTex = new THREE.DataTexture(data, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
   waypointTex.needsUpdate = true;
   waypointTex.magFilter = THREE.NearestFilter; waypointTex.minFilter = THREE.NearestFilter;
 
@@ -5594,9 +5816,11 @@ async function bakeInstanceCore(inst, links) {
       fineIdxTexData[dstIdx + 3] = wpGround[p * MAX_WAYPOINTS + w];   // A = ground-anchored waypoint
     }
   }
-  const waypointFineTex = new THREE.DataTexture(fineIdxTexData, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
+  waypointFineTex = new THREE.DataTexture(fineIdxTexData, texWidth, texHeight, THREE.RGBAFormat, THREE.FloatType);
   waypointFineTex.needsUpdate = true;
   waypointFineTex.magFilter = THREE.NearestFilter; waypointFineTex.minFilter = THREE.NearestFilter;
+  }   // end !shared
+  state.particleCPU.tex = { waypointTex, waypointFineTex, texHeight };
 
   // Flatten the SDF data into the uniform shapes the shader expects (see
   // makeSDFUniformSet / SDF_SAMPLING_GLSL). The same set also feeds the
@@ -6738,12 +6962,14 @@ function setRenderMode(mode) {
   volEnabled = mode === 'volumetric';
   if (renderModeEl.value !== mode) renderModeEl.value = mode;
   if (volToggleEl.checked !== volEnabled) volToggleEl.checked = volEnabled;
-  if (particleSystem) particleSystem.visible = mode === 'points';
-  if (!volEnabled && volMesh) volMesh.visible = false;
-  if (live.leakMesh && !volEnabled) live.leakMesh.visible = false;
-  if (live.points && mode !== 'points') live.points.visible = false;
-  if (live.gsPoints && mode !== 'gaussian') live.gsPoints.visible = false;
-  updateGaussianRender();
+  ctxAll(() => {   // every instance keeps its own render objects
+    if (particleSystem) particleSystem.visible = mode === 'points';
+    if (!volEnabled && volMesh) volMesh.visible = false;
+    if (live.leakMesh && !volEnabled) live.leakMesh.visible = false;
+    if (live.points && mode !== 'points') live.points.visible = false;
+    if (live.gsPoints && mode !== 'gaussian') live.gsPoints.visible = false;
+    updateGaussianRender();
+  });
 }
 renderModeEl.onchange = (e) => setRenderMode(e.target.value);
 volToggleEl.onchange = (e) => setRenderMode(e.target.checked ? 'volumetric' : 'points');
@@ -8519,8 +8745,8 @@ function applyPropPreset(key) {
     atmoReadout.innerHTML = `${ATMO[cfg.atmo].psi} psi <span class="u">= ${ATMO[cfg.atmo].label}</span>`;
     document.getElementById('particlesPerContainer').value = cfg.baked;
   }
-  plumeReset();
-  const r = plumeCurrentDerived(); plume.D = r ? r.D : null; plumeReadout();
+  ctxAll(() => { plume.key = key; plumeReset(); const r = plumeCurrentDerived(); plume.D = r ? r.D : null; });
+  plumeReadout();
 }
 propPresetEl.onchange = () => applyPropPreset(propPresetEl.value);
 const ofMasterEl = document.getElementById('ofMaster');
@@ -8728,6 +8954,24 @@ document.getElementById('fileInput').onchange = async (e) => {
 };
 document.getElementById('btnCloneImport').onclick = async () => {
   if (!spawnState.lastFile) return;
+  // A copy of an assembly already in the scene (same file) is a real part duplicate: it becomes its own Instance and, by default,
+  // reuses the original's bake. Works before AND during a run. Anything else falls back to re-importing the file.
+  const fname = spawnState.lastFile.name.replace(/\.[^.]+$/, '');
+  const orig = state.root && state.root.children.find(c => c.userData && c.userData.isAssembly && assemblyParts(c).length && !assemblyParts(c).some(p => p.cloneOf)
+    && assemblyParts(c).some(p => (state.assets || []).some(a => a.parts && a.parts.includes(p) && a.name === spawnState.lastFile.name)));
+  if (orig) {
+    try {
+      spawnState.imports.push(spawnState.lastFile.name);
+      const r = await addCloneInstance(orig, { share: true });
+      r.group.userData.spawnId = state.root.children.indexOf(r.group);
+      r.group.userData.spawnName = fname + ' ' + spawnState.imports.length;
+      if (!state.simRunning) layoutSpawns();
+      frameAllSpawns();
+      labelSpawn(fname, spawnState.imports.length, r.group);
+      buildPartListUI();
+    } catch (e) { console.error('clone import', e); alert('Clone failed: ' + e.message); }
+    return;
+  }
   spawnState.imports.push(spawnState.lastFile.name);
   await loadFile(spawnState.lastFile);
   let g = null;
@@ -8817,7 +9061,14 @@ function labelSpawn(kind, n, group) {
   lab.style.color = 'var(--acc)';
   cb.onchange = async () => {
     lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— ' + (cb.checked ? 'same preset' : 'custom') + '</span>';
-    if (!group || !cb.checked) return;
+    if (!group) return;
+    group.userData.shareBuild = cb.checked;   // checked = reuse the original's bake; unchecked = its own bake
+    try {
+      const inst = state.instances.find(i => i.root === group);
+      if (inst && state.simRunning) await buildInstanceNow(inst);   // only this instance rebuilds; the others keep running
+      else invalidateInstances('links');
+    } catch (e) { console.warn('rebuild on toggle', e); }
+    if (!cb.checked) return;
     try { await spawnApplyPresetToGroup(group); } catch (e) { console.warn('preset on toggle', e); }
   };
   row.appendChild(cb); row.appendChild(lab);
@@ -8837,23 +9088,14 @@ async function spawnDemo(which) {
       return;
     }
     // Mark the original as an assembly if it is not already.
-    const src = state.root.children.find(c => c.userData && c.userData.isAssembly) || state.root.children[0];
+    const src = state.root.children.find(c => c.userData && c.userData.isAssembly && !assemblyParts(c).some(p => p.cloneOf)) || state.root.children[0];
     if (src) src.userData.isAssembly = true;
-    // Strip circular userData before clone (ownerPart <-> meshes cycle),
-    // then restore. Three.js clone copies userData and a later serialize
-    // trips on the cycle.
-    const saved = [];
-    src.traverse(o => { if (o.userData && o.userData.ownerPart) { saved.push([o, o.userData.ownerPart]); delete o.userData.ownerPart; } });
-    const clone = src.clone(true);
-    for (const [o, op] of saved) o.userData.ownerPart = op;
-    clone.userData.isAssembly = true;
-    clone.position.set(0, 0, 0);
-    state.root.add(clone);
-    state.root.updateMatrixWorld(true);
+    // A real duplicate: new parts, its own Instance (running immediately when a simulation is on), shared bake by default.
+    const r = await addCloneInstance(src, { share: true });
     const n = state.root.children.filter(c => c.userData && c.userData.isAssembly).length;
-    layoutSpawns();
+    if (!state.simRunning) layoutSpawns();
     frameAllSpawns();
-    labelSpawn(kind, n, clone);
+    labelSpawn(kind, n, r.group);
     buildPartListUI();
   } catch (err) {
     console.error('spawnDemo', err);
@@ -10007,7 +10249,7 @@ window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: 
   partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances, withInstance, ctxView, ctxAlias, ctxEach };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances, withInstance, ctxView, ctxAlias, ctxEach, cloneAssemblyParts, addCloneInstance, buildInstanceNow, instanceShareRoot };
 Object.defineProperties(window.arcFlow, { live: { get: () => live, enumerable: true }, plume: { get: () => plume, enumerable: true }, follow: { get: () => follow, enumerable: true } });
 
 // Preload the demo project automatically on page open — no click required.
