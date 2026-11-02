@@ -624,7 +624,7 @@ scene.add(floorMesh);
 // (additive, and only where they're actually near the floor — see the
 // splat fragment shader), then swap buffers and hand the fresh one to the
 // floor's own material.
-function renderFloorHeatPass() {
+function renderFloorHeatPass(first = true, last = true) {   // first/last: several instances splat into ONE floor buffer per frame (decay once, swap once)
   if (!particleSystem || !particleSplatMaterial) return;
   const readTarget = floorHeatTargets[floorHeatIndex];
   const writeTarget = floorHeatTargets[1 - floorHeatIndex];
@@ -634,9 +634,11 @@ function renderFloorHeatPass() {
   renderer.autoClear = false;
 
   renderer.setRenderTarget(writeTarget);
-  renderer.clear();
-  floorDecayMat.uniforms.uPrev.value = readTarget.texture;
-  renderer.render(floorDecayScene, floorOrthoCam2D);
+  if (first) {
+    renderer.clear();
+    floorDecayMat.uniforms.uPrev.value = readTarget.texture;
+    renderer.render(floorDecayScene, floorOrthoCam2D);
+  }
 
   // The point-sprite layer is HIDDEN while the volumetric view is on (the default), and three.js skips an invisible
   // root outright, so the baked-flow floor splat silently did nothing in that mode. Force it visible for this
@@ -652,8 +654,10 @@ function renderFloorHeatPass() {
   renderer.setRenderTarget(prevRenderTarget);
   renderer.autoClear = prevAutoClear;
 
-  floorHeatIndex = 1 - floorHeatIndex;
-  floorMat.uniforms.uHeat.value = floorHeatTargets[floorHeatIndex].texture;
+  if (last) {
+    floorHeatIndex = 1 - floorHeatIndex;
+    floorMat.uniforms.uHeat.value = floorHeatTargets[floorHeatIndex].texture;
+  }
 }
 // The decay quad is defined in clip space directly (see its vertexShader),
 // so it doesn't actually need a "real" camera — any camera works since the
@@ -669,6 +673,20 @@ function onResize() {
 window.addEventListener('resize', onResize);
 new ResizeObserver(onResize).observe(viewportEl);
 
+// One instance's per-frame work (the single-instance frame, run inside withInstance(inst)); inst === null: legacy/global.
+function animateFrameBody(inst, running) {
+  const go = running && (!inst || inst.active);
+  if (!inst && running && particleSystem) renderFloorHeatPass();
+  if (typeof massFrame === 'function' && go) massFrame(inst, performance.now());
+  if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
+  // Fluid follows its parts: refresh the per-part delta matrices BEFORE any gas is drawn this frame (no one-frame lag behind a dragged part).
+  if (typeof followTick === 'function') followTick(false);
+  if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
+  if (typeof updateGaussianRender === 'function') updateGaussianRender();
+  if (typeof liveLeakFrame === 'function' && go) liveLeakFrame(inst, performance.now());
+  if (typeof plumeFrame === 'function' && go) plumeFrame(inst, performance.now());
+  if (inst && go) inst.frames = (inst.frames || 0) + 1;
+}
 function animateBase() {
   requestAnimationFrame(animateBase);
   controls.update();
@@ -678,40 +696,16 @@ function animateBase() {
   // so use a plain flag that's genuinely false until setup finishes.
   if (appReady) {
     const running = state.simRunning && !simPaused;
-    if (running && particleSystem) renderFloorHeatPass();
-    if (typeof massFrame === 'function' && running) massFrame(getActiveInstance(), performance.now());
-    if (state.currentLinks && (state.simRunning || partHeatEmissiveApplied)) updatePartThermalTint(state.currentLinks);
-    // Volumetric ray-march pass — see "VOLUMETRIC RAY-MARCH RENDERER"
-    // below buildParticleSystem for the full design. Declared via
-    // `function updateVolumetricRender` (hoisted), so this call is valid
-    // even though that function is defined later in the module — called
-    // every frame like the rest of this loop, but it internally throttles
-    // its own expensive work (CPU density rebuild) to VOL_REBUILD_INTERVAL_MS.
-    // Fluid follows its parts: refresh the per-part delta matrices BEFORE any gas is drawn this frame (no one-frame lag behind a dragged part).
-    if (typeof followTick === 'function') followTick(false);
-    if (typeof updateVolumetricRender === 'function') updateVolumetricRender(performance.now());
-    if (typeof updateGaussianRender === 'function') updateGaussianRender();
-    if (typeof liveLeakFrame === 'function' && running) liveLeakFrame(getActiveInstance(), performance.now());
-    if (typeof plumeFrame === 'function' && running) plumeFrame(getActiveInstance(), performance.now());
-    // Mirror the particle system to each extra assembly so clones show flow.
-    if (particleSystem && state.root && state.root.children.length > 1) {
-      if (!window._cloneParticles) window._cloneParticles = [];
-      const assemblies = state.root.children.filter(c => c.userData && c.userData.isAssembly);
-      while (window._cloneParticles.length < assemblies.length - 1) {
-        const cp = particleSystem.clone();
-        cp.material = particleSystem.material;
-        scene.add(cp);
-        window._cloneParticles.push(cp);
+    const built = state.instances.filter(i => i.built && !i.baking);
+    if (!built.length) animateFrameBody(null, running);
+    else {
+      // Floor heat: decay once, every instance splats into the same buffer, swap once.
+      if (running) {
+        const fl = built.filter(i => i.active && ctxView(i) && ctxView(i).particleSystem && ctxView(i).particleSplatMaterial);
+        fl.forEach((i, k) => withInstance(i, () => renderFloorHeatPass(k === 0, k === fl.length - 1)));
       }
-      const base = assemblies[0];
-      for (let i = 1; i < assemblies.length; i++) {
-        const cp = window._cloneParticles[i - 1];
-        if (!cp) continue;
-        const dx = assemblies[i].position.x - base.position.x;
-        const dz = assemblies[i].position.z - base.position.z;
-        cp.position.set(dx, 0, dz);
-        cp.visible = particleSystem.visible;
-      }
+      for (const inst of built) withInstance(inst, () => animateFrameBody(inst, running));
+      const act = getActiveInstance(); if (act && act.ctx && !act.baking) ctxAlias(act);
     }
   }
   renderer.render(scene, camera);
@@ -1025,20 +1019,16 @@ function clearScene() {
   // (or clearing) never leaves leftover simulation state.
   if (state.simRunning) {
     state.simRunning = false;
-    if (typeof massReset === 'function') massReset();
-    if (typeof liveReset === 'function') liveReset();
-    if (typeof plumeReset === 'function') plumeReset();
-    if (typeof setPartsGlass === 'function') setPartsGlass(false);
+    ctxAll(() => {
+      if (typeof massReset === 'function') massReset();
+      if (typeof liveReset === 'function') liveReset();
+      if (typeof plumeReset === 'function') plumeReset();
+      if (typeof setPartsGlass === 'function') setPartsGlass(false);
+    });
     const pb = document.getElementById('playBtn');
     if (pb) { pb.textContent = '▶ Simulate'; pb.classList.remove('playing'); }
   }
-  if (window._cloneParticles) {
-    for (const cp of window._cloneParticles) {
-      if (cp.parent) cp.parent.remove(cp);
-      if (cp.geometry) cp.geometry.dispose();   // shared with particleSystem; material is shared too, so not disposed here
-    }
-    window._cloneParticles = null;
-  }
+  for (const i of state.instances) if (i.ctx || i === _ctxCur) withInstance(i, ctxDisposeSceneObjects);   // every instance's own sim layers
   if (typeof particleSystem !== 'undefined' && particleSystem) {
     if (particleSystem.parent) particleSystem.parent.remove(particleSystem);
     if (particleSystem.geometry) particleSystem.geometry.dispose();
@@ -1047,6 +1037,7 @@ function clearScene() {
   state.sdf = null;
   state.currentLinks = null;
   resetInstances();
+  _ctxCur = null; _ctxBase = null; ctxApply(ctxBlank());   // the legacy globals go back to a fresh, instance-less context
   state.autoPenetrationSealed = [];
   state.autoPenetrationRejected = [];
   state.autoPenetrationSkipped = [];
@@ -2790,7 +2781,11 @@ class Instance {
     this.of = { global: null, perChamber: new Map() };   // O/F
     this.bounds = new THREE.Box3();                      // world AABB of the parts
     this.dirty = { links: false, network: true, sdf: true, particles: true };   // invariant: links => network
-    this.active = false;
+    this.active = false;         // simulating right now (set by startInstanceSim, cleared on Stop)
+    this.built = false;          // its sim build (SDF + particles) exists and may be ticked
+    this.baking = false;         // build in progress: the frame loop skips it
+    this.frames = 0;             // sim frames advanced since it started (test hook)
+    this.ctx = null;             // its context (see ctxCapture)
     // Slots requested by the Solver worker (all empty until PressureFlowSim lands):
     this.solver = null;          // PressureFlowSim: network nodes/edges, ATM node, per-cavity P/m/T, per-edge mdot
     this.solverMode = 'baked';   // 'baked' | 'pressure'
@@ -2858,6 +2853,7 @@ function detectInstances(parts, links) {
     const same = !fresh && inst.parts.length === comp.length && inst.parts.every(p => set.has(p));
     inst.parts = comp;
     inst.links = new Map(); for (const p of comp) { const ls = allLinks(links, p).filter(l => set.has(l.target)); if (ls.length) inst.links.set(p, ls.length === 1 && !Array.isArray(links.get(p)) ? ls[0] : ls); }
+    if (links.nodes) inst.links.nodes = new Map([...links.nodes].filter(([p]) => set.has(p)));
     const sealed = (state.autoPenetrationSealed || []).filter(j => set.has(j.partA) && set.has(j.partB));
     const rejected = (state.autoPenetrationRejected || []).filter(j => set.has(j.partA) && set.has(j.partB));
     inst.joints = { sealed, rejected };
@@ -2906,6 +2902,93 @@ function instancesReadout() {
   for (const i of d.instances) L.push((i.id === d.activeInstanceId ? '* ' : '  ') + i.id + ' "' + i.name + '": ' + i.nParts + ' parts, ' + i.nLinks + ' links, ' + i.sealedJoints + ' sealed / ' + i.rejectedJoints + ' touching joints [' + i.parts.join(', ') + ']');
   for (const o of d.orphans) L.push('  orphan ' + o.name + (o.type ? ' (' + o.type + ')' : '') + ' - ' + o.reason);
   const t = L.join('\n'); console.log(t); return t;
+}
+
+// ── Per-instance context swap (multi-instance steps 3-4) ──
+// The sim modules (live / mass / plume / follow / particles / volume / gaussian ...) are written against module-level singletons.
+// Instead of threading `inst` through every function, each Instance owns a CONTEXT (the singleton bindings + the per-system
+// `state` fields) and withInstance(inst, fn) swaps it in for the duration of fn, so the single-instance code runs unchanged.
+// The legacy globals always alias ONE instance (the one last swapped in permanently, normally the active one) when idle.
+function ctxCapture() {
+  return {
+    live, mass, follow, followU, plume, particleSystem, particleCoreSystem, particleSplatMaterial, gsMesh,
+    volMesh, volDomMin, volDomSize, volLastDomVer, volDensityTex, volDensityData, volLastBuildAt, volResXYZ, volTilesPerRow, volTexW, volTexH,
+    tubeVol, volLastSDFRef, liveSdfToken: _liveSdfToken,
+    sdf: state.sdf, particleCPU: state.particleCPU, pathMeta: state.pathMeta, channelFlows: state.channelFlows, sdfUniformSet: state.sdfUniformSet,
+  };
+}
+function ctxApply(c) {
+  live = c.live; mass = c.mass; follow = c.follow; followU = c.followU; plume = c.plume;
+  particleSystem = c.particleSystem; particleCoreSystem = c.particleCoreSystem; particleSplatMaterial = c.particleSplatMaterial; gsMesh = c.gsMesh;
+  volMesh = c.volMesh; volDomMin = c.volDomMin; volDomSize = c.volDomSize; volLastDomVer = c.volLastDomVer; volDensityTex = c.volDensityTex;
+  volDensityData = c.volDensityData; volLastBuildAt = c.volLastBuildAt; volResXYZ = c.volResXYZ; volTilesPerRow = c.volTilesPerRow; volTexW = c.volTexW; volTexH = c.volTexH;
+  tubeVol = c.tubeVol; volLastSDFRef = c.volLastSDFRef; _liveSdfToken = c.liveSdfToken;
+  state.sdf = c.sdf; state.particleCPU = c.particleCPU; state.pathMeta = c.pathMeta; state.channelFlows = c.channelFlows; state.sdfUniformSet = c.sdfUniformSet;
+}
+function ctxBlank() {
+  const fu = makeFollowU(), p = makePlume();
+  try { if (typeof propPresetEl !== 'undefined' && propPresetEl && PROP_PRESETS[propPresetEl.value]) p.key = propPresetEl.value; } catch (e) {}
+  return {
+    live: makeLive(), mass: makeMass(), follow: makeFollow(fu), followU: fu, plume: p,
+    particleSystem: null, particleCoreSystem: null, particleSplatMaterial: null, gsMesh: null,
+    volMesh: null, volDomMin: null, volDomSize: null, volLastDomVer: -1, volDensityTex: null, volDensityData: null, volLastBuildAt: -Infinity,
+    volResXYZ: [VOL_RES, VOL_RES, VOL_RES], volTilesPerRow: 1, volTexW: VOL_RES, volTexH: VOL_RES, tubeVol: null, volLastSDFRef: null, liveSdfToken: 0,
+    sdf: null, particleCPU: null, pathMeta: null, channelFlows: null, sdfUniformSet: null,
+  };
+}
+let _ctxCur = null;      // Instance whose context is applied to the globals right now (null = the base context)
+let _ctxBase = null;     // the base context, parked here while an instance is applied
+let _ctxDepth = 0;       // >0 while inside ctxEnter..ctxExit
+function ctxEnter(inst) {
+  const prev = { inst: _ctxCur, parts: state.parts, links: state.currentLinks, sealed: state.autoPenetrationSealed, rejected: state.autoPenetrationRejected };
+  if (_ctxCur !== inst) {
+    if (_ctxCur) _ctxCur.ctx = ctxCapture(); else _ctxBase = ctxCapture();
+    ctxApply(inst.ctx || (inst.ctx = ctxBlank())); _ctxCur = inst;
+  }
+  state.parts = inst.parts; state.currentLinks = inst.links; _ctxDepth++;
+  if (inst.joints) { state.autoPenetrationSealed = inst.joints.sealed; state.autoPenetrationRejected = inst.joints.rejected; }
+  return prev;
+}
+function ctxExit(inst, prev) {
+  _ctxDepth--;
+  inst.ctx = ctxCapture();
+  state.parts = prev.parts; state.currentLinks = prev.links; state.autoPenetrationSealed = prev.sealed; state.autoPenetrationRejected = prev.rejected;
+  if (prev.inst !== inst) { ctxApply(prev.inst ? prev.inst.ctx : _ctxBase); _ctxCur = prev.inst; }
+}
+function withInstance(inst, fn) {
+  if (!inst) return fn();
+  const p = ctxEnter(inst);
+  try { return fn(inst); } finally { ctxExit(inst, p); }
+}
+async function withInstanceAsync(inst, fn) {
+  if (!inst) return fn();
+  const p = ctxEnter(inst);
+  try { return await fn(inst); } finally { ctxExit(inst, p); }
+}
+// Make `inst` the permanently-applied context (the legacy globals alias it). No-op while a swap is in progress.
+function ctxAlias(inst) {
+  if (!inst || _ctxCur === inst || _ctxDepth > 0) return;
+  if (_ctxCur) _ctxCur.ctx = ctxCapture(); else _ctxBase = ctxCapture();
+  ctxApply(inst.ctx || (inst.ctx = ctxBlank())); _ctxCur = inst;
+}
+// The instance's context as a plain object (live globals when it is the applied one).
+function ctxView(inst) { return inst === _ctxCur ? ctxCapture() : (inst && inst.ctx) || null; }
+function ctxEach(fn) { for (const i of state.instances) if (i.ctx || i === _ctxCur) withInstance(i, fn); }
+function ctxDisposeSceneObjects() {
+  const kill = o => { if (!o) return; if (o.parent) o.parent.remove(o); o.visible = false; };
+  kill(particleSystem); kill(particleCoreSystem); kill(gsMesh); kill(volMesh);
+  if (live) { kill(live.points); kill(live.gsPoints); kill(live.leakMesh); }
+  if (plume) { kill(plume.points); kill(plume.vol); kill(plume.floorMesh); }
+  if (tubeVol && tubeVol.meshes) for (const m of tubeVol.meshes) kill(m);
+}
+// A clone that reuses its original's baked build returns that original (null = it has its own bake). Filled in by the clone step.
+function instanceShareRoot(inst) { return null; }
+function shareInstanceBake(inst, root) { throw new Error('shared bake not available yet'); }
+function ctxAll(fn) { if (state.instances.length) ctxEach(fn); else fn(); }
+// Start one built instance simulating (mass network, live-leak watch, glass walls). Safe mid-run: touches only this instance.
+function startInstanceSim(inst) {
+  withInstance(inst, () => { massBuild(); liveWatchStart(); setPartsGlass(true); });
+  inst.active = true; inst.frames = 0; inst.startedAt = performance.now();
 }
 // <instances:end>
 
@@ -5344,19 +5427,46 @@ function tubeUniformSet(tubeSet) {
   return { uTubeTex: { value: tubeSet.tex }, uTubeCount: { value: tubeSet.count }, uTubeBoxMin: { value: tubeSet.boxMin }, uTubeBoxMax: { value: tubeSet.boxMax } };
 }
 
+// Multi-instance bake entry (Simulate): ONE global flow-graph pass + instance detection, then every instance is baked
+// (SDF + particle waypoints + volumetric/gaussian layers) inside its own context by bakeInstanceCore. Clone instances that share
+// their original's build (see shareInstanceBake) skip their own bake. Nothing here runs for an already-running instance.
 async function buildParticleSystem() {
+  setLoading(true, 'Finding joints…');
+  await new Promise(r => requestAnimationFrame(r));
+  const prevInsts = state.instances.slice();
+  const links = buildFlowGraph();
+  state.currentLinks = links; // kept for the per-frame thermal tint update
+  let insts = [];
+  try { insts = detectInstances(state.parts, links); } catch (e) { console.warn('detectInstances failed', e); }
+  if (!insts.length) {   // no connected multi-part system found: bake the whole scene as one instance (legacy behaviour)
+    const whole = new Instance(); whole.name = 'Scene'; whole.parts = state.parts.slice(); whole.links = links; whole.root = state.root;
+    whole.joints = { sealed: state.autoPenetrationSealed || [], rejected: state.autoPenetrationRejected || [] };
+    state.instances = insts = [whole]; state.activeInstanceId = whole.id;
+  }
+  for (const o of prevInsts) if (!insts.includes(o)) { o.active = false; o.built = false; if (o.ctx) withInstance(o, ctxDisposeSceneObjects); }
+  const order = insts.slice().sort((a, b) => (instanceShareRoot(a) ? 1 : 0) - (instanceShareRoot(b) ? 1 : 0));   // originals first, shared clones after
+  for (const inst of order) {
+    inst.built = false; inst.baking = true; inst.frames = 0;
+    try {
+      await withInstanceAsync(inst, async () => {
+        const root = instanceShareRoot(inst);
+        if (root && root.built) shareInstanceBake(inst, root); else await bakeInstanceCore(inst, inst.links);
+        inst.built = !!state.particleCPU;
+      });
+    } catch (e) { console.error('bake failed for ' + inst.name, e); }
+    finally { inst.baking = false; }
+  }
+  const act = getActiveInstance(); if (act) ctxAlias(act);
+  state.currentLinks = links;
+}
+async function bakeInstanceCore(inst, links) {
   if (particleCoreSystem) { scene.remove(particleCoreSystem); particleCoreSystem.material.dispose(); particleCoreSystem = null; }
   if (particleSystem) { scene.remove(particleSystem); particleSystem.geometry.dispose(); particleSystem.material.dispose(); }
   if (gsMesh) { scene.remove(gsMesh); gsMesh.geometry.dispose(); gsMesh.material.dispose(); gsMesh = null; }
   if (particleSplatMaterial) { particleSplatMaterial.dispose(); particleSplatMaterial = null; }
   state.particleCPU = null; // stale until rebuilt below — volumetric renderer checks for this
   liveReset(); // drop any live leak state from a previous bake
-
-  setLoading(true, 'Finding joints…');
-  await new Promise(r => requestAnimationFrame(r));
-  const links = buildFlowGraph();
-  state.currentLinks = links; // kept for the per-frame thermal tint update
-  try { detectInstances(state.parts, links); } catch (e) { console.warn('detectInstances failed', e); }   // registry only; sims still use the globals
+  setLoading(true, 'Baking ' + inst.name + '…');
 
   // Build the real-geometry collision SDFs for THIS configuration (mesh
   // positions, classifications and openings as they stand right now) —
@@ -5372,7 +5482,7 @@ async function buildParticleSystem() {
   state.sdf = collisionSDF;
   if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
   state.pathMeta = new Map();
-  setTimeout(() => { try { diagnoseLinks(); renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }, 0);
+  setTimeout(() => withInstance(inst, () => { try { diagnoseLinks(); if (inst.id === state.activeInstanceId) renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }), 0);
   state.channelFlows = computeChannelFlows(); // bore areas -> continuity / Bernoulli / Darcy-Weisbach per fitted channel
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
@@ -8367,7 +8477,7 @@ function chamberInflowPsi(ch, cfg) {
   if (!cfg || !noz) return 0;   // no nozzle / no preset: no flow-derived pc, caller falls back to explicit value or preset
   // Stoichiometric O/F for RP-1/LOX is about 2.3. Combustion strength
   // peaks there and falls off as the mix goes fuel-rich or ox-rich.
-  const stoich = (window.ofPerSystem && window.ofPerSystem[ch.name] != null) ? window.ofPerSystem[ch.name] : (window.ofTarget || 2.3);
+  const stoich = (window.ofPerSystem && window.ofPerSystem[ofKeyOf(ch)] != null) ? window.ofPerSystem[ofKeyOf(ch)] : (window.ofTarget || 2.3);
   const mixK = mix.of > 0 ? Math.exp(-Math.pow(Math.log(mix.of / stoich), 2)) : 0;
   const unit = state.flowUnitM || FLOW_UNIT_M_DEFAULT;                       // m per world unit
   const Ae = Math.PI * noz.radius * noz.radius * unit * unit;                // m^2, exit plane
@@ -8424,14 +8534,15 @@ function ofUpdateReadout() {
   ofReadoutEl.innerHTML = v.toFixed(1) + ' <span class="u">' + (Math.abs(v - 2.3) < 0.15 ? 'stoichiometric for RP-1/LOX · strength peaks here' : (v < 2.3 ? 'fuel-rich' : 'oxidizer-rich')) + '</span>';
 }
 ofMasterEl.oninput = ofUpdateReadout;
+function ofKeyOf(ch) { return ch.ofKey || ch.name; }   // clones carry their own key so each Instance has its own O/F
 function renderOfPerSystem() {
   if (!ofPerSystemEl) return;
   const chambers = state.parts.filter(p => p.type === 'chamber');
   if (chambers.length < 2) { ofPerSystemEl.innerHTML = ''; return; }
   ofPerSystemEl.innerHTML = chambers.map((c, i) => {
-    const val = window.ofPerSystem[c.name] != null ? window.ofPerSystem[c.name] : window.ofTarget;
-    return '<label class="field" style="margin-top:6px">' + c.name + '</label>' +
-      '<input type="range" min="0.5" max="5" step="0.1" value="' + val + '" data-ch="' + c.name + '" style="width:100%" oninput="window.ofPerSystem[this.dataset.ch]=parseFloat(this.value)">';
+    const val = window.ofPerSystem[ofKeyOf(c)] != null ? window.ofPerSystem[ofKeyOf(c)] : window.ofTarget;
+    return '<label class="field" style="margin-top:6px">' + c.name + (c.ofKey ? ' <span class="u">(' + c.ofKey.split('@')[1] + ')</span>' : '') + '</label>' +
+      '<input type="range" min="0.5" max="5" step="0.1" value="' + val + '" data-ch="' + ofKeyOf(c) + '" style="width:100%" oninput="window.ofPerSystem[this.dataset.ch]=parseFloat(this.value)">';
   }).join('');
 }
 
@@ -8561,37 +8672,7 @@ function plumeFrame(inst, now) {
       inst.tclock = (inst.tclock || 0) + dt;
     }
   }
-  // Clones: fire a plume at each extra assembly's nozzle, offset from the original.
-  if (state.root && state.root.children.length > 1 && F) {
-    const assemblies = state.root.children.filter(c => c.userData && c.userData.isAssembly);
-    const base = assemblies[0];
-    const maxVerts = pa.length / 3;
-    for (let ai = 1; ai < assemblies.length; ai++) {
-      const dx = assemblies[ai].position.x - (base ? base.position.x : 0);
-      const dz = assemblies[ai].position.z - (base ? base.position.z : 0);
-      const count = 800;
-      const t = performance.now() * 0.001;
-      for (let k = 0; k < count && write < maxVerts; k++, write++) {
-        const prog = ((k / count) + t * 0.3) % 1.5;
-        const x = prog * F.H * 1.5;
-        const spread = 1 + prog * 2.5;
-        const s = ((k % 11) / 11) * spread;
-        const phi = (k * 2.399 + t * 2) % (Math.PI * 2);
-        const rb = plumeBoundary(Math.min(x, F.H), D) * spread;
-        const R = s * rb, cc = Math.cos(phi) * R, sn = Math.sin(phi) * R;
-        const gy = Math.max(0, F.O.y + F.d.y * x);
-        const groundSpread = prog > 0.6 ? (prog - 0.6) * 8 : 0;
-        pa[3 * write] = F.O.x + dx + F.d.x * x + F.U.x * cc + F.W.x * sn + Math.cos(phi) * groundSpread;
-        pa[3 * write + 1] = gy + Math.sin(prog * 4 + k) * 0.3 * prog;
-        pa[3 * write + 2] = F.O.z + dz + F.d.z * x + F.U.z * cc + F.W.z * sn + Math.sin(phi) * groundSpread;
-        at[write] = Math.min(prog, 1);
-        ash[write] = prog > 0.5 ? (prog - 0.5) * 2 : 0;
-        asm[write] = prog > 0.4 ? (prog - 0.4) * 1.5 : 0.1;
-        asz[write] = P.sizeK * F.re * (0.6 + 2.0 * s) * (1 + prog * 1.5);
-        aal[write] = P.tune.jetSprite * Math.pow(Math.max(0, 1 - prog / 1.5), 1.3);
-      }
-    }
-  }
+  // (Assembly clones are now real Instances with their own plume - the old static clone fan was removed.)
   P.points.geometry.setDrawRange(0, write);
   for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl]) a.needsUpdate = true;
   const camFov = camera.fov * Math.PI / 180;
@@ -8617,8 +8698,10 @@ function plumeFrame(inst, now) {
 let simClock = new THREE.Clock();
 function animateParticles() {
   requestAnimationFrame(animateParticles);
-  if (state.simRunning && particleSystem) {
-    particleSystem.material.uniforms.uTime.value += simClock.getDelta() * 0.35;
+  if (state.simRunning && (particleSystem || state.instances.length)) {
+    const dt = simClock.getDelta() * 0.35;
+    if (state.instances.length) { for (const i of state.instances) { const c = ctxView(i); if (c && c.particleSystem) c.particleSystem.material.uniforms.uTime.value += dt; } }
+    else particleSystem.material.uniforms.uTime.value += dt;
   } else {
     simClock.getDelta();
   }
@@ -9041,18 +9124,15 @@ playBtn.onclick = async () => {
     }
     state.simRunning = true;
     // Plume follows the chamber that has inflow; no forced preset.
-    massBuild();
+    if (state.instances.some(i => i.built)) { for (const i of state.instances) if (i.built) startInstanceSim(i); }
+    else { massBuild(); liveWatchStart(); setPartsGlass(true); }
     pfsActivate();   // pressure solver (no-op unless ?solver=pressure / the checkbox)
-    liveWatchStart();
-    setPartsGlass(true);
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
   } else {
     state.simRunning = false;
-    massReset();
-    liveReset();
-    plumeReset();
-    setPartsGlass(false);
+    ctxAll(() => { massReset(); liveReset(); plumeReset(); setPartsGlass(false); });
+    for (const i of state.instances) i.active = false;
     playBtn.textContent = '▶ Simulate';
     playBtn.classList.remove('playing');
   }
@@ -9927,7 +10007,8 @@ window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: 
   partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances, withInstance, ctxView, ctxAlias, ctxEach };
+Object.defineProperties(window.arcFlow, { live: { get: () => live, enumerable: true }, plume: { get: () => plume, enumerable: true }, follow: { get: () => follow, enumerable: true } });
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
