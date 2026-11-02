@@ -20,18 +20,19 @@ async function loadThree() {
   vm.createContext(ctx);
   const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex',
     'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penMinOverlap',
-    'detectPenetrationJoint', 'detectAutoPenetrationJoints'];
+    'detectPenetrationJoint', 'detectAutoPenetrationJoints', 'partAssembly'];
   let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
     'SDF_VIRTUAL_EDGE_CELLS', 'SDF_VIRTUAL_PHONG_ALPHA', 'SDF_VIRTUAL_EXTRA_TRI_CAP'].map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) { try { code += ex.fn(src, n) + '\n'; } catch (_) { /* older revisions lack refineThinOverlap */ } }
+  try { code += ex.region(src, 'booleansys') + '\n'; } catch (_) { /* older revisions lack the per-pair cache */ }
   // Pull in any other top-level helper the extracted code references (closure over module scope in the app).
   // Single-line top-level constants the extracted code references (resolved lazily at call time in the app).
   const have = new Set(code.match(/^(?:const|let) (\w+)/gm).map(l => l.split(' ')[1]).concat(['_worldTriCache', '_penIndexCache']));
   for (let again = true; again;) {
     again = false;
     for (const m of src.matchAll(/^(?:const|let) (\w+) = [^\n]*;.*$/gm)) {
-      if (have.has(m[1]) || !new RegExp('\\b' + m[1] + '\\b').test(code)) continue;
+      if (have.has(m[1]) || !/^[A-Z_]\w*$/.test(m[1]) || !new RegExp('\\b' + m[1] + '\\b').test(code)) continue;
       have.add(m[1]); code = m[0] + '\n' + code; again = true;
     }
   }

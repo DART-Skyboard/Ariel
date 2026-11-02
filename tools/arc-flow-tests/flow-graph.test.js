@@ -19,10 +19,11 @@ class V3 {
 function makeEnv() {
   const el = { innerHTML: '' };
   const ctx = {
-    THREE: { Vector3: V3 },
+    THREE: { Vector3: V3, Box3: class { setFromObject() { return this; } isEmpty() { return true; } } },
     state: { parts: [], currentLinks: null },
     document: { getElementById: (id) => (id === 'jointReport' ? el : null) },
     refreshAllOpenings() {},
+    pfsAnyPressure() { return false; },          // Solver hook read by chamberMixture (inert unless the pressure solver is active)
     renderChannelFlowReport() {},
     partCentroid: (p) => p.pos.clone(),
     _sealed: [],                       // what the (mesh-based) auto detector "found" for this test
