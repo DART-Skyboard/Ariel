@@ -161,7 +161,10 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   inst.dirty.network = true; inst.dirty.links = true;   // links still dirty: the flag is left for the link rebuild
   api.pfsRefreshInstance(inst); assert.strictEqual(inst.dirty.network, true); inst.dirty.links = false;
   sc.links.delete(sc.ox); inst.dirty.network = true;     // topology change -> new solver
+  const mFuel0 = sol.nodeOf.get(sc.fu).mL, mHe0 = sol.nodeOf.get(sc.heO).mG;
   api.pfsRefreshInstance(inst); assert.notStrictEqual(inst.solver, sol); assert.strictEqual(inst.dirty.network, false);
+  const nf = inst.solver.nodeOf.get(sc.fu), nh = inst.solver.nodeOf.get(sc.heO);
+  assert.ok(Math.abs(nf.mL - mFuel0) < 1e-9 && Math.abs(nh.mG - mHe0) < 1e-9, 'a rebuilt network keeps the cavities\' live mass (' + nf.mL + ' vs ' + mFuel0 + ')');
   ok('network refresh on clone move / topology change');
 }
 console.log(n + ' passed');

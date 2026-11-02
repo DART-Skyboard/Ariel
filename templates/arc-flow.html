@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v69</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v70</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -7493,6 +7493,29 @@ async function liveEnsureSdf() {
   live.sdf = { data, res, min: box.min.clone(), size: sz.clone(), diag, ms: performance.now() - t0 };
 }
 
+// After a new wall grid lands (cavity re-shelled / animated mesh): nothing is dropped; any in-route particle that is now inside a wall
+// is moved back out along the grid gradient and its outward velocity removed.
+function livePushOutAll() {
+  const L = live, S = L.sdf; if (!S) return 0;
+  let n = 0;
+  for (let i = 0; i < L.n; i++) {
+    if (L.st[i] !== 1) continue;
+    const x = L.px[i], y = L.py[i], z = L.pz[i], sd = liveSdfAt(x, y, z);
+    if (!(sd > -LIVE_SKIN)) continue;
+    const e = S.size.x / S.res;
+    let nx = liveSdfAt(x + e, y, z) - liveSdfAt(x - e, y, z), ny = liveSdfAt(x, y + e, z) - liveSdfAt(x, y - e, z), nz = liveSdfAt(x, y, z + e) - liveSdfAt(x, y, z - e);
+    const nl = Math.hypot(nx, ny, nz); if (nl < 1e-6) continue;
+    nx /= nl; ny /= nl; nz /= nl;
+    const push = sd + LIVE_SKIN;
+    L.px[i] = x - nx * push; L.py[i] = y - ny * push; L.pz[i] = z - nz * push;
+    const vn = L.vx[i] * nx + L.vy[i] * ny + L.vz[i] * nz;
+    if (vn > 0) { L.vx[i] -= nx * vn * 1.3; L.vy[i] -= ny * vn * 1.3; L.vz[i] -= nz * vn * 1.3; }
+    n++;
+  }
+  live.pushedOut = (live.pushedOut || 0) + n;
+  return n;
+}
+
 async function liveUpdate() {
   if (live.busy) { live.pending = true; return; }
   live.busy = true;
@@ -10456,6 +10479,17 @@ function pfsMixture(ch) {
 // Edge / chamber-axis geometry is stored in world space, so it goes stale when a clone (or any part of the instance) moves.
 // Re-read it from the live opening transforms when inst.dirty.network is set (clone move, link change) or arcflow:instance-dirty fires.
 // Same topology -> only geometry is refreshed (solver state kept); topology changed -> the solver is rebuilt for this instance.
+// A rebuilt network keeps the cavities' live state (liquid / gas mass, temperature, peak) for every part that still exists, so a
+// breach, a link change or a re-shelled cavity does not refill the tanks.
+function pfsCarryState(old, nw) {
+  const by = new Map(old.nodes.map(n => [n.part, n]));
+  for (const n of nw.nodes) {
+    const o = by.get(n.part); if (!o || o.kind !== n.kind) continue;
+    const f = n.V > 0 && o.V > 0 ? n.V / o.V : 1;     // cavity volume may have changed (re-shelled): keep density, scale mass
+    n.mL = Math.min(o.mL * f, n.kind === 'liquid' ? n.V * n.rho : o.mL * f); n.mG = o.mG * f; n.T = o.T; n.peak = o.peak; n.mIn = o.mIn; n.mOut = o.mOut; n.P = nw.nodeP(n);
+  }
+  nw.t = old.t; nw.timeScale = old.timeScale;
+}
 function pfsRefreshInstance(inst) {
   const sol = inst.solver; if (!sol || inst.solverMode !== 'pressure') return false;
   const net = pfsBuildNetwork(inst);
@@ -10467,13 +10501,24 @@ function pfsRefreshInstance(inst) {
     sol.nodes.forEach(n => { if (n.kind === 'chamber') n.axis = pfsChamberAxis(n.part); });
     sol.geoVer = (sol.geoVer || 0) + 1;
   } else {
-    inst.solver = new PressureFlowSim(inst); pfsSyncMass(inst.solver);
+    const old = sol; inst.solver = new PressureFlowSim(inst); pfsCarryState(old, inst.solver); pfsSyncMass(inst.solver);
     if (typeof pfsClearParticles === 'function') pfsClearParticles(inst);
   }
   if (!inst.dirty.links) inst.dirty.network = false;
   return true;
 }
+let _sdfDirtyTimer = 0;
+function pfsOnSdfDirty(kind) {
+  if (kind && kind !== 'sdf' && kind !== 'particles' && kind !== 'network' && kind !== 'links') return;
+  if (_sdfDirtyTimer) return;
+  _sdfDirtyTimer = setTimeout(() => {      // animated GLBs mark this every frame: coalesce to one re-bake at a time (liveEnsureSdf is token-guarded)
+    _sdfDirtyTimer = 0;
+    if (typeof live !== 'undefined' && live.groups && live.groups.size && typeof liveEnsureSdf === 'function') liveEnsureSdf().then(() => livePushOutAll());
+    if (typeof meltPushOutAll === 'function') meltPushOutAll();
+  }, 250);
+}
 if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('arcflow:instance-dirty', ev => {
+  pfsOnSdfDirty(ev && ev.detail && ev.detail.kind);
   const id = ev && ev.detail && ev.detail.id;
   for (const inst of state.instances || []) if (inst.solverMode === 'pressure' && (id == null || inst.id === id)) inst.dirty.network = true;
 });

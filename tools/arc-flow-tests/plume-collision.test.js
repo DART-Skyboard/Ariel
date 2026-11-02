@@ -2,7 +2,7 @@
 // `node tools/arc-flow-tests/plume-collision.test.js`
 const vm = require('vm');
 const assert = require('assert');
-const { load, region } = require('./extract');
+const { load, region, fn } = require('./extract');
 const src = load();
 const N = 400;
 const plume = { n: 0, st: new Uint8Array(N), px: new Float32Array(N), py: new Float32Array(N), pz: new Float32Array(N), vx: new Float32Array(N), vy: new Float32Array(N), vz: new Float32Array(N),
@@ -47,4 +47,15 @@ assert.ok(any > 0, 'confinement force present');
 for (let i = 0; i < 300; i++) { plume.vx[i] = 5; }
 A.plumeCurlBuild({ C: { x: 0, z: 0 } }, { De: 2 });
 assert.ok(A.plumeColl.stats.curlMax < 1e-4, 'uniform flow has no vorticity: ' + A.plumeColl.stats.curlMax);
-console.log('6 plume-collision tests passed');
+// 6. livePushOutAll: a new wall grid lands; an in-route particle left inside a wall is moved back out along the gradient, none dropped
+{
+  const L = { n: 3, st: new Uint8Array([1, 1, 2]), px: new Float32Array([0, 4.99, 9]), py: new Float32Array(3), pz: new Float32Array(3), vx: new Float32Array([0, 2, 0]), vy: new Float32Array(3), vz: new Float32Array(3),
+    sdf: { res: 8, size: { x: 16 } } };
+  // cavity = sphere radius 5 about the origin (sd < 0 inside the fluid); particle 1 sits at the wall (sd ~ 0) moving outward
+  const c2 = { Math, live: L, LIVE_SKIN: 0.06, liveSdfAt: (x, y, z) => Math.hypot(x, y, z) - 5 };
+  vm.createContext(c2); vm.runInContext(fn(src, 'livePushOutAll') + '\nthis.f = livePushOutAll;', c2);
+  const moved = c2.f();
+  assert.strictEqual(moved, 1); assert.ok(L.px[1] < 5 - 0.05, 'pushed back inside: ' + L.px[1]); assert.ok(L.vx[1] <= 0, 'outward velocity removed');
+  assert.strictEqual(L.px[0], 0); assert.strictEqual(L.px[2], 9); assert.strictEqual(L.n, 3);
+}
+console.log('7 plume-collision tests passed');
