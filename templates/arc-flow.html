@@ -8152,6 +8152,25 @@ function frameAllSpawns() {
   controls.target.copy(center);
   controls.update();
 }
+// Apply the original's preset to ONE spawned group only. Spawn-demo clones are visual-only
+// (no real parts / no asset) and import clones with no matching asset: safe no-op.
+async function spawnApplyPresetToGroup(group) {
+  if (!group || !state.assets || !state.assets.length) return false;
+  const inGroup = o => { for (; o; o = o.parent) if (o === group) return true; return false; };
+  const asset = state.assets.find(a => a.parts && a.parts.some(p => state.parts.includes(p) && inGroup(p.pivot)));
+  if (!asset) return false;
+  // Source = saved preset for this file if present, else the settings of an earlier copy of the same file.
+  const key = presetAssetKey(asset);
+  let raw = presetLsGet(PRESET_LS_PREFIX + key);
+  if (!raw) {
+    const sib = state.assets.find(a => a !== asset && presetAssetKey(a) === key);
+    if (!sib) return false;
+    raw = JSON.stringify(buildPreset(sib.id));
+  }
+  if (presetBusy || state.simRunning) return false;
+  await presetApplyRaw(raw, { onlyAssetId: asset.id, skipGlobal: true });
+  return true;
+}
 function labelSpawn(kind, n, group) {
   const el = document.getElementById('spawnList');
   if (!el) return;
@@ -8162,12 +8181,10 @@ function labelSpawn(kind, n, group) {
   const lab = document.createElement('span');
   lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— same preset</span>';
   lab.style.color = 'var(--acc)';
-  cb.onchange = () => { lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— ' + (cb.checked ? 'same preset' : 'custom') + '</span>'; };
   cb.onchange = async () => {
+    lab.innerHTML = kind + ' ' + n + ' <span style="opacity:.6;font-size:10px">— ' + (cb.checked ? 'same preset' : 'custom') + '</span>';
     if (!group || !cb.checked) return;
-    if (typeof presetApplyPending === 'function') {
-      try { await presetApplyPending(false); } catch (e) { console.warn('preset on toggle', e); }
-    }
+    try { await spawnApplyPresetToGroup(group); } catch (e) { console.warn('preset on toggle', e); }
   };
   row.appendChild(cb); row.appendChild(lab);
   el.appendChild(row);
