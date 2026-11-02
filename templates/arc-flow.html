@@ -2593,6 +2593,27 @@ function getActiveInstance() {
     || L[0];
 }
 function setActiveInstance(id) { const i = state.instances.find(x => x.id === id); if (i) state.activeInstanceId = i.id; return i || null; }
+// Debug readout: connected components (instances) and orphan parts. Data object; instancesReadout() prints + returns text.
+function describeInstances() {
+  const nm = p => p.name;
+  return {
+    activeInstanceId: state.activeInstanceId,
+    instances: state.instances.map(i => ({
+      id: i.id, name: i.name, nParts: i.parts.length, parts: i.parts.map(nm),
+      nLinks: [...i.links.values()].reduce((n, v) => n + (Array.isArray(v) ? v.length : 1), 0),
+      sealedJoints: i.joints.sealed.length, rejectedJoints: i.joints.rejected.length,
+      forcedSeals: i.forcedSeals.size, assetIds: i.assetIds.slice(), solverMode: i.solverMode, dirty: { ...i.dirty },
+    })),
+    orphans: (state.instanceOrphans || []).map(p => ({ name: p.name, type: p.type || null, reason: p.type ? 'no link or sealed joint to another typed part' : 'no part type (not in the flow graph)' })),
+  };
+}
+function instancesReadout() {
+  const d = describeInstances(), L = [];
+  L.push(d.instances.length + ' instance(s), ' + d.orphans.length + ' orphan part(s); active = ' + (d.activeInstanceId || 'none'));
+  for (const i of d.instances) L.push((i.id === d.activeInstanceId ? '* ' : '  ') + i.id + ' "' + i.name + '": ' + i.nParts + ' parts, ' + i.nLinks + ' links, ' + i.sealedJoints + ' sealed / ' + i.rejectedJoints + ' touching joints [' + i.parts.join(', ') + ']');
+  for (const o of d.orphans) L.push('  orphan ' + o.name + (o.type ? ' (' + o.type + ')' : '') + ' - ' + o.reason);
+  const t = L.join('\n'); console.log(t); return t;
+}
 // <instances:end>
 
 
@@ -9159,6 +9180,8 @@ window.arcFlowDebug = { readParticles: debugReadParticlePositions };
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows };
+// Multi-instance registry (step 2). Extends, never replaces, the object above.
+Object.assign(window.arcFlow, { Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, describeInstances, instancesReadout, instances: () => state.instances });
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
