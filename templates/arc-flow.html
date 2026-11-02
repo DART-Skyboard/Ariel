@@ -308,6 +308,15 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <option value="vac_engine">Vacuum engine · hard vacuum (fan plume)</option>
       <option value="off">Legacy soft plume (no nozzle model)</option>
     </select>
+    <label class="field">Propellant species <span class="u">(flame colour)</span></label>
+    <select id="fuelSpecies">
+      <option value="" selected>From preset</option>
+      <option value="rp1">RP-1 kerosene / LOX · sooty orange</option>
+      <option value="ch4">Methane / LOX</option>
+      <option value="lh2">Hydrogen / LOX · pale blue</option>
+      <option value="hyp">Hypergolic MMH / N₂O₄</option>
+    </select>
+    <label class="field" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="igniterOn" checked> Igniter (spark / torch) <span class="u">· off = cold flow unless hypergolic or hot chamber</span></label>
     <div class="readout" id="propReadout">select a preset</div>
     <label class="field" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="launchPlatform"> Launch platform (solid collision slab under the nozzle)</label>
     <div class="sec-sub">The ground and any part named platform / pad / deck / trench / stand are solid: exhaust and smoke flatten onto them, roll over the edges and curl.</div>
@@ -461,19 +470,193 @@ const THERMAL_RAMP_GLSL = `
          : t < 0.66 ? mix(mid, warm, (t-0.33)/0.33)
          : mix(warm, hot, (t-0.66)/0.34);
   }
-  // Combustion: clean blue at the nozzle (metal oxidation), orange as it
-  // mixes with air, red and smoky as it travels, fading at the end.
-  vec3 combustionRamp(float d) {
-    vec3 blue = vec3(0.4, 0.6, 1.0);
-    vec3 orange = vec3(1.0, 0.5, 0.1);
-    vec3 red = vec3(0.9, 0.25, 0.1);
-    vec3 smoke = vec3(0.3, 0.28, 0.25);
-    d = clamp(d, 0.0, 1.0);
-    return d < 0.2 ? mix(blue, orange, d/0.2)
-         : d < 0.5 ? mix(orange, red, (d-0.2)/0.3)
-         : mix(red, smoke, (d-0.5)/0.5);
-  }
 `;
+
+// ═══════════════════════════════════════════════════════════════════════
+// SHARED FLAME MODEL: one set of constants + one formula, written once in JS (flame* functions, used by the tests and by
+// JS-side colouring) and injected into GLSL (FLAME_GLSL) so Points, Gaussian and Volumetric shade the same plume identically.
+//   colour/emission come from TEMPERATURE (tn = (T-TLO)/(THI-TLO), never distance) :
+//     gas   : blackbody-ish chromaticity ramp (BB, kelvin keys) x radiance (T/TREF)^4, whitening toward the top (white-hot core)
+//     soot  : incandescent carbon, orange/yellow, cannot exceed ~SOOT_TMAX, burns out in afterburn (SOOT_BURN)
+//     chem  : chemiluminescence (OH*/CH*/C2*), pale blue, the only glow of a clean H2/O2 flame
+//     ab    : afterburn zone (fuel-rich exhaust meeting ambient O2) adds luminosity (AB_LUM)
+//   species (soot, chem, ab) are plain numbers per particle/voxel, so they average linearly: that is what lets several
+//   chambers with different propellants merge into one multicoloured plume (see plumeEnv / P.sp0,sp1,cx,cz).
+// ═══════════════════════════════════════════════════════════════════════
+// <flame-model:begin>
+const FLAME = {
+  TLO: 600, THI: 3800, TREF: 3000,
+  BB: [[600, 0.18, 0.0, 0.0], [900, 0.55, 0.05, 0.0], [1200, 0.90, 0.18, 0.02], [1600, 1.0, 0.40, 0.07], [2000, 1.0, 0.58, 0.20],
+       [2400, 1.0, 0.74, 0.40], [2800, 1.0, 0.88, 0.65], [3200, 1.0, 0.96, 0.88], [3800, 0.92, 0.95, 1.0]],
+  WHITE_LO: 2500, WHITE_HI: 3300,
+  GAS_EPS: 0.35, SOOT_GAIN: 1.6, SOOT_TMAX: 2100, SOOT_BURN: 0.7,
+  CHEM_GAIN: 0.55, CHEM_TLO: 1000, CHEM_THI: 2200, CHEM_RGB: [0.45, 0.62, 1.0], CHEM_DIM: 0.6,
+  AB_LUM: 1.5,
+  // afterburn physics (JS only): fuel-rich exhaust (unburnt CO/H2/fuel, mass fraction yf) mixing with ambient O2 downstream of the nozzle exit.
+  AB_MIX_XS: 2.0,     // exit diameters over which entrained air has mixed in (ramp-up 1-exp(-xs/MIX))
+  AB_END_XS: 16,      // exit diameters over which the plume has diluted/cooled out of the burning window (exp(-xs/END))
+  AB_DT_K: 1100,      // temperature rise [K] of a fully reacted afterburn parcel (CO/H2 + O2 releasing heat into an already hot jet)
+  AB_YF_REF: 0.12,    // unburnt-fuel fraction at which the afterburn is saturated (so it scales with how fuel-rich the mixture is)
+  AB_GROUND_DECAY: 0.9, // 1/s: the afterburn glow in the wall jet dies away as the gas cools and runs out of fuel
+  SMOKE_SOOT: [0.22, 0.19, 0.17], SMOKE_STEAM: [0.52, 0.55, 0.58],
+  T_AMB: 288,
+};
+const _fl = (x) => { const t = String(x); return /[.e]/.test(t) ? t : t + '.0'; };
+const _fv3 = (a) => `vec3(${a.map(_fl).join(', ')})`;
+function _flameBBGlsl() {
+  const k = FLAME.BB; let c = `  vec3 flameBB(float T) {\n    if (T <= ${_fl(k[0][0])}) return ${_fv3(k[0].slice(1))};\n`;
+  for (let i = 1; i < k.length; i++) c += `    if (T < ${_fl(k[i][0])}) return mix(${_fv3(k[i - 1].slice(1))}, ${_fv3(k[i].slice(1))}, (T - ${_fl(k[i - 1][0])}) / ${_fl(k[i][0] - k[i - 1][0])});\n`;
+  return c + `    return ${_fv3(k[k.length - 1].slice(1))};\n  }\n`;
+}
+const FLAME_GLSL = `
+  const float FL_TLO = ${_fl(FLAME.TLO)}, FL_THI = ${_fl(FLAME.THI)}, FL_TREF = ${_fl(FLAME.TREF)};
+  const float FL_WHITE_LO = ${_fl(FLAME.WHITE_LO)}, FL_WHITE_HI = ${_fl(FLAME.WHITE_HI)};
+  const float FL_GAS_EPS = ${_fl(FLAME.GAS_EPS)}, FL_SOOT_GAIN = ${_fl(FLAME.SOOT_GAIN)}, FL_SOOT_TMAX = ${_fl(FLAME.SOOT_TMAX)}, FL_SOOT_BURN = ${_fl(FLAME.SOOT_BURN)};
+  const float FL_CHEM_GAIN = ${_fl(FLAME.CHEM_GAIN)}, FL_CHEM_TLO = ${_fl(FLAME.CHEM_TLO)}, FL_CHEM_THI = ${_fl(FLAME.CHEM_THI)}, FL_CHEM_DIM = ${_fl(FLAME.CHEM_DIM)}, FL_AB_LUM = ${_fl(FLAME.AB_LUM)};
+  const vec3 FL_CHEM_RGB = ${_fv3(FLAME.CHEM_RGB)};
+  const vec3 FL_SMOKE_SOOT = ${_fv3(FLAME.SMOKE_SOOT)}, FL_SMOKE_STEAM = ${_fv3(FLAME.SMOKE_STEAM)};
+${_flameBBGlsl()}  float flameTK(float tn) { return FL_TLO + clamp(tn, 0.0, 1.0) * (FL_THI - FL_TLO); }
+  float flameRad(float T) { float r = T / FL_TREF; r *= r; return r * r; }
+  // emitted radiance (before the per-mode gain) of gas at temperature tn with soot / chemiluminescence / afterburn weights
+  vec3 flameEmission(float tn, float soot, float chem, float ab) {
+    float T = flameTK(tn);
+    float rad = flameRad(T) * (1.0 + FL_AB_LUM * ab);
+    float sootE = soot * (1.0 - FL_SOOT_BURN * ab);
+    vec3 gas = flameBB(T) * rad * FL_GAS_EPS * (1.0 - FL_CHEM_DIM * chem);
+    float mx = max(gas.r, max(gas.g, gas.b));
+    gas = mix(gas, vec3(mx), smoothstep(FL_WHITE_LO, FL_WHITE_HI, T));
+    vec3 sootL = flameBB(min(T, FL_SOOT_TMAX)) * flameRad(T) * (1.0 + FL_AB_LUM * ab) * sootE * FL_SOOT_GAIN;
+    vec3 chemL = FL_CHEM_RGB * chem * smoothstep(FL_CHEM_TLO, FL_CHEM_THI, T) * FL_CHEM_GAIN * (0.25 + 0.75 * sqrt(rad));
+    return gas + sootL + chemL;
+  }
+  vec3 flameSmoke(float soot) { return mix(FL_SMOKE_STEAM, FL_SMOKE_SOOT, clamp(soot, 0.0, 1.0)); }
+`;
+// JS mirror of FLAME_GLSL (kept line-for-line; tools/arc-flow-tests/flame-model.test.js checks they agree).
+const _flSS = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+const _flMix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const flameTK = (tn) => FLAME.TLO + Math.min(Math.max(tn, 0), 1) * (FLAME.THI - FLAME.TLO);
+const flameTn = (T) => Math.min(Math.max((T - FLAME.TLO) / (FLAME.THI - FLAME.TLO), 0), 1);
+const flameRad = (T) => Math.pow(T / FLAME.TREF, 4);
+function flameBB(T) {
+  const k = FLAME.BB;
+  if (T <= k[0][0]) return k[0].slice(1);
+  for (let i = 1; i < k.length; i++) if (T < k[i][0]) return _flMix(k[i - 1].slice(1), k[i].slice(1), (T - k[i - 1][0]) / (k[i][0] - k[i - 1][0]));
+  return k[k.length - 1].slice(1);
+}
+function flameEmission(tn, soot, chem, ab) {
+  const T = flameTK(tn), rad = flameRad(T) * (1 + FLAME.AB_LUM * ab), sootE = soot * (1 - FLAME.SOOT_BURN * ab);
+  let gas = flameBB(T).map(c => c * rad * FLAME.GAS_EPS * (1 - FLAME.CHEM_DIM * chem));
+  const mx = Math.max(gas[0], gas[1], gas[2]);
+  gas = _flMix(gas, [mx, mx, mx], _flSS(FLAME.WHITE_LO, FLAME.WHITE_HI, T));
+  const sb = flameBB(Math.min(T, FLAME.SOOT_TMAX)), sk = flameRad(T) * (1 + FLAME.AB_LUM * ab) * sootE * FLAME.SOOT_GAIN;
+  const ck = chem * _flSS(FLAME.CHEM_TLO, FLAME.CHEM_THI, T) * FLAME.CHEM_GAIN * (0.25 + 0.75 * Math.sqrt(rad));
+  return [0, 1, 2].map(i => gas[i] + sb[i] * sk + FLAME.CHEM_RGB[i] * ck);
+}
+const flameSmoke = (soot) => _flMix(FLAME.SMOKE_STEAM, FLAME.SMOKE_SOOT, Math.min(Math.max(soot, 0), 1));
+
+// Propellant species: stoichiometric O/F, nominal engine O/F, sootiness of the fuel-rich flame (0..1) and chemiluminescent
+// fraction (1 = the clean pale-blue flame of H2/O2). Chosen with #fuelSpecies (or the preset); per chamber via ch.fuelSpecies.
+// Propellant chemistry. `fuel` = per-mole formula (C, H, N atoms, molar mass g/mol), `ox` = oxidiser (O atoms per molecule, molar mass), so O/F stoichiometry and the
+// reaction products are COMPUTED, not looked up: ofStoich below is what the formulas give (RP-1 CH1.95 + O2 = 3.41, CH4 = 3.99, H2 = 7.94, MMH + N2O4 = 2.50).
+// ofNom = the engine's design mixture, tAuto = autoignition temperature (K, 0 = hypergolic), tK = fraction of the preset flame temperature at the nominal O/F.
+const FUEL_SPECIES = {
+  rp1: { label: 'RP-1 kerosene / LOX', fuel: { C: 1, H: 1.95, N: 0, M: 13.97 }, ox: { O: 2, M: 32.0 },  ofNom: 2.4, tAuto: 500, tK: 1.00 },
+  ch4: { label: 'Methane / LOX',       fuel: { C: 1, H: 4,    N: 0, M: 16.04 }, ox: { O: 2, M: 32.0 },  ofNom: 3.5, tAuto: 810, tK: 0.97 },
+  lh2: { label: 'Hydrogen / LOX',      fuel: { C: 0, H: 2,    N: 0, M: 2.016 }, ox: { O: 2, M: 32.0 },  ofNom: 6.0, tAuto: 770, tK: 0.93 },
+  hyp: { label: 'Hypergolic MMH / N2O4', fuel: { C: 1, H: 6,  N: 2, M: 46.07 }, ox: { O: 4, M: 92.01 }, ofNom: 1.9, tAuto: 0,   tK: 1.00 },   // tAuto 0 = hypergolic: lights on contact
+};
+for (const k in FUEL_SPECIES) { const f = FUEL_SPECIES[k]; f.ofStoich = (2 * f.fuel.C + f.fuel.H / 2) / f.ox.O * f.ox.M / f.fuel.M; }
+// Simple-equilibrium reaction products of a fuel at mixture ratio `of` (mass O/F): oxygen goes to H -> H2O first, then C -> CO, then CO -> CO2 (fuel-rich: leftover H as H2,
+// leftover C as CO, and soot once carbon outruns oxygen: the soot yield rises with the C/O atom ratio (onset ~0.3, nearly all of the excess by ~0.7, 2CO -> C + CO2);
+// lean: leftover O2). Returns moles per mole of fuel and MASS fractions of the exhaust. This is what the flame colour, afterburn fuel and smoke are derived from.
+const SOOT_C_FRAC = 0.45;     // fraction of the carbon that can end up as soot at saturation (rest stays CO / CO2)
+function combProducts(fuelKey, of) {
+  const f = FUEL_SPECIES[fuelKey] || FUEL_SPECIES.rp1, F = f.fuel, o = of > 0 ? of : f.ofNom;
+  let O = o * F.M / f.ox.M * f.ox.O;                                  // oxygen atoms per mole of fuel
+  const O0 = O;
+  const mol = { H2O: 0, H2: 0, CO: 0, CO2: 0, C: 0, N2: F.N / 2, O2: 0 };
+  mol.H2O = Math.min(F.H / 2, O); O -= mol.H2O; mol.H2 = F.H / 2 - mol.H2O;
+  mol.CO = Math.min(F.C, O); O -= mol.CO; mol.C = F.C - mol.CO;      // carbon that finds no oxygen is soot
+  const r = F.C / Math.max(O0, 1e-9), k = Math.min(mol.CO / 2, F.C * SOOT_C_FRAC * _flSS(0.30, 0.70, r));   // carbon-rich: 2CO -> C + CO2
+  mol.CO -= 2 * k; mol.CO2 += k; mol.C += k;
+  const up = Math.min(mol.CO, O); mol.CO -= up; mol.CO2 += up; O -= up;   // spare oxygen finishes CO -> CO2
+  mol.O2 = O / 2;
+  const M = { H2O: 18.015, H2: 2.016, CO: 28.01, CO2: 44.01, C: 12.011, N2: 28.014, O2: 32.0 }, mass = {}; let tot = 0;
+  for (const g in mol) { mass[g] = mol[g] * M[g]; tot += mass[g]; }
+  for (const g in mass) mass[g] /= tot;
+  return { mol, mass, of: o, phi: f.ofStoich / o };
+}
+// Exhaust description for a chamber at mixture `of` into an atmosphere (gas makeup `gas`: mole fractions, `pRel`: pressure / 1 atm). Everything the renderers use:
+//   soot  0..1  = soot mass fraction / SOOT_REF (luminous carbon: yellow-orange blackbody, black smoke)      chem 0..1 = OH/CH/H2O band emission (blue), from the fuel's hydrogen
+//   yf  = unburnt combustibles (CO + H2 + soot) mass fraction: the afterburn fuel                           smkMax = smoke opacity from soot + condensed steam
+//   nox 0..1 = thermal-NO index from the ambient N2 x O2 the hot jet entrains                              products = the full mass-fraction table
+const SOOT_REF = 0.04, CHEM_K = 1.6, K_SOOT = 10, K_STEAM = 1;     // soot mass for full colour; mass-extinction ratio soot : condensed water
+function flameSpecies(fuelKey, of, atm) {
+  const f = FUEL_SPECIES[fuelKey] || FUEL_SPECIES.rp1, pr = combProducts(fuelKey, of), m = pr.mass;
+  const g = (atm && atm.gas) || {}, pRel = atm && atm.pRel != null ? Math.max(atm.pRel, 0) : 1;
+  const soot = Math.min(1, m.C / SOOT_REF);
+  const hmass = f.fuel.H / f.fuel.M;
+  const lean = Math.max(0, pr.of / f.ofStoich - 1);
+  const chem = Math.min(1, CHEM_K * hmass * (1 - 0.6 * soot) * (1 + 0.3 * Math.min(lean, 1)));
+  const cond = _flSS(0.002, 0.05, pRel);                              // steam only forms a visible white cloud in an atmosphere (it flash-freezes / disperses in vacuum)
+  const tau = K_SOOT * m.C + K_STEAM * m.H2O * cond;
+  const nox = Math.min(((g.N2 || 0) * (g.O2 || 0)) / (0.781 * 0.209) * Math.min(pRel, 1), 1);
+  return { soot, chem, yf: m.CO + m.H2 + m.C, of: pr.of, phi: pr.phi, products: m, nox, smkMax: 1 - Math.exp(-tau / 0.5), steam: m.H2O * cond };
+}
+
+// ── Combustion (physics-driven) ──
+// The jet is only hot because propellants REACT. chamberCombustion() decides from the mixture (O/F -> equivalence ratio phi), the
+// chamber pressure and an ignition source whether the chamber lights, and what adiabatic flame temperature it reaches; combAdvance()
+// is the transient (ignition build-up, flame-out). The effective chamber temperature feeds the nozzle model and the jet luminosity,
+// so cold flow (no igniter, wrong mixture, no pressure) is a dark vapour jet. Downstream, reactRate() is the chained afterburn: a
+// parcel of unburnt fuel burns once it is hot enough OR a burning neighbour lights it, and only where ambient O2 has mixed in.
+const COMB = {
+  T_FEED: 288, P_MIN_PSI: 3, PHI_LEAN: 0.25, PHI_RICH: 4.0, ETA: 0.97, EXP_LEAN: 0.35, EXP_RICH: 0.45,
+  TAU_RISE: 0.35, TAU_FALL: 0.2,                       // s: flame spreads through the chamber after ignition; flame-out is quicker
+  T_IGN: 1000, IGN_BAND: 220, K_AB: 2.5, CHAIN_K: 1.0, BQ_REF: 1.2,   // afterburn: ignition temperature (K), band, rate (1/s), chain-reaction gain, reference burn rate (1/s)
+};
+// p: { fuel, of (0 = unknown), known (propellant flow is traced), pcPsi, TpartK (chamber wall/gas temperature K), igniter (bool), TpeakK (design flame temperature K) }
+function chamberCombustion(p) {
+  const f = FUEL_SPECIES[p.fuel] || FUEL_SPECIES.rp1, Tin = COMB.T_FEED;
+  const of = p.of > 0 ? p.of : (p.known ? 0 : f.ofNom);          // unknown mixture: nominal; known one-propellant flow: nothing to react
+  const out = { of, phi: 0, Tad: Tin, stab: 0, flammable: false, source: false, ignitable: false, sustain: false, reason: '' };
+  if (!(of > 0)) { out.reason = 'one propellant only'; return out; }
+  const phi = f.ofStoich / of; out.phi = phi;
+  if (phi < COMB.PHI_LEAN) { out.reason = 'too oxidiser-rich to burn'; return out; }
+  if (phi > COMB.PHI_RICH) { out.reason = 'too fuel-rich to burn'; return out; }
+  if (!(p.pcPsi >= COMB.P_MIN_PSI)) { out.reason = 'chamber pressure too low'; return out; }
+  out.flammable = true;
+  out.stab = _ss(COMB.PHI_LEAN, 1.6 * COMB.PHI_LEAN, phi) * (1 - _ss(0.6 * COMB.PHI_RICH, COMB.PHI_RICH, phi));
+  const phiPk = f.ofStoich / f.ofNom, Tpk = (p.TpeakK > 0 ? p.TpeakK : 3500) * f.tK;
+  const shape = phi < phiPk ? Math.pow(phi / phiPk, COMB.EXP_LEAN) : Math.pow(phiPk / phi, COMB.EXP_RICH);   // peak near the nominal O/F, falls both sides
+  out.Tad = Tin + (Tpk - Tin) * Math.min(shape, 1) * COMB.ETA;
+  out.sustain = true;
+  out.source = f.tAuto === 0 || !!p.igniter || (p.TpartK >= f.tAuto);       // hypergolic, a spark/torch, or a chamber hot enough to autoignite
+  out.ignitable = out.source;
+  if (!out.source) out.reason = 'no ignition source (igniter off, chamber below autoignition)';
+  return out;
+}
+// st: { burn 0..1, lit }. Lights when ignitable, keeps burning while sustainable (a lit chamber needs no igniter); burn follows with a time constant.
+function combAdvance(st, c, dt) {
+  if (!st.lit && c.ignitable) st.lit = true;
+  else if (st.lit && !c.sustain) st.lit = false;
+  const tau = st.lit ? COMB.TAU_RISE : COMB.TAU_FALL;
+  st.burn += ((st.lit ? 1 : 0) - st.burn) * (1 - Math.exp(-Math.max(dt, 0) / tau));
+  return st;
+}
+// Effective chamber temperature (K) and the c* scale (c* ~ sqrt(T), relative to the preset's design Tc).
+function combChamberT(c, burn) { return COMB.T_FEED + (c.Tad - COMB.T_FEED) * c.stab * burn; }
+function combPcScale(Teff, TcDesign) { return Math.sqrt(Math.max(Teff, COMB.T_FEED) / Math.max(TcDesign, COMB.T_FEED)); }
+// Chained afterburn reaction rate (1/s) of an unburnt-fuel parcel: fu = unburnt fraction, avail = entrained O2 availability 0..1, tk = its
+// own temperature, nbBurn / nbT = the burn rate (1/s) and temperature (K) of the burning neighbours around it.
+function reactRate(fu, avail, tk, nbBurn, nbT) {
+  if (!(fu > 0) || !(avail > 0)) return 0;
+  const a = COMB.T_IGN - COMB.IGN_BAND, b = COMB.T_IGN + COMB.IGN_BAND;
+  const self = _ss(a, b, tk);
+  const chain = Math.min(nbBurn / COMB.BQ_REF, 1) * _ss(a, b, nbT) * COMB.CHAIN_K;
+  return COMB.K_AB * fu * avail * Math.max(self, chain);
+}
+// <flame-model:end>
 
 const DEMO_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/CombustionChamber.glb";
 const DEMO2_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/aj10cquick.glb";
@@ -547,7 +730,10 @@ scene.add(grid);
 // splashing, fading out over time), sampled by the floor's own shader and
 // blended through the same thermal ramp the particles use.
 const FLOOR_SIZE = 200;
-const floorGeo = new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE, 1, 1);
+// The ground the flame lands on. FLOOR_SIZE is the square the thermal-feedback map covers (512^2 texels around the origin); the visible
+// plane (FLOOR_VIS) is much bigger so the ground still exists under the 300 m smoke fade, with the heat only drawn inside the map.
+const FLOOR_VIS = 1400;
+const floorGeo = new THREE.PlaneGeometry(FLOOR_VIS, FLOOR_VIS, 1, 1);
 floorGeo.rotateX(-Math.PI / 2);
 
 // Declared up here (not down beside the particle system where they're
@@ -559,6 +745,7 @@ floorGeo.rotateX(-Math.PI / 2);
 // rendered its HTML/CSS fine but no scene ever loaded.
 let particleSystem = null;
 let particleSplatMaterial = null;
+const plumeBurnUniform = { value: 1 };     // 0..1 chamber reaction progress: scales the baked (pre-nozzle) particle heat, so an unlit chamber is cold flow
 const plumeHidePostUniform = { value: 0 }; // shared by the display + floor-splat materials and the CPU volume splat
 let partHeatEmissiveApplied = false;
 
@@ -611,37 +798,51 @@ floorDecayScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), floorDecayMat)
 
 initFloorHeatSystem(floorHeatRes);
 
+// The ground is a transparent, reactive surface: a faint dark slab that shows the grid / space through it, and where exhaust lands it
+// glows with the SAME flame model (flameEmission: temperature + soot + chemistry) as the plume, driven only by the heat the exhaust particles actually deposit
+// (no texture, no scrolling noise: the motion is the real gas). Heat map channels (premultiplied, additive): R = tn x e, G = e, B = soot x e, A = chem x e.
 const floorMat = new THREE.ShaderMaterial({
   uniforms: {
     uHeat: { value: null },
     uBaseColor: { value: new THREE.Color(0x0a1218) },
+    uHeatSize: { value: FLOOR_SIZE }, uBaseAlpha: { value: 0.55 }, uGlow: { value: 0.9 }, uWave: { value: 0 },
   },
   vertexShader: `
-    varying vec2 vUv;
+    varying vec2 vXZ;
     void main() {
-      vUv = uv;
+      vXZ = (modelMatrix * vec4(position, 1.0)).xz;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
   `,
-  fragmentShader: THERMAL_RAMP_GLSL + `
-    uniform sampler2D uHeat;
-    uniform vec3 uBaseColor;
-    varying vec2 vUv;
+  fragmentShader: FLAME_GLSL + `
+    uniform sampler2D uHeat; uniform vec3 uBaseColor; uniform float uHeatSize, uBaseAlpha, uGlow, uWave;
+    varying vec2 vXZ;
     void main() {
-      vec2 h = texture2D(uHeat, vUv).rg;
-      float energy = h.g;
-      float temp = clamp(h.r / max(energy, 1e-4), 0.0, 1.0);   // mean temperature of what landed here
-      float k = 1.0 - exp(-energy * 1.4);                      // soft-saturating intensity, never clips
-      // Cap the ramp below its near-white end: hot reads as orange-gold, not paper-white.
-      vec3 heatCol = thermalRamp(temp * 0.82);
-      vec3 col = uBaseColor + heatCol * (k * 0.85);
-      gl_FragColor = vec4(col, 1.0);
+      vec2 huv = vec2(vXZ.x / uHeatSize + 0.5, 0.5 - vXZ.y / uHeatSize);
+      bool inside = huv.x > 0.0 && huv.x < 1.0 && huv.y > 0.0 && huv.y < 1.0;
+      vec4 h = inside ? texture2D(uHeat, huv) : vec4(0.0);
+      float e = h.g, inv = 1.0 / max(e, 1e-4);
+      float tn = clamp(h.r * inv, 0.0, 1.0), soot = clamp(h.b * inv, 0.0, 1.0), chem = clamp(h.a * inv, 0.0, 1.0);
+      // thermal waves: ripples run outward along the contours of the heat the gas has actually deposited, so every hot spot (each clone's own
+      // impact) carries its own bands; amplitude is the heat itself, so a cold floor stays perfectly still. No tiled texture, no noise.
+      float ph = 7.0 * log(1.0 + 8.0 * e) - uWave * 3.2;
+      float band = sin(ph), edgeK = smoothstep(0.02, 0.25, e);
+      tn = clamp(tn + 0.07 * band * edgeK, 0.0, 1.0);
+      float k = (1.0 - exp(-e * 1.4)) * (1.0 + 0.22 * band * edgeK);    // soft-saturating intensity, never clips
+      vec3 glow = flameEmission(tn, soot * 0.6, chem, 0.0) * k * uGlow;
+      float fade = 1.0 - smoothstep(250.0, 650.0, length(vXZ));
+      float a0 = uBaseAlpha * fade;
+      vec3 base = uBaseColor * (1.0 - 0.5 * k * soot);                  // soot scorches the ground darker under the flame
+      gl_FragColor = vec4(base * a0 + glow, a0 * (1.0 - 0.5 * k));      // premultiplied: the glow adds light, the slab stays see-through
     }
   `,
+  transparent: true, depthWrite: false, blending: THREE.CustomBlending,
+  blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
 });
 const floorMesh = new THREE.Mesh(floorGeo, floorMat);
 floorMesh.receiveShadow = true;
-floorMesh.position.y = 0;
+floorMesh.position.y = GROUND_BODY.Y;
+floorMesh.renderOrder = -5;
 scene.add(floorMesh);
 
 // Runs once per frame while a simulation is active: dim the previous heat
@@ -649,8 +850,10 @@ scene.add(floorMesh);
 // (additive, and only where they're actually near the floor — see the
 // splat fragment shader), then swap buffers and hand the fresh one to the
 // floor's own material.
+let _floorClockAt = 0;
 function renderFloorHeatPass(first = true, last = true) {   // first/last: several instances splat into ONE floor buffer per frame (decay once, swap once)
   if (!particleSystem || !particleSplatMaterial) return;
+  { const nw = performance.now() * 0.001; if (state.simRunning && _floorClockAt) floorMat.uniforms.uWave.value += Math.min(nw - _floorClockAt, 0.1); _floorClockAt = nw; }   // wave phase advances with the running sim only
   const readTarget = floorHeatTargets[floorHeatIndex];
   const writeTarget = floorHeatTargets[1 - floorHeatIndex];
 
@@ -1587,10 +1790,11 @@ function showNoSelection() {
   document.getElementById('partDetail').style.display = 'none';
 }
 
+// o2 = mole fraction of ambient O2 (fuels the afterburn); tint = ambient scatter colour of smoke/dust (Mars: rust dust).
 const ATMO = {
-  earth:  { psi: 14.696, o2: 0.21, label: '1 atm · Earth sea level · 21% O₂' },
-  mars:   { psi: 0.087,  o2: 0.001, label: '≈0.6% Earth · Mars surface · trace O₂' },
-  vacuum: { psi: 0.0,    o2: 0.0, label: 'hard vacuum · deep space · no atmosphere' },
+  earth:  { psi: 14.696, o2: 0.21, gas: { N2: 0.781, O2: 0.209, Ar: 0.0093, CO2: 0.0004 }, tint: [1.0, 1.0, 1.0], label: '1 atm · Earth sea level · 21% O₂' },
+  mars:   { psi: 0.087,  o2: 0.001, gas: { CO2: 0.953, N2: 0.027, Ar: 0.016, O2: 0.0013 }, tint: [1.0, 0.74, 0.55], label: '≈0.6% Earth · Mars surface · trace O₂' },
+  vacuum: { psi: 0.0,    o2: 0.0, gas: {}, tint: [1.0, 1.0, 1.0], label: 'hard vacuum · deep space · no atmosphere' },
 };
 
 // ── Part detail / classification panel ──────────────────────────
@@ -4763,6 +4967,8 @@ const SDF_TUBE_ASPECT = 6;             // bbox aspect (long / middle extent) tha
 const SDF_TUBE_MIN_CELLS = 6;          // target voxels across the smallest bore
 const SDF_JOINT_MIN_RADIUS = 0.03;
 const FLOW_UNIT_M_DEFAULT = (() => { try { const v = parseFloat(new URLSearchParams(location.search).get('flowUnitM')); return v > 0 ? v : 1; } catch (e) { return 1; } })();         // 1 model unit = 1 m for the physics (was 0.0254 = 1 inch); matches Combustion's partRadiusM/partWallM. Display units are separate (see <units:begin>)
+const unitM = () => state.flowUnitM || FLOW_UNIT_M_DEFAULT;      // metres per world unit
+const metresToWU = (m) => m / unitM();
 const FLUID_PROPS = {
   helium:   { gas: true, M: 0.004003, gamma: 1.667, mu: 2.0e-5, label: 'helium' },
   oxidizer: { rho: 1141, mu: 1.9e-4, label: 'oxidizer (LOX-like)' },
@@ -5923,6 +6129,7 @@ const PARTICLE_SHADER_CORE = `
   attribute float aLatV;
   attribute float aLive;   // 1 = this baked particle has been taken over by the live pressure-driven leak system (hidden here)
   attribute float aExit;   // waypoint index of this particle's nozzle exit plane (>= MAX_WAYPOINTS: never reaches one)
+  uniform float uBurn;
   uniform float uHidePost; // 1 = the live rocket-plume model draws everything past the nozzle, so hide the baked post-nozzle stretch
   varying float vThermal;
   varying float vProgress;
@@ -5996,7 +6203,7 @@ const PARTICLE_SHADER_CORE = `
   vec3 computeParticlePosition() {
     float progress = fract(uTime * aSpeed + aPhase);
     vProgress = progress;
-    vThermal = aThermal + progress * 0.4;
+    vThermal = (aThermal + progress * 0.4) * uBurn;     // heat comes from the reaction: unlit chamber = cold flow
     // find the segment whose [knot_i, knot_i+1) contains progress (knots are non-decreasing; zero-length segments are skipped)
     float seg = 0.0;
     float segT = 0.0;
@@ -6116,11 +6323,12 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
     float floorProximity = smoothstep(3.0, 0.0, vHeightAboveFloor);
     if (floorProximity <= 0.001) discard;
     float edge = smoothstep(0.5, 0.0, length(c));
-    // Channel layout (additive): R = heat-weighted energy, G = energy.
+    // Channel layout (premultiplied, ONE/ONE): R = heat x energy, G = energy (B, A = soot / chemistry x energy: unknown for baked gas, 0).
     // The floor shader divides them back into a mean temperature and
     // tone-maps the energy, so thousands of overlapping splats can't
     // saturate into a blown-out white slab.
-    gl_FragColor = vec4(vThermal, 1.0, 0.0, edge * floorProximity * 0.012);
+    float w = edge * floorProximity * 0.012;
+    gl_FragColor = vec4(vThermal * w, w, 0.0, 0.0);
   }
 `;
 
@@ -6586,6 +6794,7 @@ function bakeInstanceRender(collisionSDF, A, shared) {
       uTexHeight: { value: texHeight },
       uSize: { value: 1.5 },
       uHidePost: plumeHidePostUniform,
+      uBurn: plumeBurnUniform,
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
       ...sdfUniforms,
     },
@@ -6632,6 +6841,7 @@ function bakeInstanceRender(collisionSDF, A, shared) {
       uTexHeight: { value: texHeight },
       uSplatSize: { value: floorHeatRes / 24 },
       uHidePost: plumeHidePostUniform,
+      uBurn: plumeBurnUniform,
       // SAME SDF uniforms (not a second copy built independently) as the
       // main material — computeParticlePosition()'s collision correction
       // must land on the identical position in both passes, exactly like
@@ -6643,7 +6853,7 @@ function bakeInstanceRender(collisionSDF, A, shared) {
     vertexShader: PARTICLE_SPLAT_VERTEX_SHADER,
     fragmentShader: PARTICLE_SPLAT_FRAGMENT_SHADER,
     transparent: true, depthWrite: false, depthTest: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
   });
 }
 
@@ -8924,26 +9134,60 @@ window.arcFlowMass = { mass, MATERIALS, applyMaterial, step: (dt) => massStep(dt
 const PLUME_MAX = 12000;
 const PLUME_VSCALE = 0.011;           // visual speed (world units / s) per m/s of nozzle exit velocity
 const PLUME_GRID_MAX = [80, 56, 80];
+// Smoke / far field. Lengths are world units = metres (metresToWU converts if the units toggle changes the scale).
+const SMOKE = {
+  FADE_M: 300, FADE_START: 0.55,   // exhaust smoke fades out gradually between 0.55 x and 1 x this distance from the source, in every direction
+  LIFE0: 40, LIFE1: 40,            // seconds a thinned-out survivor lives (0 -> hard kill never happens inside the fade distance)
+  SPREAD_K: 0.10, SPREAD_MAX: 6,   // turbulent entrainment spreading: outward drift = K x distance from the source [1/s], capped [m/s], scaled by sqrt(ambient density)
+  BUOY: 0.5, BUOY_MAX: 12, G: 9.81, // buoyancy accel = BUOY x g x (rho_amb - rho_smoke)/rho_smoke = BUOY x g x (T/T_amb - 1), diluted by mixing; x sqrt(ambient density)
+  COOL: 0.12, DRAG: 0.3,           // 1/s: entrainment cooling toward ambient and the drag that gives the rise a terminal velocity
+  GW_MAX: 10, CAP_FRAC: 0.35,      // pool share the long-lived smoke may take / cap on the weight a survivor carries for its thinned siblings
+  RELEASE: [0.4, 1.6],             // seconds after impact over which the gas lets go of the wall-jet layer and becomes free smoke
+};
+// The ground as a body: the same descriptor drives the particle collision (plumeStep) and the thermal-feedback surface (floorMat).
+// Flat plane y = Y with the +y normal; e = restitution of the impinging jet, FEEDBACK = how much a heated patch of ground slows the
+// cooling of the gas hugging it. A different ground shape (terrain, pad with a flame trench) replaces this descriptor.
+const GROUND_BODY = { Y: 0, N: [0, 1, 0], FEEDBACK: 0.6 };
 const PLUME_VOL_INTERVAL_MS = 80;
-const PLUME_TLO = 900, PLUME_THI = 2950; // luminous-temperature window mapped onto the 0..1 flame ramp
+// luminous-temperature window: FLAME.TLO..FLAME.THI (shared flame model)
 
 // Per-preset: chamber pc [psi] / Tc [K], gas gamma + molar mass [g/mol], nozzle area ratio, ambient, baked particle
 // count per container, plume pool size, exit-disc scale, luminous temperature mix (static exit .. total), emission
 // gain and shock-cell length factor (x exit diameter x sqrt(Mj^2-1)).
 const PROP_PRESETS = {
   rocket_bell: { label: 'Rocket · supersonic bell nozzle',                  pcPsi: 1200, Tc: 3500, gamma: 1.22, mw: 22, eps: 6,  atmo: 'earth',  baked: 1000, count: 9000,  exitScale: 1.0,  lum: 0.55, emis: 1.0,  cell: 0.26 },
-  thruster:    { label: 'Low-thrust thruster',                              pcPsi: 120,  Tc: 2800, gamma: 1.25, mw: 20, eps: 3,  atmo: 'earth',  baked: 500,  count: 4500,  exitScale: 0.45, lum: 0.55, emis: 0.85, cell: 0.26 },
+  thruster:    { fuel: 'hyp', label: 'Low-thrust thruster',                              pcPsi: 120,  Tc: 2800, gamma: 1.25, mw: 20, eps: 3,  atmo: 'earth',  baked: 500,  count: 4500,  exitScale: 0.45, lum: 0.55, emis: 0.85, cell: 0.26 },
   sl_engine:   { label: 'Sea-level engine · Earth (underexpanded plume)',   pcPsi: 1500, Tc: 3600, gamma: 1.20, mw: 22, eps: 5,  atmo: 'earth',  baked: 1000, count: 10000, exitScale: 1.0,  lum: 0.55, emis: 1.0,  cell: 0.26 },
   vac_in_atm:  { label: 'Vacuum engine · Earth sea level (overexpanded)',   pcPsi: 300,  Tc: 3400, gamma: 1.20, mw: 18, eps: 40, atmo: 'earth',  baked: 1000, count: 8000,  exitScale: 1.0,  lum: 0.62, emis: 1.0,  cell: 0.26 },
   vac_engine:  { label: 'Vacuum engine · hard vacuum (fan plume)',          pcPsi: 300,  Tc: 3400, gamma: 1.20, mw: 18, eps: 40, atmo: 'vacuum', baked: 1000, count: 9000,  exitScale: 1.0,  lum: 0.62, emis: 1.0,  cell: 0.26 },
 };
+const randn = () => (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.7;   // ~N(0,1), cheap
 const _ss = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
 
 function plumeAreaRatio(M, g) { const a = (g - 1) / 2; return (1 / M) * Math.pow((1 + a * M * M) / (1 + a), (g + 1) / (2 * (g - 1))); }
 function plumeSolveMach(eps, g) { let lo = 1, hi = 16; for (let i = 0; i < 60; i++) { const m = 0.5 * (lo + hi); if (plumeAreaRatio(m, g) < eps) lo = m; else hi = m; } return 0.5 * (lo + hi); }
 
+
+// Combustion environment of a chamber: exhaust species from its propellant + O/F (flameSpecies) and the ambient oxygen
+// available to the afterburn (o2Rel = ambient O2 partial pressure relative to sea-level air; 0 in vacuum and on Mars) plus the
+// ambient scatter tint. ch may be null (no mixture info: nominal O/F of the fuel).
+function atmoNow(paPsi) {
+  const a = ATMO[atmoPresetEl.value] || { o2: paPsi > 0.5 ? 0.21 : 0, tint: [1, 1, 1] };   // custom pressure: assume Earth-like air
+  return { o2: a.o2, gas: a.gas || {}, tint: a.tint || [1, 1, 1] };
+}
+function chamberFuelSpecies(ch, cfg) {
+  const el = document.getElementById('fuelSpecies');
+  const k = (ch && ch.fuelSpecies) || (el && el.value) || (cfg && cfg.fuel) || 'rp1';
+  return FUEL_SPECIES[k] ? k : 'rp1';
+}
+function plumeEnv(ch, cfg, paPsi) {
+  const key = chamberFuelSpecies(ch, cfg), mix = ch && state.channelFlows ? chamberMixture(ch) : null;
+  const atm = atmoNow(paPsi), sp = flameSpecies(key, mix && mix.of > 0 ? mix.of : 0, { gas: atm.gas, pRel: Math.max(paPsi, 0) / 14.696 });
+  const tint = [atm.tint[0], atm.tint[1] * (1 - 0.10 * sp.nox), atm.tint[2] * (1 - 0.30 * sp.nox)];   // thermal NO2 browns the smoke
+  return { fuel: key, of: sp.of, phi: sp.phi, soot: sp.soot, chem: sp.chem, yf: sp.yf, products: sp.products, nox: sp.nox, smkMax: sp.smkMax, steam: sp.steam, o2Rel: Math.max(paPsi, 0) / 14.696 * atm.o2 / 0.21, tint };
+}
 // All nozzle/plume quantities for a preset at the chamber's current pc/Tc and the live ambient pressure.
-function plumeDerive(cfg, pcPsi, Tc, paPsi, re) {
+function plumeDerive(cfg, pcPsi, Tc, paPsi, re, env) {
   const g = cfg.gamma, a = (g - 1) / 2, R = 8314.46 / cfg.mw;
   const Me = plumeSolveMach(cfg.eps, g);
   const pr = Math.pow(1 + a * Me * Me, -g / (g - 1));                 // pe/pc
@@ -8962,8 +9206,9 @@ function plumeDerive(cfg, pcPsi, Tc, paPsi, re) {
   const thetaDeg = 12 + 22 * Math.min(Math.max(Math.log10(Math.max(ratio, 1)) / 2.5, 0), 1);
   const diam = Math.min(Math.abs(Math.log(ratio)) * 2.2, 1) * (1 - vacBlend);
   const regime = vacBlend > 0.6 ? 'vacuum fan' : Math.abs(Math.log(ratio)) < 0.06 ? 'matched' : ratio > 1 ? 'underexpanded' : 'overexpanded';
-  return { cfg, g, Me, pe, Te, ve, pa, ratio, Mj, rjre, Ls, De, re, vacBlend, tanTheta: Math.tan(thetaDeg * Math.PI / 180), diam, regime,
-           veVis: ve * PLUME_VSCALE, Tc, pc: pcPsi, atmo: Math.min(pa / 14.696, 1), hs: 0.5 * re + 0.1, lcore: 5.5 * De };
+  env = env || plumeEnv(null, cfg, pa);
+  return { env, cfg, g, Me, pe, Te, ve, pa, ratio, Mj, rjre, Ls, De, re, vacBlend, tanTheta: Math.tan(thetaDeg * Math.PI / 180), diam, regime,
+           veVis: ve * PLUME_VSCALE, Tc, cold: 1 - _ss(450, 1100, Tc), pc: pcPsi, atmo: Math.min(pa / 14.696, 1), hs: 0.5 * re + 0.1, lcore: 5.5 * De };
 }
 // Plume boundary radius at axial distance x: damped barrel cells about the equilibrium radius, or a PM-fan cone in vacuum.
 function plumeBoundary(x, D) {
@@ -8986,10 +9231,17 @@ function makePlume() {
   px: new Float32Array(PLUME_MAX), py: new Float32Array(PLUME_MAX), pz: new Float32Array(PLUME_MAX),
   vx: new Float32Array(PLUME_MAX), vy: new Float32Array(PLUME_MAX), vz: new Float32Array(PLUME_MAX),
   ax: new Float32Array(PLUME_MAX), sr: new Float32Array(PLUME_MAX), ph: new Float32Array(PLUME_MAX),
+  tk: new Float32Array(PLUME_MAX), sp0: new Float32Array(PLUME_MAX), sp1: new Float32Array(PLUME_MAX), ab: new Float32Array(PLUME_MAX),
+  cx: new Float32Array(PLUME_MAX), cz: new Float32Array(PLUME_MAX),   // per-particle source foot (merge hook: which chamber a particle came from)
   tn: new Float32Array(PLUME_MAX), sh: new Float32Array(PLUME_MAX), smk: new Float32Array(PLUME_MAX),
+  fu: new Float32Array(PLUME_MAX), bq: new Float32Array(PLUME_MAX), tb: new Float32Array(PLUME_MAX),   // unburnt-fuel fraction, burn rate (1/s), turbulent eddy (OU) per particle
+  comb: new Map(), fl: 0, reactAcc: 0, lop: new Float32Array(4),   // lop: slowly wandering azimuthal modes (m=1,2) that make the impact break-up lopsided
+     // per-chamber combustion state {burn, lit, ...} keyed by chamber part (merge hook), combustion-instability flicker (OU), reaction timer
+  sv: new Uint8Array(PLUME_MAX), lifeS: new Float32Array(PLUME_MAX), gwS: new Float32Array(PLUME_MAX),   // smoke survivor flag / its extra lifetime / the weight it carries for its thinned siblings
+  smokeLive: 0, smokeCap: 0, pSmoke: 0.1, impN: 0, impRate: 0,
   gw: new Float32Array(PLUME_MAX), tg: new Float32Array(PLUME_MAX), life: new Float32Array(PLUME_MAX), sd: new Float32Array(PLUME_MAX), st: new Uint8Array(PLUME_MAX),
-  points: null, aT: null, aSh: null, aSmk: null, aSz: null, aAl: null,
-  vol: null, grid: null, volTex: null, lastVolAt: 0,
+  points: null, aT: null, aSh: null, aSmk: null, aSz: null, aAl: null, aSp: null, gs: null, gsVel: null,
+  vol: null, grid: null, volTex: null, volTex2: null, lastVolAt: 0,
   floorMesh: null, floorTex: null, floorData: null, floorMat: null, floorOn: false,
   stats: { impacts: 0, maxWall: 0, maxHeightRing: 0 },
 };
@@ -9024,16 +9276,27 @@ function plumeFrameOf(c, cfg) {
 
 function plumePlace(i, x, s, phi, D, F, t) {
   const rb = plumeBoundary(x, D), xs = x / D.De;
-  const wob = 1 + 0.09 * Math.sin(xs * 11.0 - t * 17.0 + plume.sd[i] * 6.2832) * _ss(0.3, 1.0, s);
+  const wob = 1 + 0.16 * plume.tb[i] * _ss(0.3, 1.0, s);                // turbulent eddy of THIS parcel (random walk), not a periodic wave
   const R = s * rb * wob, c = Math.cos(phi) * R, sn = Math.sin(phi) * R;
   plume.px[i] = F.O.x + F.d.x * x + F.U.x * c + F.W.x * sn;
   plume.py[i] = F.O.y + F.d.y * x + F.U.y * c + F.W.y * sn;
   plume.pz[i] = F.O.z + F.d.z * x + F.U.z * c + F.W.z * sn;
 }
+// Entrained-air availability 0..1 of a jet parcel at x/De = xs, radial fraction s: ambient air arrives at the shear layer first, then mixes
+// toward the axis; zero at the nozzle exit and rising over AB_MIX_XS. Scaled by the ambient O2 (env.o2Rel: 0 in vacuum and on Mars, so
+// nothing afterburns there) and by whether the exhaust still holds unburnt fuel (env.yf, from O/F). The burning itself is stateful: plumeReact.
+function plumeAirMix(xs, s, env) {
+  if (!(env.o2Rel > 0.02) || !(env.yf > 0.001)) return 0;
+  const shear = 0.35 + 0.65 * _ss(0.3, 1.2, s);
+  return Math.min(env.o2Rel, 1) * shear * (1 - Math.exp(-xs / FLAME.AB_MIX_XS));
+}
+// Jet temperature: from the chamber reaction (D.Tc is the reacted chamber temperature, D.Te the isentropic exit temperature) plus the heat the
+// afterburn has actually released in THIS parcel (plume.ab[i], advanced by plumeReact), diluted as the plume entrains air. tb = turbulent eddy.
 function plumeThermo(i, x, s, sh, D) {
-  const xs = x / D.De;
-  const Tl = (D.Te * (1 - D.cfg.lum) + D.Tc * D.cfg.lum) * (1 - plume.tune.coolK * _ss(0.3, 3.0, xs)) * (1 - plume.tune.edgeK * _ss(0.4, 1.4, s)) * (1 + 0.14 * sh);
-  plume.tn[i] = Math.min(Math.max((Tl - PLUME_TLO) / (PLUME_THI - PLUME_TLO), 0), 1);
+  const xs = x / D.De, P = plume;
+  const Tl = (D.Te * (1 - D.cfg.lum) + D.Tc * D.cfg.lum) * (1 - P.tune.coolK * _ss(0.3, 3.0, xs)) * (1 - P.tune.edgeK * _ss(0.4, 1.4, s)) * (1 + 0.14 * sh) * (1 + 0.07 * P.tb[i])
+    + FLAME.AB_DT_K * P.ab[i] * Math.exp(-xs / FLAME.AB_END_XS);
+  P.tk[i] = Math.max(Tl, FLAME.T_AMB); P.tn[i] = flameTn(P.tk[i]);
 }
 
 function plumeEmit(nEmit, D, F, dt) {
@@ -9046,7 +9309,11 @@ function plumeEmit(nEmit, D, F, dt) {
     if (i + 1 > P.n) P.n = i + 1;
     P.sd[i] = Math.random();
     const s = Math.sqrt(Math.random()), phi = Math.random() * 6.2832, x = Math.random() * D.veVis * dt;
-    P.ax[i] = x; P.sr[i] = s; P.ph[i] = phi; P.st[i] = 1; P.tg[i] = 0; P.smk[i] = 0; P.gw[i] = 1;
+    const env = D.env, sdv = P.sd[i];
+    P.sp0[i] = Math.min(1, env.soot * (0.65 + 0.7 * sdv)); P.sp1[i] = env.chem; P.cx[i] = F.C.x; P.cz[i] = F.C.z;   // dirty/clean burn varies per particle
+    P.ax[i] = x; P.sr[i] = s; P.ph[i] = phi; P.st[i] = 1; P.tg[i] = 0; P.smk[i] = D.cold * 0.55; P.gw[i] = 1;   // cold flow = pale vapour
+    P.ab[i] = 0; P.bq[i] = 0; P.tb[i] = randn() * 0.6;
+    P.fu[i] = D.env.yf > 0.001 ? Math.min(1, (0.35 + 0.8 * Math.pow(Math.random(), 0.8)) * Math.max(0.5, 1 + 0.4 * P.fl)) : 0;   // fuel-rich pockets: not every parcel is equally rich
     P.life[i] = P.tune.life0 + Math.random() * P.tune.life1;
     const sh = plumeShock(x, s, D); P.sh[i] = sh; plumeThermo(i, x, s, sh, D);
     plumePlace(i, x, s, phi, D, F, P.tclock);
@@ -9185,8 +9452,27 @@ window.arcFlowCollide.audit = () => {
 };
 // <plumecoll:end>
 
+// alpha x weight of a ground-state (wall-jet -> smoke) particle. Wall-jet particles fade over their short life; the few that survive as
+// smoke carry the weight of the siblings that dropped out (so the cloud keeps its density), then age out slowly and fade out smoothly
+// between SMOKE.FADE_START x 300 m and 300 m from their source foot (cx, cz) in every direction (no hard kill).
+function plumeGroundWeight(i, PP) {
+  const P = PP || plume, tg = P.tg[i], l0 = P.life[i], f = 1 - _ss(0.65, 1.0, tg / l0);
+  if (!P.sv[i]) return f * P.gw[i];
+  const age = 1 - _ss(0.6, 1.0, (tg - l0) / Math.max(P.lifeS[i], 1)), R = metresToWU(SMOKE.FADE_M);
+  const dist = Math.hypot(P.px[i] - P.cx[i], P.py[i], P.pz[i] - P.cz[i]);
+  return P.gw[i] * (f + (1 - f) * P.gwS[i]) * age * (1 - _ss(SMOKE.FADE_START * R, R, dist));
+}
+// Heat the ground has soaked up under (x, z) (0..1), from the floor-gas map built from the SAME particles; heated ground slows the cooling of gas on it.
+function plumeGroundHeat(x, z) {
+  const g = plume.grid; if (!g || !g.fgas) return 0;
+  const ix = Math.floor((x - g.min.x) / g.size.x * g.nx), iz = Math.floor((z - g.min.z) / g.size.z * g.nz);
+  if (ix < 0 || iz < 0 || ix >= g.nx || iz >= g.nz) return 0;
+  const fi = (iz * g.nx + ix) * 4;
+  return Math.min(g.fgas[fi] * 0.5, 1) * g.fgas[fi + 1];
+}
 function plumeStep(h, D, F) {
   const P = plume, De = D.De, ve = D.veVis, atmo = D.atmo, t = P.tclock, hsFloor = D.hs;
+  const R300 = metresToWU(SMOKE.FADE_M), gY = GROUND_BODY.Y;
   const fadeD = 300 / Math.max(state.flowUnitM || FLOW_UNIT_M_DEFAULT, 1e-6);   // exhaust is recycled at 300 m from the foot, not at a floor-tile edge
   plumeCurlBuild(F, D);
   for (let i = 0; i < P.n; i++) {
@@ -9203,7 +9489,8 @@ function plumeStep(h, D, F) {
       s += (Math.random() + Math.random() - 1) * 1.6 * Math.sqrt(h) * edgew * (0.25 + 0.5 * xc) + 0.10 * h * xc * edgew;   // shear-layer mixing + entrainment
       if (s < 0) s = -s;
       const maxDist = 11800; if (s > 2.3 || ax > maxDist) { P.st[i] = 0; P.live--; continue; }
-      P.ph[i] += h * (1.2 + 2.2 * s) * (0.6 + 0.8 * P.sd[i]);
+      P.ph[i] += h * (1.2 + 2.2 * s) * (0.6 + 0.8 * P.sd[i]) + 0.9 * Math.sqrt(h) * randn() * edgew;
+      P.tb[i] += -P.tb[i] * h / 0.35 + 0.55 * Math.sqrt(2 * h / 0.35) * randn();   // temporally correlated eddy (Ornstein-Uhlenbeck)
       P.ax[i] = ax; P.sr[i] = s;
       const nsh = plumeShock(ax, s, D); P.sh[i] = nsh; plumeThermo(i, ax, s, nsh, D);
       plumePlace(i, ax, s, P.ph[i], D, F, t);
@@ -9232,38 +9519,62 @@ function plumeStep(h, D, F) {
           rl = Math.hypot(rx, ry, rz);
         }
         rx /= rl; ry /= rl; rz /= rl;
-        const jit = (Math.random() - 0.5) * 0.3, cj = Math.cos(jit), sj = Math.sin(jit);
+        const jit = (Math.random() - 0.5) * 0.7, cj = Math.cos(jit), sj = Math.sin(jit);
         const kx = cny * rz - cnz * ry, ky = cnz * rx - cnx * rz, kz = cnx * ry - cny * rx;     // n x r
         const rjx = rx * cj + kx * sj, rjy = ry * cj + ky * sj, rjz = rz * cj + kz * sj;
-        const wall = Math.sqrt(1 - e * e) * vn * kappa * (0.75 + 0.35 * Math.random());
+        const th = Math.atan2(rz, rx), L = P.lop;
+        const lopsided = Math.max(0.15, 1 + 0.55 * (L[0] * Math.cos(th) + L[1] * Math.sin(th)) + 0.4 * (L[2] * Math.cos(2 * th) + L[3] * Math.sin(2 * th)));   // one side throws further than the other
+        const wall = Math.sqrt(1 - e * e) * vn * kappa * (0.45 + 0.9 * Math.random() * Math.random() + 0.3 * Math.random()) * lopsided;
         P.vx[i] = tvx * 0.5 + rjx * wall + e * vn * cnx; P.vy[i] = tvy * 0.5 + rjy * wall + e * vn * cny; P.vz[i] = tvz * 0.5 + rjz * wall + e * vn * cnz;
         const push = Math.max(0.06 - sdc, 0);
         P.px[i] = nx + cnx * push; P.py[i] = ny + cny * push; P.pz[i] = nz + cnz * push;
         plumeColl.stats.contacts++;
-        P.st[i] = 2; P.tg[i] = 0; P.smk[i] = 0.12;
-        P.stats.impacts++;
+        // stagnation: the jet decelerates against the surface and recovers its total temperature (T0 = T + v^2/2cp), so the fuel-rich gas there
+        // is hot enough to ignite and burn with the air entrained along the ground (plumeReact), not just glow
+        const rec = _ss(0.08, 0.6, vn / Math.max(ve, 1e-3));
+        P.tk[i] += (D.Tc * 0.92 - P.tk[i]) * rec * (1 - D.cold); P.tn[i] = flameTn(P.tk[i]);
+        P.st[i] = 2; P.tg[i] = 0; P.smk[i] = Math.min(0.55 * D.env.smkMax + 0.3 + D.cold * 0.3, 0.95);   // the flame turns to smoke at the point of collision
+        P.stats.impacts++; P.impN++;
+        // a few wall-jet particles are chosen to live on as smoke (the pool can't hold every one for a minute): they carry the weight of the rest
+        if (P.smokeLive < P.smokeCap && Math.random() < P.pSmoke) {
+          P.sv[i] = 1; P.smokeLive++; P.lifeS[i] = SMOKE.LIFE0 + Math.random() * SMOKE.LIFE1; P.gwS[i] = Math.min(1 / P.pSmoke, SMOKE.GW_MAX) * 0.6;
+        } else P.sv[i] = 0;
       } else { P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz; }
     } else {
-      // ── ground state: wall jet ──
+      // ── ground state: wall jet that lets go of the ground and becomes free, spreading, rising smoke ──
       let vx = P.vx[i], vy = P.vy[i], vz = P.vz[i];
       const tg = P.tg[i] + h; P.tg[i] = tg;
+      const sv = P.sv[i], med = Math.sqrt(atmo), rel = 1 - _ss(SMOKE.RELEASE[0], SMOKE.RELEASE[1], tg);   // rel = 1 in the wall-jet layer, 0 once free
       const kd = P.tune.kd0 + P.tune.kd1 * atmo;
       const dec = Math.exp(-kd * h); vx *= dec; vz *= dec;
       const sp = Math.hypot(vx, vz);
       const tn = P.tn[i], smk = P.smk[i], sd = P.sd[i];
-      // smoke is pushed laterally first (the wall jet owns the first ~0.3 s), then rises slowly on buoyancy that follows its temperature
+      // smoke is pushed laterally first (the wall jet owns the first ~0.3 s), then rises on buoyancy that follows its temperature (free smoke: below)
       const lift = P.tune.lift * atmo * Math.min(sp / (0.4 * ve), 1) * (0.25 + 0.75 * sd) * (0.35 + 0.65 * tn) * _ss(0.25, 1.0, tg) * (1 - _ss(1.8, 3.2, tg));
-      const ay = P.tune.buoy * tn * atmo - 2.2 * smk * (1 - tn) * (0.3 + 0.7 * atmo) + lift;
-      // a wall jet is a layer whose thickness grows with radius (~0.1 r): pull toward that, so the billow lifts off it but the
-      // bulk stays hugging the ground
       const rr0 = Math.hypot(ox - F.C.x, oz - F.C.z);
+      let ay = (P.tune.buoy * tn * atmo - 2.2 * smk * (1 - tn) * (0.3 + 0.7 * atmo) + lift) * (sv ? rel : 1);
+      let drag = 1.6;
+      if (sv) {
+        // free smoke: buoyancy from the ambient/smoke density ratio (rho_amb/rho_smoke = T/T_amb: hot gas in cooler air rises; none in vacuum),
+        // entrainment spreading outward from the source, and a little turbulence
+        const dT = Math.max(P.tk[i] - FLAME.T_AMB, 0), free = 1 - rel;
+        ay += Math.min(SMOKE.BUOY * SMOKE.G * Math.min(dT / FLAME.T_AMB, 6), SMOKE.BUOY_MAX) * med * free;
+        const cxs = ox - P.cx[i], czs = oz - P.cz[i], rl = Math.max(Math.hypot(cxs, czs), 1);
+        const vr = Math.min(SMOKE.SPREAD_K * rl, SMOKE.SPREAD_MAX) * med, k = (1 - Math.exp(-0.6 * h)) * free;
+        vx += (cxs / rl * vr - vx) * k; vz += (czs / rl * vr - vz) * k;
+        P.tb[i] += -P.tb[i] * h / 0.9 + 0.8 * Math.sqrt(2 * h / 0.9) * randn();   // correlated eddies: whole clumps rise and fall together, so the smoke rolls in heavy billows instead of fine wisps
+        vy += P.tb[i] * 1.1 * h * med * free;
+        const tb = 0.9 * Math.sqrt(h) * med * free; vx += (Math.random() - 0.5) * tb; vz += (Math.random() - 0.5) * tb; vy += (Math.random() - 0.5) * tb * 0.6;
+        drag = 1.6 * rel + SMOKE.DRAG * med * free;
+      }
+      // a wall jet is a layer whose thickness grows with radius (~0.1 r): pull toward that, so the billow lifts off it but the bulk stays hugging the surface
       const sdo = plumeSD(ox, oy, oz), thick = 0.1 * rr0 + 0.4, exc = Math.max(sdo - thick, 0);   // height above the local surface (ground or platform top)
       // rolls over a platform edge: where the surface drops away the gas falls (cooler gas faster), then surges across the ground
-      const fall = 6.0 * _ss(0.5, 3.0, exc / thick) * (1 - 0.6 * tn);
+      const fall = 6.0 * _ss(0.5, 3.0, exc / thick) * (1 - 0.6 * tn) * (sv ? rel : 1);
       // vorticity from velocity shear (curl of the binned wall-jet velocity, confinement force): the front rolls up and curls
       plumeCurlForce(ox, oy, oz, _pcf);
       { const fm = Math.hypot(_pcf.x, _pcf.y, _pcf.z), fc = 1.5 * ve; const k = fm > fc ? fc / fm : 1; vx += _pcf.x * k * h; vz += _pcf.z * k * h; vy += _pcf.y * k * h; }
-      vy = (vy + (ay - fall - P.tune.spring * atmo * exc) * h) * Math.exp(-1.6 * h);
+      vy = (vy + (ay - fall - P.tune.spring * atmo * exc * (sv ? rel : 1)) * h) * Math.exp(-drag * h);
       let nx = ox + vx * h, ny = oy + vy * h, nz = oz + vz * h;
       const sdn = plumeSD(nx, ny, nz);
       if (sdn < 0.05) {   // solid contact: lift out along the normal, remove the normal velocity (restitution 0.2), friction on the tangent
@@ -9275,10 +9586,13 @@ function plumeStep(h, D, F) {
         vx = vdn2 * cnx + (vx - vdn2 * cnx) * f; vy = vdn2 * cny + (vy - vdn2 * cny) * f; vz = vdn2 * cnz + (vz - vdn2 * cnz) * f;
         plumeColl.stats.contacts++;
       }
-      P.tn[i] = tn * Math.exp(-h * P.tune.tcool); P.smk[i] = smk + h * P.tune.smkRate * (P.tune.smkMax - smk);
+      const gh = GROUND_BODY.FEEDBACK * plumeGroundHeat(nx, nz) * (1 - _ss(0.5, 4, ny));       // hot ground slows the cooling of the gas on it
+      const cool = (sv ? rel * P.tune.tcool + (1 - rel) * SMOKE.COOL : P.tune.tcool) * (1 - gh) * (1 + 2.2 * (1 - _ss(0.0, 0.5, tg)));   // fast cooling right after the impact: fire -> smoke at the collision, not a slow fade
+      P.tk[i] = FLAME.T_AMB + (P.tk[i] - FLAME.T_AMB) * Math.exp(-h * cool); P.ab[i] *= Math.exp(-h * FLAME.AB_GROUND_DECAY); P.tn[i] = flameTn(P.tk[i]); P.smk[i] = smk + h * P.tune.smkRate * (1 + 4 * (1 - _ss(0.0, 0.5, tg))) * (Math.max(D.env.smkMax != null ? Math.max(D.env.smkMax, 0.25) : P.tune.smkMax, smk) - smk);
       P.sh[i] = 0;
       P.px[i] = nx; P.py[i] = ny; P.pz[i] = nz; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
-      if (tg > P.life[i] || Math.hypot(nx - F.C.x, nz - F.C.z) > fadeD) { P.st[i] = 0; P.live--; continue; }
+      // no tile / floor-edge kill: wall-jet particles end with their short life, smoke survivors with their age or past SMOKE.FADE_M from the source
+      if (sv ? (tg > P.life[i] + P.lifeS[i] || Math.hypot(nx - P.cx[i], ny, nz - P.cz[i]) >= R300) : tg > P.life[i]) { if (sv) P.smokeLive--; P.st[i] = 0; P.live--; continue; }
       const rr = Math.hypot(nx - F.C.x, nz - F.C.z);
       if (rr > P.stats.maxWall) P.stats.maxWall = rr;
       if (ny > P.stats.maxHeightRing && tg > 0.3) P.stats.maxHeightRing = ny;
@@ -9287,19 +9601,17 @@ function plumeStep(h, D, F) {
 }
 
 // ── point-sprite layer ──
-const FLAME_RAMP_GLSL = `
-  vec3 flameRamp(float t) {
-    // t is distance along the plume: 0 at nozzle, 1 at the end.
-    // Clean blue near the nozzle (metal oxidation), orange as it mixes
-    // with air, red and smoky farther out, fading to smoke at the end.
-    t = clamp(t, 0.0, 1.0);
-    vec3 blue = vec3(0.45, 0.65, 1.0);
-    vec3 orange = vec3(1.0, 0.55, 0.12);
-    vec3 red = vec3(0.85, 0.22, 0.08);
-    vec3 smoke = vec3(0.25, 0.23, 0.2);
-    return t < 0.15 ? mix(blue, orange, t / 0.15)
-         : t < 0.4 ? mix(orange, red, (t - 0.15) / 0.25)
-         : mix(red, smoke, (t - 0.4) / 0.6);
+// Shared per-fragment plume shading for the Points and Gaussian layers (the volume does the same maths per ray step):
+// premultiplied rgb + alpha. flame adds light without hiding what is behind; smoke occludes and is lit by the flame.
+const PLUME_SHADE_GLSL = FLAME_GLSL + `
+  uniform float uGain; uniform vec3 uAmbTint;
+  // under: 0 = the sprite's top (self-shadowed, sky-lit), 1 = its underside (lit by the fire below); 0.5 = unknown
+  vec4 plumeShade(float T, float sh, float smk, vec3 sp, float h, float fall, float al, float under) {
+    vec3 flame = flameEmission(T, sp.x, sp.y, sp.z) * (1.0 + 2.4 * sh) * (1.0 - 0.7 * smk) * uGain;
+    float fire = exp(-h * 0.22) * (0.25 + 0.75 * T);
+    vec3 fireCol = vec3(1.0, 0.55, 0.24);
+    vec3 smoke = flameSmoke(sp.x) * uAmbTint * (0.10 + 0.9 * under * under * fire * fireCol * 1.6 + 0.12 * (1.0 - under)) * smk * 0.9;
+    return vec4((flame + smoke) * fall * al, smk * 0.42 * fall * al);
   }
 `;
 function plumeEnsurePoints() {
@@ -9308,35 +9620,30 @@ function plumeEnsurePoints() {
   const pos = new THREE.BufferAttribute(new Float32Array(PLUME_MAX * 3), 3);
   const mk = () => { const a = new THREE.BufferAttribute(new Float32Array(PLUME_MAX), 1); a.setUsage(THREE.DynamicDrawUsage); return a; };
   plume.aT = mk(); plume.aSh = mk(); plume.aSmk = mk(); plume.aSz = mk(); plume.aAl = mk();
+  plume.aSp = new THREE.BufferAttribute(new Float32Array(PLUME_MAX * 3), 3); plume.aSp.setUsage(THREE.DynamicDrawUsage);   // (soot, chem, afterburn)
   pos.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('position', pos);
-  geo.setAttribute('aT', plume.aT); geo.setAttribute('aSh', plume.aSh); geo.setAttribute('aSmk', plume.aSmk); geo.setAttribute('aSz', plume.aSz); geo.setAttribute('aAl', plume.aAl);
+  geo.setAttribute('aT', plume.aT); geo.setAttribute('aSh', plume.aSh); geo.setAttribute('aSmk', plume.aSmk); geo.setAttribute('aSz', plume.aSz); geo.setAttribute('aAl', plume.aAl); geo.setAttribute('aSp', plume.aSp);
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uPx: { value: 600 }, uGain: { value: 0.055 }, uHeat: { value: null } },
+    uniforms: { uPx: { value: 600 }, uGain: { value: 0.026 }, uHeat: { value: null }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
     vertexShader: `
-      uniform float uPx; attribute float aT; attribute float aSh; attribute float aSmk; attribute float aSz; attribute float aAl;
-      varying float vT; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
+      uniform float uPx; attribute float aT; attribute float aSh; attribute float aSmk; attribute float aSz; attribute float aAl; attribute vec3 aSp;
+      varying float vT; varying vec3 vSp; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
       void main() {
-        vT = aT; vSh = aSh; vSmk = aSmk; vAl = aAl; vH = position.y;
+        vT = aT; vSp = aSp; vSh = aSh; vSmk = aSmk; vH = position.y;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
-        gl_PointSize = clamp(aSz * uPx / max(-mv.z, 0.1), 1.0, 160.0);
+        float raw = aSz * uPx / max(-mv.z, 0.1), sz = clamp(raw, 10.0, 160.0);
+        vAl = aAl * min(1.0, (raw * raw) / (sz * sz) * 1.6);   // a far parcel is a faint wide haze, never a bright speck: spread its energy over a soft minimum sprite
       }`,
-    fragmentShader: FLAME_RAMP_GLSL + `
-      uniform float uGain; uniform sampler2D uHeat;
-      varying float vT; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
+    fragmentShader: PLUME_SHADE_GLSL + `
+      uniform sampler2D uHeat;
+      varying float vT; varying vec3 vSp; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
       void main() {
         vec2 c = gl_PointCoord - vec2(0.5);
         float r2 = dot(c, c) * 4.0;
         if (r2 > 1.0 || vAl < 0.002) discard;
-        float fall = exp(-r2 * 3.2);
-        float em = pow(vT, 2.1) * (1.0 + 2.4 * vSh) * (1.0 - 0.7 * vSmk);
-        vec3 flame = flameRamp(vT) * em * uGain;
-        float lit = 0.22 + 0.9 * exp(-vH * 0.35) * (0.4 + 0.6 * vT);
-        vec3 smoke = vec3(0.34, 0.30, 0.27) * lit * vSmk * 0.5;
-        float a = vSmk * 0.42;
-        // premultiplied: flame adds light without hiding what is behind; smoke occludes
-        gl_FragColor = vec4((flame + smoke) * fall * vAl, a * fall * vAl);
+        gl_FragColor = plumeShade(vT, vSh, vSmk, vSp, vH, exp(-r2 * 2.4) * (1.0 - r2) * (1.0 - r2), vAl, smoothstep(-0.7, 0.7, c.y * 2.0));
       }`,
     transparent: true, depthWrite: false, depthTest: true,
     blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
@@ -9346,6 +9653,43 @@ function plumeEnsurePoints() {
   scene.add(plume.points);
 }
 
+// ── Gaussian-splat layer: the SAME plume particles and the SAME plumeShade() as the Points layer, drawn as velocity-stretched
+// Gaussian billboards (GS_BILLBOARD_VERT / gsKernel) instead of round sprites. Shares the point layer's typed arrays.
+function plumeEnsureGaussian() {
+  if (plume.gs) return plume.gs;
+  plumeEnsurePoints();
+  const geo = gsQuadGeometry();
+  const ia = (arr, n) => { const a = new THREE.InstancedBufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+  plume.gsVel = new Float32Array(PLUME_MAX * 3);
+  plume.gsAttrs = [plume.points.geometry.attributes.position.array, plume.gsVel, plume.aAl.array, plume.aSz.array, plume.aT.array, plume.aSh.array, plume.aSmk.array, plume.aSp.array]
+    .map((arr, i) => ia(arr, (i === 0 || i === 1 || i === 7) ? 3 : 1));
+  ['aPos', 'aVel', 'aAlpha', 'aSize', 'aT', 'aSh', 'aSmk', 'aSp'].forEach((k, i) => geo.setAttribute(k, plume.gsAttrs[i]));
+  geo.instanceCount = 0;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uGsTrail: { value: 0.02 }, uGsMaxStretch: { value: 3.0 }, uGain: { value: 0.05 }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
+    vertexShader: GS_BILLBOARD_VERT + `
+      attribute vec3 aPos; attribute vec3 aVel; attribute float aAlpha; attribute float aSize; attribute float aT; attribute float aSh; attribute float aSmk; attribute vec3 aSp;
+      varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
+      void main() {
+        if (aAlpha <= 0.002) { vQ = vec2(9.0); vAtten = 0.0; vT = 0.0; vSh = 0.0; vSmk = 0.0; vA = 0.0; vH = 0.0; vSp = vec3(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+        vT = aT; vSh = aSh; vSmk = aSmk; vA = aAlpha; vSp = aSp; vH = aPos.y;
+        gsPlace(aPos, aVel, aSize * 0.2, position.xy);   // aSize is the sprite diameter; the quad spans 2.5 sigma each side
+      }`,
+    fragmentShader: PLUME_SHADE_GLSL + GS_KERNEL_FRAG + `
+      varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
+      void main() {
+        float g = gsKernel();
+        gl_FragColor = plumeShade(vT, vSh, vSmk, vSp, vH, g * vAtten, vA, smoothstep(0.7, -0.7, vQ.y));
+      }`,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  });
+  plume.gs = new THREE.Mesh(geo, mat);
+  plume.gs.frustumCulled = false; plume.gs.renderOrder = 13; plume.gs.visible = false;
+  scene.add(plume.gs);
+  return plume.gs;
+}
+
 // ── plume volume (ray-marched) ──
 const PLUME_VOL_VERTEX = `
   varying vec3 vLocalPos;
@@ -9353,13 +9697,15 @@ const PLUME_VOL_VERTEX = `
 `;
 const PLUME_VOL_FRAGMENT = `
   precision highp float;
-  uniform sampler2D uVolDensity;   // r = particles per voxel, g = temperature (0..1 flame scale), b = shock factor, a = smoke fraction
+  uniform sampler2D uVolDensity;   // r = particles per voxel, g = temperature tn (0..1 over FLAME.TLO..THI), b = shock factor, a = smoke fraction
   uniform vec3 uVolRes; uniform float uVolTilesPerRow; uniform vec2 uVolTexSize;
   uniform vec3 uVolMin; uniform vec3 uVolSize; uniform mat4 uInverseModelMatrix;
   uniform sampler2D uHeat; uniform float uFloorSize;
+  uniform sampler2D uVolSpecies;   // r = soot, g = chemiluminescence, b = afterburn (same tiling; density-weighted averages)
+  uniform vec3 uAmbTint;
   uniform float uEmis, uEmisK, uExposure, uAbsorb, uFloorLit;
   varying vec3 vLocalPos;
-  ${FLAME_RAMP_GLSL}
+  ${FLAME_GLSL}
   vec4 sampleVol(vec3 uv01) {
     vec3 voxel = clamp(uv01, 0.0, 1.0) * uVolRes - 0.5;
     vec3 v0 = floor(voxel); vec3 f = voxel - v0;
@@ -9401,19 +9747,26 @@ const PLUME_VOL_FRAGMENT = `
       if (d > 0.015) {
         vec3 wp = uVolMin + uv * uVolSize;
         float T = s.y, sh = s.z, smk = s.w;
+        vec3 vx3 = clamp(floor(clamp(uv, 0.0, 1.0) * uVolRes), vec3(0.0), uVolRes - 1.0);
+        vec3 sp = texture2D(uVolSpecies, (vec2(mod(vx3.z, uVolTilesPerRow) * uVolRes.x + vx3.x, floor(vx3.z / uVolTilesPerRow) * uVolRes.y + vx3.y) + 0.5) / uVolTexSize).rgb;
         float stepVox = dt * worldPerT / vox;
         // floor glow: heat map under this point, falling off with height (gas lit by the ground)
         vec2 fuv = vec2(wp.x / uFloorSize + 0.5, -wp.z / uFloorSize + 0.5);
-        vec2 fh = texture2D(uHeat, fuv).rg;
-        float fk = 1.0 - exp(-fh.g * 1.4);
-        float tnF = clamp((fh.r / max(fh.g, 1e-4) - 0.62) / 0.38, 0.0, 1.0);
-        vec3 floorLight = flameRamp(tnF) * fk * exp(-wp.y / 3.0) * uFloorLit;
+        vec4 fh4 = texture2D(uHeat, fuv); float ie = 1.0 / max(fh4.g, 1e-4);
+        float fk = 1.0 - exp(-fh4.g * 1.4);
+        float tnF = clamp(fh4.r * ie, 0.0, 1.0);
+        vec3 floorLight = flameEmission(tnF, clamp(fh4.b * ie, 0.0, 1.0) * 0.6, clamp(fh4.a * ie, 0.0, 1.0), 0.0) * fk * exp(-wp.y / 3.0) * uFloorLit;
         // hot gas emits (transparent), smoke occludes + is lit by the flame, the floor and the sky
-        float em = pow(T, 2.1) * uEmis * (1.0 + 4.0 * sh) * (1.0 - 0.7 * smk) * d * stepVox * uEmisK;
-        acc += trans * flameRamp(T) * em;
+        vec3 em = flameEmission(T, sp.x, sp.y, sp.z) * uEmis * (1.0 + 4.0 * sh) * (1.0 - 0.7 * smk) * d * stepVox * uEmisK;
+        acc += trans * em;
         float kap = uAbsorb * (0.10 + 1.7 * smk);
         float a = 1.0 - exp(-d * stepVox * kap);
-        vec3 smkLit = vec3(0.30, 0.27, 0.25) * (0.30 + 1.1 * T) + floorLight * 1.4;
+        // billows: self-shadowed by the gas piled above, lit from below by the hotter gas under them (and the floor)
+        vec3 uvA = clamp(uv + vec3(0.0, 2.5 / uVolRes.y, 0.0), 0.0, 1.0), uvB = clamp(uv - vec3(0.0, 2.5 / uVolRes.y, 0.0), 0.0, 1.0);
+        float dAbove = sampleVol(uvA).x; vec4 sB = sampleVol(uvB);
+        float shadowTop = exp(-1.4 * dAbove);
+        vec3 fireB = vec3(1.0, 0.55, 0.24) * sB.y * sB.y * min(sB.x * 3.0, 1.0) * exp(-0.9 * sB.x);
+        vec3 smkLit = flameSmoke(sp.x) * uAmbTint * (0.8 * (0.10 + 0.9 * T) * (0.3 + 0.7 * shadowTop) + 1.3 * fireB) + floorLight * 1.4;
         acc += trans * a * smkLit;
         acc += trans * floorLight * d * stepVox * 0.03;
         trans *= 1.0 - a;
@@ -9431,7 +9784,7 @@ function plumeEnsureVolume() {
   if (plume.vol) return plume.vol;
   const mat = new THREE.ShaderMaterial({
     uniforms: {
-      uVolDensity: { value: null }, uVolRes: { value: new THREE.Vector3(8, 8, 8) }, uVolTilesPerRow: { value: 1 }, uVolTexSize: { value: new THREE.Vector2(8, 8) },
+      uVolDensity: { value: null }, uVolSpecies: { value: null }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) }, uVolRes: { value: new THREE.Vector3(8, 8, 8) }, uVolTilesPerRow: { value: 1 }, uVolTexSize: { value: new THREE.Vector2(8, 8) },
       uVolMin: { value: new THREE.Vector3() }, uVolSize: { value: new THREE.Vector3(1, 1, 1) }, uInverseModelMatrix: { value: new THREE.Matrix4() },
       uHeat: { value: null }, uFloorSize: { value: FLOOR_SIZE },
       uEmis: { value: 1.0 }, uEmisK: { value: 0.2 }, uExposure: { value: 1.6 }, uAbsorb: { value: 0.18 }, uFloorLit: { value: 2.0 },
@@ -9462,8 +9815,10 @@ function plumeFitGrid(D, F) {
     const lay = tiledLayout([nx, ny, nz]), N = nx * ny * nz;
     g = plume.grid = { nx, ny, nz, N, tpr: lay.tpr, texW: lay.w, texH: lay.h,
       dens: new Float32Array(N), tw: new Float32Array(N), shw: new Float32Array(N), smw: new Float32Array(N), tmp: new Float32Array(N),
-      data: new Float32Array(lay.w * lay.h * 4), min, size, fgas: new Float32Array(nx * nz * 4) };
+      sow: new Float32Array(N), chw: new Float32Array(N), abw: new Float32Array(N),
+      data: new Float32Array(lay.w * lay.h * 4), data2: new Float32Array(lay.w * lay.h * 4), min, size, fgas: new Float32Array(nx * nz * 4) };
     if (plume.volTex) { plume.volTex.dispose(); plume.volTex = null; }
+    if (plume.volTex2) { plume.volTex2.dispose(); plume.volTex2 = null; }
     if (plume.floorTex) { plume.floorTex.dispose(); plume.floorTex = null; }
   }
   g.min = min; g.size = size;
@@ -9487,14 +9842,13 @@ function plumeBlur1D(src, dst, nx, ny, nz, axis) {
 
 function plumeRebuildVolume(D, F) {
   const g = plumeFitGrid(D, F), P = plume;
-  const { nx, ny, nz, dens, tw, shw, smw, tmp } = g;
-  dens.fill(0); tw.fill(0); shw.fill(0); smw.fill(0);
+  const { nx, ny, nz, dens, tw, shw, smw, tmp, sow, chw, abw } = g;
+  dens.fill(0); tw.fill(0); shw.fill(0); smw.fill(0); sow.fill(0); chw.fill(0); abw.fill(0);
   const ix = nx / g.size.x, iy = ny / g.size.y, iz = nz / g.size.z, cy = g.size.y / ny;
   for (let i = 0; i < P.n; i++) {
     if (!P.st[i]) continue;
-    const fadeOut = P.st[i] === 2 ? 1 - _ss(0.65, 1.0, P.tg[i] / P.life[i]) : 1;
-    const w = fadeOut * (P.st[i] === 1 ? P.tune.jetW : P.gw[i]);
-    const tn = P.tn[i], sh = P.sh[i], smk = P.smk[i];
+    const w = P.st[i] === 1 ? P.tune.jetW : plumeGroundWeight(i);
+    const tn = P.tn[i], sh = P.sh[i], smk = P.smk[i], so = P.sp0[i], ch = P.sp1[i], ab = P.ab[i];
     // wall-jet / billow particles are sparse, so each is spread over a few jittered samples (no speckle); jet particles stay sharp
     const ns = P.st[i] === 2 ? P.tune.groundSplats : 1, wS = w / ns, jx = 0.9 / ix, jz = 0.9 / iz, jy = 0.5 / iy;
     for (let q = 0; q < ns; q++) {
@@ -9507,30 +9861,30 @@ function plumeRebuildVolume(D, F) {
         const wt = wS * ((k & 1) ? wx : 1 - wx) * (((k >> 1) & 1) ? wy : 1 - wy) * (((k >> 2) & 1) ? wz : 1 - wz);
         if (wt <= 0) continue;
         const di = cx + cyy * nx + cz * nx * ny;
-        dens[di] += wt; tw[di] += wt * tn; shw[di] += wt * sh; smw[di] += wt * smk;
+        dens[di] += wt; tw[di] += wt * tn; shw[di] += wt * sh; smw[di] += wt * smk; sow[di] += wt * so; chw[di] += wt * ch; abw[di] += wt * ab;
       }
     }
   }
   // one [1 2 1] smoothing pass per axis (turns the particle speckle into a continuous field)
-  for (const arr of [dens, tw, shw, smw]) {
+  for (const arr of [dens, tw, shw, smw, sow, chw, abw]) {
     for (let pass = 0; pass < 1; pass++) { plumeBlur1D(arr, tmp, nx, ny, nz, 0); plumeBlur1D(tmp, arr, nx, ny, nz, 1); plumeBlur1D(arr, tmp, nx, ny, nz, 2); arr.set(tmp); }
   }
   // pack tiled RGBA + build the floor-gas map from the two lowest layers
-  const data = g.data, fg = g.fgas;
+  const data = g.data, data2 = g.data2, fg = g.fgas;
   let floorSum = 0;
   for (let z = 0; z < nz; z++) {
     const tileX = (z % g.tpr) * nx, tileY = Math.floor(z / g.tpr) * ny;
     for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
       const si = x + y * nx + z * nx * ny, di = ((tileY + y) * g.texW + tileX + x) * 4, d = dens[si];
       data[di] = d;
-      if (d > 1e-4) { const inv = 1 / d; data[di + 1] = tw[si] * inv; data[di + 2] = shw[si] * inv; data[di + 3] = smw[si] * inv; }
-      else { data[di + 1] = 0; data[di + 2] = 0; data[di + 3] = 0; }
+      if (d > 1e-4) { const inv = 1 / d; data[di + 1] = tw[si] * inv; data[di + 2] = shw[si] * inv; data[di + 3] = smw[si] * inv; data2[di] = sow[si] * inv; data2[di + 1] = chw[si] * inv; data2[di + 2] = abw[si] * inv; }
+      else { data[di + 1] = 0; data[di + 2] = 0; data[di + 3] = 0; data2[di] = 0; data2[di + 1] = 0; data2[di + 2] = 0; }
     }
     for (let x = 0; x < nx; x++) {
       const s0 = x + 0 * nx + z * nx * ny, s1 = x + Math.min(1, ny - 1) * nx + z * nx * ny;
-      const d = dens[s0] + 0.5 * dens[s1], tt = d > 1e-4 ? (tw[s0] + 0.5 * tw[s1]) / d : 0;
+      const d = dens[s0] + 0.5 * dens[s1], id = d > 1e-4 ? 1 / d : 0, tt = (tw[s0] + 0.5 * tw[s1]) * id;
       const fi = (z * nx + x) * 4;
-      fg[fi] = d; fg[fi + 1] = tt; fg[fi + 2] = 0; fg[fi + 3] = 1;
+      fg[fi] = d; fg[fi + 1] = tt; fg[fi + 2] = (sow[s0] + 0.5 * sow[s1]) * id; fg[fi + 3] = (chw[s0] + 0.5 * chw[s1]) * id;   // density, tn, soot, chem (for the floor's thermal map)
       floorSum += d;
     }
   }
@@ -9540,7 +9894,13 @@ function plumeRebuildVolume(D, F) {
     plume.volTex.wrapS = THREE.ClampToEdgeWrapping; plume.volTex.wrapT = THREE.ClampToEdgeWrapping;
     plume.vol.material.uniforms.uVolDensity.value = plume.volTex;
   }
-  plume.volTex.needsUpdate = true;
+  if (!plume.volTex2) {
+    plume.volTex2 = new THREE.DataTexture(data2, g.texW, g.texH, THREE.RGBAFormat, THREE.FloatType);
+    plume.volTex2.magFilter = THREE.NearestFilter; plume.volTex2.minFilter = THREE.NearestFilter;
+    plume.volTex2.wrapS = THREE.ClampToEdgeWrapping; plume.volTex2.wrapT = THREE.ClampToEdgeWrapping;
+    plume.vol.material.uniforms.uVolSpecies.value = plume.volTex2;
+  }
+  plume.volTex.needsUpdate = true; plume.volTex2.needsUpdate = true;
   // floor gas texture (volumetric density near the ground -> the floor's thermal map)
   if (!plume.floorTex) {
     plume.floorTex = new THREE.DataTexture(fg, nx, nz, THREE.RGBAFormat, THREE.FloatType);
@@ -9551,39 +9911,61 @@ function plumeRebuildVolume(D, F) {
   plume.floorSum = floorSum;
 }
 
-// Adds the gas lying on the ground (from the SAME density grid the ray march reads, so it works with the particle layer
-// hidden) to the floor's heat-accumulation buffer. Called from renderFloorHeatPass while that target is bound.
-function plumeFloorPass() {
-  if (!plume.active || !plume.floorTex || !plume.grid) return;
-  const g = plume.grid;
-  if (!plume.floorMesh) {
-    plume.floorMat = new THREE.ShaderMaterial({
-      uniforms: { uGas: { value: null }, uTexel: { value: new THREE.Vector2(1, 1) }, uGain: { value: 0.06 } },
-      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform sampler2D uGas; uniform vec2 uTexel; uniform float uGain; varying vec2 vUv;
-        vec4 tap(vec2 p) { return texture2D(uGas, (floor(p) + 0.5) * uTexel); }
-        void main() {
-          vec2 p = vec2(vUv.x, 1.0 - vUv.y) / uTexel - 0.5; vec2 f = fract(p);
-          vec4 g = mix(mix(tap(p), tap(p + vec2(1.0, 0.0)), f.x), mix(tap(p + vec2(0.0, 1.0)), tap(p + vec2(1.0, 1.0)), f.x), f.y);
-          float hot = smoothstep(0.0, 0.25, g.g);                       // cooled gas leaves little heat behind
-          float e = g.r * hot * uGain;
-          float tF = 0.62 + 0.38 * g.g;                                  // onto the floor ramp's orange-gold range
-          gl_FragColor = vec4(tF, 1.0, 0.0, e);
-        }`,
-      transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
-    });
-    const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
-    plume.floorMesh = new THREE.Mesh(geo, plume.floorMat);
-    plume.floorMesh.frustumCulled = false;
-    plume.floorScene = new THREE.Scene(); plume.floorScene.add(plume.floorMesh);
+// Heat deposited on the ground by the exhaust particles that are actually lying on it (st = 2, near the ground), splatted straight into the
+// floor's heat-accumulation buffer with the SAME flame channels (R = tn x e, G = e, B = soot x e, A = chem x e). Nothing else heats the plane:
+// no particles landing = no glow. Called from renderFloorHeatPass while that target is bound.
+const FLOOR_SPLAT = { EK: 0.0035, PX: 11 };     // energy per particle splat, splat size (px of the 512^2 heat map)
+// HOOK (Arc Flow Instances): which plumes feed the ground. Today every chamber/clone writes into the one shared `plume` (each particle carries its own
+// world position, so all hot spots already land on the map at once). When per-instance plumes exist (inst.plume), they are splatted too, each at its own
+// impact positions, into the same heat map; nothing else is needed.
+function plumeFloorSources() {
+  const out = new Set(); out.add(plume);
+  for (const inst of state.instances || []) if (inst && inst.plume && inst.plume.fu) out.add(inst.plume);
+  return out;
+}
+// HAND-OFF to Solver's in-engine flow (pfs particles): the state a chamber's burning mass should take. `burn` 0 -> 1 is the ignition ramp (cold flow ->
+// instantly lit when chamberCombustion says the mixture/pressure/igniter allow it), `T` the reacting gas temperature [K] (feed T when unlit), `tn` the shared
+// flame-ramp coordinate (colour with flameEmission / flameBB so in-engine particles match the plume), `phi` the equivalence ratio. The hand-off to the plume
+// is the nozzle exit plane: particles that cross it are retired by the pfs code and the plume emits there (plumeEmit) with the same T/species.
+function chamberBurnState(ch) {
+  const st = plume.comb && plume.comb.get(ch);
+  if (!st || !st.cr) return { lit: false, burn: 0, T: COMB.T_FEED, tn: flameTn(COMB.T_FEED), phi: 0, flammable: false };
+  return { lit: !!st.lit, burn: st.burn, T: st.T, tn: flameTn(st.T), phi: st.cr.phi, flammable: !!st.cr.flammable, reason: st.cr.reason };
+}
+window.arcFlowCombustion = { chamberBurnState, flameEmission, flameBB, flameTn, flameTK, chamberCombustion, COMB, FLAME };
+function plumeFloorPass() { for (const P of plumeFloorSources()) plumeFloorSplat(P); }
+function plumeFloorSplat(P) {
+  if (!P.active || !P.n) return;
+  if (!P.fpts) {
+    const geo = new THREE.BufferGeometry();
+    P.fPos = new THREE.BufferAttribute(new Float32Array(PLUME_MAX * 3), 3); P.fE = new THREE.BufferAttribute(new Float32Array(PLUME_MAX), 1); P.fC = new THREE.BufferAttribute(new Float32Array(PLUME_MAX * 3), 3);
+    for (const a of [P.fPos, P.fE, P.fC]) a.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', P.fPos); geo.setAttribute('aE', P.fE); geo.setAttribute('aC', P.fC);
+    P.fpts = new THREE.Points(geo, new THREE.ShaderMaterial({
+      uniforms: { uPx: { value: FLOOR_SPLAT.PX } },
+      vertexShader: `uniform float uPx; attribute float aE; attribute vec3 aC; varying float vE; varying vec3 vC;
+        void main() { vE = aE; vC = aC; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_PointSize = uPx; }`,
+      fragmentShader: `varying float vE; varying vec3 vC;
+        void main() { vec2 d = gl_PointCoord - 0.5; float r2 = dot(d, d); if (r2 > 0.25) discard;
+          float e = vE * exp(-r2 * 16.0); gl_FragColor = vec4(vC.x * e, e, vC.y * e, vC.z * e); }`,
+      transparent: true, depthTest: false, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+    }));
+    P.fpts.frustumCulled = false;
+    P.fScene = new THREE.Scene(); P.fScene.add(P.fpts);
   }
-  plume.floorMesh.scale.set(g.size.x, 1, g.size.z);
-  plume.floorMesh.position.set(g.min.x + g.size.x / 2, 0.2, g.min.z + g.size.z / 2);
-  plume.floorMesh.updateMatrixWorld(true);
-  plume.floorMat.uniforms.uGas.value = plume.floorTex;
-  plume.floorMat.uniforms.uTexel.value.set(1 / g.nx, 1 / g.nz);
-  renderer.render(plume.floorScene, floorOrthoCam);
+  const pp = P.fPos.array, pe = P.fE.array, pc = P.fC.array; let n = 0;
+  for (let i = 0; i < P.n; i++) {
+    if (P.st[i] !== 2 || P.py[i] > 3) continue;
+    const tn = P.tn[i]; if (tn < 0.12) continue;                       // cooled gas leaves no heat behind
+    const e = FLOOR_SPLAT.EK * plumeGroundWeight(i, P) * _ss(0.12, 0.4, tn) * (1 - _ss(0.6, 3, P.py[i]));
+    if (!(e > 1e-6)) continue;
+    pp[3 * n] = P.px[i]; pp[3 * n + 1] = 0.1; pp[3 * n + 2] = P.pz[i];
+    pe[n] = e; pc[3 * n] = tn; pc[3 * n + 1] = P.sp0[i]; pc[3 * n + 2] = P.sp1[i]; n++;
+  }
+  if (!n) return;
+  P.fpts.geometry.setDrawRange(0, n);
+  P.fPos.needsUpdate = P.fE.needsUpdate = P.fC.needsUpdate = true;
+  renderer.render(P.fScene, floorOrthoCam);
 }
 
 // ── preset UI + per-frame driver ──
@@ -9594,7 +9976,9 @@ function plumeReadout() {
   if (plume.key === 'off' || !D) { propReadoutEl.innerHTML = 'legacy baked exhaust <span class="u">(no nozzle model)</span>'; return; }
   propReadoutEl.innerHTML = `v<sub>e</sub> ${uSpeed(D.ve, 0)} · M<sub>e</sub> ${D.Me.toFixed(2)} · T<sub>e</sub> ${Math.round(D.Te)} K<br>` +
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
-    `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
+    `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span><br>` +
+    `<span class="u">flame: ${D.env.fuel} · O/F ${D.env.of.toFixed(2)} · products ${['CO2','H2O','CO','H2','C'].map(g => g + ' ' + (D.env.products[g] * 100).toFixed(0) + '%').join(' · ')}${D.env.nox > 0.05 ? ' · NOx ' + (D.env.nox * 100).toFixed(0) + '%' : ''} · unburnt fuel ${(D.env.yf * 100).toFixed(1)}% · ${D.env.o2Rel > 0.02 ? 'afterburn with ' + (D.env.o2Rel * 21).toFixed(1) + '% O₂ air' : 'no ambient O₂, no afterburn'}</span><br>` +
+    (D.comb ? `<span class="u">combustion: ${D.comb.st.lit ? 'burning ' + Math.round(D.comb.st.burn * 100) + '%' : 'COLD FLOW'} · φ ${D.comb.cr.phi.toFixed(2)} · T<sub>ad</sub> ${Math.round(D.comb.cr.Tad)} K${D.comb.cr.reason ? ' · ' + D.comb.cr.reason : ''}</span>` : '');
 }
 function upstreamContents(part, depth) {
   // Walk the flow graph back to the container that feeds this part and
@@ -9678,6 +10062,22 @@ function chamberPcPsi(ch, cfg) {
   if (ex != null) return ex;
   return (cfg || PROP_PRESETS[plume.key] || PROP_PRESETS[PC_DEFAULT_PRESET]).pcPsi;
 }
+
+// Reaction state of a chamber this frame: mixture (O/F from chamberMixture, nominal when no flow is traced), pressure and ignition source ->
+// chamberCombustion; combAdvance steps its burn transient (dt = 0 only reads). A chamber that already meets the conditions when its state
+// is first created starts lit (a running engine), otherwise it lights only when the conditions are met. Returns the reacted chamber
+// temperature Tc (K), the c* factor on pc, and the combustion record. State is per chamber part (plume.comb Map): the merge hook for
+// several chambers/clones is to blend each one's {Tc, soot, chem, cx, cz} into the shared plume (they are already per-particle).
+function plumeChamberComb(c, cfg, pc, dt) {
+  const ch = c.ch, mix = chamberMixture(ch), el = document.getElementById('igniterOn');
+  const igniter = ch.igniter !== undefined ? !!ch.igniter : (!el || el.checked);
+  const cr = chamberCombustion({ fuel: chamberFuelSpecies(ch, cfg), of: mix.of, known: mix.mdot > 0, pcPsi: pc, TpartK: ch.tempK || COMB.T_FEED, igniter, TpeakK: ch.tempK >= 1500 ? ch.tempK : cfg.Tc });
+  let st = plume.comb.get(ch);
+  if (!st) { st = { burn: cr.ignitable ? 1 : 0, lit: cr.ignitable }; plume.comb.set(ch, st); }
+  if (dt > 0) combAdvance(st, cr, dt);
+  const Tc = combChamberT(cr, st.burn); st.cr = cr; st.T = Tc;
+  return { cr, st, Tc, kPc: combPcScale(COMB.T_FEED + (cfg.Tc - COMB.T_FEED) * st.burn, cfg.Tc) };
+}
 function plumeCurrentDerived() {
   const cfg = PROP_PRESETS[plume.key];
   const c = plumeChamber();
@@ -9688,7 +10088,9 @@ function plumeCurrentDerived() {
   // part setting, then the preset. No synthetic override.
   const pc = chamberPcPsi(c.ch, cfg);
   const kPc = pfsAnyPressure() ? 1 : (mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1);   // pressure solver: chamberPcPsi is already the real Pc
-  const D = plumeDerive(cfg, pc * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+  const cb = plumeChamberComb(c, cfg, pc * kPc, 0);
+  const D = plumeDerive(cfg, pc * kPc * cb.kPc, cb.Tc, pa, F.re, plumeEnv(c.ch, cfg, pa));
+  D.comb = cb;
   return { D, F, c };
 }
 function applyPropPreset(key) {
@@ -9735,11 +10137,58 @@ function renderOfPerSystem() {
 // wall jet straight away instead of a column slowly filling in.
 // One sub-step: emit this step's share of particles (each jittered along the axis by the distance it would have flown
 // within the step, so a long frame never leaves a gap below the nozzle), then integrate.
+
+// Chained afterburn: every parcel with unburnt fuel burns at reactRate() once it is hot enough OR is lit by burning gas around it (the
+// chain reaction through a fuel-rich cloud), but only with ambient O2 that has mixed in. Heat is released into the parcel (ab -> tk), so a
+// flame front runs through the fuel-rich gas on the ground and in the billow. Neighbours are found with a spatial hash of cell ~ the
+// nozzle diameter (O(N)). Called ~25x per second from plumeAdvance.
+const _rh = { cnt: new Float32Array(16384), bq: new Float32Array(16384), bt: new Float32Array(16384) };
+function plumeReact(dt, D) {
+  const P = plume, env = D.env, o2 = Math.min(env.o2Rel, 1);
+  if (!(o2 > 0.02) || !(env.yf > 0.001) || !(dt > 0)) { for (let i = 0; i < P.n; i++) P.bq[i] = 0; return; }   // vacuum / Mars / no unburnt fuel: nothing to burn with
+  const yfK = Math.min(env.yf / FLAME.AB_YF_REF, 1), cell = Math.max(D.De * 0.7, 0.6), inv = 1 / cell, M = 16383;
+  const cnt = _rh.cnt, bq = _rh.bq, bt = _rh.bt;
+  cnt.fill(0); bq.fill(0); bt.fill(0);
+  const key = (ix, iy, iz) => ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) & M;
+  for (let i = 0; i < P.n; i++) {
+    if (!P.st[i]) continue;
+    const k = key(Math.floor(P.px[i] * inv), Math.floor(P.py[i] * inv), Math.floor(P.pz[i] * inv));
+    cnt[k] += 1; const b = P.bq[i] + (P.tk[i] > COMB.T_IGN + COMB.IGN_BAND ? 0.5 : 0);   // burning gas, and still-hot products, both light neighbours
+    if (b > 0.05) { bq[k] += b; bt[k] += b * P.tk[i]; }
+  }
+  for (let i = 0; i < P.n; i++) {
+    const st = P.st[i]; if (!st) continue;
+    const fu = P.fu[i];
+    if (!(fu > 0.001)) { P.bq[i] = 0; continue; }
+    const avail = st === 1 ? plumeAirMix(P.ax[i] / D.De, P.sr[i], env) : o2 * (0.5 + 0.5 * (1 - Math.exp(-P.tg[i] / 0.8)));
+    if (!(avail > 0)) { P.bq[i] = 0; continue; }
+    const cx = Math.floor(P.px[i] * inv), cy = Math.floor(P.py[i] * inv), cz = Math.floor(P.pz[i] * inv);
+    let sc = 0, sb = 0, sT = 0;
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) { const k = key(cx + a, cy + b, cz + c); sc += cnt[k]; sb += bq[k]; sT += bt[k]; }
+    const nbB = sc > 0 ? sb / Math.sqrt(sc) : 0, nbT = sb > 0 ? sT / sb : 0;
+    const rate = reactRate(fu, avail, P.tk[i], nbB, nbT), dB = Math.min(fu, rate * dt);
+    P.fu[i] = fu - dB; P.ab[i] += dB * yfK; P.bq[i] = 0.5 * P.bq[i] + 0.5 * dB / dt;
+    if (st === 2) {                                                     // free gas: heat released in place; hot burnt neighbours preheat it
+      P.tk[i] += FLAME.AB_DT_K * yfK * dB;
+      if (nbT > P.tk[i]) P.tk[i] += (nbT - P.tk[i]) * Math.min(nbB / COMB.BQ_REF, 1) * Math.min(1.2 * dt, 0.5);
+      P.tn[i] = flameTn(P.tk[i]);
+    }
+  }
+}
 function plumeAdvance(h, D, F, cap, tFlight) {
-  plume.acc += cap / (tFlight + plume.tune.keep * (plume.tune.life0 + 0.5 * plume.tune.life1)) * h * (mass.on ? (mass.K > 0.02 ? Math.min(1, mass.K) : 0) : 1);
+  plume.smokeCap = Math.max(0, Math.min(SMOKE.CAP_FRAC * cap, PLUME_MAX - cap));
+  plume.impAcc = (plume.impAcc || 0) + h;
+  if (plume.impAcc >= 0.25) {   // impact rate -> the fraction of wall-jet particles that can live on as smoke within the pool budget
+    const rate = plume.impN / plume.impAcc, k = Math.min(plume.impAcc / 2, 1);
+    plume.impRate += (rate - plume.impRate) * k; plume.impN = 0; plume.impAcc = 0;
+    plume.pSmoke = Math.min(Math.max(plume.smokeCap / Math.max(plume.impRate * (SMOKE.LIFE0 + 0.5 * SMOKE.LIFE1), 1), 0.01), 0.6);
+  }
+  plume.acc += cap / (tFlight + plume.tune.keep * (plume.tune.life0 + 0.5 * plume.tune.life1)) * h * (mass.on ? (mass.K > 0.02 ? Math.min(1, mass.K) : 0) : 1) * Math.max(0.15, 1 + 0.3 * plume.fl);   // combustion instability puffs the supply
   const n = Math.floor(plume.acc); plume.acc -= n;
+  for (let k = 0; k < 4; k++) plume.lop[k] += -plume.lop[k] * h / 0.7 + 0.9 * Math.sqrt(2 * h / 0.7) * randn() * 0.6;   // OU: the break-up pattern wanders
   plumeEmit(n, D, F, h);
   plumeStep(h, D, F);
+  plume.reactAcc += h; if (plume.reactAcc >= 0.04) { plumeReact(plume.reactAcc, D); plume.reactAcc = 0; }
 }
 function plumePreroll(D, F, seconds) {
   const dt = 1 / 30, cap = Math.min(D.cfg.count, PLUME_MAX), tFlight = Math.max(F.H / Math.max(D.veVis, 1), 0.05);
@@ -9751,13 +10200,15 @@ function plumePreroll(D, F, seconds) {
 
 function plumeReset() {
   plume.needPreroll = true;
-  plume.st.fill(0); plume.n = 0; plume.live = 0; plume.cursor = 0; plume.acc = 0; plume.lastAt = 0;
+  plume.st.fill(0); plume.sv.fill(0); plume.smokeLive = 0; plume.impN = 0; plume.impRate = 0; plume.impAcc = 0; plume.n = 0; plume.live = 0; plume.cursor = 0; plume.acc = 0; plume.lastAt = 0;
   plume.stats.impacts = 0; plume.stats.maxWall = 0; plume.stats.maxHeightRing = 0;
   if (plume.perChamber) plume.perChamber.clear();
   if (plume.points) plume.points.visible = false;
   if (plume.vol) plume.vol.visible = false;
-  if (plume.grid) { plume.grid.dens.fill(0); plume.grid.data.fill(0); plume.grid.fgas.fill(0); }
-  plumeHidePostUniform.value = 0;
+  if (plume.gs) plume.gs.visible = false;
+  if (plume.grid) { plume.grid.dens.fill(0); plume.grid.data.fill(0); plume.grid.data2.fill(0); plume.grid.fgas.fill(0); }
+  plumeHidePostUniform.value = 0; plumeBurnUniform.value = 1;
+  plume.fu.fill(0); plume.bq.fill(0); plume.tb.fill(0); plume.ab.fill(0); plume.comb.clear(); plume.fl = 0; plume.reactAcc = 0; plume.lop.fill(0);
 }
 
 let _plumeReadoutAt = 0;
@@ -9772,8 +10223,9 @@ function plumeFrame(inst, now) {
     if (propPresetEl.value !== 'rocket_bell') propPresetEl.value = 'rocket_bell';
   }
   if (state.simRunning && chambers.length) {
-    if (plume.points) plume.points.visible = true;
+    if (plume.points) plume.points.visible = renderMode === 'points';
     if (plume.vol) plume.vol.visible = renderMode === 'volumetric';
+    if (plume.gs) plume.gs.visible = renderMode === 'gaussian';
   }
   const ready = state.simRunning && state.particleCPU && plume.key !== 'off' && chambers.length;
   if (!ready) {
@@ -9792,7 +10244,9 @@ function plumeFrame(inst, now) {
     const F = plumeFrameOf(c, cfg);
     const pc = chamberPcPsi(c.ch, cfg);
     const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
-    const D = plumeDerive(cfg, pc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
+    const cb = plumeChamberComb(c, cfg, pc, Math.min(Math.max((now - (plume.lastAt || now)) / 1000, 0), 0.1));
+    const D = plumeDerive(cfg, pc * cb.kPc * (1 + 0.04 * plume.fl), cb.Tc * (1 + 0.03 * plume.fl), pa, F.re, plumeEnv(c.ch, cfg, pa));
+    D.comb = cb;
     let inst = plume.perChamber.get(c.ch);
     if (!inst) {
       inst = { px:[],py:[],pz:[],vx:[],vy:[],vz:[],ax:[],tn:[],sh:[],smk:[],st:[],tg:[],life:[],sr:[],gw:[],n:0,tclock:0,needPreroll:true,lastAt:now,sizeK:1 };
@@ -9816,22 +10270,39 @@ function plumeFrame(inst, now) {
   dt = Math.min(dt, 0.1);
   if (plume.needPreroll) { plume.needPreroll = false; plumePreroll(D, F, 3.2); }
   plume.tclock += dt;
+  plume.fl = Math.max(-1.2, Math.min(1.2, plume.fl - plume.fl * dt / 0.3 + 0.35 * Math.sqrt(2 * dt / 0.3) * randn()));   // chamber combustion instability: correlated random, no period
+  plumeBurnUniform.value = 0.12 + 0.88 * (D.comb ? D.comb.st.burn : 1);
   const cap = Math.min(D.cfg.count, PLUME_MAX);
   const tFlight = Math.max(F.H / Math.max(D.veVis, 1), 0.05);
   const sub = Math.max(1, Math.ceil(dt / 0.02)), h = dt / sub;
   for (let k = 0; k < sub; k++) plumeAdvance(h, D, F, cap, tFlight);
   plumeEnsurePoints();
   plumeEnsureVolume();
+  if (renderMode === 'gaussian') plumeEnsureGaussian();
   const P = plume, pa = P.points.geometry.attributes.position.array;
-  const asz = P.aSz.array, aal = P.aAl.array, at = P.aT.array, ash = P.aSh.array, asm = P.aSmk.array;
+  const asz = P.aSz.array, aal = P.aAl.array, at = P.aT.array, ash = P.aSh.array, asm = P.aSmk.array, asp = P.aSp.array;
+  const gsv = P.gsVel;
   const re = F.re;
+  // volumetric view: the near grid holds the flame and the nearby smoke; smoke that has left it is drawn as sprites (far field out to 300 m)
+  const farOnly = renderMode === 'volumetric' && !!P.grid, gg = P.grid;
+  const gc = gg ? { x: gg.min.x + gg.size.x / 2, z: gg.min.z + gg.size.z / 2, hw: gg.size.x / 2, top: gg.size.y } : null;
   for (let i = 0; i < P.n; i++) {
     const st = P.st[i];
     if (!st) { pa[3 * i + 1] = -1000; aal[i] = 0; continue; }
     pa[3 * i] = P.px[i]; pa[3 * i + 1] = P.py[i]; pa[3 * i + 2] = P.pz[i];
-    at[i] = Math.min(P.ax[i] / Math.max(F.H, 0.1), 1); ash[i] = P.sh[i]; asm[i] = P.smk[i];
+    at[i] = P.tn[i]; ash[i] = P.sh[i]; asm[i] = P.smk[i];   // temperature, not distance
+    asp[3 * i] = P.sp0[i]; asp[3 * i + 1] = P.sp1[i]; asp[3 * i + 2] = P.ab[i];
+    if (gsv) { gsv[3 * i] = P.vx[i]; gsv[3 * i + 1] = P.vy[i]; gsv[3 * i + 2] = P.vz[i]; }
+    if (st === 1 && farOnly) { aal[i] = 0; continue; }
     if (st === 1) { const distFade = Math.max(0, 1 - P.ax[i] / 11800); asz[i] = P.sizeK * re * 8.0 * (1 + 3.0 * Math.min(P.ax[i] / Math.max(F.H, 0.1), 1)); aal[i] = P.tune.jetSprite * Math.pow(distFade, 1.2); }
-    else { const f = P.tg[i] / P.life[i]; asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)); aal[i] = (1 - _ss(0.6, 1.0, f)) * P.gw[i]; }
+    else {
+      let w = plumeGroundWeight(i), grow = 0;
+      if (P.sv[i]) {   // smoke puffs grow as they spread; in the volumetric view only the part outside the near grid is drawn as sprites (the volume holds the rest)
+        grow = Math.min(0.07 * Math.hypot(P.px[i] - P.cx[i], P.pz[i] - P.cz[i]), 30);
+        if (farOnly) { const e = Math.max(Math.abs(P.px[i] - gc.x) - gc.hw, Math.abs(P.pz[i] - gc.z) - gc.hw, P.py[i] - gc.top); w *= _ss(-0.1 * gc.hw, 0.1 * gc.hw, e); }
+      } else if (farOnly) w = 0;
+      asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)) + grow; aal[i] = w;
+    }
   }
   // Append a plume for every other chamber so each clone fires on its own.
   let write = P.n;
@@ -9850,7 +10321,7 @@ function plumeFrame(inst, now) {
         pa[3 * write] = iF.O.x + iF.d.x * x + iF.U.x * cc + iF.W.x * sn;
         pa[3 * write + 1] = iF.O.y + iF.d.y * x + iF.U.y * cc + iF.W.y * sn;
         pa[3 * write + 2] = iF.O.z + iF.d.z * x + iF.U.z * cc + iF.W.z * sn;
-        at[write] = x / Math.max(iD.De, 0.1); ash[write] = 0; asm[write] = 0.3;
+        at[write] = flameTn(iD.Tc * (1 - 0.6 * x / Math.max(iF.H, 0.1))); ash[write] = 0; asm[write] = 0.3;   // canned stand-in clone plume: temperature falls with distance
         asz[write] = P.sizeK * iF.re * (0.5 + 0.4 * s); aal[write] = P.tune.jetSprite * (1 - x / Math.max(iF.H, 0.1));
       }
       inst.tclock = (inst.tclock || 0) + dt;
@@ -9858,16 +10329,19 @@ function plumeFrame(inst, now) {
   }
   // (Assembly clones are now real Instances with their own plume - the old static clone fan was removed.)
   P.points.geometry.setDrawRange(0, write);
-  for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl]) a.needsUpdate = true;
+  for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl, P.aSp]) a.needsUpdate = true;
+  if (P.gs) { P.gs.visible = renderMode === 'gaussian' && state.simRunning; P.gs.geometry.instanceCount = write; for (const a of P.gsAttrs) a.needsUpdate = true; }
+  const amb = D.env.tint;
+  P.points.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); if (P.gs) P.gs.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); P.vol.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]);
   const camFov = camera.fov * Math.PI / 180;
   P.points.material.uniforms.uPx.value = renderer.domElement.height / (2 * Math.tan(camFov / 2));
   P.points.material.uniforms.uHeat.value = floorMat.uniforms.uHeat.value;
-  P.points.visible = true;
+  P.points.visible = renderMode === 'points' || farOnly;
 
   // volume grid is built in BOTH modes (it also feeds the floor's heat map); only drawn in volumetric mode
   if (now - P.lastVolAt >= PLUME_VOL_INTERVAL_MS) { P.lastVolAt = now; plumeRebuildVolume(D, F); }
   const vm = P.vol;
-  vm.visible = !!P.volTex; // ray-marched plume for Volumetric and Gaussian modes
+  vm.visible = !!P.volTex && renderMode === 'volumetric'; // the three render modes are mutually exclusive views of the same plume
   if (vm.visible) {
     const u = vm.material.uniforms, g = P.grid;
     u.uHeat.value = floorMat.uniforms.uHeat.value;
