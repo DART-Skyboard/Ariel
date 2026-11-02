@@ -8,3 +8,5 @@ Plain-node checks for `templates/arc-flow.html` (no browser, no build step).
                                                   #   (npm i three@0.160.0, or THREE_PATH=.../three.module.js; skips otherwise)
 
 `ARC_FLOW_HTML=<file>` points `detect.test.js` at another revision, e.g. `git show main:templates/arc-flow.html > /tmp/old.html`.
+
+`boolean-instances.test.js` - two cloned assemblies (different transforms) get independent Boolean joints, graphs, tagFlowGraph, sync and LTCBP joint regions (needs three.js like detect.test.js).
