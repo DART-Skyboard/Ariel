@@ -224,7 +224,7 @@ test('renderJointReport: the "touching, no fluid path" section only renders when
 
 test('Boolean/joint detection stays volumetric and render-mode independent (it only decides which parts form which system)', () => {
   const { fn } = require('./extract');
-  const code = [region(src, 'flowgraph'), fn(src, 'detectPenetrationJoint'), fn(src, 'detectAutoPenetrationJoints'), fn(src, 'refineThinOverlap')].join('\n')
+  const code = [region(src, 'flowgraph'), fn(src, 'detectPenetrationJoint'), fn(src, 'detectAutoPenetrationJoints'), fn(src, 'refineThinOverlap'), fn(src, 'penFrameAABB')].join('\n')
     .replace(/\/\/.*$/gm, '');  // ignore comments
   for (const bad of ['renderMode', 'setRenderMode', 'gaussian', 'gsMesh', 'particleSystem', 'raymarch'])
     assert.ok(!code.includes(bad), 'joint detection must not depend on ' + bad);

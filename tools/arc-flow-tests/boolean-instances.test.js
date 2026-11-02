@@ -17,7 +17,7 @@ async function loadThree() {
   const ctx = { THREE, console, Math, Infinity, state: { parts: [], instances: [], systemGrouping: null, currentLinks: null }, refreshAllOpenings() {}, renderChannelFlowReport() {} };
   vm.createContext(ctx);
   const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex', 'findNearestTriangleIndices',
-    'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penMinOverlap', 'detectPenetrationJoint', 'detectAutoPenetrationJoints',
+    'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penFrameAABB', 'penMinOverlap', 'detectPenetrationJoint', 'detectAutoPenetrationJoints',
     'collectJointRegions'];
   let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
     'SDF_VIRTUAL_EDGE_CELLS', 'SDF_VIRTUAL_PHONG_ALPHA', 'SDF_VIRTUAL_EXTRA_TRI_CAP', 'SDF_MAX_FINE_REGIONS', 'SDF_JOINT_MIN_RADIUS', 'SDF_FINE_PAD_FACTOR', 'SDF_FINE_RES']
@@ -72,7 +72,7 @@ async function loadThree() {
     assert.strictEqual(sys.sealed.length, 2);
     const jA = sys.sealed.find(s => s.partA === A.tank), jB = sys.sealed.find(s => s.partA === B.tank);
     // B's joint is A's joint carried through B's own transform (same local geometry).
-    near(jB.centroid, jA.centroid.clone().applyMatrix4(B.g.matrixWorld), 0.8); // independent world-grid sampling: same joint to within the wall-crossing zone
+    near(jB.centroid, jA.centroid.clone().applyMatrix4(B.g.matrixWorld), 0.01); // pair-local sampling: same joint whatever the clone orientation
     assert.ok(jB.centroid.distanceTo(jA.centroid) > 10);
     assert.deepStrictEqual(Array.from(api.booleanSystemGrouping([A.tank, A.pipe]), g => g.length), [2]); // scoped to one instance
   });
@@ -195,6 +195,33 @@ async function loadThree() {
     assert.deepStrictEqual(Array.from(r.components, c => Array.from(c, p => p.name)), [['A:tank', 'A:pipe'], ['B:tank', 'B:pipe']]);
     assert.deepStrictEqual(Array.from(r.orphans, p => p.name), ['loose']);
     state.systemGrouping = null;
+  });
+
+  test('first detection is orientation-independent: identical clones at 0/45/90 deg (about Y and Z) with offsets give the same LOCAL joint centroid and radius', () => {
+    const D = Math.PI / 180, size = 4;   // tank diameter = part size
+    const specs = [[0, 0, [0, 0, 0]], [45 * D, 0, [13, -4, 7]], [90 * D, 0, [-9, 6, 2]], [0, 45 * D, [30, 1, -8]], [45 * D, 90 * D, [-20, -5, 11]], [90 * D, 45 * D, [3, 18, -6]]];
+    const rs = specs.map(([ry, rz, off], i) => {
+      const c = makeClone('C' + i, new THREE.Vector3(...off), ry, rz);
+      state.parts = [c.tank, c.pipe]; api.booleanCacheReset();           // each is a FRESH, first detection
+      const j = api.booleanSystems().sealed[0];
+      assert.ok(j, 'clone ' + i + ' has its joint');
+      const inv = c.g.matrixWorld.clone().invert();
+      return { local: j.centroid.clone().applyMatrix4(inv), radius: j.radius };
+    });
+    for (let i = 1; i < rs.length; i++) {
+      assert.ok(rs[i].local.distanceTo(rs[0].local) < 1e-3 * size, `clone ${i} local centroid ${rs[i].local.toArray()} vs ${rs[0].local.toArray()}`);
+      assert.ok(Math.abs(rs[i].radius - rs[0].radius) < 1e-3 * size, 'radius ' + i);
+    }
+    // sanity: the joint is the wall crossing of the +x pipe (local x ~ 2), not somewhere arbitrary
+    assert.ok(Math.abs(rs[0].local.x - 2) < 0.6 && Math.abs(rs[0].local.y) < 0.2 && Math.abs(rs[0].local.z) < 0.2, rs[0].local.toArray().join());
+  });
+
+  test('a uniformly scaled, rotated clone gives the same local joint on first detection', () => {
+    const a = makeClone('S0', new THREE.Vector3(0, 0, 0)), b = makeClone('S1', new THREE.Vector3(5, 5, 5), 0.8, 0.4); b.g.scale.setScalar(2.5); b.g.updateMatrixWorld(true);
+    const loc = (c) => { state.parts = [c.tank, c.pipe]; api.booleanCacheReset(); const j = api.booleanSystems().sealed[0]; return { l: j.centroid.clone().applyMatrix4(c.g.matrixWorld.clone().invert()), r: j.radius / c.g.matrixWorld.getMaxScaleOnAxis() }; };
+    const la = loc(a), lb = loc(b);
+    assert.ok(la.l.distanceTo(lb.l) < 4e-3, la.l.toArray() + ' vs ' + lb.l.toArray());
+    assert.ok(Math.abs(la.r - lb.r) < 4e-3);
   });
 
   console.log(n + ' boolean-instances tests passed');

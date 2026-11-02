@@ -19,7 +19,7 @@ async function loadThree() {
   const ctx = { THREE, console, Math, Infinity, state: { parts: [] } };
   vm.createContext(ctx);
   const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex',
-    'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penMinOverlap',
+    'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penFrameAABB', 'penMinOverlap',
     'detectPenetrationJoint', 'detectAutoPenetrationJoints', 'partAssembly'];
   let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
     'SDF_VIRTUAL_EDGE_CELLS', 'SDF_VIRTUAL_PHONG_ALPHA', 'SDF_VIRTUAL_EXTRA_TRI_CAP'].map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');

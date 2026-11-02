@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v66</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v67</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -2131,11 +2131,11 @@ const PEN_MIN_OVERLAP_FRAC = 0.15;   // real overlap must exceed this fraction o
 const PEN_MIN_OVERLAP_FLOOR = 0.01;  // ...but never less than this many world units: a sliver or shared face is not a penetration
 // Overlap-box threshold for one pair. Scales with part size so a thin pipe (bore < 0.15 world units) can still
 // register a joint, while a shared face / grazing contact (overlap ~ 0 on some axis) stays rejected.
-function penMinOverlap(boxA, boxB) {
+function penMinOverlap(boxA, boxB, scale) {
   const sa = new THREE.Vector3(), sb = new THREE.Vector3();
   boxA.getSize(sa); boxB.getSize(sb);
   const thin = Math.min(Math.min(sa.x, sa.y, sa.z), Math.min(sb.x, sb.y, sb.z));
-  return Math.max(PEN_MIN_OVERLAP_FLOOR, PEN_MIN_OVERLAP_FRAC * thin);
+  return Math.max(PEN_MIN_OVERLAP_FLOOR / (scale || 1), PEN_MIN_OVERLAP_FRAC * thin);   // scale: pair-frame -> world, so the floor stays in world units
 }
 
 let _penIndexCache = new WeakMap(); // part -> spatial index (reset with the world-triangle cache)
@@ -2160,16 +2160,31 @@ function partWorldAABB(part) {
 // first point inside BOTH meshes, else recentres on the sample closest to being inside both and repeats at 1/3 the
 // cell size. Returns null when no level finds one (a real gap, not a sampling miss). Cost is bounded:
 // at most levels * 27 * 2 nearest-surface queries per candidate, and only for candidates the coarse probe flagged.
-function refineThinOverlap(p0, cell, indexA, indexB, levels) {
+// AABB of a part's mesh vertices in a pair frame (frame.inv takes world -> frame). The Boolean samples on a grid aligned to
+// THIS box, so the grid follows the assembly instead of the world axes (a 45-degree clone no longer gets a different grid).
+function penFrameAABB(part, frame) {
+  const box = new THREE.Box3(), v = new THREE.Vector3(), m = new THREE.Matrix4();
+  for (const mesh of part.meshes) mesh.traverse(o => {
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+    const pos = o.geometry.attributes.position;
+    m.multiplyMatrices(frame.inv, o.matrixWorld);
+    for (let i = 0; i < pos.count; i++) box.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(m));
+  });
+  return box;
+}
+// `frame` (optional {fwd, inv, scale}): points p0 / the result are in the pair frame and are mapped to world only for the
+// distance queries; `cell` is in frame units.
+function refineThinOverlap(p0, cell, indexA, indexB, levels, frame) {
+  const wv = new THREE.Vector3(), q = (p, idx) => signedDistanceToMesh(frame ? wv.copy(p).applyMatrix4(frame.fwd) : p, idx), sc0 = frame ? frame.scale : 1;
   let c = p0.clone(), s = cell;
   for (let lv = 0; lv < levels; lv++) {
     const step = s / 3;
     let best = null, bestScore = Infinity;
     for (let k = -1; k <= 1; k++) for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
       const p = new THREE.Vector3(c.x + i * step, c.y + j * step, c.z + k * step);
-      const dA = signedDistanceToMesh(p, indexA);
-      if (dA >= s) continue;
-      const dB = signedDistanceToMesh(p, indexB);
+      const dA = q(p, indexA);
+      if (dA >= s * sc0) continue;
+      const dB = q(p, indexB);
       if (dA < 0 && dB < 0) return p;
       const sc = Math.max(dA, dB);
       if (sc < bestScore) { bestScore = sc; best = p; }
@@ -2216,17 +2231,21 @@ function cavitiesAreConnected(labels, res) {
 // Tests ONE part pair. Returns null when the meshes don't actually share
 // cavity volume (AABB-only overlap — not a touch at all); otherwise
 //   { sealed, centroid, radius } with centroid/radius at the wall-crossing zone.
-function detectPenetrationJoint(partA, partB) {
-  const boxA = partWorldAABB(partA), boxB = partWorldAABB(partB);
+// `frame` (optional, {fwd, inv, scale} from bsFrameOf): the pair-local frame (the assembly both parts live in). The overlap box,
+// sample grid, jitter, refinement and centroid all live in that frame, so the result does not depend on how the assembly is
+// oriented in the world; only the signed-distance queries touch world space. The returned centroid / radius are world.
+function detectPenetrationJoint(partA, partB, frame) {
+  const sc = frame ? frame.scale : 1;
+  const boxA = frame ? penFrameAABB(partA, frame) : partWorldAABB(partA), boxB = frame ? penFrameAABB(partB, frame) : partWorldAABB(partB);
   if (!boxA.intersectsBox(boxB)) return null;
   const overlap = boxA.clone().intersect(boxB);
   const size = new THREE.Vector3(); overlap.getSize(size);
-  const minOverlap = penMinOverlap(boxA, boxB);
+  const minOverlap = penMinOverlap(boxA, boxB, sc);
   if (size.x <= minOverlap || size.y <= minOverlap || size.z <= minOverlap) return null;
 
   // Pad a little: round surfaces can poke slightly outside their own AABB
   // intersection right at the seam.
-  overlap.expandByScalar(Math.max(size.length() * 0.08, 0.01));
+  overlap.expandByScalar(Math.max(size.length() * 0.08, 0.01 / sc));
   overlap.getSize(size);
   // Denser full grid for channel-through-tank so a thin cavity overlap
   // is not missed between probe samples.
@@ -2268,7 +2287,8 @@ function detectPenetrationJoint(partA, partB) {
   const isFlowPair = (partA.type === 'pipe' || partB.type === 'pipe' ||
                       partA.type === 'chamber' || partB.type === 'chamber');
   const PROBE = isFlowPair ? 7 : 5;
-  const pitch = Math.max(size.x, size.y, size.z) / PROBE;
+  const pitch = Math.max(size.x, size.y, size.z) / PROBE;   // frame units
+  const wv = new THREE.Vector3(), qd = (p, idx) => signedDistanceToMesh(frame ? wv.copy(p).applyMatrix4(frame.fwd) : p, idx);
   // hitPts: points PROVEN inside BOTH meshes (probe hit or adaptive refinement). They anchor the joint when the
   // 9^3 labeling grid happens to straddle a thin overlap and records no label-3 sample of its own.
   const hitPts = [];
@@ -2276,14 +2296,14 @@ function detectPenetrationJoint(partA, partB) {
   let overlapsInVolume = false;
   probe: for (let z = 0; z < PROBE; z++) for (let y = 0; y < PROBE; y++) for (let x = 0; x < PROBE; x++) {
     const p = sampleAt(PROBE, x, y, z);
-    const dA = signedDistanceToMesh(p, indexA);
+    const dA = qd(p, indexA);
     // Non-flow pairs keep the original cheap test (B is only queried where A says "inside"); flow pairs
     // (thin pipe cavities) also query B for samples just OUTSIDE A so a near-miss can be refined below.
-    if (dA >= (isFlowPair ? pitch : 0)) continue;
-    const dB = signedDistanceToMesh(p, indexB);
+    if (dA >= (isFlowPair ? pitch * sc : 0)) continue;
+    const dB = qd(p, indexB);
     if (dA < 0 && dB < 0) { overlapsInVolume = true; hitPts.push(p); break probe; }
     const score = Math.max(dA, dB);
-    if (score < pitch) near.push({ p, score });
+    if (score < pitch * sc) near.push({ p, score });
   }
   // Adaptive refinement, ONLY where needed: a thin cavity can slip between probe samples. Instead of the old
   // "AABBs cross => force a joint" guess (which linked any pipe that merely brushed a tank's bounding box,
@@ -2292,7 +2312,7 @@ function detectPenetrationJoint(partA, partB) {
   if (!overlapsInVolume && isFlowPair && near.length) {
     near.sort((u, v) => u.score - v.score);
     for (const c of near.slice(0, PEN_REFINE_CANDIDATES)) {
-      const hit = refineThinOverlap(c.p, pitch, indexA, indexB, PEN_REFINE_LEVELS);
+      const hit = refineThinOverlap(c.p, pitch, indexA, indexB, PEN_REFINE_LEVELS, frame);
       if (hit) { overlapsInVolume = true; hitPts.push(hit); break; }
     }
   }
@@ -2303,7 +2323,7 @@ function detectPenetrationJoint(partA, partB) {
   const pts = new Array(res * res * res);
   for (let z = 0; z < res; z++) for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
     const p = sampleAt(res, x, y, z);
-    const inA = signedDistanceToMesh(p, indexA) < 0, inB = signedDistanceToMesh(p, indexB) < 0;
+    const inA = qd(p, indexA) < 0, inB = qd(p, indexB) < 0;
     const i = (z * res + y) * res + x;
     labels[i] = inA && inB ? 3 : inA ? 1 : inB ? 2 : 0;
     pts[i] = p;
@@ -2339,7 +2359,8 @@ function detectPenetrationJoint(partA, partB) {
   const e = [ext.x, ext.y, ext.z].sort((a, b) => a - b);
   // Cross-section ~ the middle extent (the smallest is the thin along-axis
   // thickness of the zone); add one voxel pitch of margin.
-  const radius = Math.max(e[1] * 0.5 + size.length() / res * 0.25, 0.02);
+  const radius = Math.max(e[1] * 0.5 + size.length() / res * 0.25, 0.02 / sc) * sc;
+  if (frame) centroid.applyMatrix4(frame.fwd);
   return { sealed, centroid, radius };
 }
 
@@ -2613,7 +2634,7 @@ function bsCachedJoint(a, b, ctx) {
   _bsStats.misses++;
   bsFreshGeometry(a); bsFreshGeometry(b);
   _bsStats.detections++;
-  const r = detectPenetrationJoint(a, b);
+  const r = detectPenetrationJoint(a, b, frame);   // sampled in the assembly-local frame: orientation-independent
   m.set(b, { root, sa, sb, res: r ? Object.assign({}, r, {
     centroid: frame ? r.centroid.clone().applyMatrix4(frame.inv) : r.centroid.clone(),
     radius: r.radius / (frame ? frame.scale : 1),
