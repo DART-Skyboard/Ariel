@@ -2449,6 +2449,24 @@ function flowRank(p) {
   return ({ pipe: 1, chamber: 2 })[p.type] ?? 1;
 }
 
+// The assembly (top-level group of one import / clone) a part belongs to, or null.
+function partAssembly(part) {
+  let o = part && part.pivot;
+  while (o) { if (o.userData && o.userData.isAssembly) return o; o = o.parent; }
+  return null;
+}
+const _plBox = new THREE.Box3();
+function crossAssemblyLinkLimit(a, b) {
+  let m = 0;
+  for (const p of [a, b]) {
+    if (!p.pivot) continue;
+    p.pivot.updateWorldMatrix(true, true);
+    _plBox.setFromObject(p.pivot);
+    if (!_plBox.isEmpty()) m = Math.max(m, _plBox.min.distanceTo(_plBox.max));
+  }
+  return 0.5 * (m || 1);
+}
+
 function buildFlowGraph() {
   refreshAllOpenings();
   // fromPart -> Link[] (directed, branching). Manual pass: EVERY exit opening links to its nearest entrance on
@@ -2457,11 +2475,15 @@ function buildFlowGraph() {
   for (const part of state.parts) {
     for (const exitOpening of part.openings.filter(o => o.role === 'exit')) {
       let best = null, bestDist = Infinity;
+      const myAsm = partAssembly(part);
       for (const other of state.parts) {
         if (other === part) continue;
         const entrance = other.openings.find(o => o.role === 'entrance');
         if (!entrance) continue;
         const d = exitOpening.centroid.distanceTo(entrance.centroid);
+        // Copies of the same system sit side by side: an exit may only reach an entrance in ANOTHER assembly when
+        // that entrance is genuinely adjacent (within half the larger part), otherwise the copies would cross-link.
+        if (partAssembly(other) !== myAsm && d > crossAssemblyLinkLimit(part, other)) continue;
         if (d < bestDist) { bestDist = d; best = { other, entrance }; }
       }
       if (best) addFlowLink(links, part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
