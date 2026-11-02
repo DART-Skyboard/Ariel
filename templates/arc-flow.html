@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v68</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v69</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -291,6 +291,8 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <option value="off">Legacy soft plume (no nozzle model)</option>
     </select>
     <div class="readout" id="propReadout">select a preset</div>
+    <label class="field" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="launchPlatform"> Launch platform (solid collision slab under the nozzle)</label>
+    <div class="sec-sub">The ground and any part named platform / pad / deck / trench / stand are solid: exhaust and smoke flatten onto them, roll over the edges and curl.</div>
     <div class="sec-sub">
       Sets the combustion chamber's pressure and temperature, the ambient atmosphere, the particle count and the thermal/emission scaling, then drives a live exhaust jet from the nozzle: exit velocity from the isentropic nozzle relations, a bell/cone plume that expands or contracts with the ambient pressure, Mach (shock) diamonds spaced by the nozzle exit diameter and the pressure ratio, turbulent edge mixing, and a real ground impingement with a radial wall jet. Drawn in both the point-sprite and the volumetric views. Edit the chamber's pressure/temperature or the atmosphere afterwards and the plume follows. The particle count applies to the baked flow on the next Simulate press.
     </div>
@@ -8329,9 +8331,140 @@ function plumeEmit(nEmit, D, F, dt) {
   }
 }
 
+// <plumecoll:begin> ── solid collision bodies for exhaust + smoke: analytic ground plane (y = 0) + axis-aligned boxes (the built-in
+// launch platform and any part named platform/pad/deck/ground/trench/stand), in world space. Exposed: window.arcFlowCollide.
+const PLUME_COLL_NAME = /platform|launch.?(pad|table|mount)|\bpad\b|\bdeck\b|ground|trench|\bstand\b/i;
+const plumeColl = { boxes: [], platform: { on: false, topK: 0.15, halfK: 0.12, box: null, mesh: null }, nx: 0, ny: 1, nz: 0,
+  grid: null, stats: { contacts: 0, curlMax: 0 } };
+// signed distance + outward normal (plumeColl.nx/ny/nz) of the union of ground and boxes. Outside: positive.
+function plumeSD(x, y, z) {
+  let sd = y, nx = 0, ny = 1, nz = 0;
+  const B = plumeColl.boxes;
+  for (let i = 0; i < B.length; i++) {
+    const b = B[i];
+    const cx = (b.x0 + b.x1) * 0.5, cy = (b.y0 + b.y1) * 0.5, cz = (b.z0 + b.z1) * 0.5;
+    const qx = Math.abs(x - cx) - (b.x1 - b.x0) * 0.5, qy = Math.abs(y - cy) - (b.y1 - b.y0) * 0.5, qz = Math.abs(z - cz) - (b.z1 - b.z0) * 0.5;
+    const ox = Math.max(qx, 0), oy = Math.max(qy, 0), oz = Math.max(qz, 0);
+    const out = Math.hypot(ox, oy, oz);
+    const d = out + Math.min(Math.max(qx, qy, qz), 0);
+    if (d >= sd) continue;
+    sd = d;
+    if (out > 1e-9) { nx = ox / out * Math.sign(x - cx); ny = oy / out * Math.sign(y - cy); nz = oz / out * Math.sign(z - cz); }
+    else if (qx >= qy && qx >= qz) { nx = Math.sign(x - cx) || 1; ny = 0; nz = 0; }
+    else if (qy >= qz) { nx = 0; ny = Math.sign(y - cy) || 1; nz = 0; }
+    else { nx = 0; ny = 0; nz = Math.sign(z - cz) || 1; }
+  }
+  plumeColl.nx = nx; plumeColl.ny = ny; plumeColl.nz = nz;
+  return sd;
+}
+// collision-body boxes, rebuilt per frame from the platform + any matching part (instance-aware: part.instId when present)
+function plumeCollRefresh(F, D) {
+  const C = plumeColl, B = [];
+  for (const p of state.parts) {
+    if (p.type === 'chamber' || !PLUME_COLL_NAME.test(p.name || '')) continue;
+    const b = partWorldAABB(p);
+    if (b && isFinite(b.min.x + b.max.x)) B.push({ x0: b.min.x, y0: Math.max(b.min.y, 0), z0: b.min.z, x1: b.max.x, y1: b.max.y, z1: b.max.z, src: p.name, inst: p.instId || null });
+  }
+  const pl = C.platform;
+  if (pl.on && F && D) {
+    const top = Math.min(Math.max(pl.topK * F.H, 0.5), Math.max(F.H * 0.6, 0.6)), half = Math.max(pl.halfK * F.H, 2 * D.De);
+    pl.box = { x0: F.C.x - half, y0: 0, z0: F.C.z - half, x1: F.C.x + half, y1: top, z1: F.C.z + half, src: 'platform', inst: null };
+    B.push(pl.box);
+    plumePlatformMesh(pl.box);
+  } else if (pl.mesh) pl.mesh.visible = false;
+  C.boxes = B;
+}
+function plumePlatformMesh(b) {
+  const pl = plumeColl.platform;
+  if (!pl.mesh) {
+    pl.mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness: 0.85, metalness: 0.1 }));
+    pl.mesh.name = 'launch-platform'; scene.add(pl.mesh);
+  }
+  pl.mesh.visible = true;
+  pl.mesh.position.set((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
+  pl.mesh.scale.set(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0);
+}
+// Vorticity from velocity SHEAR (no noise): bin wall-jet particles' velocities on a coarse grid centred on the footprint, take
+// omega = curl(u), and apply vorticity confinement f = eps * (N x omega), N = grad|omega| / |grad|omega||.
+const PCG = { NX: 28, NY: 12, NZ: 28 };
+function plumeCurlBuild(F, D) {
+  const P = plume, C = plumeColl;
+  let g = C.grid;
+  const N = PCG.NX * PCG.NY * PCG.NZ;
+  if (!g) g = C.grid = { u: new Float32Array(N), v: new Float32Array(N), w: new Float32Array(N), c: new Float32Array(N), m: new Float32Array(N),
+    fx: new Float32Array(N), fy: new Float32Array(N), fz: new Float32Array(N), cx: 0, cz: 0, cs: 1, on: false };
+  const half = Math.max(P.stats.maxWall * 1.15, 6 * D.De), cs = 2 * half / PCG.NX;
+  g.cs = cs; g.cx = F.C.x - half; g.cz = F.C.z - half; g.on = true;
+  g.u.fill(0); g.v.fill(0); g.w.fill(0); g.c.fill(0);
+  const idx = (i, j, k) => (k * PCG.NY + j) * PCG.NX + i;
+  let n = 0;
+  for (let q = 0; q < P.n; q++) {
+    if (P.st[q] !== 2) continue;
+    const i = Math.floor((P.px[q] - g.cx) / cs), j = Math.floor(P.py[q] / cs), k = Math.floor((P.pz[q] - g.cz) / cs);
+    if (i < 0 || j < 0 || k < 0 || i >= PCG.NX || j >= PCG.NY || k >= PCG.NZ) continue;
+    const o = idx(i, j, k); g.u[o] += P.vx[q]; g.v[o] += P.vy[q]; g.w[o] += P.vz[q]; g.c[o]++; n++;
+  }
+  if (n < 20) { g.on = false; return; }
+  for (let o = 0; o < N; o++) if (g.c[o] > 0) { const r = 1 / g.c[o]; g.u[o] *= r; g.v[o] *= r; g.w[o] *= r; }
+  // |omega| per cell (central differences over occupied neighbours; empty neighbour => one-sided / zero)
+  const U = g.u, V = g.v, W = g.w, Cn = g.c, M = g.m, inv2 = 1 / (2 * cs);
+  const at = (a, i, j, k) => (i < 0 || j < 0 || k < 0 || i >= PCG.NX || j >= PCG.NY || k >= PCG.NZ) ? -1 : idx(i, j, k);
+  const wx = new Float32Array(N), wy = new Float32Array(N), wz = new Float32Array(N);
+  let wmax = 0;
+  for (let k = 0; k < PCG.NZ; k++) for (let j = 0; j < PCG.NY; j++) for (let i = 0; i < PCG.NX; i++) {
+    const o = idx(i, j, k); M[o] = 0;
+    if (!Cn[o]) continue;
+    const d = (arr, i0, j0, k0, i1, j1, k1) => { const a = at(0, i0, j0, k0), b = at(0, i1, j1, k1), ca = a < 0 || !Cn[a] ? o : a, cb = b < 0 || !Cn[b] ? o : b; return (ca === cb) ? 0 : (arr[cb] - arr[ca]) / (((ca === o || cb === o) ? 1 : 2) * cs); };
+    const dWdY = d(W, i, j - 1, k, i, j + 1, k), dVdZ = d(V, i, j, k - 1, i, j, k + 1);
+    const dUdZ = d(U, i, j, k - 1, i, j, k + 1), dWdX = d(W, i - 1, j, k, i + 1, j, k);
+    const dVdX = d(V, i - 1, j, k, i + 1, j, k), dUdY = d(U, i, j - 1, k, i, j + 1, k);
+    wx[o] = dWdY - dVdZ; wy[o] = dUdZ - dWdX; wz[o] = dVdX - dUdY;
+    M[o] = Math.hypot(wx[o], wy[o], wz[o]); if (M[o] > wmax) wmax = M[o];
+  }
+  C.stats.curlMax = wmax;
+  const eps = P.tune.curl != null ? P.tune.curl : 0.25;
+  g.fx.fill(0); g.fy.fill(0); g.fz.fill(0);
+  for (let k = 0; k < PCG.NZ; k++) for (let j = 0; j < PCG.NY; j++) for (let i = 0; i < PCG.NX; i++) {
+    const o = idx(i, j, k); if (!Cn[o] || M[o] < 1e-4) continue;
+    const m = (a, b, c) => { const t = at(0, a, b, c); return t < 0 ? M[o] : M[t]; };
+    let gx = (m(i + 1, j, k) - m(i - 1, j, k)) * inv2, gy = (m(i, j + 1, k) - m(i, j - 1, k)) * inv2, gz = (m(i, j, k + 1) - m(i, j, k - 1)) * inv2;
+    const gl = Math.hypot(gx, gy, gz); if (gl < 1e-6) continue;
+    gx /= gl; gy /= gl; gz /= gl;
+    // N x omega, scaled by cell size (confinement strength ~ eps * h * |omega|)
+    g.fx[o] = eps * cs * (gy * wz[o] - gz * wy[o]); g.fy[o] = eps * cs * (gz * wx[o] - gx * wz[o]); g.fz[o] = eps * cs * (gx * wy[o] - gy * wx[o]);
+  }
+}
+function plumeCurlForce(x, y, z, out) {
+  const g = plumeColl.grid; out.x = out.y = out.z = 0;
+  if (!g || !g.on) return;
+  const i = Math.floor((x - g.cx) / g.cs), j = Math.floor(y / g.cs), k = Math.floor((z - g.cz) / g.cs);
+  if (i < 0 || j < 0 || k < 0 || i >= PCG.NX || j >= PCG.NY || k >= PCG.NZ) return;
+  const o = (k * PCG.NY + j) * PCG.NX + i; out.x = g.fx[o]; out.y = g.fy[o]; out.z = g.fz[o];
+}
+const _pcf = { x: 0, y: 0, z: 0 };
+window.arcFlowCollide = { colliders: () => plumeColl.boxes.map(b => Object.assign({}, b)), sd: (x, y, z) => { const d = plumeSD(x, y, z); return { sd: d, n: [plumeColl.nx, plumeColl.ny, plumeColl.nz] }; },
+  platform: (on, o) => { const p = plumeColl.platform; p.on = !!on; if (o) Object.assign(p, o); const el = document.getElementById('launchPlatform'); if (el) el.checked = p.on; return p.box; },
+  addBox: (b) => { plumeColl.boxes.push(b); }, stats: () => Object.assign({}, plumeColl.stats, { impacts: plume.stats.impacts, maxWall: plume.stats.maxWall, boxes: plumeColl.boxes.length }) };
+{ const q = new URLSearchParams(location.search).get('platform'); if (q === '1') { plumeColl.platform.on = true; const el = document.getElementById('launchPlatform'); if (el) el.checked = true; } }
+// per-frame penetration audit for tests: min signed distance over every live exhaust/smoke particle (should stay >= ~0)
+window.arcFlowCollide.audit = () => {
+  const P = plume; let minSd = 1e9, n1 = 0, n2 = 0, inside = 0, maxY = 0, onPlat = 0, offPlat = 0, rmax = 0, vmax = 0; const pb = plumeColl.platform.box;
+  for (let i = 0; i < P.n; i++) {
+    if (!P.st[i]) continue;
+    if (P.st[i] === 1) n1++; else n2++;
+    const d = plumeSD(P.px[i], P.py[i], P.pz[i]); if (d < minSd) minSd = d; if (d < -0.02) inside++;
+    if (P.st[i] === 2) { if (P.py[i] > maxY) maxY = P.py[i]; const F = P.F; if (F) { const r = Math.hypot(P.px[i] - F.C.x, P.pz[i] - F.C.z); if (r > rmax) rmax = r; }
+      if (pb) { if (P.px[i] >= pb.x0 && P.px[i] <= pb.x1 && P.pz[i] >= pb.z0 && P.pz[i] <= pb.z1 && P.py[i] > 0.5 * pb.y1) onPlat++; else offPlat++; }
+      const v = Math.hypot(P.vx[i], P.vy[i], P.vz[i]); if (v > vmax) vmax = v; }
+  }
+  return { col: n1, wall: n2, minSd, inside, maxY, rmax, vmax, onPlat, offPlat, curlMax: plumeColl.stats.curlMax, contacts: plumeColl.stats.contacts, boxes: plumeColl.boxes.length, platform: pb || null, F: plume.F ? { C: [plume.F.C.x, plume.F.C.z], H: plume.F.H, re: plume.F.re } : null };
+};
+// <plumecoll:end>
+
 function plumeStep(h, D, F) {
   const P = plume, De = D.De, ve = D.veVis, atmo = D.atmo, t = P.tclock, hsFloor = D.hs;
-  const half = FLOOR_SIZE * 0.5 - 1;
+  const fadeD = 300 / Math.max(state.flowUnitM || 0.0254, 1e-6);   // exhaust is recycled at 300 m from the foot, not at a floor-tile edge
+  plumeCurlBuild(F, D);
   for (let i = 0; i < P.n; i++) {
     const st = P.st[i];
     if (!st) continue;
@@ -8352,24 +8485,37 @@ function plumeStep(h, D, F) {
       plumePlace(i, ax, s, P.ph[i], D, F, t);
       const nx = P.px[i], ny = P.py[i], nz = P.pz[i];
       const vx = (nx - ox) / h, vy = (ny - oy) / h, vz = (nz - oz) / h;
-      if (ny <= hsFloor) {
+      const sdc = plumeSD(nx, ny, nz);
+      if (sdc <= hsFloor) {
         // ── impingement: split the incoming momentum into a restitution bounce + a radial wall jet ──
         // only a fraction of the stream continues as discrete wall-jet particles, each standing for 1/keep of them
         // (keeps the jet column dense within the particle budget while the ground layer stays well sampled)
         if (Math.random() > P.tune.keep) { P.st[i] = 0; P.live--; continue; }
         P.gw[i] = 1 / P.tune.keep;
+        // contact with the ground plane or a platform/box: remove the normal velocity (restitution e), keep ~all the speed along the
+        // surface tangent and spread it radially away from the axis foot (so a tight column flattens into a ring)
         const e = P.tune.restit, kappa = P.tune.kappa;
-        const vn = Math.max(-vy, 0);
-        let rx = nx - F.C.x, rz = nz - F.C.z;
-        let rl = Math.hypot(rx, rz);
-        if (rl < 0.05) { const a = Math.random() * 6.2832; rx = Math.cos(a); rz = Math.sin(a); rl = 1; }
-        rx /= rl; rz /= rl;
+        const cnx = plumeColl.nx, cny = plumeColl.ny, cnz = plumeColl.nz;
+        const vdn = vx * cnx + vy * cny + vz * cnz, vn = Math.max(-vdn, 0);
+        const tvx = vx - vdn * cnx, tvy = vy - vdn * cny, tvz = vz - vdn * cnz;
+        let rx = nx - F.C.x, ry = 0, rz = nz - F.C.z;
+        const rn = rx * cnx + rz * cnz; rx -= rn * cnx; ry -= rn * cny; rz -= rn * cnz;
+        let rl = Math.hypot(rx, ry, rz);
+        if (rl < 0.2 * Math.hypot(nx - F.C.x, nz - F.C.z) + 0.05) {      // on a side face / on the axis: go along the surface (up the wall, or random about the normal)
+          const a = Math.random() * 6.2832;
+          if (cny > 0.5) { rx = Math.cos(a); ry = 0; rz = Math.sin(a); }
+          else { rx = -cny * cnx; ry = 1 - cny * cny; rz = -cny * cnz; if (Math.hypot(rx, ry, rz) < 1e-3) { rx = 0; ry = 1; rz = 0; } }
+          rl = Math.hypot(rx, ry, rz);
+        }
+        rx /= rl; ry /= rl; rz /= rl;
         const jit = (Math.random() - 0.5) * 0.3, cj = Math.cos(jit), sj = Math.sin(jit);
-        const rjx = rx * cj - rz * sj, rjz = rx * sj + rz * cj;
+        const kx = cny * rz - cnz * ry, ky = cnz * rx - cnx * rz, kz = cnx * ry - cny * rx;     // n x r
+        const rjx = rx * cj + kx * sj, rjy = ry * cj + ky * sj, rjz = rz * cj + kz * sj;
         const wall = Math.sqrt(1 - e * e) * vn * kappa * (0.75 + 0.35 * Math.random());
-        P.vx[i] = vx * 0.5 + rjx * wall; P.vz[i] = vz * 0.5 + rjz * wall;
-        P.vy[i] = e * vn;
-        P.py[i] = Math.max(ny, 0.06);
+        P.vx[i] = tvx * 0.5 + rjx * wall + e * vn * cnx; P.vy[i] = tvy * 0.5 + rjy * wall + e * vn * cny; P.vz[i] = tvz * 0.5 + rjz * wall + e * vn * cnz;
+        const push = Math.max(0.06 - sdc, 0);
+        P.px[i] = nx + cnx * push; P.py[i] = ny + cny * push; P.pz[i] = nz + cnz * push;
+        plumeColl.stats.contacts++;
         P.st[i] = 2; P.tg[i] = 0; P.smk[i] = 0.12;
         P.stats.impacts++;
       } else { P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz; }
@@ -8381,18 +8527,34 @@ function plumeStep(h, D, F) {
       const dec = Math.exp(-kd * h); vx *= dec; vz *= dec;
       const sp = Math.hypot(vx, vz);
       const tn = P.tn[i], smk = P.smk[i], sd = P.sd[i];
-      const lift = P.tune.lift * atmo * Math.min(sp / (0.4 * ve), 1) * (0.25 + 0.75 * sd) * _ss(0, 0.1, tg) * (1 - _ss(0.6, 1.5, tg));
+      // smoke is pushed laterally first (the wall jet owns the first ~0.3 s), then rises slowly on buoyancy that follows its temperature
+      const lift = P.tune.lift * atmo * Math.min(sp / (0.4 * ve), 1) * (0.25 + 0.75 * sd) * (0.35 + 0.65 * tn) * _ss(0.25, 1.0, tg) * (1 - _ss(1.8, 3.2, tg));
       const ay = P.tune.buoy * tn * atmo - 2.2 * smk * (1 - tn) * (0.3 + 0.7 * atmo) + lift;
       // a wall jet is a layer whose thickness grows with radius (~0.1 r): pull toward that, so the billow lifts off it but the
       // bulk stays hugging the ground
       const rr0 = Math.hypot(ox - F.C.x, oz - F.C.z);
-      vy = (vy + (ay - P.tune.spring * atmo * Math.max(oy - (0.1 * rr0 + 0.4), 0)) * h) * Math.exp(-1.6 * h);
+      const sdo = plumeSD(ox, oy, oz), thick = 0.1 * rr0 + 0.4, exc = Math.max(sdo - thick, 0);   // height above the local surface (ground or platform top)
+      // rolls over a platform edge: where the surface drops away the gas falls (cooler gas faster), then surges across the ground
+      const fall = 6.0 * _ss(0.5, 3.0, exc / thick) * (1 - 0.6 * tn);
+      // vorticity from velocity shear (curl of the binned wall-jet velocity, confinement force): the front rolls up and curls
+      plumeCurlForce(ox, oy, oz, _pcf);
+      { const fm = Math.hypot(_pcf.x, _pcf.y, _pcf.z), fc = 1.5 * ve; const k = fm > fc ? fc / fm : 1; vx += _pcf.x * k * h; vz += _pcf.z * k * h; vy += _pcf.y * k * h; }
+      vy = (vy + (ay - fall - P.tune.spring * atmo * exc) * h) * Math.exp(-1.6 * h);
       let nx = ox + vx * h, ny = oy + vy * h, nz = oz + vz * h;
-      if (ny < 0.05) { ny = 0.05; if (vy < 0) vy *= -0.2; const f = Math.exp(-0.9 * h); vx *= f; vz *= f; }
+      const sdn = plumeSD(nx, ny, nz);
+      if (sdn < 0.05) {   // solid contact: lift out along the normal, remove the normal velocity (restitution 0.2), friction on the tangent
+        const cnx = plumeColl.nx, cny = plumeColl.ny, cnz = plumeColl.nz, k = 0.05 - sdn;
+        nx += cnx * k; ny += cny * k; nz += cnz * k;
+        const vdn = vx * cnx + vy * cny + vz * cnz;
+        if (vdn < 0) { vx -= 1.2 * vdn * cnx; vy -= 1.2 * vdn * cny; vz -= 1.2 * vdn * cnz; }
+        const f = Math.exp(-0.9 * h), vdn2 = vx * cnx + vy * cny + vz * cnz;
+        vx = vdn2 * cnx + (vx - vdn2 * cnx) * f; vy = vdn2 * cny + (vy - vdn2 * cny) * f; vz = vdn2 * cnz + (vz - vdn2 * cnz) * f;
+        plumeColl.stats.contacts++;
+      }
       P.tn[i] = tn * Math.exp(-h * P.tune.tcool); P.smk[i] = smk + h * P.tune.smkRate * (P.tune.smkMax - smk);
       P.sh[i] = 0;
       P.px[i] = nx; P.py[i] = ny; P.pz[i] = nz; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
-      if (tg > P.life[i] || Math.abs(nx) > half || Math.abs(nz) > half) { P.st[i] = 0; P.live--; continue; }
+      if (tg > P.life[i] || Math.hypot(nx - F.C.x, nz - F.C.z) > fadeD) { P.st[i] = 0; P.live--; continue; }
       const rr = Math.hypot(nx - F.C.x, nz - F.C.z);
       if (rr > P.stats.maxWall) P.stats.maxWall = rr;
       if (ny > P.stats.maxHeightRing && tg > 0.3) P.stats.maxHeightRing = ny;
@@ -8819,6 +8981,7 @@ function applyPropPreset(key) {
   plumeReadout();
 }
 propPresetEl.onchange = () => applyPropPreset(propPresetEl.value);
+{ const lp = document.getElementById('launchPlatform'); if (lp) lp.onchange = () => { plumeColl.platform.on = lp.checked; if (typeof plumeReset === 'function') plumeReset(); }; }
 const ofMasterEl = document.getElementById('ofMaster');
 const ofReadoutEl = document.getElementById('ofReadout');
 const ofPerSystemEl = document.getElementById('ofPerSystem');
@@ -8920,6 +9083,7 @@ function plumeFrame(inst, now) {
   if (!r) return;
   const { D, F } = r;
   plume.D = D; plume.F = F;
+  plumeCollRefresh(F, D);
   if (!plume.active) { plume.active = true; plume.lastAt = now; }
   plumeHidePostUniform.value = 1;
   if (now - _plumeReadoutAt > 400) { _plumeReadoutAt = now; plumeReadout(); }
