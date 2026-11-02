@@ -4859,26 +4859,32 @@ const PARTICLE_SPLAT_FRAGMENT_SHADER = `
 //  Wall masks in world space (volumetric / Gaussian) look moved gas up in the moved part's own baked cavity
 //  through the uMv* remap (sdfVolume), and the volumetric / leak density domains grow to contain moved parts.
 // ═══════════════════════════════════════════════════════════════════════
-const followU = {
-  uPartTex: { value: null }, uFollowOn: { value: 0 }, uMvCount: { value: 0 },
-  uMvInv: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Matrix4()) },
-  uMvMin: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
-  uMvMax: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
-};
-const follow = {
-  data: new Float32Array(5 * FOLLOW_ROWS * 4), tex: null,
-  mats: new Array(FOLLOW_ROWS).fill(null),    // id -> Float32Array(16) delta (null = unmoved)
-  shift: new Array(FOLLOW_ROWS).fill(null),   // id -> [dx, 0, dz] ground-anchored shift (null = unmoved)
-  last: new Map(), box: new Map(), c0: new Map(),
-  on: false, moved: [], dom: null, domVer: 0, ticks: 0,
-};
-(function initFollowTex() {
-  const d = follow.data;
+function makeFollowU() {
+  return {
+    uPartTex: { value: null }, uFollowOn: { value: 0 }, uMvCount: { value: 0 },
+    uMvInv: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Matrix4()) },
+    uMvMin: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
+    uMvMax: { value: Array.from({ length: FOLLOW_MAX_MOVED }, () => new THREE.Vector3()) },
+  };
+}
+// Fluid-follows-parts state. One per Instance (factory); the legacy `follow` / `followU` bindings alias the active one.
+function makeFollow(fu) {
+  const f = {
+    data: new Float32Array(5 * FOLLOW_ROWS * 4), tex: null,
+    mats: new Array(FOLLOW_ROWS).fill(null),    // id -> Float32Array(16) delta (null = unmoved)
+    shift: new Array(FOLLOW_ROWS).fill(null),   // id -> [dx, 0, dz] ground-anchored shift (null = unmoved)
+    last: new Map(), box: new Map(), c0: new Map(),
+    on: false, moved: [], dom: null, domVer: 0, ticks: 0,
+  };
+  const d = f.data;
   for (let r = 0; r < FOLLOW_ROWS; r++) { const o = r * 5 * 4; d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1; }
-  follow.tex = new THREE.DataTexture(d, 5, FOLLOW_ROWS, THREE.RGBAFormat, THREE.FloatType);
-  follow.tex.magFilter = THREE.NearestFilter; follow.tex.minFilter = THREE.NearestFilter; follow.tex.needsUpdate = true;
-  followU.uPartTex.value = follow.tex;
-})();
+  f.tex = new THREE.DataTexture(d, 5, FOLLOW_ROWS, THREE.RGBAFormat, THREE.FloatType);
+  f.tex.magFilter = THREE.NearestFilter; f.tex.minFilter = THREE.NearestFilter; f.tex.needsUpdate = true;
+  if (fu) fu.uPartTex.value = f.tex;
+  return f;
+}
+let followU = makeFollowU();
+let follow = makeFollow(followU);
 
 // A fresh bake: every delta is identity from here on; remember each part's bake-space box and centroid.
 function followRebase() {
@@ -6444,7 +6450,8 @@ const LIVE_WATCH_MS = 120, LIVE_SETTLE_MS = 250, LIVE_MAXWAIT_MS = 700;
 const LIVE_GRAD_K = 0.35, LIVE_DRAG_IN = 1.2, LIVE_VMAX = 22, LIVE_JET_K = 1.0;
 const LIVE_G = 9.81, LIVE_DP_MIN = 2.0, LIVE_SKIN = 0.06, LIVE_SDF_RES = 26;
 
-const live = {
+function makeLive() {
+  return {
   n: 0,
   px: new Float32Array(LIVE_MAX), py: new Float32Array(LIVE_MAX), pz: new Float32Array(LIVE_MAX),
   vx: new Float32Array(LIVE_MAX), vy: new Float32Array(LIVE_MAX), vz: new Float32Array(LIVE_MAX),
@@ -6462,6 +6469,8 @@ const live = {
   leakMesh: null, leakTex: null, leakData: null, leakTpr: 1, leakTexRes: LEAK_RES, leakDomainRef: null,
   lastStepAt: 0, lastVolAt: 0, lastPendAt: 0, lastReportAt: 0, atmo: 1, updates: 0, lastUpdateMs: 0,
 };
+}
+let live = makeLive();
 const _liveRgb = [0, 0, 0];
 function liveRamp(t) {
   t = Math.max(0, Math.min(1, t));
@@ -7305,7 +7314,8 @@ function partWallInfo(part) {   // {t m, r m, derived, sphere, thick}
 }
 function partWallM(part) { return partWallInfo(part).t; }
 
-const mass = { on: false, c: new Map(), K: 1, lastAt: 0, lastSync: 0, lastUI: 0, plugged: new Set(), nozPlugged: false, nozAt: 0, th: new Map() };
+function makeMass() { return { on: false, c: new Map(), K: 1, lastAt: 0, lastSync: 0, lastUI: 0, plugged: new Set(), nozPlugged: false, nozAt: 0, th: new Map() }; }
+let mass = makeMass();
 const continuousEl = document.getElementById('continuousFlow');
 function massContinuous() { return !continuousEl || continuousEl.checked; }
 
@@ -7576,7 +7586,8 @@ function plumeShock(x, s, D) {
   return Math.pow(c, plume.tune.shockPow) * _ss(0.55 * D.Ls, 1.0 * D.Ls, x) * Math.exp(-x / (5 * D.Ls)) * (1 - _ss(0.25, 0.85, s)) * D.diam;
 }
 
-const plume = {
+function makePlume() {
+  return {
   key: 'rocket_bell', n: 0, cursor: 0, live: 0, acc: 0, lastAt: 0, active: false, D: null, F: null, tclock: 0, needPreroll: true, sizeK: 0.45,
   // live-tunable wall-jet / billow / weighting knobs
   tune: { kd0: 0.45, kd1: 0.9, buoy: 0.9, lift: 2.4, spring: 3.0, tcool: 0.4, jetW: 2.5, smkRate: 0.6, smkMax: 0.45, life0: 1.4, life1: 1.4, restit: 0.18, kappa: 0.85, shockPow: 9, coolK: 0.34, edgeK: 0.85, groundSplats: 3, keep: 0.55, jetSprite: 3.0 },
@@ -7590,6 +7601,8 @@ const plume = {
   floorMesh: null, floorTex: null, floorData: null, floorMat: null, floorOn: false,
   stats: { impacts: 0, maxWall: 0, maxHeightRing: 0 },
 };
+}
+let plume = makePlume();
 
 function plumeChambers() {
   const out = [];
