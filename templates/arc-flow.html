@@ -249,6 +249,24 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     </div>
     <input type="file" id="fileInput" accept=".glb,.gltf,.obj,.fbx,.stl,.dae,.zip,.json,application/json" style="display:none">
     <div class="sec-sub">glb · gltf · obj · fbx · stl · dae · zip</div>
+    <label class="field">Model authored in (import scale)</label>
+    <select id="importUnit">
+      <option value="unitless">Unitless (auto-fit to ~20)</option>
+      <option value="m">Metres</option>
+      <option value="cm">Centimetres</option>
+      <option value="mm">Millimetres</option>
+      <option value="in">Inches</option>
+      <option value="ft">Feet</option>
+      <option value="custom">Custom (m per unit)</option>
+    </select>
+    <input type="number" id="importUnitCustom" value="1" step="any" min="0.000001" style="display:none" title="metres per authored unit">
+    <label class="field">Display units</label>
+    <select id="unitSystem">
+      <option value="metric">Metric</option>
+      <option value="imperial">Imperial</option>
+      <option value="unitless">Unitless</option>
+    </select>
+    <div id="importUnitInfo" class="sec-sub"></div>
     <label class="chk"><input type="checkbox" id="importSamePreset"> Use same preset as last import</label>
     <button class="btn full" id="btnCloneImport" disabled>Clone</button>
     <button class="btn full" id="btnResetDefaults">Reset to Default Settings</button>
@@ -278,8 +296,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
     <div id="jointReport"><div class="sec-sub">Press Simulate to check how parts connect.</div></div>
     <div class="sec-h">◈ Channel flow</div>
     <div id="channelFlowReport"><div class="sec-sub">Press Simulate to fit thin channels and compute their flow.</div></div>
-    <label class="field">Model unit (metres per unit)</label>
-    <input type="number" id="flowUnitM" value="0.0254" step="0.001" min="0.00001">
+    <div class="sec-sub">Physics: 1 model unit = 1 m. Set the authored unit of an import and the display units under Scene.</div>
 
     <div class="sec-h">◈ Propulsion Preset</div>
     <label class="field">Engine / Exhaust Model</label>
@@ -737,6 +754,53 @@ const state = {
 window._arcFlowState = state; // for debugging from console
 window._arcFlowView = { camera, controls, renderer, scene }; // debug/test hook (camera framing from automation)
 
+// <units:begin> UNIT SYSTEM (Blender-style).  Internally 1 unit = 1 with no unit attached; for the PHYSICS 1 unit = 1 m (Combustion /
+// Solver / channel-flow all read world units as metres).  Two independent user choices, both persisted in localStorage:
+//   display      'metric' | 'imperial' | 'unitless'  -> ONLY changes the labels and numbers printed in read-outs (SI in, text out);
+//   importUnit   unit the file was AUTHORED in ('m','cm','mm','in','ft','custom' = user factor, 'unitless' = legacy auto-fit to ~20):
+//                scales an imported model by (metres per authored unit) so models line up.  Demos never use it.
+const UNIT_LEN_M = { m: 1, cm: 0.01, mm: 0.001, in: 0.0254, ft: 0.3048 };
+const unitsCfg = { display: 'metric', importUnit: 'unitless', importCustom: 1 };
+try {
+  const _u = JSON.parse(localStorage.getItem('arcflow.units') || 'null');
+  if (_u && typeof _u === 'object') {
+    if (['metric', 'imperial', 'unitless'].includes(_u.display)) unitsCfg.display = _u.display;
+    if (_u.importUnit === 'unitless' || _u.importUnit === 'custom' || UNIT_LEN_M[_u.importUnit]) unitsCfg.importUnit = _u.importUnit;
+    if (_u.importCustom > 0 && isFinite(_u.importCustom)) unitsCfg.importCustom = _u.importCustom;
+  }
+} catch (e) { /* storage blocked: defaults */ }
+function unitsSave() { try { localStorage.setItem('arcflow.units', JSON.stringify(unitsCfg)); } catch (e) {} }
+// metres per authored unit for the import scale, or null = legacy auto-fit (unitless)
+function unitsImportScale() {
+  const u = unitsCfg.importUnit;
+  if (u === 'custom') return unitsCfg.importCustom;
+  return UNIT_LEN_M[u] || null;
+}
+const _fx = (v, d) => (isFinite(v) ? v.toFixed(d) : '–');
+// SI -> display text.  Unitless prints the bare SI number (1 unit = 1 m, 1 u/s = 1 m/s, ...) with no unit attached.
+function uLen(m, d = 2) { const g = unitsCfg.display; return g === 'imperial' ? _fx(m / 0.3048, d) + ' ft' : g === 'unitless' ? _fx(m, d) : _fx(m, d) + ' m'; }
+function uLenSmall(m, d = 1) { const g = unitsCfg.display; return g === 'imperial' ? _fx(m / 0.0254, d + 1) + ' in' : g === 'unitless' ? _fx(m, d + 3) : _fx(m * 1000, d) + ' mm'; }
+function uSpeed(ms, d = 1) { const g = unitsCfg.display; return g === 'imperial' ? _fx(ms / 0.3048, d) + ' ft/s' : g === 'unitless' ? _fx(ms, d) : _fx(ms, d) + ' m/s'; }
+function uMass(kg, d = 1) { const g = unitsCfg.display; return g === 'imperial' ? _fx(kg * 2.2046226, d) + ' lb' : g === 'unitless' ? _fx(kg, d) : _fx(kg, d) + ' kg'; }
+function uMassFlow(kgs, d = 0) { const g = unitsCfg.display; return g === 'imperial' ? _fx(kgs * 2.2046226, Math.max(d, 2)) + ' lb/s' : g === 'unitless' ? _fx(kgs, Math.max(d, 3)) : _fx(kgs * 1000, d) + ' g/s'; }
+function uUnitNote() { const g = unitsCfg.display; return g === 'unitless' ? '1 unit = 1 (physics: 1 unit = 1 m)' : '1 model unit = 1 m'; }
+function unitsRefreshReadouts() {
+  try { if (state.sdf && typeof renderChannelFlowReport === 'function') renderChannelFlowReport(); } catch (e) {}
+  try { if (typeof plumeReadout === 'function') plumeReadout(); } catch (e) {}
+  try { const el = document.getElementById('massStatus'); if (el && state.simRunning && typeof massStatusHtml === 'function') el.innerHTML = massStatusHtml(); } catch (e) {}
+  try { if (typeof refreshImportUnitInfo === 'function') refreshImportUnitInfo(); } catch (e) {}
+}
+let _userImportActive = false;   // true only while loadFile() runs: demos keep their own fit
+let _lastImportInfo = null;
+function refreshImportUnitInfo() {
+  const el = document.getElementById('importUnitInfo'); if (!el) return;
+  const k = unitsImportScale();
+  let t = k == null ? 'Unitless: imports are auto-fit to about 20 units (1 unit = 1 m).' : 'Imports are scaled ×' + k + ' (1 authored unit = ' + k + ' m).';
+  if (_lastImportInfo) t += ' Last import: ' + _lastImportInfo.map(v => uLen(v)).join(' × ') + '.';
+  el.textContent = t;
+}
+// <units:end>
+
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingText = document.getElementById('loadingText');
 const emptyState = document.getElementById('emptyState');
@@ -793,6 +857,10 @@ async function loadFromArrayBuffer(name, buf, siblingFiles) {
 }
 
 async function loadFile(file) {
+  _userImportActive = true;
+  try { return await loadFileInner(file); } finally { _userImportActive = false; }
+}
+async function loadFileInner(file) {
   if (/\.json$/i.test(file.name)) return presetLoadFile(file);   // PRESET SAVE/LOAD: a dropped/picked .json is a preset, not a model
   setLoading(true, 'Reading ' + file.name + '…');
   const ext = extOf(file.name);
@@ -1088,8 +1156,17 @@ function onSceneLoaded(object) {
   const box = new THREE.Box3().setFromObject(importGroup);
   const size = new THREE.Vector3(); box.getSize(size);
   const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim > 40 || maxDim < 2) {
+  // Unit scale: a user import authored in a real unit is scaled by metres-per-unit (models line up; physics 1 unit = 1 m) and is NOT
+  // auto-fit. Unitless (default) and every demo keep the legacy fit to ~20 units.
+  const _uk = _userImportActive ? unitsImportScale() : null;
+  if (_uk != null) {
+    importGroup.scale.setScalar(_uk);
+  } else if (maxDim > 40 || maxDim < 2) {
     importGroup.scale.setScalar(20 / maxDim);
+  }
+  if (_userImportActive) {
+    _lastImportInfo = [size.x, size.y, size.z].map(v => v * importGroup.scale.x);
+    refreshImportUnitInfo();
   }
   importGroup.userData.spawnId = state.root.children.length;
   importGroup.userData.spawnName = (object.name || 'Import') + ' ' + (state.root.children.length + 1);
@@ -1664,7 +1741,7 @@ function wireDetailEvents(part) {
   const matRefresh = () => {
     const st = massStress(part, 288, Math.max(parseFloat(atmoPsiEl.value) || 0, 0)), pr = f('f_matprops'), sx = f('f_stress');
     if (pr) pr.innerHTML = matPropsText(matOf(part));
-    if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${partRadiusM(part).toFixed(2)} m · t ${(partWallM(part) * 1000).toFixed(1)} mm · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.thick ? '<br><span style="color:#ffc861">t/r &gt; ' + THICK_WALL_T_OVER_R + ': thick-wall vessel — thin-wall stress is approximate.</span>' : '') + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
+    if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${uLen(partRadiusM(part))} · t ${uLenSmall(partWallM(part))} · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.thick ? '<br><span style="color:#ffc861">t/r &gt; ' + THICK_WALL_T_OVER_R + ': thick-wall vessel — thin-wall stress is approximate.</span>' : '') + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
     if (mass.on && mass.th.get(part)) mass.th.get(part).Tw = Math.min(mass.th.get(part).Tw, 6000);
     updatePartThermalTint(state.currentLinks);
   };
@@ -3573,7 +3650,7 @@ function renderJointReport() {
       const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
       if (lk && (!lk.target || lk.target === link.target)) {
         // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
-        groups[kind].push(`<div class="seal-bad">✗ ${badge} ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${lk.vJet.toFixed(0)} m/s${lk.jetChoked ? ' (choked)' : ''}, ${(lk.mdot * 1000).toFixed(0)} g/s through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
+        groups[kind].push(`<div class="seal-bad">✗ ${badge} ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${uSpeed(lk.vJet, 0)}${lk.jetChoked ? ' (choked)' : ''}, ${uMassFlow(lk.mdot)} through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
         continue;
       }
       const how = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
@@ -3611,13 +3688,13 @@ function renderChannelFlowReport() {
   for (const [part, r] of flows) {
     const d = r.minBoreModel;
     rows.push(`<div class="seal-ok" style="display:block"><b>${part.name}</b> · ${r.fluid.label} from ${r.srcName} @ ${r.P0psi.toFixed(0)} psi<br>` +
-      `<span style="opacity:.85">bore Ø${d.toFixed(3)}–${r.maxBoreModel.toFixed(3)} (${(d * unit * 1000).toFixed(1)} mm) · length ${r.lengthModel.toFixed(2)} (L/D ${r.LoverD.toFixed(0)}) · ${r.tube.nSegs} fitted segments<br>` +
-      `exit ${r.vExit.toFixed(1)} m/s${r.gas ? ' (Mach ' + r.mach.toFixed(2) + (r.choked ? ', choked' : '') + ')' : ''} · mass flow ${(r.mdot * 1000).toFixed(0)} g/s · ΔP ${(r.dP / PSI_PA).toFixed(0)} psi (friction ${(r.dpFric / PSI_PA).toFixed(1)}) · Re ${r.Re.toFixed(0)}<br>` +
-      `v = Q/A: ${r.vMin.toFixed(1)}–${r.vMax.toFixed(1)} m/s along the bore · inlet pressure ${(r.dpInlet / PSI_PA).toFixed(1)} psi dynamic head</span></div>`);
+      `<span style="opacity:.85">bore Ø${d.toFixed(3)}–${r.maxBoreModel.toFixed(3)} (${uLenSmall(d * unit)}) · length ${r.lengthModel.toFixed(2)} (L/D ${r.LoverD.toFixed(0)}) · ${r.tube.nSegs} fitted segments<br>` +
+      `exit ${uSpeed(r.vExit)}${r.gas ? ' (Mach ' + r.mach.toFixed(2) + (r.choked ? ', choked' : '') + ')' : ''} · mass flow ${uMassFlow(r.mdot)} · ΔP ${(r.dP / PSI_PA).toFixed(0)} psi (friction ${(r.dpFric / PSI_PA).toFixed(1)}) · Re ${r.Re.toFixed(0)}<br>` +
+      `v = Q/A: ${uSpeed(r.vMin)}–${uSpeed(r.vMax)} along the bore · inlet pressure ${(r.dpInlet / PSI_PA).toFixed(1)} psi dynamic head</span></div>`);
   }
   const dg = (state.linkDiagnostic || []).map(d => `<div class="${d.connected ? 'seal-ok' : 'seal-bad'}" style="display:block">${d.connected ? '✓' : '✗'} ${d.link} · bore Ø${d.minBoreDia} · ${d.voxelsAcrossBore == null ? '' : d.voxelsAcrossBore + ' voxels across · '}${d.connected ? 'cavities connect' : 'FIRST FAILURE at ' + JSON.stringify(d.firstFailure.at) + ' in ' + d.firstFailure.side}</div>`).join('');
   el.innerHTML = rows.join('') + dg +
-    `<div class="sec-sub">Assumes 1 model unit = ${(unit * 1000).toFixed(1)} mm and chamber back-pressure ${(CHAMBER_BACKPRESSURE_FRAC * 100).toFixed(0)}% of tank pressure. Particle speed along each path follows v ∝ 1/A (faster through narrow bores, compressed for display).</div>`;
+    `<div class="sec-sub">Assumes ${unit === 1 ? uUnitNote() : '1 model unit = ' + unit + ' m'} and chamber back-pressure ${(CHAMBER_BACKPRESSURE_FRAC * 100).toFixed(0)}% of tank pressure. Particle speed along each path follows v ∝ 1/A (faster through narrow bores, compressed for display).</div>`;
 }
 
 // ── Per-part thermal reaction ────────────────────────────────────
@@ -4429,7 +4506,7 @@ const TUBE_BINS = 128;                 // 1-D density bins along a tube (ray-mar
 const SDF_TUBE_ASPECT = 6;             // bbox aspect (long / middle extent) that makes a non-pipe part count as a channel
 const SDF_TUBE_MIN_CELLS = 6;          // target voxels across the smallest bore
 const SDF_JOINT_MIN_RADIUS = 0.03;
-const FLOW_UNIT_M_DEFAULT = 0.0254;    // ASSUMPTION: 1 model unit = 1 inch (editable in the Joints panel); only the physics read-out uses it
+const FLOW_UNIT_M_DEFAULT = (() => { try { const v = parseFloat(new URLSearchParams(location.search).get('flowUnitM')); return v > 0 ? v : 1; } catch (e) { return 1; } })();         // 1 model unit = 1 m for the physics (was 0.0254 = 1 inch); matches Combustion's partRadiusM/partWallM. Display units are separate (see <units:begin>)
 const FLUID_PROPS = {
   helium:   { gas: true, M: 0.004003, gamma: 1.667, mu: 2.0e-5, label: 'helium' },
   oxidizer: { rho: 1141, mu: 1.9e-4, label: 'oxidizer (LOX-like)' },
@@ -7371,7 +7448,21 @@ volToggleEl.onchange = (e) => setRenderMode(e.target.checked ? 'volumetric' : 'p
 // computeParticlePosition, the SDF collision, the floor heat splat — all
 // untouched) running exactly as before either way, per the task's
 // "visual layer only" requirement.
-document.getElementById('flowUnitM').onchange = (e) => {
+(function wireUnits() {   // <units:begin> UI wiring: display toggle + authored-unit import scale; both persist
+  const ds = document.getElementById('unitSystem'), iu = document.getElementById('importUnit'), ic = document.getElementById('importUnitCustom');
+  if (ds) { ds.value = unitsCfg.display; ds.onchange = () => { unitsCfg.display = ds.value; unitsSave(); unitsRefreshReadouts(); }; }
+  if (iu) {
+    iu.value = unitsCfg.importUnit;
+    iu.onchange = () => { unitsCfg.importUnit = iu.value; if (ic) ic.style.display = iu.value === 'custom' ? '' : 'none'; unitsSave(); refreshImportUnitInfo(); };
+  }
+  if (ic) {
+    ic.value = unitsCfg.importCustom; ic.style.display = unitsCfg.importUnit === 'custom' ? '' : 'none';
+    ic.onchange = () => { const v = parseFloat(ic.value); if (v > 0) { unitsCfg.importCustom = v; unitsSave(); refreshImportUnitInfo(); } };
+  }
+  refreshImportUnitInfo();
+})();
+const _fuEl = document.getElementById('flowUnitM');   // legacy input (removed from the UI; physics is 1 unit = 1 m)
+if (_fuEl) _fuEl.onchange = (e) => {
   const v = parseFloat(e.target.value);
   if (v > 0) { state.flowUnitM = v; if (state.sdf) { state.channelFlows = computeChannelFlows(); renderChannelFlowReport(); } }
 };
@@ -8494,7 +8585,7 @@ function massStatusHtml() {
   const rows = [], warn = [];
   for (const [part, c] of mass.c) {
     const lab = { nozzle: 'flowing', leak: 'LEAKING', plugged: 'plugged — no flow', closed: 'closed — no flow' }[c.kind];
-    rows.push(`<div>${part.name}: <b>${c.m.toFixed(1)}</b> / ${c.m0.toFixed(1)} kg · <b>${c.P.toFixed(0)}</b> psi · ${c.m <= 0 ? '<span style="color:#ff6b6b">EMPTY</span>' : lab}</div>`);
+    rows.push(`<div>${part.name}: <b>${uMass(c.m)}</b> / ${uMass(c.m0)} · <b>${c.P.toFixed(0)}</b> psi · ${c.m <= 0 ? '<span style="color:#ff6b6b">EMPTY</span>' : lab}</div>`);
   }
   for (const [part, th] of mass.th) {
     if (th.s >= 1) warn.push(`<div style="color:#ff6b6b">⚠ ${part.name}: hoop stress ${(th.s * 100).toFixed(0)}% of yield — design a stronger container to hold this pressure</div>`);
@@ -8833,7 +8924,7 @@ window.arcFlowCollide.audit = () => {
 
 function plumeStep(h, D, F) {
   const P = plume, De = D.De, ve = D.veVis, atmo = D.atmo, t = P.tclock, hsFloor = D.hs;
-  const fadeD = 300 / Math.max(state.flowUnitM || 0.0254, 1e-6);   // exhaust is recycled at 300 m from the foot, not at a floor-tile edge
+  const fadeD = 300 / Math.max(state.flowUnitM || FLOW_UNIT_M_DEFAULT, 1e-6);   // exhaust is recycled at 300 m from the foot, not at a floor-tile edge
   plumeCurlBuild(F, D);
   for (let i = 0; i < P.n; i++) {
     const st = P.st[i];
@@ -9238,7 +9329,7 @@ const propReadoutEl = document.getElementById('propReadout');
 function plumeReadout() {
   const D = plume.D;
   if (plume.key === 'off' || !D) { propReadoutEl.innerHTML = 'legacy baked exhaust <span class="u">(no nozzle model)</span>'; return; }
-  propReadoutEl.innerHTML = `v<sub>e</sub> ${Math.round(D.ve)} m/s · M<sub>e</sub> ${D.Me.toFixed(2)} · T<sub>e</sub> ${Math.round(D.Te)} K<br>` +
+  propReadoutEl.innerHTML = `v<sub>e</sub> ${uSpeed(D.ve, 0)} · M<sub>e</sub> ${D.Me.toFixed(2)} · T<sub>e</sub> ${Math.round(D.Te)} K<br>` +
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
     `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span>`;
 }
