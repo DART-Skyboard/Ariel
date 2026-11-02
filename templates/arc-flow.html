@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v64</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v65</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -2349,12 +2349,13 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
   const parts = candidateParts || state.parts.filter(p => p.type);
   const boxes = new Map(parts.map(p => [p, partWorldAABB(p)]));
   const sealedPairs = [], rejectedPairs = [];
+  const bsCtx = { frames: new Map(), snaps: new Map() }; // per-pair results are cached in the shared assembly's local frame (booleansys)
   for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
     const a = parts[i], b = parts[j];
     if (skipPair && skipPair(a, b)) continue;
     if (boxes.get(a).isEmpty() || boxes.get(b).isEmpty()) continue;           // no mesh geometry: nothing to Boolean
     if (!boxes.get(a).intersectsBox(boxes.get(b))) continue; // before any triangle access
-    const r = detectPenetrationJoint(a, b);
+    const r = bsCachedJoint(a, b, bsCtx);
     if (r && r.sealed) { sealedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius }); continue; }
     // AABB overlap alone is never a joint. (A previous "channel x container/chamber" fallback synthesized one at
     // the AABB-overlap centre whenever the cavity sample missed; it linked pipes that only brushed a tank's
@@ -2535,6 +2536,213 @@ function buildFlowGraph() {
   return links;
 }
 // <flowgraph:end>
+
+// <booleansys:begin>
+// ── Per-instance SDF-Boolean joints / system grouping / LTCBP regions, cached in the instance's LOCAL frame ──
+// SPEC: the Boolean is volumetric on MESHES only (never render mode, particles, AABB-only overlap). It decides which mesh
+// parts make up one system and which systems are separate. Every pair result is cached in the frame of the assembly both
+// parts live in (null = world), keyed by each part's root-relative mesh matrices. A clone that is moved / rotated /
+// scaled as a whole only re-projects cached results (matrix multiply); only a part moved relative to its siblings (or
+// a swapped mesh) re-runs that pair's Boolean.
+let _bsPairs = new WeakMap();      // Part a -> Map<Part b, { root, sa, sb, res }>
+let _bsWorldSnap = new WeakMap();  // Part -> world-matrix snapshot when its triangle caches were last (re)built
+const _bsStats = { hits: 0, misses: 0, detections: 0 };
+const BS_EPS = 1e-5;
+
+function bsFrameOf(root, ctx) {
+  if (!root) return null;
+  const c = ctx && ctx.frames;
+  let f = c && c.get(root);
+  if (f) return f;
+  root.updateWorldMatrix(true, false);
+  const fwd = root.matrixWorld.clone();
+  f = { root, fwd, inv: fwd.clone().invert(), scale: fwd.getMaxScaleOnAxis() || 1 };
+  if (c) c.set(root, f);
+  return f;
+}
+// A part's mesh matrices relative to `frame` (world when null) + geometry ids: the key a cached result is valid for.
+function bsSnapshot(part, frame, ctx) {
+  const key = frame ? frame.root : 'w';
+  let byPart = ctx && ctx.snaps && ctx.snaps.get(key);
+  if (ctx && ctx.snaps && !byPart) ctx.snaps.set(key, byPart = new Map());
+  if (byPart && byPart.has(part)) return byPart.get(part);
+  const meshes = [];
+  for (const m of part.meshes || []) m.traverse(o => { if (o.isMesh) meshes.push(o); });
+  const arr = new Float64Array(meshes.length * 16), geo = new Array(meshes.length), tmp = new THREE.Matrix4();
+  meshes.forEach((o, i) => {
+    o.updateWorldMatrix(true, false);
+    tmp.copy(o.matrixWorld); if (frame) tmp.premultiply(frame.inv);
+    arr.set(tmp.elements, i * 16); geo[i] = o.geometry ? o.geometry.uuid : '';
+  });
+  const s = { n: meshes.length, arr, geo };
+  if (byPart) byPart.set(part, s);
+  return s;
+}
+function bsSameSnap(a, b) {
+  if (!a || !b || a.n !== b.n) return false;
+  for (let i = 0; i < a.n; i++) if (a.geo[i] !== b.geo[i]) return false;
+  for (let i = 0; i < a.arr.length; i++) if (Math.abs(a.arr[i] - b.arr[i]) > BS_EPS * (1 + Math.abs(a.arr[i]))) return false;
+  return true;
+}
+// Drop a part's world-space triangle caches when (and only when) its world matrices changed since they were built.
+function bsFreshGeometry(part) {
+  const now = bsSnapshot(part, null, null), was = _bsWorldSnap.get(part);
+  if (!was || !bsSameSnap(was, now)) { _worldTriCache.delete(part); _penIndexCache.delete(part); }
+  _bsWorldSnap.set(part, now);
+}
+// The assembly every part lives in, or null when they are loose / in different assemblies.
+function bsCommonRoot(parts) {
+  let root;
+  for (const p of parts) { const r = partAssembly(p); if (!r || (root && r !== root)) return null; root = r; }
+  return root || null;
+}
+function bsCachedJoint(a, b, ctx) {
+  const root = bsCommonRoot([a, b]);
+  const frame = bsFrameOf(root, ctx);
+  const sa = bsSnapshot(a, frame, ctx), sb = bsSnapshot(b, frame, ctx);
+  let m = _bsPairs.get(a); if (!m) _bsPairs.set(a, m = new Map());
+  const e = m.get(b);
+  if (e && e.root === root && bsSameSnap(e.sa, sa) && bsSameSnap(e.sb, sb)) {
+    _bsStats.hits++;
+    if (!e.res) return null;
+    return Object.assign({}, e.res, {
+      centroid: frame ? e.res.centroid.clone().applyMatrix4(frame.fwd) : e.res.centroid.clone(),
+      radius: e.res.radius * (frame ? frame.scale : 1),
+    });
+  }
+  _bsStats.misses++;
+  bsFreshGeometry(a); bsFreshGeometry(b);
+  _bsStats.detections++;
+  const r = detectPenetrationJoint(a, b);
+  m.set(b, { root, sa, sb, res: r ? Object.assign({}, r, {
+    centroid: frame ? r.centroid.clone().applyMatrix4(frame.inv) : r.centroid.clone(),
+    radius: r.radius / (frame ? frame.scale : 1),
+  }) : null });
+  return r;
+}
+function booleanCacheStats() { return { hits: _bsStats.hits, misses: _bsStats.misses, detections: _bsStats.detections }; }
+function booleanCacheReset() { _bsPairs = new WeakMap(); _bsWorldSnap = new WeakMap(); _bsStats.hits = _bsStats.misses = _bsStats.detections = 0; }
+
+// Boolean system grouping == what state.systemGrouping expects. Components of typed parts joined by volumetric
+// cavity-overlap pairs and by non-auto manual links. Scoped to the parts it is given (pass inst.parts for one instance).
+function booleanSystems(parts, links) {
+  const all = (parts || state.parts).filter(p => p && p.type);
+  const { sealedPairs, rejectedPairs } = detectAutoPenetrationJoints(all);
+  const par = new Map(all.map(p => [p, p]));
+  const find = (x) => { while (par.get(x) !== x) { par.set(x, par.get(par.get(x))); x = par.get(x); } return x; };
+  const union = (x, y) => { const rx = find(x), ry = find(y); if (rx !== ry) par.set(ry, rx); };
+  for (const s of sealedPairs) union(s.partA, s.partB);
+  const L = links || state.currentLinks;
+  if (L && typeof L.entries === 'function') for (const [from, v] of L) {
+    if (!par.has(from)) continue;
+    for (const l of asLinkArray(v)) { if (l.boolean || l.auto) continue; const t = linkTarget(l); if (par.has(t)) union(from, t); }
+  }
+  const byRoot = new Map();
+  for (const p of all) { const r = find(p); if (!byRoot.has(r)) byRoot.set(r, []); byRoot.get(r).push(p); }
+  const groups = [], orphans = [];
+  for (const g of byRoot.values()) { if (g.length >= 2) groups.push(g); else orphans.push(g[0]); }
+  return { groups, orphans, sealed: sealedPairs, rejected: rejectedPairs };
+}
+function booleanSystemGrouping(parts) { return booleanSystems(parts).groups; }
+
+// Re-project every world-space thing an instance holds by `delta` (its root's world-matrix change). Each object once.
+function bsRetransformInstance(inst, delta, sRatio) {
+  const seen = new Set();
+  const tv = (v) => { if (v && v.isVector3 && !seen.has(v)) { seen.add(v); v.applyMatrix4(delta); } };
+  const tn = (v) => { if (v && v.isVector3 && !seen.has(v)) { seen.add(v); v.transformDirection(delta); } };
+  const to = (o) => {
+    if (!o || seen.has(o)) return; seen.add(o);
+    tv(o.centroid); tn(o.normal);
+    if (typeof o.radius === 'number') o.radius *= sRatio;
+    if (typeof o.perimeter === 'number') o.perimeter *= sRatio;
+    if (Array.isArray(o.points)) o.points.forEach(tv);
+  };
+  for (const p of inst.parts) for (const o of p.openings || []) to(o);
+  for (const v of inst.links.values()) for (const l of asLinkArray(v)) { to(l.viaOpening); to(l.entrance); }
+  for (const j of [...inst.joints.sealed, ...inst.joints.rejected]) {
+    if (seen.has(j)) continue; seen.add(j);
+    tv(j.centroid); if (typeof j.radius === 'number') j.radius *= sRatio;
+  }
+  inst.bounds.makeEmpty();
+  for (const p of inst.parts) { const b = partWorldAABB(p); if (b && !b.isEmpty()) inst.bounds.union(b); }
+}
+// Keep one instance's Boolean results current with ITS OWN transform. Cheap when nothing moved (matrix compares).
+// -> { changed, kind: 'init' | 'none' | 'transform' | 'rebuild' }
+function booleanSyncInstance(inst) {
+  if (!inst || !inst.parts || !inst.parts.length) return { changed: false, kind: 'none' };
+  const root = bsCommonRoot(inst.parts);
+  const ctx = { frames: new Map(), snaps: new Map() };
+  const frame = bsFrameOf(root, ctx);
+  const snaps = new Map(inst.parts.map(p => [p, bsSnapshot(p, frame, ctx)]));
+  const rootM = root ? root.matrixWorld.clone() : null;
+  const st = inst.booleanState;
+  if (!st) { inst.booleanState = { root, rootM, snaps, rebuilds: 0, regions: null }; inst.transformVersion = inst.transformVersion || 0; return { changed: false, kind: 'init' }; }
+  let rebuild = st.root !== root || st.snaps.size !== snaps.size;
+  if (!rebuild) for (const [p, s] of snaps) if (!bsSameSnap(st.snaps.get(p), s)) { rebuild = true; break; }
+  if (rebuild) {
+    Object.assign(st, { root, rootM, snaps, regions: null, rebuilds: st.rebuilds + 1 });
+    inst.transformVersion = (inst.transformVersion || 0) + 1;
+    if (inst.markDirty) inst.markDirty('links');
+    return { changed: true, kind: 'rebuild' };
+  }
+  if (root && st.rootM && !st.rootM.equals(rootM)) {
+    const delta = rootM.clone().multiply(st.rootM.clone().invert());
+    bsRetransformInstance(inst, delta, (rootM.getMaxScaleOnAxis() || 1) / (st.rootM.getMaxScaleOnAxis() || 1));
+    st.rootM = rootM;
+    inst.transformVersion = (inst.transformVersion || 0) + 1;
+    if (inst.markDirty) { inst.markDirty('sdf'); inst.markDirty('particles'); }
+    return { changed: true, kind: 'transform' };
+  }
+  return { changed: false, kind: 'none' };
+}
+function booleanSyncAll() {
+  const out = [];
+  for (const inst of state.instances || []) {
+    let r; try { r = booleanSyncInstance(inst); } catch (e) { console.warn('booleanSync', e); continue; }
+    if (r.changed) {
+      out.push({ inst, kind: r.kind });
+      if (typeof window !== 'undefined' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('arcflow:instance-dirty', { detail: { id: inst.id, kind: r.kind } }));
+    }
+  }
+  return out;
+}
+let _bsTimer = null;
+function booleanAutoSync(on, ms) {
+  if (_bsTimer) { clearInterval(_bsTimer); _bsTimer = null; }
+  if (on !== false && typeof setInterval === 'function') _bsTimer = setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) booleanSyncAll(); }, ms || 250);
+  return !!_bsTimer;
+}
+// Per-instance tagging: roles / kinds / pressurizedBy for just this instance's links + parts.
+function booleanRefreshInstance(inst) {
+  tagFlowGraph(inst.links, inst.parts.filter(p => p.type));
+  inst.flowNodes = inst.links.nodes;
+  return inst.flowNodes;
+}
+// Per-instance LTCBP joint regions: collectJointRegions scoped to inst.links/inst.parts, cached as local-frame centre+pad
+// and re-projected through the instance's CURRENT root matrix (a pure move/rotate does not recompute).
+function instanceJointRegions(inst, cap, tubeSet) {
+  if (!inst.booleanState) booleanSyncInstance(inst);
+  const st = inst.booleanState;
+  const root = bsCommonRoot(inst.parts), frame = bsFrameOf(root, { frames: new Map() });
+  let c = st.regions;
+  if (!c || c.links !== inst.links || c.cap !== cap || c.tubeSet !== tubeSet) {
+    const world = collectJointRegions(inst.links, cap, tubeSet, inst.parts);
+    c = st.regions = { links: inst.links, cap, tubeSet, local: world.map(r => {
+      const ctr = r.box.getCenter(new THREE.Vector3()), pad = (r.box.max.x - r.box.min.x) / 2;
+      return { r, ctr: frame ? ctr.applyMatrix4(frame.inv) : ctr, pad: pad / (frame ? frame.scale : 1) };
+    }) };
+  }
+  return c.local.map(({ r, ctr, pad }) => {
+    const w = frame ? ctr.clone().applyMatrix4(frame.fwd) : ctr.clone(), p = pad * (frame ? frame.scale : 1);
+    return Object.assign({}, r, { box: new THREE.Box3(new THREE.Vector3(w.x - p, w.y - p, w.z - p), new THREE.Vector3(w.x + p, w.y + p, w.z + p)) });
+  });
+}
+// <booleansys:end>
+if (state.systemGrouping == null) state.systemGrouping = booleanSystemGrouping;
+if (typeof window !== 'undefined') {
+  window.arcFlowBoolean = { booleanSystems, booleanSystemGrouping, booleanSyncInstance, booleanSyncAll, booleanAutoSync, booleanRefreshInstance, instanceJointRegions, booleanCacheStats, booleanCacheReset };
+  booleanAutoSync(true);
+}
 
 // <instances:begin>
 // ── Instance registry (multi-instance step 2: registry + detection only; simulation behaviour is unchanged) ──
@@ -3051,7 +3259,7 @@ function worldTrianglesForPart(part) {
 // changed (new/cleared/re-transformed parts) — called from loadFile /
 // clearScene / loadDemo below, never mid-Simulate (parts don't move while
 // a sim is running, only before Play is pressed again).
-function invalidateWorldTriCache() { _worldTriCache = new WeakMap(); _penIndexCache = new WeakMap(); }
+function invalidateWorldTriCache() { _worldTriCache = new WeakMap(); _penIndexCache = new WeakMap(); if (typeof booleanCacheReset === 'function') booleanCacheReset(); }
 
 function collectWorldTriangles(parts) {
   const tris = []; // array of THREE.Vector3 triples
@@ -4022,7 +4230,7 @@ function jetVisualSpeed(vPhys) { return Math.max(1.5, LIVE_VMAX * (1 - Math.exp(
 // even without crossing a part boundary). Capped (joints share
 // SDF_MAX_FINE_REGIONS with the per-part regions) so an elaborate imported
 // assembly can't runaway the SDF build cost.
-function collectJointRegions(links, cap, tubeSet) {
+function collectJointRegions(links, cap, tubeSet, parts) {
   const regions = [];
   const seen = new Set();
   const maxRegions = cap == null ? SDF_MAX_FINE_REGIONS : cap;
@@ -4066,7 +4274,7 @@ function collectJointRegions(links, cap, tubeSet) {
   }
   // Chambers: every opening (entrances converging + the nozzle throat) is a
   // tight, high-density junction region in its own right.
-  for (const part of state.parts) {
+  for (const part of (parts || state.parts)) {
     if (part.type !== 'chamber') continue;
     for (const o of part.openings) {
       if (o.role === 'entrance' || o.role === 'nozzle') addRegion(o.centroid, o.radius, [part], false);
@@ -4121,8 +4329,8 @@ function collectPartRegions(classified) {
 // (union of every nearby triangle, same semantics as the coarse grid, just
 // finer). Regions have independent per-axis resolutions and are shelf-packed
 // into the atlas, so one extra sampler still carries everything.
-async function buildCollisionSDF(links) {
-  const classified = state.parts.filter(p => p.type);
+async function buildCollisionSDF(links, parts) {
+  const classified = (parts || state.parts).filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
   const tStart = performance.now();
   const stats = { virtualAdded: 0, voxels: 0 };
@@ -4148,7 +4356,7 @@ async function buildCollisionSDF(links) {
   const tubeSet = buildTubeSet(classified);
 
   const partRegions = collectPartRegions(classified);
-  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet);
+  const jointRegions = collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet, classified);
   const regions = jointRegions.concat(partRegions);
   const fineCount = regions.length;
   const partStart = jointRegions.length;
