@@ -9256,6 +9256,358 @@ function debugReadParticlePositions(tOverride) {
   for (let i = 0; i < n; i++) { out[3*i] = buf[4*i]; out[3*i+1] = buf[4*i+1]; out[3*i+2] = buf[4*i+2]; }
   return { pos: out, count: n, uTime: particleSystem.material.uniforms.uTime.value };
 }
+// <pfs:begin>
+// ═══════════════════════════════════════════════════════════════════════
+//  PRESSURE-DRIVEN FLOW SOLVER  (PressureFlowSim, inst.solverMode === 'pressure')
+//
+//  Default is solverMode 'baked': nothing in this block runs and every hook below is gated on pfsAnyPressure().
+//  Pressure mode (?solver=pressure or the "Pressure solver" checkbox, applied when Simulate starts):
+//   network   nodes = cavities (container / chamber) + the ATM sink; edges = flow links (and every unmatched exit / nozzle
+//             opening, which goes to ATM). A part with several links (allLinks) gets one edge per link. Pipes are not
+//             nodes: they are the conductance of the edge (fitted-tube sections via state.sdf.tubes, else the port bores).
+//   solve     time-stepped lumped model, SI throughout (state.flowUnitM metres per model unit, volumes via computeVolume):
+//             helium tank   ideal-gas isothermal blowdown, P = m R T / V
+//             prop tank     liquid + helium ullage, P = m_he R T / (V - m_liq/rho); a helium REGULATOR edge feeds the
+//                           ullage back to the setpoint (part internalPsi) while the helium tank is above it
+//             liquid edge   solveChannelFlow (Darcy-Weisbach + minor losses) at P_up - P_down
+//             chamber       accumulating gas node, Pc = m R Tc / V (semi-implicit, stable); choked/subsonic throat
+//                           mdot from the nozzle area (Ae/eps) and the preset's gamma / mw / Tc
+//             ATM edges     spill; a node at zero mass stops its flow
+//   particles tracers carrying mass weights (see the particle section), LTCBP counts only what crosses into ATM.
+// ═══════════════════════════════════════════════════════════════════════
+const PFS_DT_MAX = 0.004;           // s, max lumped sub-step
+const PFS_ULLAGE_MIN = 0.02;        // min ullage volume fraction (keeps P finite when a tank is brim full)
+const PFS_R_AIR = 287.05;           // J/(kg K) ambient gas in a cold chamber
+const PFS_T_AMB = 288.15;
+const pfsSolverEl = () => document.getElementById('solverPressure');
+function pfsWanted() {
+  const el = pfsSolverEl();
+  if (el) return !!el.checked;
+  return new URLSearchParams(location.search).get('solver') === 'pressure';
+}
+function pfsPaAbs() { return Math.max(parseFloat(atmoPsiEl.value) || 0, 0) * PSI_PA; }
+function pfsUnit() { return state.flowUnitM || FLOW_UNIT_M_DEFAULT; }
+function pfsInstances() { return (state.instances || []).filter(i => i.solverMode === 'pressure' && i.solver); }
+function pfsAnyPressure() { return !!state.simRunning && pfsInstances().length > 0; }
+function pfsOwns(part) { return pfsAnyPressure() && pfsInstances().some(i => i.solver.nodeOf.has(part)); }
+function pfsIsCavity(p) { return p.type === 'container' || p.type === 'chamber' || p.type === 'pressure'; }
+
+// Isentropic gas orifice (choked or subsonic): kg/s through area A (m^2) from stagnation P0 to back pressure Pb (Pa).
+function pfsGasMdot(P0, Pb, A, gamma, R, T, Cd) {
+  if (!(P0 > Pb) || !(A > 0) || !(P0 > 0)) return 0;
+  const rc = Math.pow(2 / (gamma + 1), gamma / (gamma - 1)), r = Pb / P0;
+  if (r <= rc) return Cd * A * P0 * Math.sqrt(gamma / (R * T)) * Math.pow(2 / (gamma + 1), (gamma + 1) / (2 * (gamma - 1)));
+  return Cd * A * P0 * Math.sqrt(2 * gamma / ((gamma - 1) * R * T) * (Math.pow(r, 2 / gamma) - Math.pow(r, (gamma + 1) / gamma)));
+}
+
+// Axis of a chamber, from the nozzle opening into the chamber (collision-body projection): wall distance sampled along the
+// nozzle axis gives the bore profile r(s) (neck/throat = minimum). Returns points ordered in the FLOW direction (top of the
+// chamber -> open bottom), the bore radii, cumulative arc length (model units) and the swept volume (model units^3).
+function pfsChamberAxis(part) {
+  const noz = part.openings.find(o => o.role === 'nozzle');
+  const idx = penIndexForPart(part);
+  if (!noz || !idx) return null;
+  const O = openingLiveCentroid(noz).clone(), u = openingLiveNormal(noz).clone().negate();   // u points into the chamber
+  const size = partWorldAABB(part).getSize(new THREE.Vector3()), Lmax = size.length();
+  const NS = 120, h = Lmax / NS, s = [];
+  let started = false, miss = 0;
+  const p = new THREE.Vector3();
+  for (let k = 0; k <= NS; k++) {
+    p.copy(O).addScaledVector(u, k * h);
+    const sd = signedDistanceToMesh(p, idx);
+    if (sd < 0) { started = true; miss = 0; s.push({ t: k * h, r: -sd }); } else if (started && ++miss >= 3) break;
+  }
+  if (s.length < 3) return null;
+  s.reverse();
+  const n = s.length, pts = new Float32Array(3 * n), r = new Float32Array(n), cum = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    p.copy(O).addScaledVector(u, s[i].t);
+    pts[3 * i] = p.x; pts[3 * i + 1] = p.y; pts[3 * i + 2] = p.z; r[i] = Math.max(s[i].r, 1e-3);
+    if (i) cum[i] = cum[i - 1] + Math.hypot(pts[3 * i] - pts[3 * i - 3], pts[3 * i + 1] - pts[3 * i - 2], pts[3 * i + 2] - pts[3 * i - 1]);
+  }
+  let vol = 0, ti = 0;
+  for (let i = 0; i < n; i++) { if (r[i] < r[ti]) ti = i; if (i) vol += Math.PI * 0.25 * (r[i] * r[i] + r[i - 1] * r[i - 1]) * (cum[i] - cum[i - 1]); }
+  return { pts, r, cum, n, vol, throat: ti, len: cum[n - 1], dir: u.clone().negate() };
+}
+
+// Network: nodes = cavities (+ the ATM sink, node -1), edges from allLinks (every link of a part, so a multi-link part gets
+// several edges) and from unmatched exit / nozzle openings (-> ATM).
+function pfsBuildNetwork(inst) {
+  const unit = pfsUnit(), tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.byPart : null;
+  const partSet = new Set(inst.parts);
+  const src = (inst.links && inst.links.size) ? inst.links : state.currentLinks;
+  const lmap = new Map();
+  if (src) for (const p of inst.parts) { const ls = allLinks(src, p).filter(l => partSet.has(linkTarget(l))); if (ls.length) lmap.set(p, ls); }
+  const nodes = [], nodeOf = new Map();
+  for (const p of inst.parts) if (pfsIsCavity(p)) { const n = { id: nodes.length, part: p, name: p.name, edgesOut: [], edgesIn: [] }; nodes.push(n); nodeOf.set(p, n); }
+  const edges = [];
+  const pipeSections = (pipe, from) => {   // -> {pts:[Vector3...] oriented from `from`, rad:[], sections:[], turn}
+    const tube = tubes && tubes.get(pipe), out = { pts: [], rad: [], sections: [], turn: 0 };
+    if (!tube || !tube.segs || !tube.segs.length) return null;
+    const sg = tube.segs, a0 = sg[0].a, b1 = sg[sg.length - 1].b;
+    const rev = from && from.distanceTo(b1) < from.distanceTo(a0);
+    const order = rev ? sg.slice().reverse() : sg;
+    for (let j = 0; j < order.length; j++) {
+      const s = order[j], A = rev ? s.b : s.a, B = rev ? s.a : s.b, rA = rev ? s.rB : s.rA, rB = rev ? s.rA : s.rB;
+      if (j === 0) { out.pts.push(A.clone()); out.rad.push(rA); }
+      out.pts.push(B.clone()); out.rad.push(rB);
+      const r = 0.5 * (rA + rB) * unit;
+      out.sections.push({ A: Math.PI * r * r, D: 2 * r, L: s.len * unit });
+      if (j) { const d0 = order[j - 1], v0 = (rev ? d0.a : d0.b).clone().sub(rev ? d0.b : d0.a), v1 = B.clone().sub(A); out.turn += v0.angleTo(v1); }
+    }
+    return out;
+  };
+  const mkEdge = (from, to, chain, pipes, exitOp) => {
+    const e = { id: edges.length, from, to, chain, pipes, exitOp: exitOp || null, toAtm: !to };
+    const l0 = chain[0], startOp = l0 ? l0.viaOpening : exitOp;
+    const startPt = startOp ? openingLiveCentroid(startOp).clone() : new THREE.Vector3();
+    const pts = [startPt], rad = [startOp ? startOp.radius : 0.2], sections = [];
+    let cur = startPt, turn = 0;
+    for (const pipe of pipes) {
+      const ps = pipeSections(pipe, cur);
+      if (ps) { for (let k = 0; k < ps.pts.length; k++) { pts.push(ps.pts[k]); rad.push(ps.rad[k]); } sections.push(...ps.sections); turn += ps.turn; cur = ps.pts[ps.pts.length - 1]; }
+    }
+    let endOp = null;
+    if (to) { const lastL = chain[chain.length - 1]; endOp = lastL && lastL.entrance; } else endOp = exitOp;
+    const endPt = endOp ? openingLiveCentroid(endOp).clone() : cur.clone();
+    pts.push(endPt); rad.push(endOp ? endOp.radius : rad[rad.length - 1]);
+    if (!sections.length) { const r = Math.min(startOp ? startOp.radius : 0.2, endOp ? endOp.radius : 0.2) * unit; sections.push({ A: Math.PI * r * r, D: 2 * r, L: Math.max(startPt.distanceTo(endPt) * unit, 0) }); }
+    const rEnd = (endOp ? endOp.radius : 0.2) * unit;
+    sections.push({ A: Math.PI * rEnd * rEnd, D: 2 * rEnd, L: 0 });     // the opening itself (orifice term uses Cd on this)
+    e.sections = sections; e.kbend = 0.3 * turn / (Math.PI / 2); e.pts = pts; e.rad = rad;
+    e.endNormal = endOp ? openingLiveNormal(endOp).clone() : new THREE.Vector3(0, -1, 0);
+    e.exitR = endOp ? endOp.radius : 0.2;
+    e.mdot = 0; e.acc = 0; e.vPhys = 0; e.fluid = 'other'; e.kind = 'liquid'; e.C = 0;
+    edges.push(e); from.edgesOut.push(e); if (to) to.edgesIn.push(e);
+    e.name = from.name + ' \u2192 ' + (to ? to.name : 'ATM');
+    return e;
+  };
+  const walk = (A, l, chain, pipes, depth) => {
+    used.get(A).add(l.viaOpening);
+    const t = linkTarget(l);
+    if (nodeOf.has(t)) { mkEdge(nodeOf.get(A), nodeOf.get(t), chain, pipes); return; }
+    if (depth > 8 || pipes.includes(t)) return;
+    const np = pipes.concat([t]), nxt = lmap.get(t) || [];
+    const usedHere = new Set(nxt.map(n => n.viaOpening));
+    for (const n of nxt) walk(A, n, chain.concat([n]), np, depth + 1);
+    for (const op of t.openings) if ((op.role === 'exit' || op.role === 'nozzle') && !usedHere.has(op)) mkEdge(nodeOf.get(A), null, chain, np, op);
+  };
+  const used = new Map();
+  for (const n of nodes) {
+    used.set(n.part, new Set());
+    for (const l of lmap.get(n.part) || []) walk(n.part, l, [l], [], 0);
+    for (const op of n.part.openings) if ((op.role === 'exit' || op.role === 'nozzle') && !used.get(n.part).has(op)) mkEdge(n, null, [], [], op);
+  }
+  return { nodes, nodeOf, edges };
+}
+
+class PressureFlowSim {
+  constructor(inst) {
+    this.inst = inst; this.t = 0; this.timeScale = 1; this.pa = pfsPaAbs();
+    const net = pfsBuildNetwork(inst);
+    this.nodes = net.nodes; this.nodeOf = net.nodeOf; this.edges = net.edges;
+    this.cfg = PROP_PRESETS[plume.key] || PROP_PRESETS[PC_DEFAULT_PRESET] || { gamma: 1.2, mw: 22, Tc: 3300, eps: 15, pcPsi: 1000 };
+    this.K = 0; this.emit = 0;
+    this.initState();
+  }
+  initState() {
+    const unit = pfsUnit(), u3 = unit * unit * unit, paPsi = this.pa / PSI_PA, cfg = this.cfg;
+    this.t = 0; this.pa = pfsPaAbs();
+    const Rhe = R_UNIV / FLUID_PROPS.helium.M;
+    for (const n of this.nodes) {
+      const p = n.part, T = p.tempK > 0 ? p.tempK : PFS_T_AMB;
+      n.T = T; n.mL = 0; n.mG = 0; n.mL0 = 0; n.mG0 = 0; n.mIn = 0; n.mOut = 0; n.peak = 0; n.axis = null;
+      const Vmesh = computeVolume(p) * u3;
+      if (p.type === 'chamber') {
+        n.kind = 'chamber'; n.axis = pfsChamberAxis(p);
+        n.V = Math.max(Vmesh, n.axis ? n.axis.vol * u3 : 0, 1e-9);
+        n.T = PFS_T_AMB; n.R = PFS_R_AIR; n.gamma = 1.4; n.burn = 0; n.inFuel = 0; n.inOx = 0;
+        n.mG = Math.max(this.pa, 1) * n.V / (n.R * n.T);
+      } else if (p.contents === 'helium' || p.type === 'pressure') {
+        n.kind = 'gas'; n.contents = 'helium'; n.V = Math.max(Vmesh, 1e-9); n.R = Rhe; n.gamma = FLUID_PROPS.helium.gamma;
+        n.mG0 = Math.max((p.internalPsi || 0), paPsi) * PSI_PA * n.V / (n.R * n.T); n.mG = n.mG0;
+      } else {
+        const fl = FLUID_PROPS[p.contents] || FLUID_PROPS.other;
+        n.kind = 'liquid'; n.contents = FLUID_PROPS[p.contents] ? p.contents : 'other'; n.V = Math.max(Vmesh, 1e-9); n.rho = fl.rho; n.R = Rhe;
+        const cap = n.V * n.rho;
+        n.mL0 = p.massKg > 0 ? Math.min(p.massKg, cap) : 0.9 * cap; n.mL = n.mL0;
+        n.Pset = Math.max((p.internalPsi || 0), paPsi) * PSI_PA;
+        n.mG0 = n.Pset * Math.max(n.V - n.mL0 / n.rho, PFS_ULLAGE_MIN * n.V) / (n.R * n.T); n.mG = n.mG0;
+      }
+      n.P = this.nodeP(n);
+    }
+    for (const e of this.edges) {
+      const src = e.from;
+      e.mdot = 0; e.acc = 0; e.dmd = 0; e.vPhys = 0; e.vol = 0;
+      e.Cd = e.toAtm ? 0.62 : 1;
+      if (src.kind === 'chamber') {
+        const nozzle = e.exitOp && e.exitOp.role === 'nozzle';
+        e.kind = nozzle ? 'throat' : 'gasleak'; e.fluid = 'gas';
+        const Ae = Math.PI * e.exitR * e.exitR * unit * unit;
+        e.A = nozzle ? Math.max(Ae / Math.max(cfg.eps || 1, 1), AT_MIN_M2) : Ae;
+        e.Cd = nozzle ? 1 : 0.62;
+      } else if (src.kind === 'gas') { e.kind = (e.to && e.to.kind === 'liquid') ? 'regulator' : 'gas'; e.fluid = 'helium'; }
+      else { e.kind = e.toAtm ? 'spill' : 'liquid'; e.fluid = src.contents; }
+      e.fp = FLUID_PROPS[e.fluid] || FLUID_PROPS.other;
+      e.A = e.A || e.sections[e.sections.length - 1].A;
+    }
+    for (const n of this.nodes) { n.openKind = 'closed'; }
+    // which cavities have an open path to ATM (for the UI status)
+    for (const n of this.nodes) {
+      const seen = new Set(), q = [n]; let kind = 'closed';
+      while (q.length) {
+        const c = q.pop(); if (seen.has(c)) continue; seen.add(c);
+        for (const e of c.edgesOut) { if (e.toAtm) { if (e.kind === 'throat') { kind = 'nozzle'; } else if (kind !== 'nozzle') kind = 'leak'; } else q.push(e.to); }
+      }
+      n.openKind = kind;
+    }
+    this.mixOfStoich = null;
+  }
+  nodeP(n) {
+    if (n.kind === 'liquid') return n.mG * n.R * n.T / Math.max(n.V - n.mL / n.rho, PFS_ULLAGE_MIN * n.V);
+    return Math.max(n.mG * n.R * n.T / n.V, n.kind === 'chamber' ? 1 : 0);
+  }
+  // mass flow of one edge at the CURRENT pressures; also e.dmd = d(mdot)/d(P_down) for the chamber's implicit coupling
+  edgeFlow(e, h) {
+    const src = e.from, dst = e.to, pa = this.pa;
+    const Pup = src.P, Pdn = dst ? dst.P : pa;
+    e.dmd = 0;
+    if (!(Pup > Pdn)) return 0;
+    let m = 0;
+    switch (e.kind) {
+      case 'liquid': case 'spill':
+        if (src.mL <= 0) return 0;
+        m = solveChannelFlow(e.sections, e.fp, Pup, Pdn, { Cd: e.Cd, Kin: 0.5, Kbend: e.kbend, T: src.T }).mdot; break;
+      case 'gas':
+        if (src.mG <= 0) return 0;
+        m = solveChannelFlow(e.sections, e.fp, Pup, Pdn, { Cd: e.Cd, Kin: 0.5, Kbend: e.kbend, T: src.T }).mdot; break;
+      case 'regulator': {
+        const to = dst, Vu = Math.max(to.V - to.mL / to.rho, PFS_ULLAGE_MIN * to.V);
+        const need = to.Pset * Vu / (to.R * to.T) - to.mG;
+        if (need <= 0 || src.mG <= 0 || !(Pup > to.Pset)) return 0;
+        m = solveChannelFlow(e.sections, e.fp, Pup, Pdn, { Cd: e.Cd, Kin: 0.5, Kbend: e.kbend, T: src.T }).mdot;
+        return Math.min(m, need / h); }
+      case 'throat': case 'gasleak':
+        if (src.mG <= 0) return 0;
+        m = pfsGasMdot(Pup, Pdn, e.A, src.gamma, src.R, src.T, e.Cd);
+        { const d = 1e-3 * Pup; e.dmd = (pfsGasMdot(Pup + d, Pdn, e.A, src.gamma, src.R, src.T, e.Cd) - m) / d; }
+        return m;
+    }
+    if (dst && dst.kind === 'chamber') e.dmd = m / (2 * Math.max(Pup - Pdn, 1));
+    return m;
+  }
+  step(dt, cont) {
+    if (!(dt > 0)) return;
+    const nsub = Math.min(Math.max(Math.ceil(dt / PFS_DT_MAX), 1), 60), h = dt / nsub;
+    for (let k = 0; k < nsub; k++) this.sub(h, cont);
+  }
+  sub(h, cont) {
+    const pa = this.pa = pfsPaAbs();
+    for (const n of this.nodes) { n.P = this.nodeP(n); n.mIn = 0; n.mOut = 0; }
+    // 1. edge flows at current pressure (explicit); then limit each source node to the mass it holds
+    for (const e of this.edges) e.mdot = e.from.kind === 'chamber' ? 0 : this.edgeFlow(e, h);
+    for (const n of this.nodes) {
+      if (n.kind === 'chamber') continue;
+      let tot = 0; for (const e of n.edgesOut) tot += e.mdot * h;
+      const have = n.kind === 'liquid' ? n.mL : n.mG * 0.98;
+      if (tot > have && tot > 0) { const f = have / tot; for (const e of n.edgesOut) e.mdot *= f; }
+    }
+    // 2. chamber nodes: semi-implicit pressure update (inflows from the lagged edges + their slopes, throat/leak outflow)
+    for (const c of this.nodes) {
+      if (c.kind !== 'chamber') continue;
+      this.chamberThermo(c, h);
+      const P0 = this.nodeP(c); c.P = P0;
+      let sIn = 0, sOut = 0, inM = 0, outM = 0;
+      for (const e of c.edgesIn) { sIn += e.dmd; inM += e.mdot; }
+      for (const e of c.edgesOut) { e.mdot = this.edgeFlow(e, h); sOut += e.dmd; outM += e.mdot; }
+      const cap = c.V / (c.R * c.T);
+      const dP = h * (inM - outM) / (cap + h * (sIn + sOut));
+      let P1 = Math.max(P0 + dP, Math.max(pa, 1));
+      const dP1 = P1 - P0;
+      for (const e of c.edgesIn) e.mdot = Math.max(0, e.mdot - e.dmd * dP1);
+      for (const e of c.edgesOut) e.mdot = Math.max(0, e.mdot + e.dmd * dP1);
+      c.mG = P1 * cap; c.P = P1;
+    }
+    // 3. commit the mass moved this step
+    for (const e of this.edges) {
+      const m = e.mdot * h, s = e.from, d = e.to;
+      s.mOut += e.mdot; if (d) d.mIn += e.mdot;
+      if (s.kind === 'liquid') s.mL = Math.max(s.mL - m, 0); else if (s.kind === 'gas') s.mG = Math.max(s.mG - m, 0);
+      if (d && d.kind !== 'chamber') { if (e.kind === 'liquid') d.mL += m; else d.mG += m; }
+    }
+    // 4. continuous flow: containers are replenished as they are used; otherwise they deplete
+    if (cont) for (const n of this.nodes) {
+      if (n.kind === 'liquid') { n.mL = n.mL0; n.mG = n.mG0; } else if (n.kind === 'gas') n.mG = n.mG0;
+    }
+    for (const n of this.nodes) {
+      if (n.kind === 'liquid' && n.mL < 1e-9 * n.mL0) n.mL = 0;
+      n.P = this.nodeP(n); n.peak = Math.max(n.peak, n.mOut);
+    }
+    // exit/transit speed bookkeeping per edge (m/s): mdot / (rho A)
+    for (const e of this.edges) {
+      const rho = e.kind === 'throat' || e.kind === 'gasleak' ? Math.max(e.from.P / (e.from.R * e.from.T), 1e-6)
+        : (e.fluid === 'helium' ? Math.max(e.from.P / (e.from.R * e.from.T), 1e-6) : e.fp.rho);
+      e.vPhys = e.mdot / (rho * (e.kind === 'throat' ? e.A : e.sections[e.sections.length - 1].A));
+    }
+    this.t += h;
+  }
+  // chamber gas: cold ambient air until both propellants arrive, then combustion products at the preset's Tc / mw / gamma
+  chamberThermo(c, h) {
+    const cfg = this.cfg; let inF = 0, inO = 0;
+    for (const e of c.edgesIn) { if (e.fluid === 'fuel') inF += e.mdot; else if (e.fluid === 'oxidizer') inO += e.mdot; }
+    c.inFuel = inF; c.inOx = inO;
+    const stoich = (window.ofPerSystem && window.ofPerSystem[c.part.name] != null) ? window.ofPerSystem[c.part.name] : (window.ofTarget || 2.3);
+    const mixK = inF > 0 && inO > 0 ? Math.exp(-Math.pow(Math.log((inO / inF) / stoich), 2)) : 0;
+    c.mixK = mixK;
+    const k = Math.max(mixK, inF + inO > 0 ? 0.25 : 0), w = k * k;
+    const Tt = PFS_T_AMB + (cfg.Tc - PFS_T_AMB) * w, Rt = PFS_R_AIR + (R_UNIV / (cfg.mw * G_MOL_TO_KG) - PFS_R_AIR) * w, gt = 1.4 + (cfg.gamma - 1.4) * w;
+    const a = 1 - Math.exp(-h / 0.01);
+    c.T += (Tt - c.T) * a; c.R += (Rt - c.R) * a; c.gamma += (gt - c.gamma) * a; c.burn = w;
+  }
+  advance(dt, cont) { this.step(dt * this.timeScale, cont); pfsSyncMass(this); }
+  chamberNode(part) { return this.nodeOf.get(part) || null; }
+}
+
+// Keep mass.c (UI, stress, thermal) in step with the solver: m / m0 in kg, P in psi (absolute), flow 0..1, kind.
+function pfsSyncMass(sol) {
+  for (const n of sol.nodes) {
+    const c = mass.c.get(n.part); if (!c) continue;
+    c.m = n.kind === 'liquid' ? n.mL : n.mG; c.m0 = n.kind === 'liquid' ? n.mL0 : n.mG0;
+    c.P = n.P / PSI_PA; c.P0 = n.kind === 'liquid' ? n.Pset / PSI_PA : n.mG0 * n.R * n.T / n.V / PSI_PA;
+    c.flow = n.peak > 0 ? Math.min(n.mOut / n.peak, 1) : 0;
+    c.kind = n.openKind;
+  }
+}
+
+function pfsSnapshot(inst) {
+  const sol = (inst || (state.instances || []).find(i => i.solver) || {}).solver;
+  if (!sol) return null;
+  const psi = Pa => +(Pa / PSI_PA).toFixed(3);
+  return {
+    mode: sol.inst.solverMode, t: +sol.t.toFixed(4), atmPsi: psi(sol.pa), emitK: +sol.K.toFixed(4),
+    nodes: sol.nodes.map(n => ({ id: n.id, name: n.name, kind: n.kind, contents: n.contents || 'gas', psi: psi(n.P), massKg: +(n.kind === 'liquid' ? n.mL : n.mG).toPrecision(5),
+      massKg0: +(n.kind === 'liquid' ? n.mL0 : n.mG0).toPrecision(5), ullageKg: n.kind === 'liquid' ? +n.mG.toPrecision(4) : undefined, V_m3: +n.V.toPrecision(5), T: +n.T.toFixed(1), mdotIn: +n.mIn.toPrecision(4), mdotOut: +n.mOut.toPrecision(4) })),
+    edges: sol.edges.map(e => ({ id: e.id, name: e.name, kind: e.kind, fluid: e.fluid, from: e.from.id, to: e.to ? e.to.id : 'ATM', mdot: +e.mdot.toPrecision(5), vPhys: +e.vPhys.toFixed(2), area_m2: +e.A.toPrecision(4), links: e.chain.length, pipes: e.pipes.map(p => p.name) })),
+  };
+}
+function pfsActivate() {
+  const want = pfsWanted();
+  for (const inst of state.instances || []) {
+    if (want) { inst.solverMode = 'pressure'; inst.solver = new PressureFlowSim(inst); inst.ltcbp = []; }
+    else { inst.solverMode = 'baked'; inst.solver = null; }
+  }
+  if (want) for (const inst of pfsInstances()) pfsSyncMass(inst.solver);
+}
+function pfsDeactivate() {
+  for (const inst of state.instances || []) { if (inst.solverMode === 'pressure') { inst.solverMode = 'baked'; inst.solver = null; inst.ltcbp = []; } }
+}
+// Manual stepping for tests: advance every pressure instance `sec` seconds in `dt`-sized frames.
+function pfsAdvanceAll(sec, dt) {
+  dt = dt || 0.05; const cont = massContinuous();
+  for (let t = 0; t < sec - 1e-9; t += dt) for (const inst of pfsInstances()) inst.solver.advance(Math.min(dt, sec - t), cont);
+}
+// <pfs:end>
+
 window.arcFlowDebug = { readParticles: debugReadParticlePositions };
 
 // Expose for debugging / follow-on iteration
