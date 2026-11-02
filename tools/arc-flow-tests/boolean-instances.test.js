@@ -24,7 +24,7 @@ async function loadThree() {
     .map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) code += ex.fn(src, n) + '\n';
-  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.fn(src, 'partCentroid') + '\n';
+  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.fn(src, 'partCentroid') + '\n' + ex.fn(src, 'instanceGroupingFromBoolean') + '\n' + ex.fn(src, 'instanceComponents') + '\n';
   const have = new Set(code.match(/^(?:const|let) (\w+)/gm).map(l => l.split(' ')[1]).concat(['_worldTriCache', '_penIndexCache']));
   for (let again = true; again;) {
     again = false;
@@ -35,7 +35,7 @@ async function loadThree() {
   }
   const helpers = new Set();
   for (let pass = 0; pass < 8; pass++) {
-    try { vm.runInContext(code + '\nthis.api={buildFlowGraph,allLinks,booleanSystems,booleanSystemGrouping,booleanSyncInstance,booleanSyncAll,booleanRefreshInstance,instanceJointRegions,booleanCacheStats,booleanCacheReset,detectAutoPenetrationJoints,collectJointRegions};', ctx); break; }
+    try { vm.runInContext(code + '\nthis.api={instanceComponents,buildFlowGraph,allLinks,booleanSystems,booleanSystemGrouping,booleanSyncInstance,booleanSyncAll,booleanRefreshInstance,instanceJointRegions,booleanCacheStats,booleanCacheReset,detectAutoPenetrationJoints,collectJointRegions};', ctx); break; }
     catch (e) {
       const m = /^(\w+) is not defined/.exec(e.message);
       if (!m || helpers.has(m[1])) throw e;
@@ -154,7 +154,7 @@ async function loadThree() {
     B.g.position.add(new THREE.Vector3(5, -2, 4)); B.g.rotation.y += 0.4; B.g.updateMatrixWorld(true);
     const out = api.booleanSyncAll();
     assert.deepStrictEqual(Array.from(out, o => o.inst.id + ':' + o.kind), ['B:transform']);
-    assert.deepStrictEqual(B.inst.dirty, ['sdf', 'particles']);
+    assert.deepStrictEqual(B.inst.dirty, ['network', 'sdf', 'particles']);
     assert.deepStrictEqual(A.inst.dirty, []);
     near(bl.viaOpening.centroid, bBefore.clone().applyMatrix4(B.g.matrixWorld.clone().multiply(prevM.clone().invert())));
     near(lk.viaOpening.centroid, aBefore);
@@ -183,6 +183,18 @@ async function loadThree() {
     const rB2 = api.instanceJointRegions(B.inst);
     near(rB2[0].box.getCenter(new THREE.Vector3()), cBlocal.applyMatrix4(B.g.matrixWorld));
     assert.ok(Math.abs(rB2[0].box.max.x - rB2[0].box.min.x - (rB[0].box.max.x - rB[0].box.min.x)) < 1e-9);
+  });
+
+  test('detectInstances path: instanceComponents with state.systemGrouping = booleanSystemGrouping splits the clones by Boolean', () => {
+    const A = makeClone('A', new THREE.Vector3(0, 0, 0)), B = makeClone('B', new THREE.Vector3(20, 5, -3), 0.7, 1.2);
+    const loose = { name: 'loose', type: 'pipe', meshes: [new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1))], pivot: null, openings: [] };
+    loose.meshes[0].position.set(60, 0, 0); loose.meshes[0].updateMatrixWorld(true);
+    state.parts = [A.tank, A.pipe, B.tank, B.pipe, loose];
+    state.systemGrouping = ctx.booleanSystemGrouping;
+    const r = api.instanceComponents(state.parts, new Map());
+    assert.deepStrictEqual(Array.from(r.components, c => Array.from(c, p => p.name)), [['A:tank', 'A:pipe'], ['B:tank', 'B:pipe']]);
+    assert.deepStrictEqual(Array.from(r.orphans, p => p.name), ['loose']);
+    state.systemGrouping = null;
   });
 
   console.log(n + ' boolean-instances tests passed');
