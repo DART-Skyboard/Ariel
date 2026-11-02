@@ -19,9 +19,9 @@ async function loadThree() {
   const ctx = { THREE, console, Math, Infinity, state: { parts: [] } };
   vm.createContext(ctx);
   const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex',
-    'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap',
+    'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penMinOverlap',
     'detectPenetrationJoint', 'detectAutoPenetrationJoints'];
-  let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'SDF_VIRTUAL_EDGE_VOXELS',
+  let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
     'SDF_VIRTUAL_EDGE_CELLS', 'SDF_VIRTUAL_PHONG_ALPHA', 'SDF_VIRTUAL_EXTRA_TRI_CAP'].map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) { try { code += ex.fn(src, n) + '\n'; } catch (_) { /* older revisions lack refineThinOverlap */ } }
@@ -65,6 +65,18 @@ async function loadThree() {
     const tank = mk('tank', 'container', new THREE.SphereGeometry(2, 32, 24), 0, 0, 0);
     const pipe = mk('pipe', 'pipe', new THREE.CylinderGeometry(0.1, 0.1, 2, 16).rotateZ(Math.PI / 2), 2.75, 0, 0); // tip at x=1.75 (0.25 deep, 0.2 wide: just over PEN_MIN_OVERLAP)
     assert.strictEqual(detect(tank, pipe), 1);
+  });
+  test('a thin pipe (bore < 0.15 world units) fitted into a tank is found: threshold scales with the smaller part', () => {
+    const tank = mk('tank', 'container', new THREE.SphereGeometry(2, 32, 24), 0, 0, 0);
+    const pipe = mk('thin', 'pipe', new THREE.CylinderGeometry(0.04, 0.04, 2, 16).rotateZ(Math.PI / 2), 2.8, 0, 0); // 0.08 wide, tip 0.2 deep
+    assert.strictEqual(detect(tank, pipe), 1);
+  });
+  test('shared face / grazing contact is still not a joint', () => {
+    const a = mk('a', 'container', new THREE.BoxGeometry(1, 1, 1), 0, 0, 0);
+    const b = mk('b', 'container', new THREE.BoxGeometry(1, 1, 1), 1, 0, 0);   // touching faces, zero overlap
+    const c = mk('c', 'container', new THREE.BoxGeometry(1, 1, 1), 0.995, 0, 0); // 0.005 sliver, under the absolute floor
+    assert.strictEqual(detect(a, b), 0);
+    assert.strictEqual(detect(a, c), 0);
   });
   test('pipe in the corner of the tank AABB but outside the real cavity is NOT a joint (false helium hit)', () => {
     const tank = mk('He', 'container', new THREE.SphereGeometry(2, 32, 24), 0, 0, 0);

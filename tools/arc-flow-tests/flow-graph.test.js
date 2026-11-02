@@ -2,7 +2,7 @@
 // (no DOM, no three.js): run with `node tools/arc-flow-tests/flow-graph.test.js`.
 const vm = require('vm');
 const assert = require('assert');
-const { load, region } = require('./extract');
+const { load, region, fn } = require('./extract');
 const src = load();
 
 // Minimal Vector3 stand-in: just what the graph code touches.
@@ -30,7 +30,8 @@ function makeEnv() {
     console,
   };
   vm.createContext(ctx);
-  vm.runInContext(region(src, 'flowgraph') + '\n' + region(src, 'jointreport') + '\nthis.__api = { buildFlowGraph, firstLink, allLinks, asLinkArray, renderJointReport };', ctx);
+  vm.runInContext(region(src, 'flowgraph') + '\n' + region(src, 'jointreport') + '\n' + fn(src, 'upstreamContents') + '\n' + fn(src, 'chamberMixture') +
+    '\nthis.__api = { buildFlowGraph, firstLink, allLinks, asLinkArray, linkTarget, renderJointReport, upstreamContents, chamberMixture };', ctx);
   return { ctx, el, api: ctx.__api };
 }
 // vm contexts have their own Array.prototype: compare structurally via JSON
@@ -161,6 +162,63 @@ test('renderJointReport separates pressurant from propellant', () => {
   assert.ok(/\[pressurant\]<\/b> He → LOX/.test(html));
   assert.ok(/\[propellant\]<\/b> oxLine → chamber/.test(html));
   assert.ok(!html.includes('both already have an outgoing link'));
+});
+
+test('chamberMixture resolves the parts behind links (was always 0: it compared link records to parts)', () => {
+  const { ctx, api, pOx, pF, ch } = feedTrain();
+  ctx.state.currentLinks = api.buildFlowGraph();
+  ctx.state.channelFlows = new Map([[pOx, { mdot: 2 }], [pF, { mdot: 1 }]]);
+  assert.strictEqual(api.upstreamContents(pOx, 0), 'oxidizer');
+  assert.strictEqual(api.upstreamContents(pF, 0), 'fuel');
+  const m = api.chamberMixture(ch);
+  assert.strictEqual(m.mOx, 2); assert.strictEqual(m.mFuel, 1); assert.strictEqual(m.mdot, 3); assert.strictEqual(m.of, 2);
+});
+
+test('chamberMixture ignores channels that do not feed the chamber, and zero-flow channels', () => {
+  const { ctx, api, pOx, pF, ch } = feedTrain();
+  const other = part('otherLine', 'pipe', null, 9, 9, 0);
+  ctx.state.parts.push(other);
+  ctx.state.currentLinks = api.buildFlowGraph();
+  ctx.state.channelFlows = new Map([[pOx, { mdot: 2 }], [pF, { mdot: 0 }], [other, { mdot: 5 }]]);
+  const m = api.chamberMixture(ch);
+  assert.strictEqual(m.mOx, 2); assert.strictEqual(m.mFuel, 0); assert.strictEqual(m.of, 0);
+});
+
+test('upstreamContents prefers the propellant source over a helium (pressurant) edge into the same part', () => {
+  const { ctx, api, he, lox } = feedTrain();
+  const line = part('shared', 'pipe', null, 0, 8, 0);
+  ctx.state.parts.push(line);
+  // helium listed first so a first-match walk would return 'helium'
+  ctx._sealed.unshift({ partA: he, partB: line, centroid: new V3(0, 14, 0), radius: 0.1 });
+  ctx._sealed.push({ partA: lox, partB: line, centroid: new V3(-2, 10, 0), radius: 0.1 });
+  ctx.state.currentLinks = api.buildFlowGraph();
+  assert.strictEqual(api.upstreamContents(line, 0), 'oxidizer');
+  // helium-only line: falls back to its pressurant source rather than ''
+  const vent = part('vent', 'pipe', null, 8, 20, 0);
+  ctx.state.parts.push(vent);
+  ctx._sealed.push({ partA: he, partB: vent, centroid: new V3(4, 20, 0), radius: 0.1 });
+  ctx.state.currentLinks = api.buildFlowGraph();
+  assert.strictEqual(api.upstreamContents(vent, 0), 'helium');
+});
+
+test('chamberMixture handles legacy single-object link values', () => {
+  const { ctx, api, pOx, ch } = feedTrain();
+  const lox = ctx.state.parts.find(p => p.name === 'LOX');
+  const links = new Map([[lox, { target: pOx, kind: 'propellant' }], [pOx, { target: ch, kind: 'propellant' }]]);
+  ctx.state.currentLinks = links;
+  ctx.state.channelFlows = new Map([[pOx, { mdot: 4 }]]);
+  assert.strictEqual(api.chamberMixture(ch).mOx, 4);
+});
+
+test('renderJointReport: the "touching, no fluid path" section only renders when rejectedPairs is non-empty', () => {
+  const { ctx, el, api, lox, he } = feedTrain();
+  ctx.state.currentLinks = api.buildFlowGraph();
+  ctx.state.autoPenetrationRejected = [];
+  api.renderJointReport();
+  assert.ok(!/Touching, no fluid path/.test(el.innerHTML) && !el.innerHTML.includes('✕'));
+  ctx.state.autoPenetrationRejected = [{ partA: lox, partB: he }];
+  api.renderJointReport();
+  assert.ok(/Touching, no fluid path/.test(el.innerHTML) && el.innerHTML.includes('✕ LOX ↔ He'));
 });
 
 console.log(`\n${n} tests passed`);

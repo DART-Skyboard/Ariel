@@ -2,7 +2,7 @@
 // (no build step, no DOM) so it can be exercised under plain node.
 const fs = require('fs');
 const path = require('path');
-const HTML = path.join(__dirname, '..', '..', 'templates', 'arc-flow.html');
+const HTML = process.env.ARC_FLOW_HTML || path.join(__dirname, '..', '..', 'templates', 'arc-flow.html');
 
 function load() { return fs.readFileSync(HTML, 'utf8'); }
 
