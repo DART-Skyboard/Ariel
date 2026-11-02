@@ -2118,7 +2118,16 @@ function runSealCheck() {
 const PEN_SAMPLE_RES = 9;        // samples per axis across an overlap box — small on purpose: the box is just the region two surfaces cross in
 const PEN_REFINE_CANDIDATES = 3;  // near-miss probe samples refined locally (thin cavity overlaps)
 const PEN_REFINE_LEVELS = 3;      // each level re-samples 3^3 points at 1/3 the pitch (27x finer after 3 levels)
-const PEN_MIN_OVERLAP = 0.15;    // require real overlap; a sliver or shared face is not a penetration
+const PEN_MIN_OVERLAP_FRAC = 0.15;   // real overlap must exceed this fraction of the SMALLER part's thinnest extent (its bore / wall scale)...
+const PEN_MIN_OVERLAP_FLOOR = 0.01;  // ...but never less than this many world units: a sliver or shared face is not a penetration
+// Overlap-box threshold for one pair. Scales with part size so a thin pipe (bore < 0.15 world units) can still
+// register a joint, while a shared face / grazing contact (overlap ~ 0 on some axis) stays rejected.
+function penMinOverlap(boxA, boxB) {
+  const sa = new THREE.Vector3(), sb = new THREE.Vector3();
+  boxA.getSize(sa); boxB.getSize(sb);
+  const thin = Math.min(Math.min(sa.x, sa.y, sa.z), Math.min(sb.x, sb.y, sb.z));
+  return Math.max(PEN_MIN_OVERLAP_FLOOR, PEN_MIN_OVERLAP_FRAC * thin);
+}
 
 let _penIndexCache = new WeakMap(); // part -> spatial index (reset with the world-triangle cache)
 function penIndexForPart(part) {
@@ -2203,7 +2212,8 @@ function detectPenetrationJoint(partA, partB) {
   if (!boxA.intersectsBox(boxB)) return null;
   const overlap = boxA.clone().intersect(boxB);
   const size = new THREE.Vector3(); overlap.getSize(size);
-  if (size.x <= PEN_MIN_OVERLAP || size.y <= PEN_MIN_OVERLAP || size.z <= PEN_MIN_OVERLAP) return null;
+  const minOverlap = penMinOverlap(boxA, boxB);
+  if (size.x <= minOverlap || size.y <= minOverlap || size.z <= minOverlap) return null;
 
   // Pad a little: round surfaces can poke slightly outside their own AABB
   // intersection right at the seam.
