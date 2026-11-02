@@ -2676,7 +2676,7 @@ function buildFlowGraphCore() {
 let _bsPairs = new WeakMap();      // Part a -> Map<Part b, { root, sa, sb, res }>
 let _bsWorldSnap = new WeakMap();  // Part -> world-matrix snapshot when its triangle caches were last (re)built
 const _bsStats = { hits: 0, misses: 0, detections: 0 };
-const BS_EPS = 1e-5;
+const BS_EPS = 1e-5, BS_DEFORM_EPS = 1e-4, BS_DEFORM_MS = 400;
 
 function bsFrameOf(root, ctx) {
   if (!root) return null;
@@ -2703,16 +2703,39 @@ function bsSnapshot(part, frame, ctx) {
     tmp.copy(o.matrixWorld); if (frame) tmp.premultiply(frame.inv);
     arr.set(tmp.elements, i * 16); geo[i] = o.geometry ? o.geometry.uuid : '';
   });
-  const s = { n: meshes.length, arr, geo };
+  const d = bsDeformValues(meshes);
+  const s = { n: meshes.length, arr, geo, dv: d.dv, dver: d.dver };
   if (byPart) byPart.set(part, s);
   return s;
 }
-function bsSameSnap(a, b) {
+// Animated-GLB state of a part's meshes: bone matrices (relative to the mesh, so a rigid move of the whole clone is invisible), morph weights and
+// the position-attribute version (CPU vertex edits).  Cheap: only skinned / morph meshes contribute values.
+function bsDeformValues(meshes) {
+  const dv = [], dver = [], inv = new THREE.Matrix4(), rel = new THREE.Matrix4();
+  for (const o of meshes) {
+    const pa = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+    dver.push(pa ? pa.version : 0);
+    if (o.isSkinnedMesh && o.skeleton) {
+      inv.copy(o.matrixWorld).invert();
+      for (const b of o.skeleton.bones) { b.updateWorldMatrix(true, false); rel.multiplyMatrices(inv, b.matrixWorld); for (let i = 0; i < 16; i++) dv.push(rel.elements[i]); }
+    }
+    if (o.morphTargetInfluences) for (const w of o.morphTargetInfluences) dv.push(w);
+  }
+  return { dv, dver };
+}
+function bsSameRigid(a, b) {
   if (!a || !b || a.n !== b.n) return false;
   for (let i = 0; i < a.n; i++) if (a.geo[i] !== b.geo[i]) return false;
   for (let i = 0; i < a.arr.length; i++) if (Math.abs(a.arr[i] - b.arr[i]) > BS_EPS * (1 + Math.abs(a.arr[i]))) return false;
   return true;
 }
+function bsSameDeform(a, b) {
+  if (!a || !b || a.dv.length !== b.dv.length || a.dver.length !== b.dver.length) return false;
+  for (let i = 0; i < a.dver.length; i++) if (a.dver[i] !== b.dver[i]) return false;
+  for (let i = 0; i < a.dv.length; i++) if (Math.abs(a.dv[i] - b.dv[i]) > BS_DEFORM_EPS * (1 + Math.abs(a.dv[i]))) return false;
+  return true;
+}
+function bsSameSnap(a, b) { return bsSameRigid(a, b) && bsSameDeform(a, b); }
 // Drop a part's world-space triangle caches when (and only when) its world matrices changed since they were built.
 function bsFreshGeometry(part) {
   const now = bsSnapshot(part, null, null), was = _bsWorldSnap.get(part);
@@ -2797,7 +2820,7 @@ function bsRetransformInstance(inst, delta, sRatio) {
   for (const p of inst.parts) { const b = partWorldAABB(p); if (b && !b.isEmpty()) inst.bounds.union(b); }
 }
 // Keep one instance's Boolean results current with ITS OWN transform. Cheap when nothing moved (matrix compares).
-// -> { changed, kind: 'init' | 'none' | 'transform' | 'rebuild' }
+// -> { changed, kind: 'init' | 'none' | 'transform' | 'rebuild' | 'deform' | 'throttled' }
 function booleanSyncInstance(inst) {
   if (!inst || !inst.parts || !inst.parts.length) return { changed: false, kind: 'none' };
   const root = bsCommonRoot(inst.parts);
@@ -2807,13 +2830,24 @@ function booleanSyncInstance(inst) {
   const rootM = root ? root.matrixWorld.clone() : null;
   const st = inst.booleanState;
   if (!st) { inst.booleanState = { root, rootM, snaps, rebuilds: 0, regions: null }; inst.transformVersion = inst.transformVersion || 0; return { changed: false, kind: 'init' }; }
-  let rebuild = st.root !== root || st.snaps.size !== snaps.size;
-  if (!rebuild) for (const [p, s] of snaps) if (!bsSameSnap(st.snaps.get(p), s)) { rebuild = true; break; }
+  let rebuild = st.root !== root || st.snaps.size !== snaps.size, rigid = rebuild;
+  const changedParts = [];
+  if (!rebuild) for (const [p, s] of snaps) {
+    const was = st.snaps.get(p);
+    if (!bsSameRigid(was, s)) { rebuild = rigid = true; changedParts.push(p); } else if (!bsSameDeform(was, s)) { rebuild = true; changedParts.push(p); }
+  }
   if (rebuild) {
+    // Animated geometry (skin / morph / vertex edits) is throttled: while the previous snapshot is kept, the pending change is simply picked up later.
+    const now = ltcbpNow(), gap = state.bsDeformMs != null ? state.bsDeformMs : BS_DEFORM_MS;
+    if (!rigid && now - (st.lastDeform != null ? st.lastDeform : -1e9) < gap) return { changed: false, kind: 'throttled' };
+    const kind = rigid ? 'rebuild' : 'deform';
     Object.assign(st, { root, rootM, snaps, regions: null, rebuilds: st.rebuilds + 1 });
+    if (!rigid) st.lastDeform = now;
     inst.transformVersion = (inst.transformVersion || 0) + 1;
     if (inst.markDirty) inst.markDirty('links');
-    return { changed: true, kind: 'rebuild' };
+    for (const p of changedParts) fireDeform(p, { type: rigid ? 'move' : 'deform', inst, part: p });
+    try { ltcbpOnChange(inst, kind, changedParts); } catch (e) { console.warn('ltcbpOnChange', e); }
+    return { changed: true, kind, parts: changedParts };
   }
   if (root && st.rootM && !st.rootM.equals(rootM)) {
     const delta = rootM.clone().multiply(st.rootM.clone().invert());
@@ -2839,7 +2873,7 @@ function booleanSyncAll() {
 let _bsTimer = null;
 function booleanAutoSync(on, ms) {
   if (_bsTimer) { clearInterval(_bsTimer); _bsTimer = null; }
-  if (on !== false && typeof setInterval === 'function') _bsTimer = setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) booleanSyncAll(); }, ms || 250);
+  if (on !== false && typeof setInterval === 'function') _bsTimer = setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) { booleanSyncAll(); if (typeof ltcbpAutoTick === 'function') ltcbpAutoTick(); } }, ms || 250);
   return !!_bsTimer;
 }
 // Per-instance tagging: roles / kinds / pressurizedBy for just this instance's links + parts.
@@ -3113,6 +3147,213 @@ function meshesIntersect(a, b) {
   return { centroid, radius: Math.max(e[1] * 0.5, 0.02), points: pts.length };
 }
 // <shellsys:end>
+
+// <ltcbpwatch:begin>
+// LTCBP live watch (spec 18).  While the sim runs, LTCBP (a) re-checks the resolution of the baked collision SDF against the exact mesh
+// and adapts it, and (b) rebuilds an instance's SDF when the Boolean (booleanSyncInstance) reports a collision-body change — animated GLB
+// skin / morph / node motion, CPU vertex edits.  Everything is per instance (inst.ltcbp), throttled and coalesced.
+const LTCBP_SCALE_MIN = 0.6, LTCBP_SCALE_MAX = 2.0;
+const LTCBP_CHECK_MS = 1000;      // resolution check interval per instance
+const LTCBP_REBUILD_MS = 800;     // minimum gap between two SDF rebuild starts per instance
+const LTCBP_PROBES = 96, LTCBP_ERR_HI = 0.75, LTCBP_ERR_LO = 0.15;   // probe count; p90 error (in local voxels) to refine above / coarsen below
+const _deformHooks = new WeakMap();
+function ltcbpNow() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
+function ltcbpState(inst) {
+  return inst.ltcbp || (inst.ltcbp = { scale: 1, lastCheck: -1e9, lastRebuild: -1e9, lowStreak: 0, rebuilds: 0, checks: 0, sdfStale: false, job: null, again: false, history: [], pass: null, sliceStats: null });
+}
+// Resolution LTCBP is currently asking for: scale multiplies the coarse budget and every fine region's per-axis resolution.
+function ltcbpResolution(inst) {
+  const s = inst ? ltcbpState(inst).scale : 1;
+  return { scale: s, coarse: Math.round(SDF_COARSE_RES * s), fine: Math.round(SDF_FINE_RES * s) };
+}
+// Per-part deformation hooks: fn({type:'deform'|'move'|'melt', inst, part}) runs when that part's collision body changed.  Returns an unsubscribe fn.
+function registerDeformHook(part, fn) {
+  let l = _deformHooks.get(part); if (!l) _deformHooks.set(part, l = []);
+  l.push(fn); return () => { const i = l.indexOf(fn); if (i >= 0) l.splice(i, 1); };
+}
+function fireDeform(part, ev) {
+  const l = _deformHooks.get(part); if (!l) return 0;
+  for (const fn of l.slice()) { try { fn(ev); } catch (e) { console.warn('deform hook', e); } }
+  return l.length;
+}
+// CPU read of a baked SDF (the textures keep their Float32Array): trilinear over the first fine region containing p, else the coarse grid.
+// Values are stored divided by the grid-bounds diagonal (see sampleSDFGrid).  Returns { d (model units), edge (local voxel edge), grid } or null.
+function ltcbpReadGrid(data, texW, ox, oy, R, tpr, mn, size, p) {
+  const f = [(p.x - mn.x) / size.x * R[0] - 0.5, (p.y - mn.y) / size.y * R[1] - 0.5, (p.z - mn.z) / size.z * R[2] - 0.5];
+  const i0 = [], t = [];
+  for (let a = 0; a < 3; a++) { const c = Math.min(Math.max(f[a], 0), R[a] - 1); i0[a] = Math.min(Math.floor(c), Math.max(R[a] - 2, 0)); t[a] = c - i0[a]; }
+  const at = (x, y, z) => { x = Math.min(x, R[0] - 1); y = Math.min(y, R[1] - 1); z = Math.min(z, R[2] - 1); return data[((oy + Math.floor(z / tpr) * R[1] + y) * texW + ox + (z % tpr) * R[0] + x) * 4]; };
+  let v = 0;
+  for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++)
+    v += at(i0[0] + dx, i0[1] + dy, i0[2] + dz) * (dx ? t[0] : 1 - t[0]) * (dy ? t[1] : 1 - t[1]) * (dz ? t[2] : 1 - t[2]);
+  return v * Math.hypot(size.x, size.y, size.z);
+}
+function ltcbpSdfAt(sdf, p) {
+  if (!sdf) return null;
+  for (let i = 0; i < sdf.fineCount; i++) {
+    const mn = new THREE.Vector3(sdf.fineMin[i*3], sdf.fineMin[i*3+1], sdf.fineMin[i*3+2]), size = new THREE.Vector3(sdf.fineSize[i*3], sdf.fineSize[i*3+1], sdf.fineSize[i*3+2]);
+    if (p.x < mn.x || p.y < mn.y || p.z < mn.z || p.x > mn.x + size.x || p.y > mn.y + size.y || p.z > mn.z + size.z) continue;
+    const R = [sdf.fineRes[i*3], sdf.fineRes[i*3+1], sdf.fineRes[i*3+2]];
+    const d = ltcbpReadGrid(sdf.fineAtlasTexture.image.data, sdf.atlasW, sdf.fineBlockOrigin[i*2], sdf.fineBlockOrigin[i*2+1], R, sdf.fineTpr[i], mn, size, p);
+    return { d, edge: Math.max(size.x / R[0], size.y / R[1], size.z / R[2]), grid: 'fine' + i };
+  }
+  const c = sdf.coarse, size = c.boundsSize, mn = c.boundsMin;
+  if (p.x < mn.x || p.y < mn.y || p.z < mn.z || p.x > mn.x + size.x || p.y > mn.y + size.y || p.z > mn.z + size.z) return null;
+  const R = c.resXYZ;
+  return { d: ltcbpReadGrid(c.texture.image.data, c.texW, 0, 0, R, c.tilesPerRow, mn, size, p), edge: Math.max(size.x / R[0], size.y / R[1], size.z / R[2]), grid: 'coarse' };
+}
+function ltcbpPerf() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
+function ltcbpIdle(fn) {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout: 500 }); else setTimeout(fn, 0);
+}
+// Resolution check: probe the baked SDF right next to the exact surface (deterministic probes, <= LTCBP_PROBES) and measure the error in local
+// voxel units.  High error -> raise the resolution; persistently tiny error -> lower it.  Throttled to LTCBP_CHECK_MS per instance.
+// INCREMENTAL + TIME-BUDGETED: the probe pass is resumable.  Each call probes until its budget (opts.budgetMs, else state.ltcbpBudgetMs ?? 2 ms)
+// is used, then returns { pending: true }; the next call continues where it stopped.  The verdict is taken only when every probe is done.
+function ltcbpCheckResolution(inst, opts) {
+  opts = opts || {};
+  const st = ltcbpState(inst), now = ltcbpNow();
+  const budget = opts.budgetMs != null ? opts.budgetMs : (state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2);
+  const t0 = ltcbpPerf();
+  if (!st.pass) {
+    if (!opts.force && now - st.lastCheck < (state.ltcbpCheckMs != null ? state.ltcbpCheckMs : LTCBP_CHECK_MS)) return { skipped: 'throttled' };
+    if (!inst.sdf) return { skipped: 'no-sdf' };
+    if (st.job) return { skipped: 'rebuilding' };
+    const parts = (inst.parts || []).filter(p => p.type && p.meshes && p.meshes.length && !(p.melt && p.melt.full)).slice(0, 24);
+    if (!parts.length) return { skipped: 'no-parts' };
+    st.lastCheck = now; st.checks++;
+    st.pass = { parts, per: Math.max(2, Math.ceil(LTCBP_PROBES / parts.length)), idxs: null, pi: 0, k: 0, errs: [], tris: null, sdf: inst.sdf };
+  }
+  const ps = st.pass;
+  if (st.job || inst.sdf !== ps.sdf) { st.pass = null; return { skipped: 'rebuilding' }; }   // the SDF was swapped mid-pass: start over next time
+  const parts = ps.parts, per = ps.per, errs = ps.errs;
+  const pt = new THREE.Vector3(), n = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), g = new THREE.Vector3();
+  let steps = 0;
+  const over = () => steps > 0 && ltcbpPerf() - t0 >= budget;
+  while (ps.pi < parts.length) {
+    if (over()) { st.lastBudgetUsed = ltcbpPerf() - t0; return { pending: true, probesDone: errs.length }; }
+    if (!ps.idxs) { ps.idxs = parts.map(p => penIndexForPart(p)); steps++; continue; }
+    const part = parts[ps.pi];
+    if (!ps.tris) { ps.tris = worldTrianglesForPart(part); steps++; continue; }
+    const tris = ps.tris, nt = Math.floor(tris.length / 3), k = ps.k;
+    if (k >= per || !nt) { ps.pi++; ps.k = 0; ps.tris = null; continue; }
+    ps.k++; steps++;
+    const ti = Math.min(nt - 1, Math.floor((k + 0.5) * nt / per)) * 3, a = tris[ti], b = tris[ti + 1], c = tris[ti + 2];
+    n.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a)); if (n.lengthSq() < 1e-18) continue; n.normalize();
+    g.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    const probe0 = ltcbpSdfAt(inst.sdf, g); if (!probe0) continue;
+    pt.copy(g).addScaledVector(n, (k & 1 ? 0.5 : -0.5) * probe0.edge);          // half a voxel off the surface, alternating sides
+    const here = ltcbpSdfAt(inst.sdf, pt); if (!here) continue;
+    let exact = Infinity;
+    for (const ix of ps.idxs) { const d = signedDistanceToMesh(pt, ix); if (Math.abs(d) < Math.abs(exact)) exact = d; }
+    if (!isFinite(exact)) continue;
+    errs.push(Math.abs(here.d - exact) / here.edge);
+  }
+  st.pass = null; st.lastBudgetUsed = ltcbpPerf() - t0;
+  if (!errs.length) return { skipped: 'no-probes' };
+  errs.sort((x, y) => x - y);
+  const p90 = errs[Math.min(errs.length - 1, Math.floor(errs.length * 0.9))], max = errs[errs.length - 1];
+  const res = { probes: errs.length, p90, max, scale: st.scale, action: 'none' };
+  if (p90 > LTCBP_ERR_HI) {
+    st.lowStreak = 0;
+    if (st.sdfStale) { res.action = 'rebuild'; st.refineBlocked = false; st.lastRefine = null; }   // the geometry moved under the grid: same resolution, fresh bake
+    else if (st.lastRefine && p90 > st.lastRefine.p90 * 0.9) {     // the last refinement did not help (a sub-voxel feature such as a thin pipe, which the analytic
+      st.scale = st.lastRefine.scale; st.lastRefine = null; st.refineBlocked = true; res.action = 'revert';   // tubes / part regions own): go back, stop refining until the geometry changes
+    } else if (st.refineBlocked) res.action = 'blocked';
+    else if (st.scale < LTCBP_SCALE_MAX) { st.lastRefine = { p90, scale: st.scale }; st.scale = Math.min(LTCBP_SCALE_MAX, st.scale * 1.25); res.action = 'refine'; }
+    else res.action = 'at-max';
+  } else if (p90 < LTCBP_ERR_LO && st.scale > LTCBP_SCALE_MIN && !st.sdfStale) {
+    st.lastRefine = null;
+    if (++st.lowStreak >= 3) { st.scale = Math.max(LTCBP_SCALE_MIN, st.scale / 1.15); st.lowStreak = 0; res.action = 'coarsen'; }
+  } else st.lowStreak = 0;
+  res.newScale = st.scale;
+  st.history.push({ t: now, p90, max, action: res.action, scale: st.scale }); if (st.history.length > 24) st.history.shift();
+  if (!opts.noRebuild && (res.action === 'refine' || res.action === 'rebuild' || res.action === 'coarsen' || res.action === 'revert')) res.rebuild = rebuildInstanceSDF(inst, { reason: 'ltcbp-' + res.action });
+  return res;
+}
+function ltcbpAdapt(inst, opts) { return ltcbpCheckResolution(inst, opts); }
+// Called by booleanSyncInstance when an instance's collision body changed.  'deform' (animated geometry) always refreshes the SDF;
+// plain rigid edits only when state.ltcbpAuto === 'all' (the user re-bakes after dragging parts as before).
+function ltcbpOnChange(inst, kind, parts) {
+  if (!inst || !inst.sdf || inst.baking || state.ltcbpAuto === false) return false;
+  if (kind !== 'deform' && state.ltcbpAuto !== 'all') return false;
+  ltcbpState(inst).sdfStale = true;
+  rebuildInstanceSDF(inst, { reason: kind });
+  return true;
+}
+// Swap a freshly built SDF into the instance's live uniform objects (the particle + volumetric materials share them by reference).
+function ltcbpSwapSDF(inst, sdf) {
+  const old = inst.sdf, set = (inst.ctx && inst.ctx.sdfUniformSet) || state.sdfUniformSet;
+  inst.sdf = sdf; if (state.activeInstanceId === inst.id || inst.ctx === state || !inst.ctx) state.sdf = sdf;
+  let swapped = false;
+  if (set) {
+    const nu = makeSDFUniformSet(sdf);
+    for (const k of Object.keys(nu)) if (set[k] && set[k] !== nu[k]) set[k].value = nu[k].value;
+    swapped = true;
+  }
+  if (old && old !== sdf) { try { old.coarse.texture.dispose(); old.fineAtlasTexture.dispose(); } catch (e) { /* headless */ } }
+  return swapped;
+}
+// Rebuild one instance's collision SDF in the background (quiet: no loading overlay) at LTCBP's current resolution, then hot-swap it.
+// Throttled (>= LTCBP_REBUILD_MS between starts) and coalesced: calls during a build / wait share one follow-up build.
+// opts: { reason, immediate }.  Returns a Promise resolving to the new SDF (or null if it failed / nothing to build).
+function rebuildInstanceSDF(inst, opts) {
+  opts = opts || {};
+  const st = ltcbpState(inst);
+  if (st.job) { st.again = true; return st.job.promise; }
+  const ms = state.ltcbpRebuildMs != null ? state.ltcbpRebuildMs : LTCBP_REBUILD_MS;
+  const wait = opts.immediate ? 0 : Math.max(0, st.lastRebuild + ms - ltcbpNow());
+  let done; const promise = new Promise(r => { done = r; });
+  const job = st.job = { promise, reason: opts.reason || null };
+  const run = async () => {
+    let out = null;
+    try {
+      do {
+        st.again = false; st.lastRebuild = ltcbpNow();
+        await withInstanceAsync(inst, async () => {
+          const sdf = await buildCollisionSDF(inst.links || state.currentLinks, inst.parts, inst, { quiet: true, resScale: st.scale, sliceMs: state.ltcbpSliceMs != null ? state.ltcbpSliceMs : 2, now: state.ltcbpSliceNow, yieldFn: state.ltcbpSliceYield, sliceStats: st.sliceStats || (st.sliceStats = {}) });
+          if (!sdf) return;
+          ltcbpSwapSDF(inst, sdf); out = sdf;
+        });
+        st.sdfStale = false; st.rebuilds++; inst.sdfVersion = (inst.sdfVersion || 0) + 1;
+      } while (st.again);
+      try { window.dispatchEvent(new CustomEvent('arcflow:sdf-rebuilt', { detail: { inst, instId: inst.id, sdfVersion: inst.sdfVersion, scale: st.scale, reason: job.reason } })); } catch (e) { /* headless */ }
+    } catch (e) { console.error('rebuildInstanceSDF failed for ' + (inst && inst.name), e); out = null; }
+    finally { st.job = null; done(out); }
+  };
+  if (wait > 0) setTimeout(() => ltcbpIdle(run), wait); else ltcbpIdle(run);
+  return promise;
+}
+// Interval tick (hooked on the Boolean's autosync): adaptive-resolution checks while the sim runs.  ONE shared time budget per tick
+// (state.ltcbpBudgetMs, default 2 ms), round-robin over instances, so the watch never blocks a frame.
+let _ltcbpRR = 0;
+function ltcbpAutoTick() {
+  if (state.ltcbpAdaptive === false || !state.simRunning) return 0;
+  const list = (state.instances || []).filter(i => i.built && !i.baking && i.sdf);
+  if (!list.length) return 0;
+  const total = state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2, t0 = ltcbpPerf();
+  let n = 0;
+  for (let k = 0; k < list.length; k++) {
+    const left = total - (ltcbpPerf() - t0); if (k > 0 && left <= 0) break;
+    const idx = (_ltcbpRR + k) % list.length;
+    try { const r = ltcbpCheckResolution(list[idx], { budgetMs: Math.max(left, 0.25) }); if (!r.skipped) n++; if (r.pending) { _ltcbpRR = idx; return n; } } catch (e) { console.warn('ltcbp check', e); }
+  }
+  _ltcbpRR = (_ltcbpRR + 1) % list.length;
+  return n;
+}
+// ── Hooks for the deferred melt conversion (spec 22/25): data fields + format stub only; nothing here converts or melts anything. ──
+const MELT_POINT_K = { steel: 1700, stainless: 1673, titanium: 1941, al7075: 750, al2195: 830, copper: 1350, inconel: 1609, cfrp: 700, glass: 1100 };
+function partMelt(part) {       // per-part alloy: { id, label, densityKgM3, meltPointK }; part.meltPointK overrides the table
+  const id = (part && part.matId) || MAT_DEFAULT, m = MATERIALS[id] || MATERIALS[MAT_DEFAULT];
+  return { id, label: m[0], densityKgM3: (part && part.densityKgM3) || m[1], meltPointK: (part && part.meltPointK) || MELT_POINT_K[id] || null };
+}
+// Sparse voxel-grid format reserved for the melt payload (VG v1, instance-local frame, bricks of 8^3 voxels carrying density kg/m3).  Format only.
+const VG_BRICK = 8;
+const VG_FORMAT = { format: 'arcflow-voxelgrid', version: 1, brick: VG_BRICK, frame: 'instance-local', key: '(bx+512)+1024*((by+512)+1024*(bz+512))', brickIndex: 'x+8*(y+8*z)', value: 'density kg/m3 (0 = empty)', implemented: false };
+function vgKey(bx, by, bz) { return (bx + 512) + 1024 * ((by + 512) + 1024 * (bz + 512)); }
+function vgUnkey(k) { return [(k % 1024) - 512, (Math.floor(k / 1024) % 1024) - 512, Math.floor(k / 1048576) - 512]; }
+if (typeof window !== 'undefined') window.arcFlowWatch = { ltcbpResolution, ltcbpCheckResolution, ltcbpAdapt, rebuildInstanceSDF, ltcbpState, registerDeformHook, ltcbpSdfAt, ltcbpAutoTick, partMelt, VG_FORMAT, vgKey, vgUnkey };
+// <ltcbpwatch:end>
 
 // <instances:begin>
 // ── Instance registry (multi-instance step 2: registry + detection only; simulation behaviour is unchanged) ──
@@ -4386,7 +4627,7 @@ function adaptiveGridRes(size, h0, budget, minAxis, maxAxis) {
 // and reuses it for every voxel. Over-long triangles are virtually subdivided
 // first (see subdivideLargeTris) relative to THIS grid's voxel size.
 // opts.stats (optional) accumulates { virtualAdded, voxels }.
-function sampleSDFGrid(bounds, res, tris, opts) {
+function sdfGridPrep(bounds, res, tris, opts) {
   const R = Array.isArray(res) ? res : [res, res, res];
   const size = new THREE.Vector3(); bounds.getSize(size);
   size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
@@ -4416,20 +4657,35 @@ function sampleSDFGrid(bounds, res, tris, opts) {
   }
   if (opts && opts.stats) opts.stats.voxels += out.length;
   const index = buildTriangleSpatialIndex(work);
-  const p = new THREE.Vector3();
-  for (let z = 0; z < R[2]; z++) {
-    for (let y = 0; y < R[1]; y++) {
-      for (let x = 0; x < R[0]; x++) {
-        p.set(
-          bounds.min.x + (x + 0.5) / R[0] * size.x,
-          bounds.min.y + (y + 0.5) / R[1] * size.y,
-          bounds.min.z + (z + 0.5) / R[2] * size.z,
-        );
-        out[(z * R[1] + y) * R[0] + x] = signedDistanceToMesh(p, index) / diag;
-      }
-    }
+  return { R, size, diag, out, index, bounds };
+}
+// One z-row of the voxel fill (shared by the sync and the time-sliced fill).
+function sdfGridRow(g, y, z, p) {
+  const { R, size, diag, out, index, bounds } = g;
+  for (let x = 0; x < R[0]; x++) {
+    p.set(bounds.min.x + (x + 0.5) / R[0] * size.x, bounds.min.y + (y + 0.5) / R[1] * size.y, bounds.min.z + (z + 0.5) / R[2] * size.z);
+    out[(z * R[1] + y) * R[0] + x] = signedDistanceToMesh(p, index) / diag;
   }
-  return out;
+}
+function sampleSDFGrid(bounds, res, tris, opts) {
+  const g = sdfGridPrep(bounds, res, tris, opts), p = new THREE.Vector3();
+  for (let z = 0; z < g.R[2]; z++) for (let y = 0; y < g.R[1]; y++) sdfGridRow(g, y, z, p);
+  return g.out;
+}
+// Time-sliced fill for background rebuilds: holds the main thread for at most sliceMs (default 2) between yields.
+// opts.now / opts.yieldFn are test hooks; opts.sliceStats collects { slices, maxSliceMs }.
+async function sampleSDFGridAsync(bounds, res, tris, opts) {
+  const sliceMs = (opts && opts.sliceMs) || 2, now = (opts && opts.now) || (() => performance.now());
+  const yieldFn = (opts && opts.yieldFn) || (() => new Promise(r => setTimeout(r, 0)));
+  const g = sdfGridPrep(bounds, res, tris, opts), p = new THREE.Vector3();
+  let t0 = now(), slices = 1, maxMs = 0;
+  for (let z = 0; z < g.R[2]; z++) for (let y = 0; y < g.R[1]; y++) {
+    sdfGridRow(g, y, z, p);
+    const dt = now() - t0;
+    if (dt >= sliceMs) { if (dt > maxMs) maxMs = dt; await yieldFn(); t0 = now(); slices++; }
+  }
+  const ss = opts && opts.sliceStats; if (ss) { ss.slices = (ss.slices || 0) + slices; ss.maxSliceMs = Math.max(ss.maxSliceMs || 0, maxMs); }
+  return g.out;
 }
 
 // Tiled-2D-as-3D layout for an [rx,ry,rz] grid: each z-slice is an rx×ry
@@ -4458,7 +4714,7 @@ function buildSDFGrid(bounds, res, tris, opts) {
   const R = Array.isArray(res) ? res : [res, res, res];
   const size = new THREE.Vector3(); bounds.getSize(size);
   size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
-  const voxels = sampleSDFGrid(bounds, R, tris, opts);
+  const voxels = (opts && opts.voxels) || sampleSDFGrid(bounds, R, tris, opts);
   const lay = tiledLayout(R);
   const data = new Float32Array(lay.w * lay.h * 4);
   for (let i = 3; i < data.length; i += 4) data[i] = 1;
@@ -5111,7 +5367,13 @@ function collectPartRegions(classified) {
 // (union of every nearby triangle, same semantics as the coarse grid, just
 // finer). Regions have independent per-axis resolutions and are shelf-packed
 // into the atlas, so one extra sampler still carries everything.
-async function buildCollisionSDF(links, parts, inst) {
+async function buildCollisionSDF(links, parts, inst, opts) {
+  // opts (background rebuilds, spec 18): quiet = no loading overlay / rAF; resScale = LTCBP's resolution multiplier; sliceMs = time-sliced voxel fill.
+  const quiet = !!(opts && opts.quiet), SL = quiet ? () => {} : setLoading;
+  const tick = () => new Promise(r => quiet ? setTimeout(r, 0) : requestAnimationFrame(r));
+  const rs = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
+  const scaleRes = (res, cap) => rs === 1 ? res : res.map(v => Math.max(4, Math.min(cap, Math.round(v * rs))));
+  const sliceMs = (opts && opts.sliceMs) || 0, sliceOpts = sliceMs ? { sliceMs, now: opts.now, yieldFn: opts.yieldFn, sliceStats: opts.sliceStats } : null;
   const classified = (parts || state.parts).filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
   const tStart = performance.now();
@@ -5122,25 +5384,26 @@ async function buildCollisionSDF(links, parts, inst) {
   sceneBounds.expandByScalar(Math.max(sceneBounds.getSize(new THREE.Vector3()).length() * 0.02, 0.05));
 
   const allTris = collectWorldTriangles(classified);
-  setLoading(true, 'Building collision data… (coarse grid)');
-  await new Promise(requestAnimationFrame);
+  SL(true, 'Building collision data… (coarse grid)');
+  await tick();
   const sceneSize = sceneBounds.getSize(new THREE.Vector3());
   const coarseGeom = adaptiveGridRes(sceneSize, Math.cbrt(Math.max(sceneSize.x, 1e-3) * Math.max(sceneSize.y, 1e-3) * Math.max(sceneSize.z, 1e-3) / (SDF_COARSE_RES ** 3)),
                                      SDF_COARSE_RES ** 3 * 1.25, 6, SDF_COARSE_MAX_AXIS);
   const tCoarse = performance.now();
-  const coarse = buildSDFGrid(sceneBounds, coarseGeom.res, allTris, { stats });
+  const coarseRes = scaleRes(coarseGeom.res, SDF_COARSE_MAX_AXIS + 16);
+  const coarse = buildSDFGrid(sceneBounds, coarseRes, allTris, sliceMs ? { stats, voxels: await sampleSDFGridAsync(sceneBounds, coarseRes, allTris, Object.assign({ stats }, sliceOpts)) } : { stats });
   const coarseMs = performance.now() - tCoarse;
 
   // Thin channels: fit analytic bore tubes (cheap, no per-voxel mesh queries) BEFORE the joint boxes are sized so a joint
   // at a pipe end is scaled to the pipe's true bore, not the (larger) nominal port.
-  setLoading(true, 'Building collision data… (thin channels)');
-  await new Promise(requestAnimationFrame);
+  SL(true, 'Building collision data… (thin channels)');
+  await tick();
   const tubeSet = buildTubeSet(classified);
 
   const partRegions = collectPartRegions(classified);
   // per-instance: LTCBP regions cached in instance-local space and re-projected from the instance's world transform
   const jointRegions = inst ? instanceJointRegions(inst, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet) : collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet, classified);
-  const regions = jointRegions.concat(partRegions);
+  const regions = jointRegions.concat(partRegions).map(r => rs === 1 ? r : Object.assign({}, r, { res: scaleRes(r.res, 64) }));
   const fineCount = regions.length;
   const partStart = jointRegions.length;
 
@@ -5170,8 +5433,8 @@ async function buildCollisionSDF(links, parts, inst) {
 
   for (let i = 0; i < regions.length; i++) {
     const region = regions[i];
-    setLoading(true, `Building collision data… (${region.kind === 'part' ? 'part ' + (i - partStart + 1) + '/' + partRegions.length : 'joint ' + (i + 1) + '/' + jointRegions.length})`);
-    await new Promise(requestAnimationFrame);
+    SL(true, `Building collision data… (${region.kind === 'part' ? 'part ' + (i - partStart + 1) + '/' + partRegions.length : 'joint ' + (i + 1) + '/' + jointRegions.length})`);
+    await tick();
     const tRegion = performance.now();
     // Filter down to triangles actually near this region's (small, padded)
     // box before building a spatial index for them — a generous query-radius
@@ -5201,7 +5464,7 @@ async function buildCollisionSDF(links, parts, inst) {
     // the collision body tessellation follows the higher joint resolution.
     const bakeOpts = { stats, clipBox: queryBox };
     if (region.autoRefine) bakeOpts.booleanTight = true;
-    const voxels = sampleSDFGrid(region.box, region.res, localTris.length ? localTris : allLocalTris, bakeOpts);
+    const voxels = sliceMs ? await sampleSDFGridAsync(region.box, region.res, localTris.length ? localTris : allLocalTris, Object.assign(bakeOpts, sliceOpts)) : sampleSDFGrid(region.box, region.res, localTris.length ? localTris : allLocalTris, bakeOpts);
     const L = layouts[i], [originX, originY] = origins[i];
     writeTiledGrid(fineAtlasData, atlasW, originX, originY, region.res, L.tpr, voxels);
     const size = new THREE.Vector3(); region.box.getSize(size);

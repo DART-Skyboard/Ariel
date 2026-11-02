@@ -24,7 +24,7 @@ async function loadThree() {
     .map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) code += ex.fn(src, n) + '\n';
-  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.region(src, 'shellsys') + '\n' + ex.fn(src, 'partCentroid') + '\n' + ex.fn(src, 'instanceGroupingFromBoolean') + '\n' + ex.fn(src, 'instanceComponents') + '\n';
+  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.region(src, 'shellsys') + '\n' + ex.region(src, 'ltcbpwatch') + '\n' + ex.fn(src, 'partCentroid') + '\n' + ex.fn(src, 'instanceGroupingFromBoolean') + '\n' + ex.fn(src, 'instanceComponents') + '\n';
   const have = new Set(code.match(/^(?:const|let) (\w+)/gm).map(l => l.split(' ')[1]).concat(['_worldTriCache', '_penIndexCache']));
   for (let again = true; again;) {
     again = false;

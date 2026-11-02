@@ -8,25 +8,27 @@ async function loadThree() {
   for (const c of cands) if (fs.existsSync(c)) return await import(require('url').pathToFileURL(c).href);
   return null;
 }
-async function build({ regions = [], fns = [], lets = [], skip = [], globals = {}, exportNames = [] }) {
+async function build({ regions = [], fns = [], lets = [], skip = [], globals = {}, exportNames = [], patch = [] }) {
   const THREE = await loadThree(); if (!THREE) return null;
   const src = ex.load(), skipSet = new Set(skip);
   const ctx = Object.assign({ THREE, console, Math, Infinity, Float32Array, Float64Array, Int32Array, Uint8Array, Map, Set, WeakMap, Promise, setTimeout, clearTimeout, performance: { now: () => Date.now() }, state: { parts: [], instances: [] } }, globals);
   vm.createContext(ctx);
-  const have = new Set(), chunks = [];
+  const have = new Set(), chunks = [], constChunks = [];
   const add = (name, text) => { if (have.has(name)) return false; have.add(name); chunks.push(text); return true; };
   for (const r of regions) { const t = ex.region(src, r); chunks.push(t); for (const m of t.matchAll(/^(?:async )?function (\w+)\(/gm)) have.add(m[1]); for (const m of t.matchAll(/^(?:const|let|var|class) (\w+)/gm)) have.add(m[1]); }
   for (const n of fns) add(n, ex.fn(src, n));
-  for (const n of lets) { try { add(n, ex.constLine(src, n)); } catch (_) {} }
+  for (const n of lets) { try { const l = ex.constLine(src, n); if (!have.has(n)) { have.add(n); constChunks.push({ pos: src.indexOf(l), text: l }); } } catch (_) {} }
   const topFns = new Set([...src.matchAll(/^(?:async )?function (\w+)\(/gm)].map(m => m[1]));
   const consts = new Map([...src.matchAll(/^(?:const|let) (\w+) = [^\n]*;.*$/gm)].map(m => [m[1], m[0]]));
   for (let again = true; again;) {
     again = false;
-    const code = chunks.join('\n');
+    const code = chunks.join('\n') + constChunks.map(c => c.text).join('\n');
     for (const tok of new Set(code.match(/\b[A-Za-z_]\w*(?=\()/g) || [])) if (topFns.has(tok) && !have.has(tok) && !skipSet.has(tok)) { add(tok, ex.fn(src, tok)); again = true; }
-    for (const [n, line] of consts) if (!have.has(n) && !skipSet.has(n) && /^[A-Z_]\w*$|^_\w+$/.test(n) && new RegExp('\\b' + n + '\\b').test(code)) { add(n, line); again = true; }
+    for (const [n, line] of consts) if (!have.has(n) && !skipSet.has(n) && /^[A-Z_]\w*$|^_\w+$/.test(n) && new RegExp('\\b' + n + '\\b').test(code)) { have.add(n); constChunks.push({ pos: src.indexOf(line), text: line }); again = true; }
   }
-  const code = chunks.join('\n') + '\nthis.api = {' + exportNames.join(',') + '};';
+  let code = constChunks.sort((a, b) => a.pos - b.pos).map(c => c.text).join('\n') + '\n' + chunks.join('\n');
+  for (const [re, to] of patch) code = code.replace(re, to);
+  code += '\nthis.api = {' + exportNames.join(',') + '};';
   vm.runInContext(code, ctx);
   return { THREE, ctx, api: ctx.api, state: ctx.state, src, code };
 }
