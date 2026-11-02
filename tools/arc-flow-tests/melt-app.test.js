@@ -1,4 +1,4 @@
-// Melting app layer: region tessellation of a bell-nozzle chamber, per-instance state in mass.melt, throat hot spot, regen survives, uncooled melts + event.
+// Melting app layer: region tessellation of a bell-nozzle chamber, per-instance state in mass.wallHeat, throat hot spot, regen survives, uncooled melts + event.
 const vm = require('vm'), assert = require('assert'), path = require('path');
 const ex = require('./extract');
 const src = ex.load();
@@ -34,17 +34,17 @@ const src = ex.load();
     MAT_DEFAULT: 'al2195', unitM: () => 1, worldTrianglesForPart: () => tris,
     partWorldAABB: () => new THREE.Box3(new THREE.Vector3(-0.6, 0, -0.6), new THREE.Vector3(0.6, 3, 0.6)),
     openingLiveNormal: () => new THREE.Vector3(0, -1, 0), openingLiveCentroid: () => new THREE.Vector3(0, 0, 0),
-    matOf: () => ['x', 8190, 200, 1035, 11, 435, 0.6, 1300], partAlloy: p => g.meltAlloyFor(p.matId, p.custom), partWallM: () => 0.004, partRadiusM: () => 0.5, massPartPressure: () => 14.7,
+    matOf: () => ['x', 8190, 200, 1035, 11, 435, 0.6, 1300], partAlloy: p => g.wallAlloyFor(p.matId, p.custom), partWallM: () => 0.004, partRadiusM: () => 0.5, massPartPressure: () => 14.7,
     flameBB: () => [1, 0.5, 0.2], matBlockHtml: null, mass_: null,
   };
   vm.createContext(g);
-  vm.runInContext(ex.region(src, 'melt-model') + '\n' + ex.region(src, 'melt-app') + '\nthis.meltFrame = meltFrame; this.meltReset = meltReset; this.meltGlow = meltGlow;', g);
+  vm.runInContext(ex.region(src, 'melt-model') + '\n' + ex.region(src, 'melt-app') + '\nthis.wallFrame = wallFrame; this.wallReset = wallReset; this.wallGlow = wallGlow;', g);
   let n = 0; const t = (name, f) => { f(); n++; };
   const run = (secs, o) => {
-    g.meltReset(); events.length = 0; Object.assign(part, o);
-    perChamber.set(part, { melt: { Tc: 3500 * 1, pcPa: 1200 * 6894.757, gamma: 1.22 } });
-    for (let i = 0; i < secs * 20; i++) g.meltFrame(0.05, []);
-    return g.window.arcFlowMelt.regions(part);
+    g.wallReset(); events.length = 0; Object.assign(part, o);
+    perChamber.set(part, { wallGas: { Tc: 3500 * 1, pcPa: 1200 * 6894.757, gamma: 1.22 } });
+    for (let i = 0; i < secs * 20; i++) g.wallFrame(0.05, []);
+    return g.window.arcFlowWall.regions(part);
   };
   t('regions tessellate by axial band x azimuth with real areas; throat found at the narrowest band', () => {
     const r = run(1, { regen: undefined, film: undefined, purity: undefined });
@@ -59,7 +59,7 @@ const src = ex.load();
     const hot = r.reduce((a, x) => x.T > a.T ? x : a); if (process.env.V) console.log('hot', hot.a, hot.T, 'bands', [...new Set(r.map(x=>x.a))].length);
     assert(hot.a >= 5 && hot.a <= 8, 'hottest band ' + hot.a);       // the throat (y=1 of 0..3, band index ~ 14*(1/3 from the exit... = exit side)
     assert(hot.T > 700 && hot.T < 1533, 'throat T ' + hot.T);
-    assert(g.meltGlow(part).T === hot.T);
+    assert(g.wallGlow(part).T === hot.T);
   });
   t('uncooled chamber melts in seconds and fires arcflow:region-melt once per region with a world AABB', () => {
     const r = run(30, { regen: false });
@@ -67,20 +67,20 @@ const src = ex.load();
     assert(m.length > 5, 'melted ' + m.length);
     assert.strictEqual(events.length, m.length);
     const d = events[0].detail; assert.strictEqual(events[0].type, 'arcflow:region-melt');
-    assert(d.region.type === 'aabb' && d.region.min.length === 3 && d.temperature >= 1533 && d.alloy.Tm === 1533 && d.part === 'Ch');
+    assert(d.region.type === 'aabb' && d.region.min.length === 3 && d.temperature >= 1533 && d.alloy.Tm === 1533 && d.partName === 'Ch' && d.part.name === 'Ch');
   });
   t('higher propellant purity heats the wall (monotonic)', () => {
     const lo = run(40, { regen: undefined, purity: 0.9 }), hi = run(40, { regen: undefined, purity: 0.9 });
     const Tm = r => Math.max(...r.map(x => x.T));
     // purity acts in plumeChamberComb (Tc scale): model it here through the same scale on Tc
-    const mk = p => { g.meltReset(); perChamber.set(part, { melt: { Tc: 300 + (3500 - 300) * g.meltPurityScale(p), pcPa: 1200 * 6894.757, gamma: 1.22 } }); for (let i = 0; i < 800; i++) g.meltFrame(0.05, []); return Tm(g.window.arcFlowMelt.regions(part)); };
+    const mk = p => { g.wallReset(); perChamber.set(part, { wallGas: { Tc: 300 + (3500 - 300) * g.wallPurityScale(p), pcPa: 1200 * 6894.757, gamma: 1.22 } }); for (let i = 0; i < 800; i++) g.wallFrame(0.05, []); return Tm(g.window.arcFlowWall.regions(part)); };
     part.regen = undefined; assert(mk(0.9) < mk(0.98) && mk(0.98) < mk(1.0));
   });
   t('per-instance state: swapping `mass` swaps the melt state; geometry re-sample keeps temperatures', () => {
     run(10, { regen: undefined });
-    const a = g.mass.melt; assert(a && a.size === 1);
+    const a = g.mass.wallHeat; assert(a && a.size === 1);
     g.mass = { on: false, th: new Map() };
-    assert.strictEqual(g.window.arcFlowMelt.regions(part).length, 0);
+    assert.strictEqual(g.window.arcFlowWall.regions(part).length, 0);
   });
   console.log(n + ' melt-app tests passed');
 })().catch(e => { console.error(e); process.exit(1); });
