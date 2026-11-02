@@ -9915,14 +9915,11 @@ function plumeRebuildVolume(D, F) {
 // floor's heat-accumulation buffer with the SAME flame channels (R = tn x e, G = e, B = soot x e, A = chem x e). Nothing else heats the plane:
 // no particles landing = no glow. Called from renderFloorHeatPass while that target is bound.
 const FLOOR_SPLAT = { EK: 0.0035, PX: 11 };     // energy per particle splat, splat size (px of the 512^2 heat map)
-// HOOK (Arc Flow Instances): which plumes feed the ground. Today every chamber/clone writes into the one shared `plume` (each particle carries its own
-// world position, so all hot spots already land on the map at once). When per-instance plumes exist (inst.plume), they are splatted too, each at its own
-// impact positions, into the same heat map; nothing else is needed.
-function plumeFloorSources() {
-  const out = new Set(); out.add(plume);
-  for (const inst of state.instances || []) if (inst && inst.plume && inst.plume.fu) out.add(inst.plume);
-  return out;
-}
+// Which plumes feed the ground: Instances call renderFloorHeatPass(first, last) once per instance inside withInstance(inst, ...), where the module-level `plume`
+// IS that instance's plume, so each clone is splatted at its own impact positions into the one shared heat map (decay once on first, swap once on last): every
+// hot spot shows at once. HOOK for a plume that is not an instance's context plume: push it into FLOOR_EXTRA_PLUMES.
+const FLOOR_EXTRA_PLUMES = new Set();
+function plumeFloorSources() { const out = new Set([plume]); for (const P of FLOOR_EXTRA_PLUMES) out.add(P); return out; }
 // HAND-OFF to Solver's in-engine flow (pfs particles): the state a chamber's burning mass should take. `burn` 0 -> 1 is the ignition ramp (cold flow ->
 // instantly lit when chamberCombustion says the mixture/pressure/igniter allow it), `T` the reacting gas temperature [K] (feed T when unlit), `tn` the shared
 // flame-ramp coordinate (colour with flameEmission / flameBB so in-engine particles match the plume), `phi` the equivalence ratio. The hand-off to the plume
