@@ -658,6 +658,95 @@ function reactRate(fu, avail, tk, nbBurn, nbT) {
 }
 // <flame-model:end>
 
+// <melt-model:begin>
+// ── Melting model (pure maths, SI). Alloy table + per-region wall heat balance. No THREE / DOM here so tools/arc-flow-tests can run it.
+// Units: K, Pa, m, kg, s, W. Tm = solidus (onset of melting: the region has no strength above it), Tliq = liquidus.
+// Sources (typical wrought/handbook values): Inconel 718 solidus/liquidus 1260/1336 C, rho 8190 (Special Metals INCONEL 718 bulletin; ASM/MatWeb);
+// 2195 solidus/liquidus 550/660 C (MakeItFrom / NASA NTRS 19970003540: 543/643 C); 316L 1375-1400 C, Ti-6Al-4V 1604-1660 C, 7075 477-635 C,
+// CuCrZr 1075-1085 C, A516-70 low-carbon steel 1370-1530 C (ASM Handbook v1/v2 / MatWeb); molten viscosity: Iida & Guthrie, "The Physical
+// Properties of Liquid Metals"; IN718 from the Andon-Day fit (~5 mPa s at 1800 K). CFRP epoxy matrix: pyrolysis ~570-770 K (decomposes, no melt);
+// borosilicate 3.3: softening point 820 C (1093 K), viscosity 10^6.6 Pa s there (Schott Borofloat 33).
+const MELT_ALLOYS = {
+  steel:     { label: 'Steel A516-70',        Tm: 1643, Tliq: 1803, yieldMPa: 260,  rho: 7850, mu: 6.0e-3, kind: 'melt' },
+  stainless: { label: 'Stainless 316L',       Tm: 1648, Tliq: 1673, yieldMPa: 290,  rho: 8000, mu: 6.0e-3, kind: 'melt' },
+  titanium:  { label: 'Ti-6Al-4V',            Tm: 1877, Tliq: 1933, yieldMPa: 880,  rho: 4430, mu: 4.0e-3, kind: 'melt' },
+  al7075:    { label: 'Al 7075-T6',           Tm: 750,  Tliq: 908,  yieldMPa: 503,  rho: 2810, mu: 1.3e-3, kind: 'melt' },
+  al2195:    { label: 'Al-Li 2195',           Tm: 823,  Tliq: 933,  yieldMPa: 540,  rho: 2630, mu: 1.3e-3, kind: 'melt' },
+  copper:    { label: 'CuCrZr',               Tm: 1348, Tliq: 1358, yieldMPa: 380,  rho: 8900, mu: 4.0e-3, kind: 'melt' },
+  inconel:   { label: 'Inconel 718',          Tm: 1533, Tliq: 1609, yieldMPa: 1035, rho: 8190, mu: 5.0e-3, kind: 'melt' },
+  cfrp:      { label: 'CFRP (epoxy matrix)',  Tm: 570,  Tliq: 770,  yieldMPa: 1500, rho: 1600, mu: null,   kind: 'decomp' },
+  glass:     { label: 'Borosilicate glass',   Tm: 1093, Tliq: 1500, yieldMPa: 50,   rho: 2230, mu: 4.0e6,  kind: 'soften' }
+};
+const MELT_CUSTOM_DEFAULT = { Tm: 1500, Tliq: 1550, yieldMPa: 300, rho: 7800, mu: 6.0e-3, kind: 'melt' };
+// User alloy for an imported part: any subset of {Tm, Tliq, yieldMPa, rho, mu} (K, MPa, kg/m3, Pa s).
+function meltAlloyFor(matId, custom) {
+  if (matId === 'custom') {
+    const c = Object.assign({}, MELT_CUSTOM_DEFAULT, custom || {}, { label: 'Custom alloy' });
+    if (!(c.Tliq >= c.Tm)) c.Tliq = c.Tm;
+    return c;
+  }
+  return MELT_ALLOYS[matId] || MELT_ALLOYS.al2195;
+}
+const MELT = {
+  SIGMA: 5.670374e-8, T_AMB: 288, R_REC: 0.9,        // recovery factor ~ Pr^(1/3)
+  HG_REF: 1.0e4, PC_REF: 7e6, DT_REF: 0.1,           // W/m2K gas-side film coefficient at the throat of a 7 MPa, 0.1 m dia. engine (Bartz scaling: pc^0.8 Dt^-0.2 (At/A)^0.9)
+  H_COOL: 1.0e5, T_COOL: 300, LINER_M: 0.6e-3,       // regenerative jacket: coolant side h, coolant temperature, hot-liner gauge
+  FILM_ETA: 0.25,                                    // film / boundary-layer cooling: fraction of (Taw - T_COOL) removed (typical 0.1-0.3)
+  H_EXT: 10,                                         // natural convection to ambient air at 1 atm (scaled by sqrt(p/1 atm)); none in vacuum
+  QP_REF: 2.0e5,                                     // W/m2 plastic-work heating at s = 1 (pressure loading): QP_REF * max(s-0.8,0)^2 / 0.04
+  PURITY_REF: 0.98, PURITY_K: 12,                    // flame temperature rise scales 1 + K (purity - REF): cleaner propellant burns hotter
+  NA: 14, NB: 8                                      // axial x azimuth regions per part
+};
+function meltPurityScale(p) { return p == null ? 1 : Math.max(0.3, 1 + MELT.PURITY_K * (Math.min(Math.max(p, 0), 1) - MELT.PURITY_REF)); }
+// strength retained at temperature T (1 at <= 0.45 Tm, 0 at Tm), typical superalloy/Al knock-down
+function meltYieldDerate(T, Tm) { return Math.min(Math.max((Tm - T) / (0.55 * Tm), 0), 1); }
+function meltAreaRatio(M, g) { const a = (g - 1) / 2; return (1 / M) * Math.pow((1 + a * M * M) / (1 + a), (g + 1) / (2 * (g - 1))); }
+function meltMach(ar, g, supersonic) {
+  if (!(ar > 1)) return 1;
+  let lo = supersonic ? 1 : 0.01, hi = supersonic ? 20 : 1;
+  for (let i = 0; i < 50; i++) { const m = 0.5 * (lo + hi), a = meltAreaRatio(m, g); if (supersonic ? a < ar : a > ar) lo = m; else hi = m; }
+  return 0.5 * (lo + hi);
+}
+// Gas-side adiabatic wall temperature and film coefficient of a band at area ratio ar = A/At (>=1)
+function meltGasSide(o) {
+  const M = meltMach(o.ar, o.gamma, !!o.supersonic), g = o.gamma, q = 0.5 * (g - 1) * M * M;
+  const Tst = o.Tc / (1 + q), Taw = Tst * (1 + MELT.R_REC * q);
+  const hg = MELT.HG_REF * Math.pow(Math.max(o.pcPa, 1) / MELT.PC_REF, 0.8) * Math.pow(MELT.DT_REF / Math.max(o.Dt, 1e-3), 0.2) * Math.pow(1 / Math.max(o.ar, 1), 0.9);
+  const Tf = MELT.T_COOL, eta = o.film == null ? 0 : o.film;
+  return { M, Taw: Tf + (Taw - Tf) * (1 - eta), hg };
+}
+// Advance one part's regions. S = {n, T:Float32Array, s:Float32Array, melted:Uint8Array, q:Float32Array, lat:[[idx..]]}, E = environment per region:
+//   E.Tg[i] (K gas-side adiabatic wall), E.hg[i], E.L2[i] (lateral pitch^2, m2), E.nb[i] (neighbour indices), E.alloy, E.k, E.cp, E.t (hot-liner gauge, m), E.tStruct (structural wall for hoop stress, m), E.eps,
+//   E.paPa (ambient), E.dPPa (internal gauge pressure), E.r (m), E.cooled (bool), E.Tcool, E.hCool. Returns number of newly melted regions via cb(i).
+function meltStepPart(S, E, dt, cb) {
+  const A = E.alloy, n = S.n, sg = MELT.SIGMA, Ta = E.Tamb == null ? MELT.T_AMB : E.Tamb;
+  const C = A.rho * E.cp * E.t, hExt = MELT.H_EXT * Math.sqrt(Math.max(E.paPa, 0) / 101325);
+  const U = E.cooled ? 1 / (1 / E.hCool + E.t / E.k) : 0;
+  const ks = E.k * E.t;
+  const sigH = E.dPPa * E.r / Math.max(E.tStruct || E.t, 1e-6);                 // hoop stress, Pa
+  let left = dt, guard = 0;
+  while (left > 1e-9 && guard++ < 60) {
+    // stable sub-step from the stiffest loss rate
+    let rmax = 1e-9;
+    for (let i = 0; i < n; i++) { const T = S.T[i]; rmax = Math.max(rmax, (E.hg[i] + U + hExt + 4 * E.eps * sg * T * T * T + 4 * ks / E.L2[i]) / C); }
+    const h = Math.min(left, 0.4 / rmax); left -= h;
+    const Tn = S.T.slice ? S.T.slice() : Array.from(S.T);
+    for (let i = 0; i < n; i++) {
+      const T = Tn[i];
+      const Ts = E.cooled ? E.Tcool + 0.1 * (T - E.Tcool) : T;                // load-bearing shell temperature (the regen jacket stays cold)
+      const yld = A.yieldMPa * 1e6 * meltYieldDerate(Ts, A.Tm);
+      const s = yld > 0 ? sigH / yld : 9; S.s[i] = Math.min(s, 9);
+      let q = E.hg[i] * (E.Tg[i] - T) - U * (T - E.Tcool) - E.eps * sg * (T * T * T * T - Ta * Ta * Ta * Ta) - hExt * (T - Ta);
+      if (s > 0.8 && T < A.Tm) { const e = Math.min(s, 2) - 0.8; q += MELT.QP_REF * e * e / 0.04; }   // plastic-work heating from pressure loading
+      for (const j of E.nb[i]) q += ks * (Tn[j] - T) / E.L2[i];       // conduction between regions (W/m2 for a plate of gauge t)
+      S.q[i] = E.hg[i] * (E.Tg[i] - T);
+      S.T[i] = Math.min(Math.max(T + q / C * h, 100), 6000);
+      if (!S.melted[i] && S.T[i] >= A.Tm) { S.melted[i] = 1; if (cb) cb(i); }
+    }
+  }
+}
+// <melt-model:end>
+
 const DEMO_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/CombustionChamber.glb";
 const DEMO2_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/aj10cquick.glb";
 const DEMO2_PRESET_URL = "https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/models/aj10cquick-preset.json";
@@ -1944,12 +2033,18 @@ function wireDetailEvents(part) {
   if (f('f_contents')) f('f_contents').onchange = e => part.contents = e.target.value;
   const matRefresh = () => {
     const st = massStress(part, 288, Math.max(parseFloat(atmoPsiEl.value) || 0, 0)), pr = f('f_matprops'), sx = f('f_stress');
-    if (pr) pr.innerHTML = matPropsText(matOf(part));
+    if (pr) pr.innerHTML = matPropsText(matOf(part), part);
     if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${uLen(partRadiusM(part))} · t ${uLenSmall(partWallM(part))} · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.thick ? '<br><span style="color:#ffc861">t/r &gt; ' + THICK_WALL_T_OVER_R + ': thick-wall vessel — thin-wall stress is approximate.</span>' : '') + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
     if (mass.on && mass.th.get(part)) mass.th.get(part).Tw = Math.min(mass.th.get(part).Tw, 6000);
     updatePartThermalTint(state.currentLinks);
   };
-  if (f('f_matid')) { f('f_matid').onchange = e => { applyMaterial(part, e.target.value); matRefresh(); }; matRefresh(); }
+  if (f('f_matid')) { f('f_matid').onchange = e => { applyMaterial(part, e.target.value); if (typeof meltReset === 'function') meltReset(part); renderPartDetail(); matRefresh(); }; matRefresh(); }
+  for (const [ck, , clo, chi] of CUSTOM_FIELDS) if (f('f_cm_' + ck)) f('f_cm_' + ck).oninput = e => {
+    const v = parseFloat(e.target.value); if (!(v >= clo && v <= chi)) return;
+    part.custom = customAlloy(part); part.custom[ck] = v; if (ck === 'rho') part.densityKgM3 = v;
+    if (part.custom.Tliq < part.custom.Tm) part.custom.Tliq = part.custom.Tm;
+    if (typeof meltReset === 'function') meltReset(part); matRefresh();
+  };
   if (f('f_wall')) f('f_wall').oninput = e => { part.wallMm = Math.max(0, parseFloat(e.target.value) || 0); matRefresh(); };
   if (f('f_mass')) f('f_mass').oninput = e => {
     part.massKg = parseFloat(e.target.value) || 0;
@@ -8535,12 +8630,21 @@ const MATERIALS = {
   inconel:   ['Inconel 718 (chamber/nozzle superalloy)',    8190, 200, 1035, 11.4, 435, 0.70, 1200],
   cfrp:      ['Carbon-fibre composite (COPV)',              1600, 140, 1500,   5, 800, 0.85,  450],
   glass:     ['Borosilicate glass',                         2230,  64,   50, 1.1, 830, 0.90,  750],
+  custom:    ['Custom alloy (enter your own values)',       7800, 200,  300,  20, 500, 0.60, 1200],   // placeholder row: the real values live on part.custom (see matOf)
 };
 const MAT_DEFAULT = 'al2195';
-function matOf(part) { return MATERIALS[part.matId] || MATERIALS[MAT_DEFAULT]; }
+// Custom alloy for an imported part: part.custom = { Tm, Tliq (K), yieldMPa, rho (kg/m3), mu (Pa s), E (GPa), k (W/m K), cp (J/kg K), eps }.
+const CUSTOM_ALLOY_DEFAULT = { Tm: 1500, Tliq: 1550, yieldMPa: 300, rho: 7800, mu: 6.0e-3, E: 200, k: 20, cp: 500, eps: 0.6 };
+function customAlloy(part) { return Object.assign({}, CUSTOM_ALLOY_DEFAULT, part.custom || {}); }
+function matOf(part) {
+  if (part.matId === 'custom') { const c = customAlloy(part); return ['Custom alloy', c.rho, c.E, c.yieldMPa, c.k, c.cp, c.eps, Math.round(0.8 * c.Tm)]; }
+  return MATERIALS[part.matId] || MATERIALS[MAT_DEFAULT];
+}
+function partAlloy(part) { return meltAlloyFor(part.matId || MAT_DEFAULT, part.matId === 'custom' ? customAlloy(part) : null); }
 function applyMaterial(part, id) {
   if (!MATERIALS[id]) return false;
   part.matId = id; part.material = MATERIALS[id][0]; part.densityKgM3 = MATERIALS[id][1];
+  if (id === 'custom') { part.custom = customAlloy(part); part.densityKgM3 = part.custom.rho; }
   return true;
 }
 function matOptionsHtml(part) {
@@ -8552,11 +8656,21 @@ function matBlockHtml(part) {
     <select id="f_matid">${matOptionsHtml(part)}</select>
     <label class="field">Wall thickness (mm, 0 = auto)</label>
     <input type="number" id="f_wall" value="${part.wallMm || 0}" min="0" step="0.5">
-    <div class="readout" id="f_matprops" style="font-size:10px;line-height:1.5">${matPropsText(m)}</div>
+    ${part.matId === 'custom' ? customAlloyHtml(part) : ''}
+    <div class="readout" id="f_matprops" style="font-size:10px;line-height:1.5">${matPropsText(m, part)}</div>
     <div class="readout" id="f_stress" style="font-size:11px;line-height:1.5"></div>`;
 }
-function matPropsText(m) {
-  return `ρ ${m[1]} kg/m³ · E ${m[2]} GPa · yield ${m[3]} MPa<br>k ${m[4]} W/m·K · cp ${m[5]} J/kg·K · ε ${m[6]} · max ${m[7]} K`;
+function matPropsText(m, part) {
+  let t = `ρ ${m[1]} kg/m³ · E ${m[2]} GPa · yield ${m[3]} MPa<br>k ${m[4]} W/m·K · cp ${m[5]} J/kg·K · ε ${m[6]} · max ${m[7]} K`;
+  if (part) { const a = partAlloy(part), lbl = a.kind === 'decomp' ? 'decomposes' : a.kind === 'soften' ? 'softens' : 'melts'; t += `<br>${lbl} ${a.Tm}${a.Tliq > a.Tm ? '–' + a.Tliq : ''} K` + (a.mu != null ? ` · molten μ ${a.mu >= 1 ? a.mu.toExponential(1) : (a.mu * 1000).toFixed(1) + ' m'}Pa·s` : ''); }
+  return t;
+}
+const CUSTOM_FIELDS = [['Tm', 'Melting point / solidus (K)', 300, 6000, 10], ['Tliq', 'Liquidus (K, ≥ solidus)', 300, 6000, 10], ['yieldMPa', 'Yield strength (MPa)', 1, 5000, 10],
+  ['rho', 'Density (kg/m³)', 100, 25000, 10], ['mu', 'Molten viscosity (Pa·s)', 1e-5, 1e8, 'any'], ['E', 'Young’s modulus (GPa)', 1, 700, 1], ['k', 'Conductivity (W/m·K)', 0.1, 500, 'any'], ['cp', 'Specific heat (J/kg·K)', 100, 5000, 10], ['eps', 'Emissivity (0–1)', 0, 1, 0.05]];
+function customAlloyHtml(part) {
+  const c = customAlloy(part);
+  return `<div class="readout" style="font-size:10px;line-height:1.4">Custom alloy for this part (SI units):</div>` + CUSTOM_FIELDS.map(([k, l, lo, hi, st]) =>
+    `<label class="field">${l}</label><input type="number" id="f_cm_${k}" value="${c[k]}" min="${lo}" max="${hi}" step="${st}">`).join('');
 }
 function partRadiusM(part) {
   const b = partWorldAABB(part), s = b.getSize(new THREE.Vector3());
@@ -10699,7 +10813,7 @@ function presetPartSettings(part) {
   for (const q of state.parts) if (q !== part && state.forcedSeals && state.forcedSeals.has(part.name + '|' + q.name)) { presetPartSig(q); sealTo.push(q._presetKey); }
   const p = part.pivot;
   return {
-    type: part.type || null, contents: part.contents, material: part.material, matId: part.matId || MAT_DEFAULT, wallMm: _prnd(part.wallMm || 0), massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
+    type: part.type || null, contents: part.contents, material: part.material, matId: part.matId || MAT_DEFAULT, matCustom: part.matId === 'custom' ? customAlloy(part) : undefined, wallMm: _prnd(part.wallMm || 0), massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
     internalPsi: part.internalPsi == null ? null : _prnd(part.internalPsi), densityKgM3: _prnd(part.densityKgM3 || 0),
     transform: { position: [p.position.x, p.position.y, p.position.z].map(v => _prnd(v, 6)), quaternion: [p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w].map(v => _prnd(v, 6)), scale: [p.scale.x, p.scale.y, p.scale.z].map(v => _prnd(v, 6)) },
     hiddenMeshes: part.meshes.map((m, i) => (m.userData.nozzleCover && !m.visible) ? i : -1).filter(i => i >= 0),
@@ -10852,7 +10966,13 @@ async function presetApplyPart(part, s, warns) {
   if (s.type === null || PRESET_TYPES.includes(s.type)) part.type = s.type; else if (s.type !== undefined) warns.push(tag + 'unknown type "' + String(s.type).slice(0, 30) + '"');
   if (PRESET_CONTENTS.includes(s.contents)) part.contents = s.contents; else if (s.contents !== undefined) warns.push(tag + 'unknown contents');
   if (typeof s.material === 'string') part.material = s.material.slice(0, 200);
-  if (typeof s.matId === 'string' && MATERIALS[s.matId]) { applyMaterial(part, s.matId); if (s.material) part.material = String(s.material).slice(0, 200); }
+  if (typeof s.matId === 'string' && MATERIALS[s.matId]) {
+    if (s.matId === 'custom' && s.matCustom && typeof s.matCustom === 'object') {
+      const cu = {}; for (const [k, , lo, hi] of CUSTOM_FIELDS) { const x = _pnum(s.matCustom[k], lo, hi); if (x != null) cu[k] = x; }
+      part.custom = Object.assign({}, CUSTOM_ALLOY_DEFAULT, cu);
+    }
+    applyMaterial(part, s.matId); if (s.material) part.material = String(s.material).slice(0, 200);
+  }
   let v;
   if ((v = _pnum(s.wallMm, 0, 1e4)) != null) part.wallMm = v;
   if ((v = _pnum(s.massKg, 0, 1e9)) != null) part.massKg = v;
