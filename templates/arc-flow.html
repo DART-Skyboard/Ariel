@@ -3164,9 +3164,79 @@ async function buildInstanceNow(inst) {
       applySupplyLink(inst, root && root.built ? root : null);
       inst.built = !!state.particleCPU;
     });
-  } finally { inst.baking = false; }
+  } finally { inst.baking = false; if (inst.removed) { try { teardownInstanceResources(inst); } catch (e) { console.error(e); } } }
+  if (inst.removed) return inst;
   if (inst.built && state.simRunning) startInstanceSim(inst);
   return inst;
+}
+// ── Delete one clone (axe on its spawn card) ──
+// Every GPU object a context owns (textures / geometries / materials / render targets / Object3Ds), found by walking the context.
+function ctxResources(c) {
+  const out = { tex: new Set(), geo: new Set(), mat: new Set(), rt: new Set(), obj: new Set() }, seen = new Set();
+  const visit = (v, d) => {
+    if (!v || typeof v !== 'object' || d > 6 || seen.has(v)) return;
+    if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || v instanceof Set) return;
+    seen.add(v);
+    if (v.isTexture) { out.tex.add(v); return; }
+    if (v.isBufferGeometry) { out.geo.add(v); return; }
+    if (v.isWebGLRenderTarget) { out.rt.add(v); visit(v.texture, d + 1); return; }
+    if (v.isMaterial) { out.mat.add(v); if (v.uniforms) visit(v.uniforms, d + 1); visit(v.map, d + 1); return; }
+    if (v.isObject3D) { out.obj.add(v); visit(v.geometry, d + 1); visit(v.material, d + 1); return; }
+    if (v.pivot && v.meshes) return;   // a Part: scene data, never a GPU resource of a context
+    if (v instanceof Map) { for (const x of v.values()) visit(x, d + 1); return; }
+    if (Array.isArray(v)) { for (const x of v) visit(x, d + 1); return; }
+    for (const k in v) { let x; try { x = v[k]; } catch (e) { continue; } visit(x, d + 1); }
+  };
+  if (c) for (const k in c) visit(c[k], 0);
+  return out;
+}
+function teardownInstanceResources(inst) {
+  if (!inst.ctx && inst !== _ctxCur) { inst.ctx = null; return { tex: 0, geo: 0, mat: 0, rt: 0, obj: 0 }; }
+  if (_ctxDepth > 0) throw new Error('teardown inside a context swap');
+  if (_ctxCur === inst) {   // move the legacy-global alias off it first
+    inst.ctx = ctxCapture();
+    const next = state.instances.find(o => o !== inst && o.ctx);
+    if (next) { ctxApply(next.ctx); _ctxCur = next; } else { ctxApply(_ctxBase); _ctxCur = null; }
+  }
+  const mine = ctxResources(inst.ctx), keep = { tex: new Set(), geo: new Set(), mat: new Set(), rt: new Set(), obj: new Set() };
+  const others = state.instances.filter(o => o !== inst).map(o => ctxView(o)).concat([_ctxCur ? _ctxBase : ctxCapture()]);
+  for (const oc of others) { const r = ctxResources(oc); for (const k in keep) for (const x of r[k]) keep[k].add(x); }
+  const n = { tex: 0, geo: 0, mat: 0, rt: 0, obj: 0 };
+  for (const o of mine.obj) { if (o.parent) o.parent.remove(o); o.visible = false; n.obj++; }
+  for (const k of ['rt', 'mat', 'geo', 'tex']) for (const x of mine[k]) if (!keep[k].has(x)) { try { x.dispose(); n[k]++; } catch (e) {} }
+  inst.ctx = null;
+  return n;
+}
+function removeCloneInstance(group) {
+  if (!group || !state.root || group.parent !== state.root) return null;
+  const parts = assemblyParts(group);
+  if (!parts.length || !parts.every(p => p.cloneOf)) return null;     // never the original
+  const inst = state.instances.find(i => i.root === group) || null;
+  const before = renderer.info.memory ? { geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures } : null;
+  const pset = new Set(parts);
+  if (inst) {
+    inst.active = false; inst.built = false; inst.removed = true;
+    state.instances = state.instances.filter(i => i !== inst);     // out of the frame loop + Boolean sync (booleanSyncAll walks state.instances)
+    if (state.activeInstanceId === inst.id) state.activeInstanceId = state.instances.length ? state.instances[0].id : null;
+    inst.solver = null; inst.ltcbp = []; inst.booleanState = null; inst.sdf = null; inst.flowNodes = null;
+    if (!inst.baking) teardownInstanceResources(inst);             // a bake in flight finishes into a dead context and is torn down in its finally
+  }
+  // scene data
+  group.traverse(o => { if (o.isMesh && o.material) for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.dispose(); });   // cloned materials only; geometry is shared with the original
+  if (group.parent) group.parent.remove(group);
+  state.parts = state.parts.filter(p => !pset.has(p));
+  if (state.selectedPart && pset.has(state.selectedPart)) state.selectedPart = null;
+  if (state.currentLinks) { for (const p of parts) state.currentLinks.delete(p); for (const [p, v] of [...state.currentLinks]) { if (Array.isArray(v)) { const k = v.filter(l => !pset.has(l.target)); if (k.length !== v.length) state.currentLinks.set(p, k); } else if (pset.has(v.target)) state.currentLinks.delete(p); } }
+  const dropJ = a => (a || []).filter(j => !(pset.has(j.partA) || pset.has(j.partB)));
+  state.autoPenetrationSealed = dropJ(state.autoPenetrationSealed); state.autoPenetrationRejected = dropJ(state.autoPenetrationRejected); state.autoPenetrationSkipped = dropJ(state.autoPenetrationSkipped);
+  if (state.assets) { for (const a of state.assets) if (a.parts) a.parts = a.parts.filter(p => !pset.has(p)); state.assets = state.assets.filter(a => !a.parts || a.parts.length); presetRefreshScope(); }
+  if (group.userData.spawnRow) { group.userData.spawnRow.remove(); group.userData.spawnRow = null; }
+  if (inst) { inst.parts = []; inst.links = new Map(); }
+  const act = getActiveInstance(); if (act && act.ctx && !act.baking) ctxAlias(act);
+  if (!state.simRunning) { layoutSpawns(); invalidateInstances('links'); }   // mid-run: nothing that is simulating is moved
+  buildPartListUI();
+  const after = renderer.info.memory ? { geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures } : null;
+  return { instance: !!inst, parts: parts.length, before, after };
 }
 // Add one clone of `srcGroup`. Before a run it only adds the parts (Simulate detects + bakes every instance). During a run it ALSO
 // builds the clone's flow graph, creates its Instance, builds it (shared or own) and starts it, leaving every running instance alone.
@@ -5694,7 +5764,7 @@ async function bakeInstanceCore(inst, links) {
   state.sdf = collisionSDF; inst.sdf = collisionSDF;
   if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
   state.pathMeta = new Map();
-  setTimeout(() => withInstance(inst, () => { try { diagnoseLinks(); if (inst.id === state.activeInstanceId) renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }), 0);
+  setTimeout(() => !inst.removed && withInstance(inst, () => { try { diagnoseLinks(); if (inst.id === state.activeInstanceId) renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }), 0);
   state.channelFlows = computeChannelFlows(); // bore areas -> continuity / Bernoulli / Darcy-Weisbach per fitted channel
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
@@ -9072,6 +9142,14 @@ function labelSpawn(kind, n, group) {
     try { await spawnApplyPresetToGroup(group); } catch (e) { console.warn('preset on toggle', e); }
   };
   row.appendChild(cb); row.appendChild(lab);
+  if (group && group.userData && group.userData.cloneOfGroup) {   // real clones can be removed one by one
+    const axe = document.createElement('button');
+    axe.className = 'spawn-axe'; axe.textContent = '\u{1FA93}'; axe.title = 'Delete this clone (the others keep running)';
+    axe.style.cssText = 'margin-left:auto;background:none;border:1px solid var(--bd,#345);border-radius:4px;cursor:pointer;padding:0 5px;color:inherit;';
+    axe.onclick = () => { try { removeCloneInstance(group); } catch (e) { console.error('delete clone', e); alert('Delete failed: ' + e.message); } };
+    row.appendChild(axe);
+  }
+  if (group) group.userData.spawnRow = row;
   el.appendChild(row);
   return cb;
 }
@@ -10249,7 +10327,7 @@ window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: 
   partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances, withInstance, ctxView, ctxAlias, ctxEach, cloneAssemblyParts, addCloneInstance, buildInstanceNow, instanceShareRoot };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances, withInstance, ctxView, ctxAlias, ctxEach, cloneAssemblyParts, addCloneInstance, removeCloneInstance, renderer: () => renderer, buildInstanceNow, instanceShareRoot };
 Object.defineProperties(window.arcFlow, { live: { get: () => live, enumerable: true }, plume: { get: () => plume, enumerable: true }, follow: { get: () => follow, enumerable: true } });
 
 // Preload the demo project automatically on page open — no click required.

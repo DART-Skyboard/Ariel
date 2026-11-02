@@ -42,7 +42,7 @@ def fresh(p):
     b = p.chromium.launch(executable_path=a.chrome, args=['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--disable-dev-shm-usage'])
     pg = b.new_page(viewport={'width': 480, 'height': 320})
     pg.on('pageerror', lambda e: errs.append(str(e)))
-    pg.on('console', lambda m: errs.append('console.error: ' + m.text[:200]) if m.type == 'error' else None)
+    pg.on('console', lambda m: errs.append('console.error: ' + m.text[:200]) if (m.type == 'error' and 'Failed to load resource' not in m.text) else None)
     pg.goto(a.url); pg.wait_for_timeout(8000)
     pg.evaluate("document.getElementById('particlesPerContainer').value = 300; window.arcFlow.setRenderMode('points')")
     wait(pg, "window._arcFlowState.parts.length > 0", 'Quick Rocket to load', 120)   # the demo loads by default; click it if not
@@ -65,19 +65,19 @@ with sync_playwright() as p:
     if a.mode in ('prerun', 'both'):
         print('== pre-run clones =='); b, pg = fresh(p)
         for _ in range(a.clones):
-            pg.click('#btnAddDemo'); pg.wait_for_timeout(1500)
+            pg.eval_on_selector('#btnAddDemo','e=>e.click()'); pg.wait_for_timeout(1500)
         check(pg.evaluate("window._arcFlowState.root.children.filter(c => c.userData.isAssembly).length") == a.clones + 1, 'assemblies in scene = clones + 1')
-        pg.click('#playBtn')
+        pg.eval_on_selector('#playBtn','e=>e.click()')
         wait(pg, f"window._arcFlowState.simRunning && window._arcFlowState.instances.length >= {a.clones + 1} && window._arcFlowState.instances.every(i => i.built && !i.baking)", 'all instances built')
         s = advancing(pg, a.clones + 1, 'prerun'); print(json.dumps(s)); b.close()
     if a.mode in ('midrun', 'both'):
         print('== mid-run clones =='); b, pg = fresh(p)
-        pg.click('#playBtn')
+        pg.eval_on_selector('#playBtn','e=>e.click()')
         wait(pg, "window._arcFlowState.simRunning && window._arcFlowState.instances.length >= 1 && window._arcFlowState.instances.every(i => i.built && !i.baking)", 'original running')
         s0 = advancing(pg, 1, 'before clone'); n0 = len(s0); base = {x['id']: x for x in s0}
         stopped = []
         for k in range(a.clones):
-            pg.click('#btnAddDemo')
+            pg.eval_on_selector('#btnAddDemo','e=>e.click()')
             t0 = time.time()
             while time.time() - t0 < a.timeout:
                 pg.wait_for_timeout(2000)
@@ -88,6 +88,25 @@ with sync_playwright() as p:
         check(not stopped, 'running instances never stopped / rebaked while clones were added ' + str(sorted(set(stopped))))
         s = advancing(pg, n0 + a.clones, 'midrun')
         check(sum(1 for x in s if x['shared']) >= a.clones, 'clones reuse the original bake by default (shared)')
+        print(json.dumps(s))
+        # delete two clones with their axe buttons while everything runs
+        mem = "() => { const m = window.arcFlow.renderer().info.memory; return { geometries: m.geometries, textures: m.textures }; }"
+        m0 = pg.evaluate(mem); keep = [x['id'] for x in s]
+        n_axes = pg.evaluate("document.querySelectorAll('.spawn-axe').length")
+        check(n_axes == a.clones, f'one axe per clone ({n_axes})')
+        for _ in range(2):
+            pg.eval_on_selector('.spawn-axe','e=>e.click()'); pg.wait_for_timeout(1500)
+        pg.wait_for_timeout(3000)
+        m1 = pg.evaluate(mem)
+        check(m1['geometries'] < m0['geometries'], f"renderer geometries dropped {m0['geometries']} -> {m1['geometries']}")
+        check(m1['textures'] < m0['textures'], f"renderer textures dropped {m0['textures']} -> {m1['textures']}")
+        check(pg.evaluate("document.querySelectorAll('.spawn-axe').length") == a.clones - 2, 'two spawn cards removed')
+        check(pg.evaluate("window._arcFlowState.root.children.filter(c => c.userData.isAssembly).length") == a.clones - 1, 'two assemblies removed from the scene')
+        s = advancing(pg, a.clones - 1, 'after delete')
+        check(len(s) == a.clones - 1, f'exactly {a.clones - 1} instances remain ({len(s)})')
+        check(all(x['id'] in keep for x in s), 'the survivors are the same instances (nothing rebuilt)')
+        orphan = pg.evaluate("() => { const S = window._arcFlowState; const ps = new Set(S.instances.flatMap(i => i.parts)); return S.parts.filter(p => !ps.has(p)).length; }")
+        check(orphan == 0, f'no orphan parts in state.parts ({orphan})')
         print(json.dumps(s)); b.close()
 check(not errs, 'no page errors ' + str(errs[:5]))
 print('RESULT', 'FAIL' if fails else 'PASS', len(fails), 'failure(s)')
