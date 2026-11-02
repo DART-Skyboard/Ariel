@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v67</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v68</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -5021,8 +5021,28 @@ const PARTICLE_SHADER_CORE = `
     // along the gradient toward the interior by just enough to clear it.
     float skin = max(rad * 0.08, 0.01);
     if (sd > -skin) {
-      vec3 n = sdfGradient(pos, fineIdx); // points toward increasing distance, i.e. OUTWARD
-      pos -= n * (sd + skin);
+      // COLLISION BODY (v65): the cavity interior (sd < 0) is the fluid domain. The old push moved every offending particle to
+      // exactly -skin, so a whole lateral cross-section that stuck out past the bore plastered itself onto the wall (and onto the
+      // bell rim, where the gradient points back at the lip once the particle is in open air below the mouth).
+      //  - axis in the cavity: slide the particle back toward the axis along its own lateral direction (bisection on the SDF) so
+      //    the cross-section fills the bore instead of piling on the wall; it never ends up inside the shell material
+      //  - axis past the exit plane (open air below the mouth): no wall acts there, the gas is a free jet
+      //  - otherwise: the original gradient push
+      vec3 lat = pos - centerPos;
+      float sdc = sdfAt(centerPos, fineIdx);
+      if (sdc < -skin) {
+        float lo = 0.0, hi = 1.0;
+        for (int k = 0; k < 5; k++) {
+          float m = 0.5 * (lo + hi);
+          if (sdfAt(centerPos + lat * m, fineIdx) < -skin) lo = m; else hi = m;
+        }
+        pos = centerPos + lat * lo;
+      } else if (gSeg >= aExit - 1.0 && sdc > 0.0) {
+        // open air downstream of the nozzle exit plane: free jet, no wall push
+      } else {
+        vec3 n = sdfGradient(pos, fineIdx); // points toward increasing distance, i.e. OUTWARD
+        pos -= n * (sd + skin);
+      }
     }
     if (uFollowOn > 0.5) {
       vec2 wfa = sampleWaypointFollow(aRow, seg), wfb = sampleWaypointFollow(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
@@ -9877,7 +9897,9 @@ function pfsFrame(dt, now) {
 { const el = pfsSolverEl(); if (el && new URLSearchParams(location.search).get('solver') === 'pressure') el.checked = true; }
 // <pfs:end>
 
-window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked' });
+window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',
+  sdAgainst: (name, flat) => { const part = state.parts.find(p => p.name === name); const idx = part && penIndexForPart(part); if (!idx) return null; const out = new Float32Array(flat.length / 3), v = new THREE.Vector3(); for (let i = 0; i < out.length; i++) out[i] = signedDistanceToMesh(v.set(flat[3*i], flat[3*i+1], flat[3*i+2]), idx); return out; },
+  partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances };
