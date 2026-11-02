@@ -18,14 +18,14 @@ async function loadThree() {
   if (!THREE) { console.log('skip - three.js not found (npm i three@0.160.0 or set THREE_PATH)'); return; }
   const ctx = { THREE, console, Math, Infinity, state: { parts: [] } };
   vm.createContext(ctx);
-  const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex',
+  const names = ['worldTrianglesForPart', 'worldTrianglesForPartRaw', 'dropPartGeometryCaches', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex',
     'findNearestTriangleIndices', 'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penFrameAABB', 'penMinOverlap',
     'detectPenetrationJoint', 'detectAutoPenetrationJoints', 'partAssembly'];
   let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
     'SDF_VIRTUAL_EDGE_CELLS', 'SDF_VIRTUAL_PHONG_ALPHA', 'SDF_VIRTUAL_EXTRA_TRI_CAP'].map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) { try { code += ex.fn(src, n) + '\n'; } catch (_) { /* older revisions lack refineThinOverlap */ } }
-  try { code += ex.region(src, 'booleansys') + '\n'; } catch (_) { /* older revisions lack the per-pair cache */ }
+  try { code += ex.region(src, 'booleansys') + '\n' + ex.region(src, 'shellsys') + '\n'; } catch (_) { /* older revisions lack the per-pair cache */ }
   // Pull in any other top-level helper the extracted code references (closure over module scope in the app).
   // Single-line top-level constants the extracted code references (resolved lazily at call time in the app).
   const have = new Set(code.match(/^(?:const|let) (\w+)/gm).map(l => l.split(' ')[1]).concat(['_worldTriCache', '_penIndexCache']));

@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v70</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v71</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -494,7 +494,7 @@ transformControls.addEventListener('objectChange', () => {
     // identity, so the cached world-space triangles from
     // worldTrianglesForPart (keyed by that identity) would otherwise go
     // stale and feed the next Simulate's SDF bake the PRE-move geometry.
-    _worldTriCache.delete(part);
+    dropPartGeometryCaches(part);
     if (document.getElementById('f_psi')) renderPartDetail(); // keep the panel's readouts in sync live
   }
 });
@@ -2369,10 +2369,11 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
   for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
     const a = parts[i], b = parts[j];
     if (skipPair && skipPair(a, b)) continue;
+    if ((a.melt && a.melt.full) || (b.melt && b.melt.full)) continue;          // a fully melted part is no longer a body
     if (boxes.get(a).isEmpty() || boxes.get(b).isEmpty()) continue;           // no mesh geometry: nothing to Boolean
     if (!boxes.get(a).intersectsBox(boxes.get(b))) continue; // before any triangle access
     const r = bsCachedJoint(a, b, bsCtx);
-    if (r && r.sealed) { sealedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius }); continue; }
+    if (r && r.sealed) { sealedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius, source: r.source || 'cavity' }); continue; }
     // AABB overlap alone is never a joint. (A previous "channel x container/chamber" fallback synthesized one at
     // the AABB-overlap centre whenever the cavity sample missed; it linked pipes that only brushed a tank's
     // bounding box and, since containers rank upstream, produced false helium -> pipe hits. Thin real overlaps
@@ -2632,7 +2633,7 @@ function bsSameSnap(a, b) {
 // Drop a part's world-space triangle caches when (and only when) its world matrices changed since they were built.
 function bsFreshGeometry(part) {
   const now = bsSnapshot(part, null, null), was = _bsWorldSnap.get(part);
-  if (!was || !bsSameSnap(was, now)) { _worldTriCache.delete(part); _penIndexCache.delete(part); }
+  if (!was || !bsSameSnap(was, now)) dropPartGeometryCaches(part);
   _bsWorldSnap.set(part, now);
 }
 // The assembly every part lives in, or null when they are loose / in different assemblies.
@@ -2658,7 +2659,8 @@ function bsCachedJoint(a, b, ctx) {
   _bsStats.misses++;
   bsFreshGeometry(a); bsFreshGeometry(b);
   _bsStats.detections++;
-  const r = detectPenetrationJoint(a, b, frame);   // sampled in the assembly-local frame: orientation-independent
+  let r = detectPenetrationJoint(a, b, frame);   // sampled in the assembly-local frame: orientation-independent
+  if (!r) { const x = meshesIntersect(a, b); if (x) r = { sealed: true, centroid: x.centroid, radius: x.radius, source: 'intersection' }; }   // spec 17: crossing surfaces = sealed joint
   m.set(b, { root, sa, sb, res: r ? Object.assign({}, r, {
     centroid: frame ? r.centroid.clone().applyMatrix4(frame.inv) : r.centroid.clone(),
     radius: r.radius / (frame ? frame.scale : 1),
@@ -2788,6 +2790,246 @@ if (typeof window !== 'undefined') {
   window.arcFlowBoolean = { booleanSystems, booleanSystemGrouping, booleanSyncInstance, booleanSyncAll, booleanAutoSync, booleanRefreshInstance, instanceJointRegions, booleanCacheStats, booleanCacheReset };
   booleanAutoSync(true);
 }
+
+// <shellsys:begin>
+// ── Mesh topology -> collision cavity surface; mesh-surface intersections ──────────────────────────────────────────────────────
+// Spec 15/16/17. Every part is analysed ONCE (cached, re-run only when its geometry changes) into one of:
+//   'closed'  one closed surface, no inner layer: its only possible cavity is the space directly beneath that surface (the existing
+//             single-surface convention: sdf < 0 = inside = cavity). Collision surface = the mesh itself. UNCHANGED behaviour.
+//   'hole'    one single surface with a hole (boundary loop) opening onto the space beneath it: a shell of the minimum thickness is
+//             generated (every vertex offset inward along its smoothed normal by `thickness`, rim faces joining the hole's outer and
+//             inner loops). Collision surface = the generated inner surface (the cavity is what it encloses); `wallTris` = the full
+//             generated shell (outer + inner + rim) for inspection / voxel wall.
+//   'shelled' inner and outer surfaces joined by side faces around the whole perimeter (a cracked walnut half): a wall with
+//             thickness. The two layers are separated (inner = faces whose outward side lies inside the part's convex envelope, i.e.
+//             in the pocket); the cavity is the space inside the inner layer; the SOLID is the outer layer.
+//   'multi' / 'empty'  several loose pieces / no mesh: untouched.
+// Everything is in WORLD space like the other triangle caches; the Boolean sampling already works in the assembly-local frame.
+const SHELL_T_FRAC = 0.015;      // auto-shell thickness = this fraction of the part's thinnest extent...
+const SHELL_T_FLOOR = 0.002;     // ...but never below this many model units
+const SHELL_RATIO_MAX = 0.25;    // wall thickness / thinnest extent below this => the closed surface really is a two-layer wall
+const SHELL_HULL_DIRS = 300, SHELL_RAYS = 32, SHELL_MAX_RAY_TRIS = 80000;
+let _shellCache = new WeakMap();
+function shellDropCache(part) { _shellCache.delete(part); if (typeof vgDropCache === 'function') vgDropCache(part); }
+function shellResetCaches() { _shellCache = new WeakMap(); if (typeof vgResetCaches === 'function') vgResetCaches(); }
+function shellWeld(tris) {
+  const box = new THREE.Box3();
+  for (const v of tris) box.expandByPoint(v);
+  const diag = box.getSize(new THREE.Vector3()).length() || 1, q = diag * 1e-5;
+  const ids = new Map(), verts = [], tri = new Int32Array(tris.length);
+  for (let i = 0; i < tris.length; i++) {
+    const v = tris[i], k = Math.round(v.x / q) + ',' + Math.round(v.y / q) + ',' + Math.round(v.z / q);
+    let id = ids.get(k);
+    if (id === undefined) { id = verts.length; ids.set(k, id); verts.push(v); }
+    tri[i] = id;
+  }
+  return { verts, tri, box, diag };
+}
+function shellTopology(w) {
+  const nv = w.verts.length, uf = new Int32Array(nv); for (let i = 0; i < nv; i++) uf[i] = i;
+  const find = (a) => { while (uf[a] !== a) { uf[a] = uf[uf[a]]; a = uf[a]; } return a; };
+  const edges = new Map();
+  const addEdge = (a, b) => { const k = Math.min(a, b) * nv + Math.max(a, b), e = edges.get(k); if (e) e.n++; else edges.set(k, { n: 1, a, b }); };
+  const used = new Uint8Array(nv);
+  for (let t = 0; t < w.tri.length; t += 3) {
+    const a = w.tri[t], b = w.tri[t + 1], c = w.tri[t + 2];
+    if (a === b || b === c || a === c) continue;
+    used[a] = used[b] = used[c] = 1;
+    const ra = find(a), rb = find(b); if (ra !== rb) uf[rb] = ra;
+    const ra2 = find(a), rc2 = find(c); if (ra2 !== rc2) uf[rc2] = ra2;
+    addEdge(a, b); addEdge(b, c); addEdge(c, a);
+  }
+  const roots = new Set(); for (let i = 0; i < nv; i++) if (used[i]) roots.add(find(i));
+  const boundary = []; for (const e of edges.values()) if (e.n === 1) boundary.push(e);
+  return { components: roots.size, boundary };
+}
+function shellSignedVolume(tris) {
+  let v = 0; const c = new THREE.Vector3();
+  for (let i = 0; i < tris.length; i += 3) v += tris[i].dot(c.copy(tris[i + 1]).cross(tris[i + 2]));
+  return v / 6;
+}
+// Möller-Trumbore ray vs triangle: distance t or -1. dirSign (optional out): sign of dot(dir, triangle normal).
+const _rtE1 = new THREE.Vector3(), _rtE2 = new THREE.Vector3(), _rtP = new THREE.Vector3(), _rtT = new THREE.Vector3(), _rtQ = new THREE.Vector3();
+function shellRayTri(o, d, a, b, c) {
+  _rtE1.copy(b).sub(a); _rtE2.copy(c).sub(a);
+  _rtP.copy(d).cross(_rtE2);
+  const det = _rtE1.dot(_rtP);
+  if (Math.abs(det) < 1e-14) return -1;
+  const inv = 1 / det; _rtT.copy(o).sub(a);
+  const u = _rtT.dot(_rtP) * inv; if (u < 0 || u > 1) return -1;
+  _rtQ.copy(_rtT).cross(_rtE1);
+  const v = d.dot(_rtQ) * inv; if (v < 0 || u + v > 1) return -1;
+  return _rtE2.dot(_rtQ) * inv;
+}
+// Wall-thickness estimate: from SHELL_RAYS sampled faces, shoot a ray into the material (against the face normal); the first BACK-facing
+// hit is the other side of the wall. Closed solid / hollow-but-single-surface parts hit the far side of the whole body (ratio ~ 1);
+// a two-layer wall hits its other layer a small fraction of the body away.
+function shellWallThickness(tris, diag) {
+  const T = tris.length / 3, ts = [], o = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+  const step = Math.max(1, Math.floor(T / SHELL_RAYS)), scan = Math.max(1, Math.floor(T / SHELL_MAX_RAY_TRIS));
+  for (let t = 0; t < T; t += step) {
+    const a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2];
+    n.copy(b).sub(a).cross(e.copy(c).sub(a)); if (n.lengthSq() < 1e-24) continue; n.normalize();
+    o.copy(a).add(b).add(c).multiplyScalar(1 / 3); d.copy(n).negate();
+    let best = Infinity;
+    for (let j = 0; j < T; j += scan) {
+      if (j === t) continue;
+      const tt = shellRayTri(o, d, tris[j * 3], tris[j * 3 + 1], tris[j * 3 + 2]);
+      if (tt > diag * 1e-6 && tt < best) {
+        // back-facing only: the hit face's normal points the way the ray travels
+        const fa = tris[j * 3], fb = tris[j * 3 + 1], fc = tris[j * 3 + 2];
+        e.copy(fb).sub(fa).cross(_rtQ.copy(fc).sub(fa));
+        if (e.dot(d) > 0) best = tt;
+      }
+    }
+    if (best < Infinity) ts.push(best);
+  }
+  if (ts.length < Math.max(3, SHELL_RAYS * 0.4)) return null;
+  ts.sort((x, y) => x - y);
+  return ts[ts.length >> 1];
+}
+function shellHullDirs(n) {
+  const out = [], g = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) { const y = 1 - (i + 0.5) * 2 / n, r = Math.sqrt(1 - y * y), th = g * i; out.push(new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r)); }
+  return out;
+}
+function shellMinExtent(box) { const s = box.getSize(new THREE.Vector3()); return Math.max(Math.min(s.x, s.y, s.z), 1e-6); }
+function shellThickness(part, box) {
+  if (state.autoShellThickness > 0) return state.autoShellThickness;
+  return Math.max(SHELL_T_FLOOR, SHELL_T_FRAC * shellMinExtent(box));
+}
+function analyzePartShell(part) {
+  const now = bsSnapshot(part, null, null), hit = _shellCache.get(part);
+  if (hit && bsSameSnap(hit.snap, now) && hit.flag === (state.autoShell !== false)) return hit.res;
+  const res = shellAnalyze(part);
+  _shellCache.set(part, { snap: now, flag: state.autoShell !== false, res });
+  return res;
+}
+function shellAnalyze(part) {
+  const raw = worldTrianglesForPartRaw(part);
+  const out = { kind: 'empty', thickness: 0, ratio: null, boundaryEdges: 0, components: 0, cavityTris: null, solidTris: raw, wallTris: null, rimTris: null, inverted: false, innerFraction: null };
+  if (!raw.length) return out;
+  const w = shellWeld(raw), top = shellTopology(w);
+  out.components = top.components; out.boundaryEdges = top.boundary.length;
+  if (top.components !== 1) { out.kind = 'multi'; return out; }
+  const minExt = shellMinExtent(w.box);
+  if (top.boundary.length === 0) {
+    out.kind = 'closed';
+    let work = raw;
+    if (shellSignedVolume(raw) < 0) { work = []; for (let i = 0; i < raw.length; i += 3) work.push(raw[i], raw[i + 2], raw[i + 1]); out.inverted = true; }
+    const t = shellWallThickness(work, w.diag);
+    out.ratio = t == null ? null : t / minExt;
+    if (t != null && out.ratio < SHELL_RATIO_MAX) {
+      // two-layer wall: split by "does the outward side of this face lie in the pocket (inside the convex envelope)?"
+      const dirs = shellHullDirs(SHELL_HULL_DIRS), sup = new Float64Array(dirs.length).fill(-Infinity);
+      for (const v of w.verts) for (let k = 0; k < dirs.length; k++) { const s = v.dot(dirs[k]); if (s > sup[k]) sup[k] = s; }
+      const delta = Math.max(0.6 * t, 0.008 * w.diag), inner = [], outer = [], p = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+      for (let i = 0; i < work.length; i += 3) {
+        const a = work[i], b = work[i + 1], c = work[i + 2];
+        n.copy(b).sub(a).cross(e.copy(c).sub(a)); if (n.lengthSq() < 1e-24) { outer.push(a, b, c); continue; } n.normalize();
+        p.copy(a).add(b).add(c).multiplyScalar(1 / 3).addScaledVector(n, delta);
+        let inside = true; for (let k = 0; k < dirs.length; k++) if (p.dot(dirs[k]) > sup[k]) { inside = false; break; }
+        if (inside) inner.push(a, b, c); else outer.push(a, b, c);
+      }
+      const frac = inner.length / work.length;
+      out.innerFraction = frac;
+      if (frac > 0.1 && frac < 0.9) {
+        out.kind = 'shelled'; out.thickness = t;
+        const cav = []; for (let i = 0; i < inner.length; i += 3) cav.push(inner[i], inner[i + 2], inner[i + 1]);   // normals away from the cavity: sdf < 0 inside it
+        out.cavityTris = cav; out.solidTris = outer; out.wallTris = work;
+      }
+    }
+    return out;
+  }
+  // open single surface: a hole onto the space beneath it
+  const t = shellWallThickness(raw, w.diag);
+  out.ratio = t == null ? null : t / minExt;
+  if (t != null && out.ratio < SHELL_RATIO_MAX) { out.kind = 'multi'; return out; }   // an open two-layer wall: not ours to interpret
+  out.kind = 'hole';
+  if (state.autoShell === false) return out;
+  const th = shellThickness(part, w.box); out.thickness = th;
+  const nrm = w.verts.map(() => new THREE.Vector3()), ab = new THREE.Vector3(), ac = new THREE.Vector3();
+  for (let t3 = 0; t3 < w.tri.length; t3 += 3) {
+    const a = w.tri[t3], b = w.tri[t3 + 1], c = w.tri[t3 + 2];
+    ab.copy(w.verts[b]).sub(w.verts[a]); ac.copy(w.verts[c]).sub(w.verts[a]); ab.cross(ac);   // area-weighted
+    nrm[a].add(ab); nrm[b].add(ab); nrm[c].add(ab);
+  }
+  const innerV = w.verts.map((v, i) => nrm[i].lengthSq() > 0 ? v.clone().addScaledVector(nrm[i].normalize(), -th) : v.clone());
+  const cav = [], rim = [];
+  for (let t3 = 0; t3 < w.tri.length; t3 += 3) cav.push(innerV[w.tri[t3]], innerV[w.tri[t3 + 1]], innerV[w.tri[t3 + 2]]);
+  for (const e of top.boundary) { const A = w.verts[e.a], B = w.verts[e.b], A2 = innerV[e.a], B2 = innerV[e.b]; rim.push(A, A2, B, B, A2, B2); }
+  out.cavityTris = cav; out.rimTris = rim;
+  out.wallTris = raw.concat(cav.slice().reverse(), rim);   // outer + inner (reversed copy: normals toward the cavity) + rim: the explicit shell
+  return out;
+}
+function shellCavityTris(part) {
+  if (state.autoShell === false) return null;
+  return analyzePartShell(part).cavityTris;
+}
+// The part as a SOLID (spec 25: shells included): the outer envelope. A closed/hole/multi part is its own envelope.
+function partSolidTris(part) { const a = analyzePartShell(part); return a.solidTris || worldTrianglesForPartRaw(part); }
+
+// ── mesh surface intersection (spec 17) ──
+const _siD = new THREE.Vector3(), _siP = new THREE.Vector3(), _siE1 = new THREE.Vector3(), _siE2 = new THREE.Vector3(), _siT = new THREE.Vector3(), _siQ = new THREE.Vector3();
+function shellSegTri(p, q, a, b, c, out) {
+  _siD.copy(q).sub(p);
+  _siE1.copy(b).sub(a); _siE2.copy(c).sub(a);
+  _siP.copy(_siD).cross(_siE2);
+  const det = _siE1.dot(_siP); if (Math.abs(det) < 1e-14) return;
+  const inv = 1 / det; _siT.copy(p).sub(a);
+  const u = _siT.dot(_siP) * inv; if (u < 0 || u > 1) return;
+  _siQ.copy(_siT).cross(_siE1);
+  const v = _siD.dot(_siQ) * inv; if (v < 0 || u + v > 1) return;
+  const t = _siE2.dot(_siQ) * inv; if (t < 0 || t > 1) return;
+  out.push(p.clone().addScaledVector(_siD, t));
+}
+// Do the two parts' SURFACES cross? -> { centroid, radius, points } (world) or null. Triangle edges are tested against the other mesh's
+// triangles (both ways) inside the overlap box, with a uniform grid so it stays cheap on dense parts.
+function meshesIntersect(a, b) {
+  const ta = partSolidTris(a), tb = partSolidTris(b);
+  if (!ta.length || !tb.length) return null;
+  const bx = (tris) => { const x = new THREE.Box3(); for (const v of tris) x.expandByPoint(v); return x; };
+  const boxA = bx(ta), boxB = bx(tb);
+  if (!boxA.intersectsBox(boxB)) return null;
+  const O = boxA.clone().intersect(boxB), size = O.getSize(new THREE.Vector3());
+  if (Math.min(size.x, size.y, size.z) < penMinOverlap(boxA, boxB)) return null;   // a sliver / shared face is not an intersection (same gate as the cavity Boolean)
+  O.expandByScalar(Math.max(size.length() * 0.02, 1e-4)); O.getSize(size);
+  const tbox = new THREE.Box3();
+  const pick = (tris) => { const idx = []; for (let i = 0; i < tris.length; i += 3) { tbox.makeEmpty().expandByPoint(tris[i]).expandByPoint(tris[i + 1]).expandByPoint(tris[i + 2]); if (tbox.intersectsBox(O)) idx.push(i); } const cap = 8000, st = Math.max(1, Math.ceil(idx.length / cap)); return st > 1 ? idx.filter((_, k) => k % st === 0) : idx; };
+  const ia = pick(ta), ib = pick(tb);
+  if (!ia.length || !ib.length) return null;
+  const G = 12, cell = new THREE.Vector3(size.x / G, size.y / G, size.z / G);
+  const cellOf = (v, ax) => Math.max(0, Math.min(G - 1, Math.floor((v - O.min[ax]) / Math.max(cell[ax], 1e-9))));
+  const grid = new Map();
+  for (const i of ib) {
+    tbox.makeEmpty().expandByPoint(tb[i]).expandByPoint(tb[i + 1]).expandByPoint(tb[i + 2]);
+    for (let x = cellOf(tbox.min.x, 'x'); x <= cellOf(tbox.max.x, 'x'); x++) for (let y = cellOf(tbox.min.y, 'y'); y <= cellOf(tbox.max.y, 'y'); y++) for (let z = cellOf(tbox.min.z, 'z'); z <= cellOf(tbox.max.z, 'z'); z++) {
+      const k = x + G * (y + G * z); let l = grid.get(k); if (!l) grid.set(k, l = []); l.push(i);
+    }
+  }
+  const pts = [], seen = new Int32Array(tb.length / 3).fill(-1);
+  for (let n = 0; n < ia.length && pts.length < 400; n++) {
+    const i = ia[n], A0 = ta[i], A1 = ta[i + 1], A2 = ta[i + 2];
+    tbox.makeEmpty().expandByPoint(A0).expandByPoint(A1).expandByPoint(A2);
+    for (let x = cellOf(tbox.min.x, 'x'); x <= cellOf(tbox.max.x, 'x'); x++) for (let y = cellOf(tbox.min.y, 'y'); y <= cellOf(tbox.max.y, 'y'); y++) for (let z = cellOf(tbox.min.z, 'z'); z <= cellOf(tbox.max.z, 'z'); z++) {
+      const l = grid.get(x + G * (y + G * z)); if (!l) continue;
+      for (const j of l) {
+        if (seen[j / 3] === n) continue; seen[j / 3] = n;
+        const B0 = tb[j], B1 = tb[j + 1], B2 = tb[j + 2];
+        shellSegTri(A0, A1, B0, B1, B2, pts); shellSegTri(A1, A2, B0, B1, B2, pts); shellSegTri(A2, A0, B0, B1, B2, pts);
+        shellSegTri(B0, B1, A0, A1, A2, pts); shellSegTri(B1, B2, A0, A1, A2, pts); shellSegTri(B2, B0, A0, A1, A2, pts);
+      }
+    }
+  }
+  if (pts.length < 3) return null;
+  const centroid = new THREE.Vector3(), zb = new THREE.Box3();
+  for (const p of pts) { centroid.add(p); zb.expandByPoint(p); }
+  centroid.divideScalar(pts.length);
+  const ext = zb.getSize(new THREE.Vector3()), e = [ext.x, ext.y, ext.z].sort((u, v) => u - v);
+  if (e[2] < PEN_MIN_OVERLAP_FLOOR) return null;
+  return { centroid, radius: Math.max(e[1] * 0.5, 0.02), points: pts.length };
+}
+// <shellsys:end>
 
 // <instances:begin>
 // ── Instance registry (multi-instance step 2: registry + detection only; simulation behaviour is unchanged) ──
@@ -3591,9 +3833,24 @@ function closestPointOnTriangle(p, a, b, c, out) {
 // the "sometimes it'll just freeze" report). Caching per-part triangles
 // means every part's buffers are walked exactly once per Simulate press,
 // however many joint regions reference it afterward.
-let _worldTriCache = new WeakMap(); // part -> THREE.Vector3[] (flat triples)
+let _worldTriCache = new WeakMap(); // part -> THREE.Vector3[] (flat triples): the COLLISION surface (cavity wall) = auto shell / shelled inner layer / melt-carved
+let _rawTriCache = new WeakMap();   // part -> the mesh triangles exactly as modelled (solid envelope; input of the shell analysis + voxel solid)
 function worldTrianglesForPart(part) {
   let tris = _worldTriCache.get(part);
+  if (tris) return tris;
+  tris = (typeof shellCavityTris === 'function') ? shellCavityTris(part) : null;
+  if (!tris) tris = worldTrianglesForPartRaw(part);
+  if (typeof meltCarveTris === 'function') tris = meltCarveTris(part, tris);
+  _worldTriCache.set(part, tris);
+  return tris;
+}
+// Drop every cached derivative of a part's geometry (world triangles, spatial index, shell analysis, voxel solid).
+function dropPartGeometryCaches(part) {
+  _worldTriCache.delete(part); _rawTriCache.delete(part); _penIndexCache.delete(part);
+  if (typeof shellDropCache === 'function') shellDropCache(part);
+}
+function worldTrianglesForPartRaw(part) {
+  let tris = _rawTriCache.get(part);
   if (tris) return tris;
   tris = [];
   for (const mesh of part.meshes) {
@@ -3625,12 +3882,16 @@ function worldTrianglesForPart(part) {
       const bd = geo.boundingBox.getSize(new THREE.Vector3()).length() * wm.getMaxScaleOnAxis();
       bigEdge2 = (bd * 0.04) * (bd * 0.04);
     }
+    // Animated GLB imports: a skinned mesh / a mesh with morph targets is read in its CURRENT pose (Mesh.getVertexPosition applies
+    // morph targets, SkinnedMesh adds the bone transform), not the rest-pose buffer.
+    const posed = !!(mesh.isSkinnedMesh || (mesh.morphTargetInfluences && mesh.morphTargetInfluences.length)) && typeof mesh.getVertexPosition === 'function';
+    const vAt = (v, i) => posed ? mesh.getVertexPosition(i, v) : v.fromBufferAttribute(pos, i);
     for (let t = 0; t < triCount; t++) {
       const i0 = idx ? idx[t*3] : t*3, i1 = idx ? idx[t*3+1] : t*3+1, i2 = idx ? idx[t*3+2] : t*3+2;
-      const v0 = new THREE.Vector3().fromBufferAttribute(pos, i0).applyMatrix4(wm);
-      const v1 = new THREE.Vector3().fromBufferAttribute(pos, i1).applyMatrix4(wm);
-      const v2 = new THREE.Vector3().fromBufferAttribute(pos, i2).applyMatrix4(wm);
-      if (nrm && Math.max(v0.distanceToSquared(v1), v1.distanceToSquared(v2), v2.distanceToSquared(v0)) > bigEdge2) {
+      const v0 = vAt(new THREE.Vector3(), i0).applyMatrix4(wm);
+      const v1 = vAt(new THREE.Vector3(), i1).applyMatrix4(wm);
+      const v2 = vAt(new THREE.Vector3(), i2).applyMatrix4(wm);
+      if (nrm && !posed && Math.max(v0.distanceToSquared(v1), v1.distanceToSquared(v2), v2.distanceToSquared(v0)) > bigEdge2) {
         v0.n = new THREE.Vector3().fromBufferAttribute(nrm, i0).applyMatrix3(normalMat).normalize();
         v1.n = new THREE.Vector3().fromBufferAttribute(nrm, i1).applyMatrix3(normalMat).normalize();
         v2.n = new THREE.Vector3().fromBufferAttribute(nrm, i2).applyMatrix3(normalMat).normalize();
@@ -3638,14 +3899,14 @@ function worldTrianglesForPart(part) {
       if (flip) tris.push(v0, v2, v1); else tris.push(v0, v1, v2);
     }
   }
-  _worldTriCache.set(part, tris);
+  _rawTriCache.set(part, tris);
   return tris;
 }
 // Clear the cache whenever the scene's actual mesh data could have
 // changed (new/cleared/re-transformed parts) — called from loadFile /
 // clearScene / loadDemo below, never mid-Simulate (parts don't move while
 // a sim is running, only before Play is pressed again).
-function invalidateWorldTriCache() { _worldTriCache = new WeakMap(); _penIndexCache = new WeakMap(); if (typeof booleanCacheReset === 'function') booleanCacheReset(); }
+function invalidateWorldTriCache() { _worldTriCache = new WeakMap(); _rawTriCache = new WeakMap(); _penIndexCache = new WeakMap(); if (typeof shellResetCaches === 'function') shellResetCaches(); if (typeof booleanCacheReset === 'function') booleanCacheReset(); }
 
 function collectWorldTriangles(parts) {
   const tris = []; // array of THREE.Vector3 triples
@@ -7525,7 +7786,7 @@ async function liveUpdate() {
       live.pending = false;
       const moved = new Set(live.moved); live.moved.clear();
       for (const part of moved) {
-        _worldTriCache.delete(part); _penIndexCache.delete(part);
+        dropPartGeometryCaches(part);
         if (part.type) refreshPartOpenings(part);
       }
       state.root.updateMatrixWorld(true);
@@ -9936,7 +10197,7 @@ async function presetApplyPart(part, s, warns) {
   if (t && _pvec(t.position, 3) && _pvec(t.quaternion, 4) && _pvec(t.scale, 3) && t.scale.every(x => Math.abs(x) > 1e-6)) {
     part.pivot.position.fromArray(t.position); part.pivot.quaternion.fromArray(t.quaternion).normalize(); part.pivot.scale.fromArray(t.scale);
     part.pivot.updateMatrixWorld(true); part.volumeM3 = null;
-    if (typeof _worldTriCache !== 'undefined') _worldTriCache.delete(part);
+    if (typeof dropPartGeometryCaches === 'function') dropPartGeometryCaches(part);
   }
   // nozzle-cover meshes hidden by the demo chamber setup
   if (Array.isArray(s.hiddenMeshes)) {

@@ -16,7 +16,7 @@ async function loadThree() {
   if (!THREE) { console.log('skip - three.js not found (npm i three@0.160.0 or set THREE_PATH)'); return; }
   const ctx = { THREE, console, Math, Infinity, state: { parts: [], instances: [], systemGrouping: null, currentLinks: null }, refreshAllOpenings() {}, renderChannelFlowReport() {} };
   vm.createContext(ctx);
-  const names = ['worldTrianglesForPart', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex', 'findNearestTriangleIndices',
+  const names = ['worldTrianglesForPart', 'worldTrianglesForPartRaw', 'dropPartGeometryCaches', 'partWorldAABB', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex', 'findNearestTriangleIndices',
     'closestPointOnTriangle', 'subdivideLargeTris', 'cavitiesAreConnected', 'refineThinOverlap', 'penFrameAABB', 'penMinOverlap', 'detectPenetrationJoint', 'detectAutoPenetrationJoints',
     'collectJointRegions'];
   let code = ['PEN_SAMPLE_RES', 'PEN_REFINE_CANDIDATES', 'PEN_REFINE_LEVELS', 'PEN_MIN_OVERLAP', 'PEN_MIN_OVERLAP_FRAC', 'PEN_MIN_OVERLAP_FLOOR', 'SDF_VIRTUAL_EDGE_VOXELS',
@@ -24,7 +24,7 @@ async function loadThree() {
     .map(n => { try { return ex.constLine(src, n); } catch (_) { return ''; } }).join('\n');
   code += '\nlet _worldTriCache = new WeakMap(), _penIndexCache = new WeakMap();\n';
   for (const n of names) code += ex.fn(src, n) + '\n';
-  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.fn(src, 'partCentroid') + '\n' + ex.fn(src, 'instanceGroupingFromBoolean') + '\n' + ex.fn(src, 'instanceComponents') + '\n';
+  code += ex.region(src, 'flowgraph') + '\n' + ex.region(src, 'booleansys') + '\n' + ex.region(src, 'shellsys') + '\n' + ex.fn(src, 'partCentroid') + '\n' + ex.fn(src, 'instanceGroupingFromBoolean') + '\n' + ex.fn(src, 'instanceComponents') + '\n';
   const have = new Set(code.match(/^(?:const|let) (\w+)/gm).map(l => l.split(' ')[1]).concat(['_worldTriCache', '_penIndexCache']));
   for (let again = true; again;) {
     again = false;
