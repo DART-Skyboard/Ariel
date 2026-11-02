@@ -3452,35 +3452,48 @@ function teardownInstanceResources(inst) {
   return n;
 }
 function removeCloneInstance(group) {
+  // SYNCHRONOUS part (never waits on a bake or the frame loop): hide + detach the clone, drop it from the registry, the parts list and its
+  // spawn card, mark it removed. The disposal of its GPU resources / graph bookkeeping runs right after, off the click (retried while
+  // another instance is mid context-swap), so the click always works even when the main loop is busy.
   if (!group || !state.root || group.parent !== state.root) return null;
   const parts = assemblyParts(group);
   if (!parts.length || !parts.every(p => p.cloneOf)) return null;     // never the original
   const inst = state.instances.find(i => i.root === group) || null;
   const before = renderer.info.memory ? { geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures } : null;
   const pset = new Set(parts);
+  group.visible = false;
+  if (group.parent) group.parent.remove(group);
+  state.parts = state.parts.filter(p => !pset.has(p));
+  if (state.selectedPart && pset.has(state.selectedPart)) state.selectedPart = null;
+  if (group.userData.spawnRow) { group.userData.spawnRow.remove(); group.userData.spawnRow = null; }
+  group.userData.removed = true;
   if (inst) {
     inst.active = false; inst.built = false; inst.removed = true;
     state.instances = state.instances.filter(i => i !== inst);     // out of the frame loop + Boolean sync (booleanSyncAll walks state.instances)
     if (state.activeInstanceId === inst.id) state.activeInstanceId = state.instances.length ? state.instances[0].id : null;
     inst.solver = null; inst.ltcbp = []; inst.booleanState = null; inst.sdf = null; inst.flowNodes = null;
-    if (!inst.baking) teardownInstanceResources(inst);             // a bake in flight finishes into a dead context and is torn down in its finally
   }
-  // scene data
-  group.traverse(o => { if (o.isMesh && o.material) for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.dispose(); });   // cloned materials only; geometry is shared with the original
-  if (group.parent) group.parent.remove(group);
-  state.parts = state.parts.filter(p => !pset.has(p));
-  if (state.selectedPart && pset.has(state.selectedPart)) state.selectedPart = null;
-  if (state.currentLinks) { for (const p of parts) state.currentLinks.delete(p); for (const [p, v] of [...state.currentLinks]) { if (Array.isArray(v)) { const k = v.filter(l => !pset.has(l.target)); if (k.length !== v.length) state.currentLinks.set(p, k); } else if (pset.has(v.target)) state.currentLinks.delete(p); } }
-  const dropJ = a => (a || []).filter(j => !(pset.has(j.partA) || pset.has(j.partB)));
-  state.autoPenetrationSealed = dropJ(state.autoPenetrationSealed); state.autoPenetrationRejected = dropJ(state.autoPenetrationRejected); state.autoPenetrationSkipped = dropJ(state.autoPenetrationSkipped);
-  if (state.assets) { for (const a of state.assets) if (a.parts) a.parts = a.parts.filter(p => !pset.has(p)); state.assets = state.assets.filter(a => !a.parts || a.parts.length); presetRefreshScope(); }
-  if (group.userData.spawnRow) { group.userData.spawnRow.remove(); group.userData.spawnRow = null; }
-  if (inst) { inst.parts = []; inst.links = new Map(); }
-  const act = getActiveInstance(); if (act && act.ctx && !act.baking) ctxAlias(act);
-  if (!state.simRunning) { layoutSpawns(); invalidateInstances('links'); }   // mid-run: nothing that is simulating is moved
-  buildPartListUI();
-  const after = renderer.info.memory ? { geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures } : null;
-  return { instance: !!inst, parts: parts.length, before, after };
+  let finish;
+  const done = new Promise(resolve => {
+    finish = () => {
+      if (_ctxDepth > 0) { setTimeout(finish, 60); return; }       // another instance is inside a context swap: try again shortly
+      try {
+        if (inst && !inst.baking) teardownInstanceResources(inst);  // a bake in flight finishes into a dead context and is torn down in its finally
+        group.traverse(o => { if (o.isMesh && o.material) for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.dispose(); });   // cloned materials only; geometry is shared with the original
+        if (state.currentLinks) { for (const p of parts) state.currentLinks.delete(p); for (const [p, v] of [...state.currentLinks]) { if (Array.isArray(v)) { const k = v.filter(l => !pset.has(l.target)); if (k.length !== v.length) state.currentLinks.set(p, k); } else if (pset.has(v.target)) state.currentLinks.delete(p); } }
+        const dropJ = a => (a || []).filter(j => !(pset.has(j.partA) || pset.has(j.partB)));
+        state.autoPenetrationSealed = dropJ(state.autoPenetrationSealed); state.autoPenetrationRejected = dropJ(state.autoPenetrationRejected); state.autoPenetrationSkipped = dropJ(state.autoPenetrationSkipped);
+        if (state.assets) { for (const a of state.assets) if (a.parts) a.parts = a.parts.filter(p => !pset.has(p)); state.assets = state.assets.filter(a => !a.parts || a.parts.length); presetRefreshScope(); }
+        if (inst) { inst.parts = []; inst.links = new Map(); }
+        const act = getActiveInstance(); if (act && act.ctx && !act.baking) ctxAlias(act);
+        if (!state.simRunning) { layoutSpawns(); invalidateInstances('links'); }   // mid-run: nothing that is simulating is moved
+        buildPartListUI();
+      } catch (e) { console.error('delete clone teardown', e); }
+      resolve({ instance: !!inst, parts: parts.length, before, after: renderer.info.memory ? { geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures } : null });
+    };
+  });
+  queueMicrotask(finish);
+  return { instance: !!inst, parts: parts.length, before, done };
 }
 // Add one clone of `srcGroup`. Before a run it only adds the parts (Simulate detects + bakes every instance). During a run it ALSO
 // builds the clone's flow graph, creates its Instance, builds it (shared or own) and starts it, leaving every running instance alone.
@@ -3503,10 +3516,21 @@ async function addCloneInstance(srcGroup, opts) {
     state.instances.push(inst);
     buildFlowGraph(inst);   // scoped to the clone's parts: no links to other assemblies
     inst.bounds.makeEmpty(); for (const p of inst.parts) { const b = partWorldAABB(p); if (b && !b.isEmpty()) inst.bounds.union(b); }
-    await buildInstanceNow(inst);
+    // The bake is QUEUED, not awaited: the clone, its card and its axe appear immediately and the click never waits on a bake. A shared
+    // clone waits for the original's bake to finish (it reuses it); everything else keeps running.
+    inst.buildPromise = (async () => {
+      await new Promise(r => setTimeout(r, 0));
+      for (let g = 0; g < 6000 && !inst.removed; g++) {
+        const root = instanceShareRoot(inst);
+        if (!(root && root.baking && !root.built)) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!inst.removed) await buildInstanceNow(inst);
+      return inst;
+    })().catch(e => { console.error('clone bake', e); return inst; });
   }
   buildPartListUI();
-  return { group: c.group, parts: c.parts, inst };
+  return { group: c.group, parts: c.parts, inst, buildPromise: inst ? inst.buildPromise : null };
 }
 function ctxAll(fn) { if (state.instances.length) ctxEach(fn); else fn(); }
 // Start one built instance simulating (mass network, live-leak watch, glass walls). Safe mid-run: touches only this instance.
@@ -9470,41 +9494,62 @@ document.getElementById('fileInput').onchange = async (e) => {
     renderTabs();
   }
 };
-document.getElementById('btnCloneImport').onclick = async () => {
-  if (!spawnState.lastFile) return;
-  // A copy of an assembly already in the scene (same file) is a real part duplicate: it becomes its own Instance and, by default,
-  // reuses the original's bake. Works before AND during a run. Anything else falls back to re-importing the file.
-  const fname = spawnState.lastFile.name.replace(/\.[^.]+$/, '');
-  const orig = state.root && state.root.children.find(c => c.userData && c.userData.isAssembly && assemblyParts(c).length && !assemblyParts(c).some(p => p.cloneOf)
-    && assemblyParts(c).some(p => (state.assets || []).some(a => a.parts && a.parts.includes(p) && a.name === spawnState.lastFile.name)));
-  if (orig) {
-    try {
-      spawnState.imports.push(spawnState.lastFile.name);
-      const r = await addCloneInstance(orig, { share: true });
-      r.group.userData.spawnId = state.root.children.indexOf(r.group);
-      r.group.userData.spawnName = fname + ' ' + spawnState.imports.length;
-      if (!state.simRunning) layoutSpawns();
-      frameAllSpawns();
-      labelSpawn(fname, spawnState.imports.length, r.group);
-      buildPartListUI();
-    } catch (e) { console.error('clone import', e); alert('Clone failed: ' + e.message); }
-    return;
+// Clone = the same real-duplicate factory the "+" buttons use. Source: the assembly of the selected part (a clone selects its original),
+// else the first original assembly. Enabled whenever a model is loaded (before AND during a run); never gated on a bake.
+function cloneSourceGroup() {
+  if (!state.root) return null;
+  const orig = c => c && c.parent === state.root && assemblyParts(c).length && !assemblyParts(c).some(p => p.cloneOf);
+  const sel = state.selectedPart && state.selectedPart.pivot;
+  if (sel) {
+    let g = sel; while (g && g.parent && g.parent !== state.root) g = g.parent;
+    if (g && g.parent === state.root) {
+      if (g.userData && g.userData.cloneOfGroup && g.userData.cloneOfGroup.parent === state.root) g = g.userData.cloneOfGroup;
+      if (!g.userData.isAssembly) g.userData.isAssembly = true;
+      if (orig(g)) return g;
+    }
   }
-  spawnState.imports.push(spawnState.lastFile.name);
-  await loadFile(spawnState.lastFile);
-  let g = null;
-  if (state.root && state.root.children.length) {
-    g = state.root.children[state.root.children.length - 1];
-    layoutSpawns();
-    g.userData.spawnId = state.root.children.length - 1;
-    g.userData.spawnName = spawnState.lastFile.name.replace(/\.[^.]+$/, '') + ' ' + spawnState.imports.length;
-    frameAllSpawns();
-  }
-  const cb = labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length, g);
-  if (cb && cb.checked && typeof presetApplyPending === 'function') {
-    try { await presetApplyPending(false); } catch (e) { console.warn('preset on clone', e); }
-  }
+  for (const c of state.root.children) { if (c.userData && c.userData.isAssembly && orig(c)) return c; }
+  for (const c of state.root.children) { if (!c.userData.isAssembly) c.userData.isAssembly = true; if (orig(c)) return c; }
+  return null;
+}
+async function cloneSpawn(src) {
+  const kind = (src.userData.spawnName || 'System').replace(/ \d+$/, '');
+  const r = await addCloneInstance(src, { share: true });
+  const n = state.root.children.filter(c => c.userData && c.userData.isAssembly).length;
+  r.group.userData.spawnId = state.root.children.indexOf(r.group);
+  if (!state.simRunning) layoutSpawns();
+  frameAllSpawns();
+  labelSpawn(kind, n, r.group);
   buildPartListUI();
+  return r;
+}
+function syncCloneBtn() {
+  const cb = document.getElementById('btnCloneImport');
+  if (cb) cb.disabled = !(state.parts && state.parts.length && cloneSourceGroup());
+}
+setInterval(syncCloneBtn, 400);
+document.getElementById('btnCloneImport').onclick = async () => {
+  try {
+    const src = cloneSourceGroup();
+    if (src) { spawnState.imports.push(src.userData.spawnName || 'clone'); await cloneSpawn(src); return; }
+    if (!spawnState.lastFile) return;
+    // No assembly in the scene to duplicate: fall back to re-importing the last file.
+    spawnState.imports.push(spawnState.lastFile.name);
+    await loadFile(spawnState.lastFile);
+    let g = null;
+    if (state.root && state.root.children.length) {
+      g = state.root.children[state.root.children.length - 1];
+      layoutSpawns();
+      g.userData.spawnId = state.root.children.length - 1;
+      g.userData.spawnName = spawnState.lastFile.name.replace(/\.[^.]+$/, '') + ' ' + spawnState.imports.length;
+      frameAllSpawns();
+    }
+    const cb = labelSpawn(spawnState.lastFile.name.replace(/\.[^.]+$/, ''), spawnState.imports.length, g);
+    if (cb && cb.checked && typeof presetApplyPending === 'function') {
+      try { await presetApplyPending(false); } catch (e) { console.warn('preset on clone', e); }
+    }
+    buildPartListUI();
+  } catch (e) { console.error('clone', e); alert('Clone failed: ' + e.message); }
 };
 document.getElementById('btnClear').onclick = () => { if (confirm('Clear the scene?')) clearScene(); };
 document.getElementById('btnResetDefaults').onclick = () => {
