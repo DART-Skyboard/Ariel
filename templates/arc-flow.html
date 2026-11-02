@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Arc Flow · Radical Deepscale</title>
+<link rel="icon" href="data:,">   <!-- no /favicon.ico on the host: stops the console 404 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet">
 <style>
@@ -213,7 +214,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v71</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v72</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -355,10 +356,15 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       Gas inside a container, channel or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the Volumetric and Gaussian splat renders; untick to see the gas only where the walls don't hide it.
     </div>
 
-    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-      <input type="checkbox" id="continuousFlow" checked style="width:auto;margin:0;">
-      Continuous flow
+    <label class="field">Supply
+      <select id="supplyMode"><option value="continuous" selected>Continuous Fill (default)</option><option value="fixed">Fixed amount</option></select>
     </label>
+    <input type="checkbox" id="continuousFlow" checked style="display:none" aria-hidden="true">
+    <div id="supplyFixed" style="display:none">
+      <label class="field">Oxidizer total (kg) <input type="number" id="supplyOx" min="0" step="1" placeholder="demo / part Mass" style="width:110px"></label>
+      <label class="field">Fuel total (kg) <input type="number" id="supplyFuel" min="0" step="1" placeholder="demo / part Mass" style="width:110px"></label>
+      <div class="sec-sub">Fixed amount: containers deplete and the flow stops when they are empty. A typed total is shared between the oxidizer (or fuel) containers by volume, and capped at what fits; blank uses each part's own Mass, else the demo fill.</div>
+    </div>
     <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
       <input type="checkbox" id="solverPressure" style="width:auto;margin:0;">
       Pressure solver
@@ -368,7 +374,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <label class="field" style="margin-top:6px">Solver time scale <input type="number" id="solverTimeScale" value="1" min="0.01" max="100" step="0.1" style="width:70px"></label>
     </div>
     <div class="sec-sub">
-      Only containers hold fluid, with a finite fill from their volume, density, pressure and temperature; pipes and chambers start empty and only conduct. On (default): containers are replenished as fluid is used, so the steady state can be studied indefinitely. Off: the fixed amounts deplete, container pressure falls with the mass that leaves, and the flow stops when they are empty. Separated openings spill into the atmosphere; an opening pressed against another surface is plugged.
+      Only containers hold fluid, with a finite fill from their volume, density, pressure and temperature; pipes and chambers start empty and only conduct. Continuous Fill (default): containers are replenished as fluid is used, so the steady state can be studied indefinitely. Fixed amount: the amounts deplete, container pressure falls with the mass that leaves, and the flow stops when they are empty. Separated openings spill into the atmosphere; an opening pressed against another surface is plugged.
     </div>
     <div id="massStatus" class="sec-sub" style="font-size:10px;line-height:1.6"></div>
   </div>
@@ -4795,7 +4801,10 @@ function fluidProps(part) {
 // cavity). If the coarse probe at the port misses, the search is refined adaptively (finer and finer point clouds inside the port
 // disc and along the flow axis, down to 1/64 of the port radius) until an interior point of the neighbour is found, i.e. a
 // resolution/detection miss is distinguished from a real gap. Tube bore data comes from the analytic fit.
-function diagnoseLinks() {
+// Run as a generator so the (pure-JS, per-sample mesh query) probe can be time-sliced across frames (diagnoseLinksAsync);
+// diagnoseLinks() is the synchronous wrapper kept for tests / the console. On the 223k-triangle demo with software WebGL this
+// probe was ONE ~130 s main-thread block right after Simulate (profiled: 80% of the post-bake freeze).
+function* diagnoseLinksGen() {
   const links = state.currentLinks || new Map();
   const rows = [];
   const sdfAtPart = (part, v) => { const ix = penIndexForPart(part); return ix ? signedDistanceToMesh(v, ix) : Infinity; };
@@ -4808,12 +4817,14 @@ function diagnoseLinks() {
     const n = o.normal.clone().normalize();
     const u = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0).cross(n).normalize() : new THREE.Vector3(1, 0, 0).cross(n).normalize();
     const w = n.clone().cross(u);
-    const probe = (partX, scale, levels) => {
+    const probe = function* (partX, scale, levels) {
       let best = Infinity, bestPt = null, tested = 0;
       for (let lv = 0; lv <= levels; lv++) {
         const k = lv === 0 ? 1 : Math.pow(2, lv); // 1,2,4,.. rings/steps: refinement
         const rad = r * scale / (lv === 0 ? 1 : 1);
         for (let ia = 0; ia <= k; ia++) for (let ib = 0; ib < Math.max(1, 2 * k); ib++) {
+          if ((ib & 7) === 0) yield;
+          if (tested > DIAG_MAX_SAMPLES) break;
           const rr = rad * (ia / k), th = (ib / Math.max(1, 2 * k)) * Math.PI * 2;
           for (let ax = -2; ax <= 2; ax++) {
             const p = o.centroid.clone().addScaledVector(u, rr * Math.cos(th)).addScaledVector(w, rr * Math.sin(th)).addScaledVector(n, ax * r * 0.5 / Math.max(1, lv));
@@ -4821,11 +4832,11 @@ function diagnoseLinks() {
             if (d < best) { best = d; bestPt = p; }
           }
         }
-        if (best < 0) break;
+        if (best <= 0.02 || tested > DIAG_MAX_SAMPLES) break;   // an interior sample at the port: connected, no need to refine further
       }
       return { sd: best, pt: bestPt, tested };
     };
-    const pa = probe(part, 0.8, 5), pb = probe(target, 0.8, 5);
+    const pa = yield* probe(part, 0.8, 5), pb = yield* probe(target, 0.8, 5);
     // min bore along the whole path portion: fitted tubes if present, else the ports
     let minBore = Math.min(o.radius, link.entrance ? link.entrance.radius : o.radius) * 2;
     if (tubeA) minBore = Math.min(minBore, tubeA.minRIn * 2);
@@ -4845,6 +4856,29 @@ function diagnoseLinks() {
   }
   state.linkDiagnostic = rows;
   return rows;
+}
+const DIAG_MAX_SAMPLES = 4000;
+function diagnoseLinks() { const g = diagnoseLinksGen(); let r; while (!(r = g.next()).done); return r.value; }
+// Time-sliced: ~budgetMs of work per animation frame, inside the instance's own context each slice.
+function diagnoseLinksAsync(inst, budgetMs) {
+  budgetMs = budgetMs || 6;
+  return new Promise((resolve, reject) => {
+    let g = null, out = null;
+    const slice = () => {
+      if (inst && inst.removed) return resolve(null);
+      try {
+        withInstance(inst, () => {
+          if (!g) g = diagnoseLinksGen();
+          const t0 = performance.now();
+          let r;
+          do { r = g.next(); } while (!r.done && performance.now() - t0 < budgetMs);
+          if (r.done) out = r.value;
+        });
+      } catch (e) { return reject(e); }
+      if (out) resolve(out); else requestAnimationFrame(slice);
+    };
+    requestAnimationFrame(slice);
+  });
 }
 
 // Per-tube numbers for the demo / any scene: bore area profile A(s), min bore, length, exit velocity, mass flow.
@@ -6051,7 +6085,7 @@ async function bakeInstanceCore(inst, links) {
   state.sdf = collisionSDF; inst.sdf = collisionSDF;
   if (!state.flowUnitM) state.flowUnitM = FLOW_UNIT_M_DEFAULT;
   state.pathMeta = new Map();
-  setTimeout(() => !inst.removed && withInstance(inst, () => { try { diagnoseLinks(); if (inst.id === state.activeInstanceId) renderChannelFlowReport(); } catch (e) { console.error('link diagnostic failed', e); } }), 0);
+  setTimeout(() => { if (!inst.removed) diagnoseLinksAsync(inst).then(() => { if (!inst.removed && inst.id === state.activeInstanceId) withInstance(inst, () => renderChannelFlowReport()); }).catch(e => console.error('link diagnostic failed', e)); }, 0);
   state.channelFlows = computeChannelFlows(); // bore areas -> continuity / Bernoulli / Darcy-Weisbach per fitted channel
 
   const perContainer = parseInt(document.getElementById('particlesPerContainer').value) || 2000;
@@ -8290,7 +8324,20 @@ function partWallM(part) { return partWallInfo(part).t; }
 function makeMass() { return { on: false, c: new Map(), K: 1, lastAt: 0, lastSync: 0, lastUI: 0, plugged: new Set(), nozPlugged: false, nozAt: 0, th: new Map() }; }
 let mass = makeMass();
 const continuousEl = document.getElementById('continuousFlow');
-function massContinuous() { return !continuousEl || continuousEl.checked; }
+const supplyModeEl = document.getElementById('supplyMode'), supplyOxEl = document.getElementById('supplyOx'), supplyFuelEl = document.getElementById('supplyFuel');
+function massContinuous() { return supplyModeEl ? supplyModeEl.value !== 'fixed' : (!continuousEl || continuousEl.checked); }
+// Fixed-amount supply: typed total kg per propellant, shared between that propellant's containers by volume (null = not typed / continuous).
+function supplyTypedKg(part, cap) {
+  if (massContinuous() || !part || part.type === 'pressure' || part.contents === 'helium') return null;
+  const el = part.contents === 'fuel' ? supplyFuelEl : (part.contents === 'oxidizer' ? supplyOxEl : null);
+  const tot = el ? parseFloat(el.value) : 0;
+  if (!(tot > 0)) return null;
+  let vsum = 0;
+  for (const q of state.parts) if (q.type === 'container' && q.contents === part.contents) { if (q.volumeM3 == null) q.volumeM3 = computeVolume(q); vsum += q.volumeM3; }
+  if (part.volumeM3 == null) part.volumeM3 = computeVolume(part);
+  const share = vsum > 0 ? tot * part.volumeM3 / vsum : tot;
+  return cap > 0 ? Math.min(share, cap) : share;
+}
 
 function massInitialFor(part) {
   if (part.volumeM3 == null) part.volumeM3 = computeVolume(part);
@@ -8298,6 +8345,8 @@ function massInitialFor(part) {
   const he = part.contents === 'helium';
   const rho = he ? (P0 + 14.696) * PSI2PA * 4.0026e-3 / (8.314 * T0) : (part.contents === 'fuel' ? 810 : 1141);
   const cap = V * rho * (he ? 1.0 : 1.0), nominal = V * rho * (he ? 1.0 : 0.9);
+  const typed = supplyTypedKg(part, cap);
+  if (typed != null) return typed;
   return part.massKg > 0 ? Math.min(part.massKg, cap) : nominal;
 }
 function massBuild() {
@@ -8468,7 +8517,20 @@ function massFrame(inst, now) {
     if (sel && st) { const th = mass.th.get(sel); if (th) st.innerHTML = `Wall ${th.Tw.toFixed(0)} K · P ${th.P.toFixed(0)} psi · stress ${(th.s * 100).toFixed(0)}% of yield` + (th.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : ''); }
   }
 }
-if (continuousEl) continuousEl.onchange = () => { if (continuousEl.checked) for (const c of mass.c.values()) c.m = c.m0; };
+function supplyApply(fromCheckbox) {
+  if (supplyModeEl && fromCheckbox && continuousEl) supplyModeEl.value = continuousEl.checked ? 'continuous' : 'fixed';
+  const cont = massContinuous();
+  if (continuousEl) continuousEl.checked = cont;
+  const fx = document.getElementById('supplyFixed'); if (fx) fx.style.display = cont ? 'none' : '';
+  const ai = typeof getActiveInstance === 'function' ? getActiveInstance() : null;
+  const num = el => { const v = el ? parseFloat(el.value) : 0; return v > 0 ? v : null; };
+  if (ai && ai.supply) { ai.supply.mode = cont ? 'continuous' : 'fixed'; ai.supply.oxAmount = num(supplyOxEl); ai.supply.fuelAmount = num(supplyFuelEl); }
+  if (cont) for (const c of mass.c.values()) c.m = c.m0;
+  else if (state.simRunning && mass.on) { massBuild(); for (const i of state.instances) if (i.solverMode === 'pressure') i.dirty.network = true; }
+}
+if (continuousEl) continuousEl.onchange = () => supplyApply(true);
+for (const el of [supplyModeEl, supplyOxEl, supplyFuelEl]) if (el) el.onchange = () => supplyApply(false);
+supplyApply(false);
 window.arcFlowMass = { mass, MATERIALS, applyMaterial, step: (dt) => massStep(dt, performance.now()) };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -10586,7 +10648,8 @@ class PressureFlowSim {
         const fl = FLUID_PROPS[p.contents] || FLUID_PROPS.other;
         n.kind = 'liquid'; n.contents = FLUID_PROPS[p.contents] ? p.contents : 'other'; n.V = Math.max(Vmesh, 1e-9); n.rho = fl.rho; n.R = Rhe;
         const cap = n.V * n.rho;
-        n.mL0 = p.massKg > 0 ? Math.min(p.massKg, cap) : 0.9 * cap; n.mL = n.mL0;
+        const typedKg = typeof supplyTypedKg === 'function' ? supplyTypedKg(p, cap) : null;
+        n.mL0 = typedKg != null ? typedKg : (p.massKg > 0 ? Math.min(p.massKg, cap) : 0.9 * cap); n.mL = n.mL0;
         n.Pset = Math.max((p.internalPsi || 0), paPsi) * PSI_PA;
         n.mG0 = n.Pset * Math.max(n.V - n.mL0 / n.rho, PFS_ULLAGE_MIN * n.V) / (n.R * n.T); n.mG = n.mG0;
       }
