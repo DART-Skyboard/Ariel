@@ -894,7 +894,8 @@ async function resetAndLoadDemo() {
 //
 // Pressures are realistic for a pressure-fed small engine (no turbopump,
 // matching how this file's plumbing is laid out): helium storage tanks at
-// 4500 psi (typical COPV storage pressure), propellant tanks regulated
+// 12000 psi (~827 bar, high-end COPV storage pressure; DEFAULT_DEMO_CONFIG
+// below is the source of truth), propellant tanks regulated
 // down to 400 psi (comfortably above chamber pressure to drive flow,
 // without needing pump assistance) — not a precise CFD-grade figure, but a
 // physically reasonable starting point for a prototype.
@@ -968,6 +969,7 @@ function applyDefaultDemoConfiguration() {
     applyMaterial(part, cfg.type === 'chamber' ? 'inconel' : cfg.type === 'pipe' ? 'stainless' : (cfg.contents === 'helium' ? 'cfrp' : 'al2195'));
     if (cfg.contents) part.contents = cfg.contents;
     if (cfg.internalPsi) part.internalPsi = cfg.internalPsi;
+    else if (cfg.type === 'chamber') part.internalPsi = null;   // derived from the propellant preset / inflow, not a typed value
     if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
 
     // Every part in this demo is a vertical tank/pipe, so sorting detected
@@ -1627,6 +1629,7 @@ function wireDetailEvents(part) {
   document.querySelectorAll('[data-settype]').forEach(btn => {
     btn.onclick = () => {
       part.type = btn.dataset.settype;
+      if (part.type === 'chamber') part.internalPsi = null;   // chamber pressure is derived (preset / inflow) unless explicitly set
       if (part.type === 'container' && part.volumeM3 == null) part.volumeM3 = computeVolume(part);
       // Any chamber gets a nozzle: lowest opening is the exhaust so the plume can fire.
       if (part.type === 'chamber') {
@@ -1646,7 +1649,7 @@ function wireDetailEvents(part) {
   const matRefresh = () => {
     const st = massStress(part, 288, Math.max(parseFloat(atmoPsiEl.value) || 0, 0)), pr = f('f_matprops'), sx = f('f_stress');
     if (pr) pr.innerHTML = matPropsText(matOf(part));
-    if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${partRadiusM(part).toFixed(2)} m · t ${(partWallM(part) * 1000).toFixed(1)} mm · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
+    if (sx && !state.simRunning) sx.innerHTML = `Static check at ${st.P.toFixed(0)} psi · r ${partRadiusM(part).toFixed(2)} m · t ${(partWallM(part) * 1000).toFixed(1)} mm · stress ${(st.s * 100).toFixed(0)}% of yield` + (st.thick ? '<br><span style="color:#ffc861">t/r &gt; ' + THICK_WALL_T_OVER_R + ': thick-wall vessel — thin-wall stress is approximate.</span>' : '') + (st.s >= 1 ? '<br><span style="color:#ff6b6b">Overstressed — design a stronger container to hold this pressure.</span>' : '');
     if (mass.on && mass.th.get(part)) mass.th.get(part).Tw = Math.min(mass.th.get(part).Tw, 6000);
     updatePartThermalTint(state.currentLinks);
   };
@@ -6101,7 +6104,7 @@ function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart
     let c = pCache.get(part);
     if (!c) {
       const h = (part && VOL_CONTENT_HUE[part.type === 'chamber' ? 'chamber' : part.contents]) || null;
-      c = { press: gsPressure01(part ? part.internalPsi : 0), h };
+      c = { press: gsPressure01(part ? (part.type === 'chamber' ? chamberPcPsi(part) : part.internalPsi) : 0), h };
       pCache.set(part, c);
     }
     press[p] = c.press;
@@ -7054,7 +7057,64 @@ function partRadiusM(part) {
   const d = [s.x, s.y, s.z].sort((a, c) => a - c);
   return Math.max(0.5 * 0.5 * (d[0] + d[1]), 0.01);
 }
-function partWallM(part) { return part.wallMm > 0 ? part.wallMm / 1000 : 0.04 * partRadiusM(part); }
+// ── Pressure-vessel sizing (SI: m, Pa, K) ─────────────────────────────────────────────────────────────────────────
+//   t = SF * (MEOP - Pamb) * r / (sigma_yield * derate(Tw_design))      cylinder / pipe / chamber  (hoop, thin wall)
+//   t = SF * (MEOP - Pamb) * r / (2 * sigma_yield * derate(Tw_design))  sphere
+//   MEOP = MEOP_FACTOR * max(chamber pc, regulated feed pressure, own fill pressure)
+// An explicit wall thickness (wallMm > 0) always wins. t/r above THICK_WALL_T_OVER_R is flagged: the thin-wall formula
+// under-predicts the inner-fibre stress there (Lame) and the wall should be reviewed as a thick-wall vessel.
+const P_AMB_DESIGN_PSI = 14.696;          // psi: sea-level ambient assumed when sizing
+const MEOP_FACTOR = 1.1;                  // - : MEOP margin over the highest operating pressure
+const SF_METAL = 1.5;                     // - : yield safety factor, metal vessels
+const SF_COMPOSITE = 2.0;                 // - : yield safety factor, composite (COPV) vessels (range 1.5-2.0)
+const WALL_MIN_M = { container: 1.0e-3, pipe: 0.5e-3, chamber: 2.0e-3 };   // m: minimum gauge per part type
+const WALL_MIN_DEFAULT_M = 1.0e-3;        // m: minimum gauge for any other part type
+const THICK_WALL_T_OVER_R = 0.1;          // - : t/r above this is a thick-wall vessel
+const SPHERE_ASPECT_MAX = 1.1;            // - : container whose bounding box is within this aspect ratio is a sphere
+const T_WALL_DESIGN_K = 288;              // K : design wall temperature of tanks and lines
+const CHAMBER_WALL_DESIGN_FRAC = 0.8;     // - : chamber design wall temperature = this x the material's max service temperature
+const PC_DEFAULT_PRESET = 'rocket_bell';  // chamber preset used for sizing when no propellant preset is selected
+function yieldDerate(Tw, m) { return Tw >= m[7] ? 0.05 : Math.max(0.1, 1 - 0.0009 * Math.max(Tw - 293, 0)); }
+function partDesignTw(part) { return part.type === 'chamber' ? CHAMBER_WALL_DESIGN_FRAC * matOf(part)[7] : T_WALL_DESIGN_K; }
+function partIsSphere(part) {
+  if (part.shape === 'sphere') return true;
+  if (part.type !== 'container') return false;
+  const b = partWorldAABB(part), sz = b.getSize(new THREE.Vector3()), d = [sz.x, sz.y, sz.z].sort((a, c) => a - c);
+  return d[0] > 0 && d[2] / d[0] <= SPHERE_ASPECT_MAX;
+}
+// psi at the far end of a feed chain: pOf(container) for every container whose chain reaches `part`; propellant tanks win over pressurant.
+function feedPressurePsi(part, pOf) {
+  const links = state.currentLinks; let P = 0, Phe = 0;
+  if (!links) return { P, Phe };
+  for (const cp of state.parts) {
+    if (cp.type !== 'container') continue;
+    let cur = cp, g = 0;
+    while (cur && g++ < 8) {
+      if (cur === part) { if (cp.contents === 'helium') Phe = Math.max(Phe, pOf(cp)); else P = Math.max(P, pOf(cp)); break; }
+      const l = firstLink(links, cur); cur = l && l.target;
+    }
+  }
+  return { P, Phe };
+}
+function chamberExplicitPcPsi(ch) { const v = ch && ch.internalPsi; return (typeof v === 'number' && isFinite(v) && v > 0) ? v : null; }
+function chamberDesignPcPsi(ch) { const ex = chamberExplicitPcPsi(ch); return ex != null ? ex : (PROP_PRESETS[plume.key] || PROP_PRESETS[PC_DEFAULT_PRESET]).pcPsi; }
+function partMeopPsi(part) {   // psi absolute, before MEOP_FACTOR: highest pressure this part is designed to hold
+  if (part.type === 'chamber') return Math.max(chamberDesignPcPsi(part), feedPressurePsi(part, c => c.internalPsi || 0).P);
+  if (part.type === 'container' || part.type === 'pressure') return part.internalPsi || 0;
+  const f = feedPressurePsi(part, c => c.internalPsi || 0);
+  return f.P || f.Phe || part.internalPsi || 0;
+}
+function partWallInfo(part) {   // {t m, r m, derived, sphere, thick}
+  const r = partRadiusM(part), sphere = partIsSphere(part);
+  if (part.wallMm > 0) { const t = part.wallMm / 1000; return { t, r, derived: false, sphere, thick: t / r > THICK_WALL_T_OVER_R }; }
+  const m = matOf(part), sf = part.matId === 'cfrp' ? SF_COMPOSITE : SF_METAL;
+  const dP = Math.max(MEOP_FACTOR * partMeopPsi(part) - P_AMB_DESIGN_PSI, 0) * PSI2PA;
+  const sigmaY = m[3] * 1e6 * yieldDerate(partDesignTw(part), m);
+  const tMin = WALL_MIN_M[part.type] || WALL_MIN_DEFAULT_M;
+  const t = Math.max(sf * dP * r / (sphere ? 2 : 1) / sigmaY, tMin);
+  return { t, r, derived: true, sphere, thick: t / r > THICK_WALL_T_OVER_R };
+}
+function partWallM(part) { return partWallInfo(part).t; }
 
 const mass = { on: false, c: new Map(), K: 1, lastAt: 0, lastSync: 0, lastUI: 0, plugged: new Set(), nozPlugged: false, nozAt: 0, th: new Map() };
 const continuousEl = document.getElementById('continuousFlow');
@@ -7132,18 +7192,16 @@ function massPartPressure(part) {   // psi (absolute) currently inside this part
   const c = mass.c.get(part);
   if (c) return c.P;
   let P = 0, Phe = 0; const links = state.currentLinks;
-  if (part.type === 'chamber') return (part.internalPsi || 0) * (mass.on ? Math.max(0, Math.min(1, mass.K)) : 1);
-  if (links) for (const [cp, cc] of mass.c) {
-    let cur = cp, g = 0;
-    while (cur && g++ < 8) { if (cur === part) { if (cp.contents === 'helium') Phe = Math.max(Phe, cc.P); else P = Math.max(P, cc.P); break; } const l = firstLink(links, cur); cur = l && l.target; }
-  }
+  if (part.type === 'chamber') return chamberPcPsi(part) * (mass.on ? Math.max(0, Math.min(1, mass.K)) : 1);   // preset / derived pc, not a typed psi
+  ({ P, Phe } = feedPressurePsi(part, cp => { const cc = mass.c.get(cp); return cc ? cc.P : (cp.internalPsi || 0); }));
   return P || Phe || part.internalPsi || 0;   // lines carry the regulated propellant-tank pressure, not the pressurant storage pressure
 }
 function massStress(part, Tw, pamb) {
   const m = matOf(part);
-  const P = massPartPressure(part), sigma = Math.max(P - pamb, 0) * PSI2PA * partRadiusM(part) / partWallM(part) / 1e6;
-  const der = Tw >= m[7] ? 0.05 : Math.max(0.1, 1 - 0.0009 * Math.max(Tw - 293, 0));
-  return { P, s: sigma / (m[3] * der), sigma, yEff: m[3] * der };
+  const w = partWallInfo(part);
+  const P = massPartPressure(part), sigma = Math.max(P - pamb, 0) * PSI2PA * w.r / (w.sphere ? 2 : 1) / w.t / 1e6;   // MPa; sphere P r / (2 t)
+  const der = yieldDerate(Tw, m);
+  return { P, s: sigma / (m[3] * der), sigma, yEff: m[3] * der, t: w.t, thick: w.thick };
 }
 
 function massStep(dt, now) {
@@ -7185,7 +7243,7 @@ function massStep(dt, now) {
   }
   for (const [part, th] of mass.th) {
     th.Tw = Math.max(Ta * 0.2, Math.min(th.Tw + (dT.get(part) || 0) * dt * TS, 6000));
-    const st = massStress(part, th.Tw, pa); th.s = st.s; th.P = st.P;
+    const st = massStress(part, th.Tw, pa); th.s = st.s; th.P = st.P; th.thick = st.thick;
     const mx = matOf(part)[7]; th.oh = Math.max(0, Math.min(1, (th.Tw - 0.8 * mx) / (0.2 * mx)));
   }
 }
@@ -7216,6 +7274,7 @@ function massStatusHtml() {
   }
   for (const [part, th] of mass.th) {
     if (th.s >= 1) warn.push(`<div style="color:#ff6b6b">⚠ ${part.name}: hoop stress ${(th.s * 100).toFixed(0)}% of yield — design a stronger container to hold this pressure</div>`);
+    if (th.thick) warn.push(`<div style="color:#ffc861">ℹ ${part.name}: wall t/r > ${THICK_WALL_T_OVER_R} — thick-wall vessel, thin-wall stress is approximate</div>`);
     if (th.oh > 0.5) warn.push(`<div style="color:#ffc861">⚠ ${part.name}: wall ${th.Tw.toFixed(0)} K near the ${matOf(part)[0]} limit</div>`);
   }
   return rows.join('') + warn.join('');
@@ -7832,6 +7891,15 @@ function chamberInflowPsi(ch) {
   const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
   return Math.min(3000, mix.mdot * 120 * mixK * afterburn / Math.max(At, 1e-4));
 }
+// Chamber pressure (psi) from the highest-priority source: the pressure the propellant inflow actually produces, then an
+// explicitly set value (chamberExplicitPcPsi), then the selected propellant preset.
+function chamberPcPsi(ch, cfg) {
+  const fromFlow = chamberInflowPsi(ch);
+  if (fromFlow > 0) return fromFlow;
+  const ex = chamberExplicitPcPsi(ch);
+  if (ex != null) return ex;
+  return (cfg || PROP_PRESETS[plume.key] || PROP_PRESETS[PC_DEFAULT_PRESET]).pcPsi;
+}
 function plumeCurrentDerived() {
   const cfg = PROP_PRESETS[plume.key];
   const c = plumeChamber();
@@ -7941,7 +8009,7 @@ function plumeFrame(now) {
     if (!cfg) continue;
     // Combust when propellant arrives. Both is ideal; one still shows flow.
     const mix = chamberMixture(c.ch);
-    if (mix.mdot <= 0 && !c.ch.internalPsi) continue;
+    if (mix.mdot <= 0 && c.ch.internalPsi === 0) continue;   // only an explicitly-zero chamber stays dark with no propellant
     const F = plumeFrameOf(c, cfg);
     const fromFlow = chamberInflowPsi(c.ch);
     const pcIn = c.ch.internalPsi;
@@ -8545,6 +8613,7 @@ const PRESET_KNOWN = { atmoPreset: 'atmosphere.preset', atmoPsi: 'atmosphere.amb
 let presetPending = null;     // { preset, entries, global, globalApplied } waiting for an asset import
 let presetBusy = false;
 
+const LEGACY_DEFAULT_PSI = 60;   // psi: the old part-creation default (see createPart), present in older preset files
 const _prnd = (v, d = 5) => { const k = Math.pow(10, d); return Math.round(v * k) / k; };
 const _pnum = (v, lo = -Infinity, hi = Infinity) => (typeof v === 'number' && isFinite(v)) ? Math.min(hi, Math.max(lo, v)) : null;
 const _pvec = (a, n) => Array.isArray(a) && a.length === n && a.every(x => typeof x === 'number' && isFinite(x));
@@ -8630,7 +8699,7 @@ function presetPartSettings(part) {
   const p = part.pivot;
   return {
     type: part.type || null, contents: part.contents, material: part.material, matId: part.matId || MAT_DEFAULT, wallMm: _prnd(part.wallMm || 0), massKg: _prnd(part.massKg || 0), tempK: _prnd(part.tempK),
-    internalPsi: _prnd(part.internalPsi), densityKgM3: _prnd(part.densityKgM3 || 0),
+    internalPsi: part.internalPsi == null ? null : _prnd(part.internalPsi), densityKgM3: _prnd(part.densityKgM3 || 0),
     transform: { position: [p.position.x, p.position.y, p.position.z].map(v => _prnd(v, 6)), quaternion: [p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w].map(v => _prnd(v, 6)), scale: [p.scale.x, p.scale.y, p.scale.z].map(v => _prnd(v, 6)) },
     hiddenMeshes: part.meshes.map((m, i) => (m.userData.nozzleCover && !m.visible) ? i : -1).filter(i => i >= 0),
     openings, forcedSealTo: sealTo,
@@ -8788,6 +8857,9 @@ async function presetApplyPart(part, s, warns) {
   if ((v = _pnum(s.massKg, 0, 1e9)) != null) part.massKg = v;
   if ((v = _pnum(s.tempK, 0, 1e5)) != null) part.tempK = v;
   if ((v = _pnum(s.internalPsi, -1e6, 1e7)) != null) part.internalPsi = v;
+  // Files saved before chamber pressure became derived stored the creation default (60 psi) for chambers: that was never a
+  // typed value, so migrate it (and null/0) to "derived" at this I/O boundary only.
+  if (part.type === 'chamber' && (s.internalPsi == null || s.internalPsi === LEGACY_DEFAULT_PSI)) part.internalPsi = null;
   if ((v = _pnum(s.densityKgM3, 0, 1e6)) != null && v > 0) part.densityKgM3 = v;
   const t = s.transform;
   if (t && _pvec(t.position, 3) && _pvec(t.quaternion, 4) && _pvec(t.scale, 3) && t.scale.every(x => Math.abs(x) > 1e-6)) {
