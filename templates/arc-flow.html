@@ -7875,26 +7875,42 @@ function chamberMixture(ch) {
   const of = mFuel > 0 ? mOx / mFuel : 0;
   return { mFuel, mOx, of, mdot };
 }
-function chamberInflowPsi(ch) {
+// Steady-state chamber pressure from the propellant mass flow: pc = mdot * c* / At  (SI throughout).
+//   mdot  kg/s  (state.channelFlows, summed per chamber by chamberMixture)
+//   c*    m/s   characteristic velocity from the preset's gamma, mw, Tc (ideal, frozen composition)
+//   At    m^2   throat area = Ae/eps; the nozzle opening is the exit plane (Ae), so At = Ae/eps. Opening radius is in
+//               world units; state.flowUnitM (m per world unit) converts it to metres (area scales by flowUnitM^2).
+// mixK scales c* with how close the mix is to the target O/F (combustion efficiency); there is no afterburn term.
+const R_UNIV = 8.314462618;          // J/(mol*K), universal gas constant
+const G_MOL_TO_KG = 1e-3;            // kg per g (preset mw is in g/mol)
+const PC_MAX_PSI = 3000;             // cap on the flow-derived chamber pressure (psi)
+const AT_MIN_M2 = 1e-8;              // floor on throat area (m^2) so a degenerate nozzle cannot divide by ~0
+function characteristicVelocity(gamma, mwGmol, TcK) {
+  // c* = sqrt(R*Tc/gamma) * ((gamma+1)/2)^((gamma+1)/(2*(gamma-1)))   [m/s]
+  const Rspec = R_UNIV / (mwGmol * G_MOL_TO_KG);   // J/(kg*K)
+  return Math.sqrt(Rspec * TcK / gamma) * Math.pow((gamma + 1) / 2, (gamma + 1) / (2 * (gamma - 1)));
+}
+function chamberInflowPsi(ch, cfg) {
   const mix = chamberMixture(ch);
   if (mix.mdot <= 0) return 0;
+  cfg = cfg || PROP_PRESETS[plume.key] || PROP_PRESETS[PC_DEFAULT_PRESET];
+  const noz = ch.openings.find(o => o.role === 'nozzle');
+  if (!cfg || !noz) return 0;   // no nozzle / no preset: no flow-derived pc, caller falls back to explicit value or preset
   // Stoichiometric O/F for RP-1/LOX is about 2.3. Combustion strength
   // peaks there and falls off as the mix goes fuel-rich or ox-rich.
   const stoich = (window.ofPerSystem && window.ofPerSystem[ch.name] != null) ? window.ofPerSystem[ch.name] : (window.ofTarget || 2.3);
   const mixK = mix.of > 0 ? Math.exp(-Math.pow(Math.log(mix.of / stoich), 2)) : 0;
-  // Afterburning: atmospheric oxygen lets unburnt propellant finish burning
-  // outside the chamber. Vacuum has none, so the plume stays the core only.
-  const atmoKey = (document.getElementById('atmoPreset') || {}).value || 'earth';
-  const o2 = (ATMO[atmoKey] && ATMO[atmoKey].o2 != null) ? ATMO[atmoKey].o2 : 0.21;
-  const afterburn = 0.6 + 0.4 * Math.min(o2 / 0.21, 1);
-  const noz = ch.openings.find(o => o.role === 'nozzle');
-  const At = noz ? Math.PI * noz.radius * noz.radius : 0.01;
-  return Math.min(3000, mix.mdot * 120 * mixK * afterburn / Math.max(At, 1e-4));
+  const unit = state.flowUnitM || FLOW_UNIT_M_DEFAULT;                       // m per world unit
+  const Ae = Math.PI * noz.radius * noz.radius * unit * unit;                // m^2, exit plane
+  const At = Math.max(Ae / cfg.eps, AT_MIN_M2);                              // m^2, throat
+  const cstar = characteristicVelocity(cfg.gamma, cfg.mw, cfg.Tc) * mixK;   // m/s
+  const pcPa = mix.mdot * cstar / At;                                        // Pa
+  return Math.min(PC_MAX_PSI, pcPa / PSI2PA);
 }
 // Chamber pressure (psi) from the highest-priority source: the pressure the propellant inflow actually produces, then an
 // explicitly set value (chamberExplicitPcPsi), then the selected propellant preset.
 function chamberPcPsi(ch, cfg) {
-  const fromFlow = chamberInflowPsi(ch);
+  const fromFlow = chamberInflowPsi(ch, cfg);
   if (fromFlow > 0) return fromFlow;
   const ex = chamberExplicitPcPsi(ch);
   if (ex != null) return ex;
@@ -7908,9 +7924,7 @@ function plumeCurrentDerived() {
   const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
   // Prefer the pressure the inflow actually produces; fall back to the
   // part setting, then the preset. No synthetic override.
-  const fromFlow = chamberInflowPsi(c.ch);
-  const pcIn = c.ch.internalPsi;
-  const pc = fromFlow > 0 ? fromFlow : ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi);
+  const pc = chamberPcPsi(c.ch, cfg);
   const kPc = mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1;
   const D = plumeDerive(cfg, pc * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
   return { D, F, c };
@@ -8011,9 +8025,7 @@ function plumeFrame(now) {
     const mix = chamberMixture(c.ch);
     if (mix.mdot <= 0 && c.ch.internalPsi === 0) continue;   // only an explicitly-zero chamber stays dark with no propellant
     const F = plumeFrameOf(c, cfg);
-    const fromFlow = chamberInflowPsi(c.ch);
-    const pcIn = c.ch.internalPsi;
-    const pc = fromFlow > 0 ? fromFlow : ((pcIn > 0 && pcIn !== 60) ? pcIn : cfg.pcPsi);
+    const pc = chamberPcPsi(c.ch, cfg);
     const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
     const D = plumeDerive(cfg, pc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
     let inst = plume.perChamber.get(c.ch);
