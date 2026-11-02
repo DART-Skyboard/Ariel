@@ -9889,7 +9889,32 @@ function pfsMixture(ch) {
   const mFuel = n.inFuel, mOx = n.inOx;
   return { mFuel, mOx, of: mFuel > 0 ? mOx / mFuel : 0, mdot: mFuel + mOx };
 }
+// Edge / chamber-axis geometry is stored in world space, so it goes stale when a clone (or any part of the instance) moves.
+// Re-read it from the live opening transforms when inst.dirty.network is set (clone move, link change) or arcflow:instance-dirty fires.
+// Same topology -> only geometry is refreshed (solver state kept); topology changed -> the solver is rebuilt for this instance.
+function pfsRefreshInstance(inst) {
+  const sol = inst.solver; if (!sol || inst.solverMode !== 'pressure') return false;
+  const net = pfsBuildNetwork(inst);
+  const same = net.nodes.length === sol.nodes.length && net.edges.length === sol.edges.length
+    && net.nodes.every((n, i) => n.part === sol.nodes[i].part)
+    && net.edges.every((e, i) => { const o = sol.edges[i]; return (e.from.part === o.from.part) && ((e.to && e.to.part) === (o.to && o.to.part)) && e.pipes.length === o.pipes.length && e.chain.length === o.chain.length; });
+  if (same) {
+    net.edges.forEach((e, i) => { const o = sol.edges[i]; o.pts = e.pts; o.rad = e.rad; o.endNormal = e.endNormal; o.exitR = e.exitR; });
+    sol.nodes.forEach(n => { if (n.kind === 'chamber') n.axis = pfsChamberAxis(n.part); });
+    sol.geoVer = (sol.geoVer || 0) + 1;
+  } else {
+    inst.solver = new PressureFlowSim(inst); pfsSyncMass(inst.solver);
+    if (typeof pfsClearParticles === 'function') pfsClearParticles(inst);
+  }
+  if (!inst.dirty.links) inst.dirty.network = false;
+  return true;
+}
+if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('arcflow:instance-dirty', ev => {
+  const id = ev && ev.detail && ev.detail.id;
+  for (const inst of state.instances || []) if (inst.solverMode === 'pressure' && (id == null || inst.id === id)) inst.dirty.network = true;
+});
 function pfsFrame(dt, now) {
+  for (const inst of pfsInstances()) if (inst.dirty && inst.dirty.network) pfsRefreshInstance(inst);
   const cont = massContinuous();
   const el = document.getElementById('solverTimeScale'), ts = el ? Math.max(parseFloat(el.value) || 1, 0.001) : 1;
   for (const inst of pfsInstances()) { inst.solver.timeScale = ts; inst.solver.advance(Math.min(dt, 0.1), cont); }

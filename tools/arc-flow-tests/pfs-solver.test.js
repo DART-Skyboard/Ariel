@@ -60,7 +60,7 @@ function makeEnv(sc, opts = {}) {
   const flu = src.slice(src.indexOf('const FLUID_PROPS = {'), src.indexOf('};', src.indexOf('const FLUID_PROPS = {')) + 2);
   vm.runInContext(pre + '\n' + flu + '\n' + fn(src, 'asLinkArray') + '\n' + fn(src, 'allLinks') + '\n' + fn(src, 'linkTarget') + '\n' + fn(src, 'solveChannelFlow') + '\n' + fn(src, 'characteristicVelocity') +
     '\nfunction openingLiveCentroid(o){return o.centroid;} function openingLiveNormal(o){return o.normal;} function penIndexForPart(){return null;}' +
-    '\n' + region(src, 'pfs') + '\nthis.__api = { PressureFlowSim, pfsBuildNetwork, pfsGasMdot, pfsSnapshot, pfsChamberAxis };', ctx);
+    '\n' + region(src, 'pfs') + '\nthis.__api = { PressureFlowSim, pfsBuildNetwork, pfsGasMdot, pfsSnapshot, pfsChamberAxis, pfsRefreshInstance };', ctx);
   const inst = { parts: sc.parts, links: sc.links, solverMode: 'pressure', solver: null, ltcbp: [] };
   ctx.state.instances.push(inst);
   for (const p of sc.parts) if (p.type === 'container') ctx.mass.c.set(p, { m: 0, m0: 0, P: 0, P0: 0, flow: 0, kind: 'closed' });
@@ -142,5 +142,26 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   run(sol, 3, 0.01, false);
   assert.strictEqual(oxN.mL, 0); assert.strictEqual(e.mdot, 0);
   ok('ATM spill drains and stops at m = 0');
+}
+// 7. a clone move (inst.dirty.network): edge geometry is re-read in place, solver state kept, flag cleared; a topology change rebuilds
+{
+  const sc = makeScene(), { api, inst, ctx } = makeEnv(sc, { cont: true });
+  inst.dirty = { links: false, network: false, sdf: false, particles: false };
+  const sol = inst.solver = new api.PressureFlowSim(inst);
+  run(sol, 0.3, 0.01, true);
+  const e0 = sol.edges.find(e => e.name === 'Oxidizer \u2192 CombustionChamber'), x0 = e0.pts[0].x, P0 = sol.nodeOf.get(sc.ch).P, mdot0 = e0.mdot;
+  for (const p of sc.parts) for (const o of p.openings) o.centroid = new V3(o.centroid.x + 10, o.centroid.y, o.centroid.z);   // the clone moved +10 in x
+  for (const t of sc.tubes.values()) for (const sg of t.segs) { sg.a = new V3(sg.a.x + 10, sg.a.y, sg.a.z); sg.b = new V3(sg.b.x + 10, sg.b.y, sg.b.z); }
+  inst.dirty.network = true;
+  assert.strictEqual(api.pfsRefreshInstance(inst), true);
+  assert.strictEqual(inst.solver, sol, 'same solver object (state kept)');
+  assert.ok(Math.abs(e0.pts[0].x - (x0 + 10)) < 1e-9, 'edge geometry follows the move: ' + e0.pts[0].x);
+  assert.strictEqual(sol.nodeOf.get(sc.ch).P, P0); assert.strictEqual(e0.mdot, mdot0);
+  assert.strictEqual(inst.dirty.network, false, 'flag cleared');
+  inst.dirty.network = true; inst.dirty.links = true;   // links still dirty: the flag is left for the link rebuild
+  api.pfsRefreshInstance(inst); assert.strictEqual(inst.dirty.network, true); inst.dirty.links = false;
+  sc.links.delete(sc.ox); inst.dirty.network = true;     // topology change -> new solver
+  api.pfsRefreshInstance(inst); assert.notStrictEqual(inst.solver, sol); assert.strictEqual(inst.dirty.network, false);
+  ok('network refresh on clone move / topology change');
 }
 console.log(n + ' passed');
