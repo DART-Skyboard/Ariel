@@ -719,6 +719,7 @@ const state = {
   openingCandidates: [],  // candidates for the part currently in flow-selection mode
   selectedOpening: null,
   simRunning: false,
+  systemGrouping: null,   // optional Boolean grouping (Part[][] or fn(parts)=>Part[][]); detectInstances falls back to union-find
   instances: [],          // Instance[] (see <instances:begin>)
   activeInstanceId: null,
   instanceOrphans: [],    // parts that belong to no multi-part component
@@ -2572,8 +2573,27 @@ function resetInstances() { state.instances = []; state.activeInstanceId = null;
 
 // Union-find over typed parts: an edge for every flow link and every sealed penetration joint.
 // Returns { components: Part[][] (size >= 2, ordered by first part in `parts`), orphans: Part[] }.
+// Boolean grouping hook (owned by the Flow Graph worker's volumetric Boolean): when state.systemGrouping is set -- an array
+// of Part[] groups, or a function (parts) => Part[][] -- it DECIDES which mesh parts make up a system and which systems
+// are separate; the union-find below is only the fallback when no grouping is present (or it returns nothing usable).
+function instanceGroupingFromBoolean(parts) {
+  let g = state.systemGrouping;
+  try { if (typeof g === 'function') g = g(parts); } catch (e) { console.warn('systemGrouping', e); g = null; }
+  if (!Array.isArray(g) || !g.length) return null;
+  const inScene = new Set(parts), seen = new Set(), components = [];
+  for (const grp of g) {
+    const comp = (Array.isArray(grp) ? grp : []).filter(p => inScene.has(p) && !seen.has(p));
+    if (!comp.length) continue;
+    comp.forEach(p => seen.add(p));
+    components.push(comp);
+  }
+  if (!components.length) return null;
+  return { components, orphans: parts.filter(p => !seen.has(p)) };
+}
 function instanceComponents(parts, links) {
   parts = parts || state.parts;
+  const viaBool = instanceGroupingFromBoolean(parts);
+  if (viaBool) return viaBool;
   const typed = parts.filter(p => p.type), idx = new Map(typed.map((p, i) => [p, i])), uf = typed.map((_, i) => i);
   const find = a => { while (uf[a] !== a) { uf[a] = uf[uf[a]]; a = uf[a]; } return a; };
   const union = (a, b) => { if (!idx.has(a) || !idx.has(b)) return; const ra = find(idx.get(a)), rb = find(idx.get(b)); if (ra !== rb) uf[Math.max(ra, rb)] = Math.min(ra, rb); };
@@ -9226,7 +9246,7 @@ function debugReadParticlePositions(tOverride) {
 window.arcFlowDebug = { readParticles: debugReadParticlePositions };
 
 // Expose for debugging / follow-on iteration
-window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, describeInstances, instancesReadout, instances: () => state.instances };
+window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances };
 
 // Preload the demo project automatically on page open — no click required.
 // Someone can still Clear Scene and import their own file, or import
