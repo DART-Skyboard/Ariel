@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v63</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v64</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -357,6 +357,14 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <input type="checkbox" id="continuousFlow" checked style="width:auto;margin:0;">
       Continuous flow
     </label>
+    <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="solverPressure" style="width:auto;margin:0;">
+      Pressure solver
+    </label>
+    <div class="sec-sub">
+      Off (default): the baked waypoint flow. On (<code>?solver=pressure</code>): flow is driven by the pressure differences in a lumped network &mdash; helium blowdown and regulator, liquid channels, an accumulating chamber with a choked throat, spill to the atmosphere. Applied when Simulate starts. Fluid that crosses into the atmosphere is what the plume and LTCBP evaluate.
+      <label class="field" style="margin-top:6px">Solver time scale <input type="number" id="solverTimeScale" value="1" min="0.01" max="100" step="0.1" style="width:70px"></label>
+    </div>
     <div class="sec-sub">
       Only containers hold fluid, with a finite fill from their volume, density, pressure and temperature; pipes and chambers start empty and only conduct. On (default): containers are replenished as fluid is used, so the steady state can be studied indefinitely. Off: the fixed amounts deplete, container pressure falls with the mass that leaves, and the flow stops when they are empty. Separated openings spill into the atmosphere; an opening pressed against another surface is plugged.
     </div>
@@ -7345,6 +7353,7 @@ function massBuild() {
   mass.on = true;
 }
 function massReset() {
+  if (typeof pfsDeactivate === 'function') pfsDeactivate();
   mass.on = false; mass.c.clear(); mass.th.clear(); mass.K = 1; mass.plugged.clear(); mass.nozPlugged = false;
   const cpu = state.particleCPU; if (cpu) cpu.rank = null;
 }
@@ -7391,6 +7400,7 @@ function massPartPressure(part) {   // psi (absolute) currently inside this part
   const c = mass.c.get(part);
   if (c) return c.P;
   let P = 0, Phe = 0; const links = state.currentLinks;
+  if (part.type === 'chamber' && pfsOwns(part)) return chamberPcPsi(part);   // solver chamber gas pressure
   if (part.type === 'chamber') return chamberPcPsi(part) * (mass.on ? Math.max(0, Math.min(1, mass.K)) : 1);   // preset / derived pc, not a typed psi
   ({ P, Phe } = feedPressurePsi(part, cp => { const cc = mass.c.get(cp); return cc ? cc.P : (cp.internalPsi || 0); }));
   return P || Phe || part.internalPsi || 0;   // lines carry the regulated propellant-tank pressure, not the pressurant storage pressure
@@ -7407,6 +7417,7 @@ function massStep(dt, now) {
   const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0), cont = massContinuous();
   let K = 0;
   for (const [part, c] of mass.c) {
+    if (pfsOwns(part)) continue;   // pressure solver (PressureFlowSim) owns m / P / flow / kind of this container
     c.kind = massGate(part, now);
     const th = mass.th.get(part);
     const Tgas = c.T0 + 0.5 * ((th ? th.Tw : c.T0) - c.T0);
@@ -7419,9 +7430,9 @@ function massStep(dt, now) {
     if (cont && c.m < c.m0) c.m = c.m0;
     if (c.kind === 'nozzle') K = Math.max(K, c.flow);
   }
-  mass.K = K;
+  mass.K = pfsAnyPressure() ? pfsEmitK() : K;
   // wall thermal state + stress
-  const chamberHot = K > 0.02;
+  const chamberHot = mass.K > 0.02;
   const ch = state.parts.find(p => p.type === 'chamber');
   const cfg = PROP_PRESETS[plume.key];
   const Tch = ch ? (ch.tempK > 300 ? ch.tempK : (cfg ? cfg.Tc : 288)) : 288;
@@ -7483,8 +7494,8 @@ function massFrame(inst, now) {
   if (!state.simRunning || !mass.on) { if (mass.lastUI) { mass.lastUI = 0; const el = document.getElementById('massStatus'); if (el) el.innerHTML = ''; } return; }
   if (!mass.lastAt) mass.lastAt = now;
   const dt = Math.min((now - mass.lastAt) / 1000, 0.1); mass.lastAt = now;
-  if (dt > 0) massStep(dt, now);
-  if (now - mass.lastSync > 100) { mass.lastSync = now; massSync(); }
+  if (dt > 0) { if (pfsAnyPressure()) pfsFrame(dt, now); massStep(dt, now); }
+  if (now - mass.lastSync > 100) { mass.lastSync = now; if (!pfsAnyPressure()) massSync(); }
   if (now - mass.lastUI > 300) {
     mass.lastUI = now;
     const el = document.getElementById('massStatus'); if (el) el.innerHTML = massStatusHtml();
@@ -8066,6 +8077,7 @@ function upstreamContents(part, depth) {
   return fallback || part.contents || '';
 }
 function chamberMixture(ch) {
+  if (pfsAnyPressure()) { const pm = pfsMixture(ch); if (pm) return pm; }   // pressure solver: what actually arrives at the chamber
   // Combustion needs both fuel and oxidizer. Sum the mass flow of each
   // arriving at the chamber, traced from the container contents setting.
   if (!state.channelFlows) return { mFuel: 0, mOx: 0, of: 0, mdot: 0 };
@@ -8118,6 +8130,7 @@ function chamberInflowPsi(ch, cfg) {
 // Chamber pressure (psi) from the highest-priority source: the pressure the propellant inflow actually produces, then an
 // explicitly set value (chamberExplicitPcPsi), then the selected propellant preset.
 function chamberPcPsi(ch, cfg) {
+  if (pfsAnyPressure()) { const n = pfsChamberNode(ch); if (n) return n.P / PSI_PA; }   // pressure solver: the chamber gas node
   const fromFlow = chamberInflowPsi(ch, cfg);
   if (fromFlow > 0) return fromFlow;
   const ex = chamberExplicitPcPsi(ch);
@@ -8133,7 +8146,7 @@ function plumeCurrentDerived() {
   // Prefer the pressure the inflow actually produces; fall back to the
   // part setting, then the preset. No synthetic override.
   const pc = chamberPcPsi(c.ch, cfg);
-  const kPc = mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1;
+  const kPc = pfsAnyPressure() ? 1 : (mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1);   // pressure solver: chamberPcPsi is already the real Pc
   const D = plumeDerive(cfg, pc * kPc, c.ch.tempK > 300 ? c.ch.tempK : cfg.Tc, pa, F.re);
   return { D, F, c };
 }
@@ -8780,6 +8793,7 @@ playBtn.onclick = async () => {
     state.simRunning = true;
     // Plume follows the chamber that has inflow; no forced preset.
     massBuild();
+    pfsActivate();   // pressure solver (no-op unless ?solver=pressure / the checkbox)
     liveWatchStart();
     setPartsGlass(true);
     playBtn.textContent = '■ Stop';
@@ -9564,7 +9578,14 @@ class PressureFlowSim {
     const a = 1 - Math.exp(-h / 0.01);
     c.T += (Tt - c.T) * a; c.R += (Rt - c.R) * a; c.gamma += (gt - c.gamma) * a; c.burn = w;
   }
-  advance(dt, cont) { this.step(dt * this.timeScale, cont); pfsSyncMass(this); }
+  advance(dt, cont) { this.step(dt * this.timeScale, cont); this.updateEmission(); pfsSyncMass(this); }
+  // emission strength K = actual nozzle mass flow / the preset's design mass flow (pc_design * At / c*), 0..1; drives plume emission
+  updateEmission() {
+    let K = 0, tot = 0;
+    const cstar = characteristicVelocity(this.cfg.gamma, this.cfg.mw, this.cfg.Tc);
+    for (const e of this.edges) if (e.kind === 'throat') { tot += e.mdot; K = Math.max(K, e.mdot / Math.max(this.cfg.pcPsi * PSI_PA * e.A / cstar, 1e-12)); }
+    this.K = Math.min(K, 1); this.emit = tot;
+  }
   chamberNode(part) { return this.nodeOf.get(part) || null; }
 }
 
@@ -9592,6 +9613,7 @@ function pfsSnapshot(inst) {
 }
 function pfsActivate() {
   const want = pfsWanted();
+  getActiveInstance();   // make sure the instance registry exists
   for (const inst of state.instances || []) {
     if (want) { inst.solverMode = 'pressure'; inst.solver = new PressureFlowSim(inst); inst.ltcbp = []; }
     else { inst.solverMode = 'baked'; inst.solver = null; }
@@ -9606,9 +9628,27 @@ function pfsAdvanceAll(sec, dt) {
   dt = dt || 0.05; const cont = massContinuous();
   for (let t = 0; t < sec - 1e-9; t += dt) for (const inst of pfsInstances()) inst.solver.advance(Math.min(dt, sec - t), cont);
 }
+
+// ---- hooks used by massStep / massFrame / chamberPcPsi / chamberMixture (all gated on pfsAnyPressure) ----
+function pfsChamberNode(ch) {
+  for (const i of pfsInstances()) { const n = i.solver.nodeOf.get(ch); if (n) return n; }
+  return null;
+}
+function pfsEmitK() { let K = 0; for (const i of pfsInstances()) K = Math.max(K, i.solver.K); return K; }
+function pfsMixture(ch) {
+  const n = pfsChamberNode(ch); if (!n) return null;
+  const mFuel = n.inFuel, mOx = n.inOx;
+  return { mFuel, mOx, of: mFuel > 0 ? mOx / mFuel : 0, mdot: mFuel + mOx };
+}
+function pfsFrame(dt, now) {
+  const cont = massContinuous();
+  const el = document.getElementById('solverTimeScale'), ts = el ? Math.max(parseFloat(el.value) || 1, 0.001) : 1;
+  for (const inst of pfsInstances()) { inst.solver.timeScale = ts; inst.solver.advance(Math.min(dt, 0.1), cont); }
+}
+{ const el = pfsSolverEl(); if (el && new URLSearchParams(location.search).get('solver') === 'pressure') el.checked = true; }
 // <pfs:end>
 
-window.arcFlowDebug = { readParticles: debugReadParticlePositions };
+window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked' });
 
 // Expose for debugging / follow-on iteration
 window.arcFlow = { state, loadFile, loadDemo, clearScene, detectOpenings, computeVolume, runSealCheck, buildCollisionSDF, signedDistanceToMesh, buildTriangleSpatialIndex, sampleSDFGrid, subdivideLargeTris, adaptiveGridRes, buildFlowGraph, detectAutoPenetrationJoints, detectPenetrationJoint, cavitiesAreConnected, live, follow, followTick, followOwnedCentroid, liveUpdate, liveKick, fitTubeForPart, diagnoseLinks, buildTubeSet, tubeProbeSegs, solveChannelFlow, leakJet, computeChannelFlows, gsMesh: () => gsMesh, setRenderMode, plume, plumeDerive, PROP_PRESETS, applyPropPreset, Instance, detectInstances, getActiveInstance, setActiveInstance, instanceComponents, setSystemGrouping: (g) => { state.systemGrouping = g || null; invalidateInstances('links'); }, describeInstances, instancesReadout, instances: () => state.instances };

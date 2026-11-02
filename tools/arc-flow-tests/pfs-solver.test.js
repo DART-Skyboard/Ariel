@@ -50,7 +50,7 @@ function makeEnv(sc, opts = {}) {
   const ctx = {
     THREE: { Vector3: V3 },
     state: { flowUnitM: opts.unit || 0.0254, currentLinks: sc.links, sdf: { tubes: { byPart: sc.tubes } }, instances: [], simRunning: true },
-    atmoPsiEl: atm, window: {}, mass: { c: new Map() }, massContinuous: () => !!opts.cont,
+    atmoPsiEl: atm, window: {}, document: { getElementById: () => null }, location: { search: '' }, mass: { c: new Map() }, massContinuous: () => !!opts.cont,
     computeVolume: (p) => p.vol,
     PROP_PRESETS: { rocket_bell: { pcPsi: 1200, Tc: 3500, gamma: 1.22, mw: 22, eps: 6 } }, plume: { key: 'rocket_bell' }, PC_DEFAULT_PRESET: 'rocket_bell',
     console, Math,
@@ -58,7 +58,7 @@ function makeEnv(sc, opts = {}) {
   vm.createContext(ctx);
   const pre = ['PSI_PA', 'FLOW_UNIT_M_DEFAULT', 'R_UNIV', 'G_MOL_TO_KG', 'AT_MIN_M2'].map(n => constLine(src, n)).join('\n');
   const flu = src.slice(src.indexOf('const FLUID_PROPS = {'), src.indexOf('};', src.indexOf('const FLUID_PROPS = {')) + 2);
-  vm.runInContext(pre + '\n' + flu + '\n' + fn(src, 'asLinkArray') + '\n' + fn(src, 'allLinks') + '\n' + fn(src, 'linkTarget') + '\n' + fn(src, 'solveChannelFlow') +
+  vm.runInContext(pre + '\n' + flu + '\n' + fn(src, 'asLinkArray') + '\n' + fn(src, 'allLinks') + '\n' + fn(src, 'linkTarget') + '\n' + fn(src, 'solveChannelFlow') + '\n' + fn(src, 'characteristicVelocity') +
     '\nfunction openingLiveCentroid(o){return o.centroid;} function openingLiveNormal(o){return o.normal;} function penIndexForPart(){return null;}' +
     '\n' + region(src, 'pfs') + '\nthis.__api = { PressureFlowSim, pfsBuildNetwork, pfsGasMdot, pfsSnapshot, pfsChamberAxis };', ctx);
   const inst = { parts: sc.parts, links: sc.links, solverMode: 'pressure', solver: null, ltcbp: [] };
