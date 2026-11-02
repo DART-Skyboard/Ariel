@@ -213,7 +213,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v61</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v62</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -2101,6 +2101,8 @@ function runSealCheck() {
 // ═══════════════════════════════════════════════════════════════════════
 
 const PEN_SAMPLE_RES = 9;        // samples per axis across an overlap box — small on purpose: the box is just the region two surfaces cross in
+const PEN_REFINE_CANDIDATES = 3;  // near-miss probe samples refined locally (thin cavity overlaps)
+const PEN_REFINE_LEVELS = 3;      // each level re-samples 3^3 points at 1/3 the pitch (27x finer after 3 levels)
 const PEN_MIN_OVERLAP = 0.15;    // require real overlap; a sliver or shared face is not a penetration
 
 let _penIndexCache = new WeakMap(); // part -> spatial index (reset with the world-triangle cache)
@@ -2116,8 +2118,33 @@ function penIndexForPart(part) {
 
 function partWorldAABB(part) {
   const box = new THREE.Box3();
-  for (const m of part.meshes) box.expandByObject(m);
+  // Meshes only: a Points/Line/Sprite child must not inflate the box the overlap test is gated on.
+  for (const m of part.meshes) m.traverse(o => { if (o.isMesh) box.expandByObject(o); });
   return box;
+}
+
+// Local adaptive refinement around a probe near-miss: samples a 3^3 cube (side = cell) around `p0`, returns the
+// first point inside BOTH meshes, else recentres on the sample closest to being inside both and repeats at 1/3 the
+// cell size. Returns null when no level finds one (a real gap, not a sampling miss). Cost is bounded:
+// at most levels * 27 * 2 nearest-surface queries per candidate, and only for candidates the coarse probe flagged.
+function refineThinOverlap(p0, cell, indexA, indexB, levels) {
+  let c = p0.clone(), s = cell;
+  for (let lv = 0; lv < levels; lv++) {
+    const step = s / 3;
+    let best = null, bestScore = Infinity;
+    for (let k = -1; k <= 1; k++) for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+      const p = new THREE.Vector3(c.x + i * step, c.y + j * step, c.z + k * step);
+      const dA = signedDistanceToMesh(p, indexA);
+      if (dA >= s) continue;
+      const dB = signedDistanceToMesh(p, indexB);
+      if (dA < 0 && dB < 0) return p;
+      const sc = Math.max(dA, dB);
+      if (sc < bestScore) { bestScore = sc; best = p; }
+    }
+    if (!best) return null;
+    c = best; s = step;
+  }
+  return null;
 }
 
 // True iff one 6-connected component of non-zero labels contains BOTH a
@@ -2207,10 +2234,33 @@ function detectPenetrationJoint(partA, partB) {
   const isFlowPair = (partA.type === 'pipe' || partB.type === 'pipe' ||
                       partA.type === 'chamber' || partB.type === 'chamber');
   const PROBE = isFlowPair ? 7 : 5;
+  const pitch = Math.max(size.x, size.y, size.z) / PROBE;
+  // hitPts: points PROVEN inside BOTH meshes (probe hit or adaptive refinement). They anchor the joint when the
+  // 9^3 labeling grid happens to straddle a thin overlap and records no label-3 sample of its own.
+  const hitPts = [];
+  const near = []; // near-misses (inside/just outside A, within one pitch of B): candidates for local refinement
   let overlapsInVolume = false;
-  for (let z = 0; z < PROBE && !overlapsInVolume; z++) for (let y = 0; y < PROBE && !overlapsInVolume; y++) for (let x = 0; x < PROBE; x++) {
+  probe: for (let z = 0; z < PROBE; z++) for (let y = 0; y < PROBE; y++) for (let x = 0; x < PROBE; x++) {
     const p = sampleAt(PROBE, x, y, z);
-    if (signedDistanceToMesh(p, indexA) < 0 && signedDistanceToMesh(p, indexB) < 0) { overlapsInVolume = true; break; }
+    const dA = signedDistanceToMesh(p, indexA);
+    // Non-flow pairs keep the original cheap test (B is only queried where A says "inside"); flow pairs
+    // (thin pipe cavities) also query B for samples just OUTSIDE A so a near-miss can be refined below.
+    if (dA >= (isFlowPair ? pitch : 0)) continue;
+    const dB = signedDistanceToMesh(p, indexB);
+    if (dA < 0 && dB < 0) { overlapsInVolume = true; hitPts.push(p); break probe; }
+    const score = Math.max(dA, dB);
+    if (score < pitch) near.push({ p, score });
+  }
+  // Adaptive refinement, ONLY where needed: a thin cavity can slip between probe samples. Instead of the old
+  // "AABBs cross => force a joint" guess (which linked any pipe that merely brushed a tank's bounding box,
+  // e.g. a helium tank -> propellant feed line), re-sample just around the closest near-misses, 3^3 points per
+  // level, shrinking 3x per level, and accept ONLY a point that is inside both real meshes.
+  if (!overlapsInVolume && isFlowPair && near.length) {
+    near.sort((u, v) => u.score - v.score);
+    for (const c of near.slice(0, PEN_REFINE_CANDIDATES)) {
+      const hit = refineThinOverlap(c.p, pitch, indexA, indexB, PEN_REFINE_LEVELS);
+      if (hit) { overlapsInVolume = true; hitPts.push(hit); break; }
+    }
   }
   if (!overlapsInVolume) return null; // boxes overlap, cavities never share volume
 
@@ -2225,35 +2275,10 @@ function detectPenetrationJoint(partA, partB) {
     pts[i] = p;
   }
 
-  let sealed = cavitiesAreConnected(labels, res);
-  // Boolean intersection: pure cavity overlap (label-3) with no exclusive
-  // bridge still counts as a connecting joint. Closed pipes pushed through
-  // a tank (no manual hole) often have only a thin shared cavity, so any
-  // label-3 sample is enough to expose an opening.
-  let label3 = 0;
-  for (let i = 0; i < labels.length; i++) if (labels[i] === 3) label3++;
-  const overlapVoxels = label3;
-  if (!sealed && overlapVoxels >= 1) sealed = true; // auto Boolean port
-  // Wall-penetration fallback: a closed channel pushed through a container
-  // or chamber may have its cavity overlap thinner than the sample pitch.
-  // If the AABBs cross and either part is a channel, force a sealed joint
-  // at the overlap centroid so the automation drafts the opening.
-  if (!sealed) {
-    const flowTypes = { pipe: 1, container: 1, chamber: 1 };
-    if (flowTypes[partA.type] && flowTypes[partB.type] &&
-        (partA.type === 'pipe' || partB.type === 'pipe')) {
-      // Check for any mesh-wall crossing: a sample inside one and near the other
-      let near = 0;
-      for (let i = 0; i < labels.length && near < 2; i++) {
-        if (labels[i] === 1 || labels[i] === 2) near++;
-      }
-      if (near >= 2 && overlapVoxels === 0) {
-        // No shared cavity sample, but exclusive interiors exist in the
-        // overlap box — treat as a pushed-through joint and expose it.
-        sealed = true;
-      }
-    }
-  }
+  // Boolean intersection: the two cavities share real volume (a point proven inside BOTH meshes above), so
+  // even with no exclusive A->B bridge the shared volume itself is the connecting opening. There is NO
+  // AABB-only fallback any more: bounding boxes crossing proves nothing about the meshes.
+  const sealed = cavitiesAreConnected(labels, res) || overlapsInVolume;
 
   // Wall-crossing zone. The part that passes THROUGH the other has
   // exclusive samples only at its cross-section (the pipe outside the
@@ -2270,7 +2295,8 @@ function detectPenetrationJoint(partA, partB) {
   }
   const c1 = contacts[1].length, c2 = contacts[2].length;
   const zone = c1 && c2 ? (c1 <= c2 ? contacts[1] : contacts[2]) : (c1 ? contacts[1] : contacts[2]);
-  const use = zone.length ? zone : pts.filter((_, i) => labels[i] === 3);
+  let use = zone.length ? zone : pts.filter((_, i) => labels[i] === 3);
+  if (!use.length) use = hitPts; // thin overlap only the probe/refinement saw
   const centroid = new THREE.Vector3();
   const zb = new THREE.Box3();
   for (const p of use) { centroid.add(p); zb.expandByPoint(p); }
@@ -2292,25 +2318,14 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
   for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
     const a = parts[i], b = parts[j];
     if (skipPair && skipPair(a, b)) continue;
+    if (boxes.get(a).isEmpty() || boxes.get(b).isEmpty()) continue;           // no mesh geometry: nothing to Boolean
     if (!boxes.get(a).intersectsBox(boxes.get(b))) continue; // before any triangle access
     const r = detectPenetrationJoint(a, b);
     if (r && r.sealed) { sealedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius }); continue; }
-    // Channel pushed through a container or chamber: even if the cavity
-    // sample missed, a significant AABB cross means the automation should
-    // draft the joint. Use the overlap centroid and a bore-sized radius.
-    const isChan = (a.type === 'pipe' || b.type === 'pipe');
-    const isRecv = (a.type === 'container' || a.type === 'chamber' || b.type === 'container' || b.type === 'chamber');
-    if (isChan && isRecv) {
-      const boxA = boxes.get(a), boxB = boxes.get(b);
-      const overlap = boxA.clone().intersect(boxB);
-      if (!overlap.isEmpty()) {
-        const c = new THREE.Vector3(); overlap.getCenter(c);
-        const sz = new THREE.Vector3(); overlap.getSize(sz);
-        const radius = Math.max(Math.min(sz.x, sz.y, sz.z) * 0.35, 0.03);
-        sealedPairs.push({ partA: a, partB: b, centroid: c, radius });
-        continue;
-      }
-    }
+    // AABB overlap alone is never a joint. (A previous "channel x container/chamber" fallback synthesized one at
+    // the AABB-overlap centre whenever the cavity sample missed; it linked pipes that only brushed a tank's
+    // bounding box and, since containers rank upstream, produced false helium -> pipe hits. Thin real overlaps
+    // are now found by adaptive refinement inside detectPenetrationJoint.)
     if (r) rejectedPairs.push({ partA: a, partB: b, centroid: r.centroid, radius: r.radius });
   }
   return { sealedPairs, rejectedPairs };
@@ -2339,117 +2354,180 @@ const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture
 // system above (they're referenced during initial setup).
 
 
-// A part may feed several downstream parts (multiple channels, multiple
-// chambers). links values are either a single link object or an array.
-// Consumers that only need one path call firstLink; the joint report
-// and region collector walk all of them.
+// ═══════════════════════════════════════════════════════════════════════
+//  FLOW GRAPH: a DIRECTED, BRANCHING PRESSURE GRAPH
+//
+//  links: Map(fromPart -> Link[])   (always an ARRAY of outgoing links, "from -> many")
+//  Link = { target, viaOpening, entrance, kind, from, [auto, boolean] }
+//    kind: 'pressurant' | 'propellant' | 'mixed' — what the edge carries.
+//      Containers decide it from their own contents (helium => pressurant, anything else => propellant); pipes and
+//      chambers inherit from whatever feeds them (fixed-point over the graph). A helium tank -> propellant tank
+//      edge is therefore PRESSURANT (ullage push), the propellant tank -> feed pipe -> chamber edges are PROPELLANT.
+//  links.nodes: Map(part -> { part, role, kind, pressurizedBy })  (also state.flowNodes)
+//
+//  Older code paths store a single link object per part; every consumer goes through asLinkArray / firstLink /
+//  allLinks so both shapes still work. firstLink() prefers a propellant edge (particle paths walk to the nozzle).
+// ═══════════════════════════════════════════════════════════════════════
+
+// <flowgraph:begin>
+function asLinkArray(v) { return !v ? [] : (Array.isArray(v) ? v : [v]); }
 function firstLink(links, part) {
-  const v = links && links.get(part);
-  return Array.isArray(v) ? v[0] : v;
+  const v = asLinkArray(links && links.get(part));
+  return v.find(l => l.kind === 'propellant') || v[0];
 }
-function allLinks(links, part) {
-  const v = links && links.get(part);
-  return !v ? [] : (Array.isArray(v) ? v : [v]);
+function allLinks(links, part) { return asLinkArray(links && links.get(part)); }
+
+// Appends `link` to links[from] (branching). Returns false for an exact duplicate (same target through the same opening).
+function addFlowLink(links, from, link) {
+  let arr = links.get(from);
+  if (!arr) { arr = []; links.set(from, arr); }
+  else if (!Array.isArray(arr)) { arr = [arr]; links.set(from, arr); }
+  const id = link.viaOpening && link.viaOpening.id;
+  if (arr.some(l => l.target === link.target && (l.viaOpening && l.viaOpening.id) === id)) return false;
+  arr.push(link);
+  return true;
+}
+
+// Tags every edge and node pressurant / propellant (see the block above). Mutates the links in place.
+function tagFlowGraph(links, parts) {
+  const nodes = new Map();
+  const seed = (p) => p.type === 'container' ? (p.contents === 'helium' ? 'pressurant' : 'propellant') : null;
+  for (const p of parts) nodes.set(p, { part: p, role: p.type === 'container' ? (p.contents === 'helium' ? 'pressurant-source' : 'propellant-tank') : p.type === 'chamber' ? 'chamber' : 'line', kind: seed(p), pressurizedBy: [] });
+  const edges = [];
+  for (const [from, v] of links) for (const l of asLinkArray(v)) { l.from = from; l.kind = undefined; edges.push(l); }
+  const incoming = (p) => edges.filter(l => l.target === p);
+  const combine = (kinds) => { const u = [...new Set(kinds.filter(Boolean))]; return u.length === 0 ? null : (u.length === 1 ? u[0] : 'mixed'); };
+  // What does `p` push out through its exit openings?
+  const outKind = (p) => seed(p) || combine(incoming(p).map(l => l.kind)) || 'propellant'; // unfed line/chamber: feed lines default to propellant
+  for (let iter = 0; iter <= parts.length; iter++) {
+    let changed = false;
+    for (const l of edges) { const k = outKind(l.from); if (l.kind !== k) { l.kind = k; changed = true; } }
+    if (!changed) break;
+  }
+  for (const [p, n] of nodes) {
+    const inc = incoming(p);
+    if (!n.kind) n.kind = combine(inc.map(l => l.kind)) || 'propellant';
+    // A reservoir keeps its own kind; it is merely PRESSURIZED by whatever pressurant edges feed it.
+    if (p.type === 'container') n.pressurizedBy = inc.filter(l => l.kind === 'pressurant' && l.from !== p).map(l => l.from);
+    else if (n.kind === 'pressurant' && inc.some(l => l.kind === 'propellant')) n.kind = 'mixed';
+  }
+  links.nodes = nodes;
+  return links;
+}
+
+// Heuristic upstream-first ordering for AUTO links (geometry alone doesn't say which side is upstream):
+// pressurant tank -> propellant tank -> pipe -> chamber.
+function flowRank(p) {
+  if (p.type === 'container') return p.contents === 'helium' ? -0.5 : 0;
+  return ({ pipe: 1, chamber: 2 })[p.type] ?? 1;
 }
 
 function buildFlowGraph() {
   refreshAllOpenings();
-  // part -> { entrancePart, exitTargetPart } via nearest opening match
-  const links = new Map(); // exitingPart -> { targetPart, viaOpening }
+  // fromPart -> Link[] (directed, branching). Manual pass: EVERY exit opening links to its nearest entrance on
+  // another part. (This used to be one link per part: only the first exit was looked at.)
+  const links = new Map();
   for (const part of state.parts) {
-    const exitOpening = part.openings.find(o => o.role === 'exit');
-    if (!exitOpening) continue;
-    let best = null, bestDist = Infinity;
-    for (const other of state.parts) {
-      if (other === part) continue;
-      const entrance = other.openings.find(o => o.role === 'entrance');
-      if (!entrance) continue;
-      const d = exitOpening.centroid.distanceTo(entrance.centroid);
-      if (d < bestDist) { bestDist = d; best = { other, entrance }; }
+    for (const exitOpening of part.openings.filter(o => o.role === 'exit')) {
+      let best = null, bestDist = Infinity;
+      for (const other of state.parts) {
+        if (other === part) continue;
+        const entrance = other.openings.find(o => o.role === 'entrance');
+        if (!entrance) continue;
+        const d = exitOpening.centroid.distanceTo(entrance.centroid);
+        if (d < bestDist) { bestDist = d; best = { other, entrance }; }
+      }
+      if (best) addFlowLink(links, part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
     }
-    if (best) links.set(part, { target: best.other, viaOpening: exitOpening, entrance: best.entrance });
   }
 
-  // Auto-penetration pass (see "AUTO-PENETRATION JOINT DETECTION"): parts
-  // geometrically fitted together with no marked opening pair get a link
-  // synthesized from their real mesh overlap, in the same { target,
-  // viaOpening, entrance } shape the manual pass produces, so
-  // buildParticlePath and collectJointRegions (fine SDF box at the joint)
-  // treat it exactly like a manually sealed joint.
+  // Auto-penetration pass (see "AUTO-PENETRATION JOINT DETECTION"): parts geometrically fitted together with no
+  // marked opening pair get a link synthesized from their real mesh overlap, in the same { target, viaOpening,
+  // entrance } shape the manual pass produces, so buildParticlePath and collectJointRegions (fine SDF box at the
+  // joint) treat it exactly like a manually sealed joint.
   //
-  // Pairs already joined by a REAL link (either direction) are skipped
-  // entirely: the manual system stays the source of truth, and — found in
-  // testing on the bundled demo — re-testing them would report working
-  // joints as "touching with no fluid path". A part may still gain an auto
-  // link to a neighbour if it has no manual link to THAT neighbour.
+  // Pairs already joined by a REAL link (either direction) are skipped entirely: the manual system stays the
+  // source of truth, and re-testing them would report working joints as "touching with no fluid path".
   const manualPair = (a, b) => allLinks(links, a).some(l => l.target === b) || allLinks(links, b).some(l => l.target === a);
   const { sealedPairs, rejectedPairs } = detectAutoPenetrationJoints(null, manualPair);
   state.autoPenetrationSealed = [];
   state.autoPenetrationRejected = rejectedPairs; // shown by renderJointReport + the post-bake notice
-  // The geometry doesn't say which side is upstream. Heuristic: flow runs
-  // container -> pipe -> chamber (rank by type); equal types keep A -> B.
-  // links is keyed by the EXITING part, so each part gets one outgoing
-  // link: if the chosen upstream part already has one, the pair is left
-  // unlinked (reported via autoPenetrationSkipped) rather than overriding it.
-  const rank = { container: 0, pipe: 1, chamber: 2 };
   state.autoPenetrationSkipped = [];
+  for (const p of state.parts) if (p.userData) p.userData._autoJoint = false; // stale flags from an earlier bake must not force fine tessellation everywhere
   for (const { partA, partB, centroid, radius } of sealedPairs) {
     let from = partA, to = partB;
-    if ((rank[partB.type] ?? 1) < (rank[partA.type] ?? 1)) { from = partB; to = partA; }
-    // A container may feed several channels. Only skip if this exact
-    // pair is already linked; otherwise allow the additional channel.
-    if (links.has(from)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
-    // Synthetic openings: buildParticlePath/collectJointRegions only read
-    // centroid + radius from a resolved link.
-    const mk = (role) => ({ id: 'autopen', centroid: centroid.clone(), radius, normal: new THREE.Vector3(0, 1, 0), role });
-    // Tag both parts so collectJointRegions can request higher tessellation
-    // for this Boolean intersection joint (seal the walls, open the cavity).
+    if (flowRank(partB) < flowRank(partA)) { from = partB; to = partA; }
+    // Synthetic openings sit AT the real mesh overlap and face along the from -> to flow axis (buildParticlePath /
+    // collectJointRegions / diagnoseLinks read centroid, radius and normal from a resolved link).
+    const axis = partCentroid(to).sub(partCentroid(from));
+    if (axis.lengthSq() < 1e-12) axis.set(0, -1, 0);
+    axis.normalize();
+    const id = 'autopen:' + from.name + '>' + to.name;
+    const mk = (role) => ({ id, centroid: centroid.clone(), radius, normal: axis.clone(), role, synthetic: true });
     from.userData = from.userData || {}; from.userData._autoJoint = true;
     to.userData = to.userData || {}; to.userData._autoJoint = true;
     const entry = { target: to, viaOpening: mk('exit'), entrance: mk('entrance'), auto: true, boolean: true };
-    const existing = links.get(from);
-    if (!existing) links.set(from, entry);
-    else if (Array.isArray(existing)) {
-      if (existing.some(l => l.target === to)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
-      existing.push(entry);
-    } else if (existing.target === to) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
-    else links.set(from, [existing, entry]);
+    // Branching: a part may feed any number of parts. (A `links.has(from)` skip used to run before the append,
+    // so only a part's FIRST link ever survived and the array-append branch below it was dead code.)
+    if (!addFlowLink(links, from, entry)) { state.autoPenetrationSkipped.push({ partA, partB }); continue; }
     state.autoPenetrationSealed.push({ partA: from, partB: to, centroid, radius });
   }
+  tagFlowGraph(links, state.parts.filter(p => p.type));
+  state.flowNodes = links.nodes;
   return links;
 }
+// <flowgraph:end>
 
-// Joint report (left panel): every link buildFlowGraph resolved, marked
-// "marked" (manual opening pair) or "auto" (found from mesh overlap), plus
-// parts whose meshes overlap with no fluid path between them. Uses the
-// .seal-ok / .seal-bad styles.
+// <jointreport:begin>
+// Joint report (left panel): every link buildFlowGraph resolved, marked "marked" (manual opening pair) or "auto"
+// (found from mesh overlap) and grouped PRESSURANT (helium pushing the propellant tanks) vs PROPELLANT (the liquid
+// path to the chamber), plus parts whose meshes overlap with no fluid path between them.
+// Uses the .seal-ok / .seal-bad styles.
+const FLOW_KIND_STYLE = {
+  pressurant: { label: 'pressurant', color: '#b9a4ff' },
+  propellant: { label: 'propellant', color: '#ffb454' },
+  mixed:      { label: 'mixed',      color: '#9fe6d6' },
+};
+function flowKindBadge(kind) {
+  const k = FLOW_KIND_STYLE[kind] || FLOW_KIND_STYLE.propellant;
+  return `<b style="color:${k.color}">[${k.label}]</b>`;
+}
 function renderJointReport() {
   const el = document.getElementById('jointReport');
   if (!el) return;
   const links = state.currentLinks || new Map();
-  const rows = [];
+  const groups = { pressurant: [], propellant: [], mixed: [] };
   for (const [part, linkOrArr] of links.entries()) {
-    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
-    for (const link of linkList) {
-    const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
-    if (lk) {
-      // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
-      rows.push(`<div class="seal-bad">✗ ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${lk.vJet.toFixed(0)} m/s${lk.jetChoked ? ' (choked)' : ''}, ${(lk.mdot * 1000).toFixed(0)} g/s through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
-      continue;
+    for (const link of asLinkArray(linkOrArr)) {
+      const kind = groups[link.kind] ? link.kind : 'propellant';
+      const badge = flowKindBadge(kind);
+      const lk = typeof liveGroupFor === 'function' ? liveGroupFor(part) : null;
+      if (lk && (!lk.target || lk.target === link.target)) {
+        // Live seal break (a part was moved mid-simulation): see "LIVE PRESSURE-DRIVEN LEAKS".
+        groups[kind].push(`<div class="seal-bad">✗ ${badge} ${part.name} → ${link.target.name} <b>leaking</b> <span style="opacity:.8">gap ${lk.gapDist.toFixed(2)} · ${Math.max(lk.P0 * (lk.nTotal ? lk.nInside / lk.nTotal : 0), 0).toFixed(0)} psi left of ${lk.P0.toFixed(0)}${lk.vJet ? ` · jet ${lk.vJet.toFixed(0)} m/s${lk.jetChoked ? ' (choked)' : ''}, ${(lk.mdot * 1000).toFixed(0)} g/s through Ø${((lk.holeR || 0) * 2).toFixed(2)}` : ''}</span></div>`);
+        continue;
+      }
+      const how = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
+      const what = kind === 'pressurant' ? (link.target.type === 'container' ? 'pressurizes' : 'carries helium') : kind === 'mixed' ? 'carries pressurant + propellant' : '';
+      groups[kind].push(`<div class="seal-ok">✓ ${badge} ${part.name} → ${link.target.name} <span style="opacity:.6">(${how}${what ? ' · ' + what : ''})</span></div>`);
     }
-    const kind = link.boolean ? 'auto-drafted Boolean joint' : (link.auto ? 'auto, from mesh overlap' : 'marked openings');
-    rows.push(`<div class="seal-ok">✓ ${part.name} → ${link.target.name} <span style="opacity:.6">(${kind})</span></div>`);
-    }
+  }
+  const rows = [];
+  const heads = { pressurant: 'Pressurant path (helium → tanks)', propellant: 'Propellant path (tanks → chamber)', mixed: 'Mixed pressurant / propellant' };
+  for (const k of ['pressurant', 'propellant', 'mixed']) {
+    if (!groups[k].length) continue;
+    rows.push(`<div class="sec-sub" style="margin-top:6px;color:${FLOW_KIND_STYLE[k].color}">${heads[k]}</div>`, ...groups[k]);
   }
   for (const r of (state.autoPenetrationRejected || [])) {
     rows.push(`<div class="seal-bad">✕ ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">touch/overlap, but no fluid path between them</span></div>`);
   }
   for (const r of (state.autoPenetrationSkipped || [])) {
-    rows.push(`<div class="seal-bad">! ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">overlap connects them, but both already have an outgoing link</span></div>`);
+    rows.push(`<div class="seal-bad">! ${r.partA.name} ↔ ${r.partB.name} <span style="opacity:.8">overlap joint was already linked (duplicate skipped)</span></div>`);
   }
   el.innerHTML = rows.length ? rows.join('') : '<div class="sec-sub">No joints found. Mark openings, or fit parts so their meshes overlap.</div>';
   renderChannelFlowReport();
 }
+// <jointreport:end>
 
 // "Water hose" read-out for every fitted thin channel (see "THIN CHANNELS"): bore, length, exit speed, mass flow.
 function renderChannelFlowReport() {
@@ -2498,13 +2576,16 @@ function computePartHeatLevels(links) {
   for (const part of state.parts) {
     if (!part.type) continue;
     if (part === chamber) { heat.set(part, 1.0); continue; }
-    let hops = 0, cur = part, guard = 0, reached = false;
-    while (guard++ < 20) {
-      const link = links.get(cur);
-      if (!link) break;
-      cur = link.target;
+    // Shortest hop count to the chamber over the branching graph (BFS; a part may feed several parts).
+    let hops = 0, reached = false, frontier = [part]; const seen = new Set([part]);
+    while (frontier.length && hops < 20 && !reached) {
       hops++;
-      if (cur === chamber) { reached = true; break; }
+      const next = [];
+      for (const cur of frontier) for (const l of allLinks(links, cur)) {
+        if (l.target === chamber) { reached = true; break; }
+        if (!seen.has(l.target)) { seen.add(l.target); next.push(l.target); }
+      }
+      frontier = next;
     }
     heat.set(part, reached ? Math.max(0.15, 1 - hops * 0.22) : 0.1);
   }
@@ -2718,6 +2799,7 @@ function worldTrianglesForPart(part) {
   tris = [];
   for (const mesh of part.meshes) {
     const geo = mesh.geometry;
+    if (!mesh.isMesh || !geo || !geo.attributes || !geo.attributes.position) continue; // Boolean/overlap tests apply to meshes only (not points/lines/groups)
     const pos = geo.attributes.position;
     const idx = geo.index ? geo.index.array : null;
     const wm = mesh.matrixWorld;
@@ -3609,7 +3691,10 @@ function upstreamFluidOf(part) {
     if (own && own !== 'helium') { best = cur; break; }
     if (own && !best) best = cur;
     let up = null;
-    if (links) for (const [p, l] of links) if (l.target === cur) { up = p; break; }
+    if (links) { // nearest feeder; prefer a propellant edge over a pressurant one (a helium tank only pressurizes)
+      let upKind = null;
+      for (const [p, v] of links) for (const l of asLinkArray(v)) if (l.target === cur && (!up || (l.kind === 'propellant' && upKind !== 'propellant'))) { up = p; upKind = l.kind; }
+    }
     if (!up) break;
     cur = up;
   }
@@ -3736,7 +3821,7 @@ function collectJointRegions(links, cap, tubeSet) {
   const regions = [];
   const seen = new Set();
   const maxRegions = cap == null ? SDF_MAX_FINE_REGIONS : cap;
-  const addRegion = (center, radius, partsInvolved) => {
+  const addRegion = (center, radius, partsInvolved, refine) => {
     if (regions.length >= maxRegions) return;
     const key = center.x.toFixed(2)+','+center.y.toFixed(2)+','+center.z.toFixed(2);
     if (seen.has(key)) return;
@@ -3752,7 +3837,9 @@ function collectJointRegions(links, cap, tubeSet) {
     // while leaving the cavity connection open. The bake uses this
     // higher resolution; the live fluid then sees a clean, leak-free
     // path at the assigned physics.
-    const isAuto = partsInvolved.some(pt => pt && pt.userData && pt.userData._autoJoint);
+    // `refine` is per LINK (a synthesized Boolean joint), not per part: a part that has one auto joint must not drag
+    // its manually-marked joints up to the fine grid too (only joints that need it get refined).
+    const isAuto = !!refine;
     const hasChamber = partsInvolved.some(pt => pt && pt.type === 'chamber');
     // Chamber fittings (pipe into combustion / pressure chamber) get the
     // same high-resolution Boolean treatment as tank joints.
@@ -3761,7 +3848,7 @@ function collectJointRegions(links, cap, tubeSet) {
   };
 
   for (const [part, linkOrArr] of links.entries()) {
-    const linkList = Array.isArray(linkOrArr) ? linkOrArr : [linkOrArr];
+    const linkList = asLinkArray(linkOrArr);
     for (const link of linkList) {
     const mid = part === link.target ? link.viaOpening.centroid
       : link.viaOpening.centroid.clone().lerp(link.entrance.centroid, 0.5);
@@ -3769,7 +3856,7 @@ function collectJointRegions(links, cap, tubeSet) {
     // Auto-scale to the true bore: a joint box has a fixed SDF_FINE_RES voxels, so sizing it from the smallest bore through
     // the joint keeps >= ~6 voxels across that bore (the nominal port radius can be larger than a fitted pipe's bore).
     if (tubeSet) for (const p of [part, link.target]) { const tb = tubeSet.byPart.get(p); if (tb) r = Math.min(r, tb.minRIn); }
-    addRegion(mid, r, [part, link.target]);
+    addRegion(mid, r, [part, link.target], !!link.boolean);
     }
   }
   // Chambers: every opening (entrances converging + the nozzle throat) is a
@@ -3777,7 +3864,7 @@ function collectJointRegions(links, cap, tubeSet) {
   for (const part of state.parts) {
     if (part.type !== 'chamber') continue;
     for (const o of part.openings) {
-      if (o.role === 'entrance' || o.role === 'nozzle') addRegion(o.centroid, o.radius, [part]);
+      if (o.role === 'entrance' || o.role === 'nozzle') addRegion(o.centroid, o.radius, [part], false);
     }
   }
   return regions;
@@ -6258,11 +6345,11 @@ function liveEvalLinks(movedSet) {
     let gap = null;
     if (link.auto) {
       // Mesh-overlap joint: only re-run the (expensive) overlap test when one of its two parts actually moved.
-      let verdict = live.autoOk.get(part);
+      let verdict = live.autoOk.get(link); // keyed by LINK: a part can now own several auto links
       if (verdict === undefined || movedSet.has(part) || movedSet.has(target)) {
         const r = detectPenetrationJoint(part, target);
         verdict = !!(r && r.sealed);
-        live.autoOk.set(part, verdict);
+        live.autoOk.set(link, verdict);
       }
       ok = verdict;
       if (!ok) {
@@ -6288,7 +6375,7 @@ function liveEvalLinks(movedSet) {
       // treat as a temporary plug so fluid does not spill if the user re-seats
       // the tank quickly enough.
       live.plugged.add(part); mass.plugged.add(part);
-    } else if (!ok) out.set(part, { gap, gapDist, radius });
+    } else if (!ok && !out.has(part)) out.set(part, { gap, gapDist, radius, target });
     }
   }
   return out;
@@ -6472,7 +6559,7 @@ function liveApplyVerdict(verdict) {
   for (const [part, v] of verdict) {
     let g = live.groups.get(part);
     if (!g) {
-      g = { id: live.nextId++, part, target: firstLink(state.currentLinks, part).target, gap: new THREE.Vector3(), dir: new THREE.Vector3(),
+      g = { id: live.nextId++, part, target: v.target || firstLink(state.currentLinks, part).target, gap: new THREE.Vector3(), dir: new THREE.Vector3(),
             gapDist: 0, ap: 0.5, P0: 0, nTotal: 0, nInside: 0, weight: 1, dp: LIVE_DP_MIN, routes: new Map(), fresh: true };
       live.groups.set(part, g); live.byId.set(g.id, g);
       fresh.push(g);
