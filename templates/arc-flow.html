@@ -379,7 +379,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       X-ray interior glow
     </label>
     <div class="sec-sub">
-      Gas inside a container, channel or combustion chamber is drawn through its walls with an internal glow, a hue shift by contents and temperature, and a rim light where it meets the wall — the parts themselves are never made transparent. Applies to the Volumetric and Gaussian splat renders; untick to see the gas only where the walls don't hide it.
+      Gas inside a container, channel or combustion chamber is lit in the cavity (hue shift + soft fill). Part shells stay depth-tested and are only made lightly see-through while simulating — they are not light sources. Applies to Points / Volumetric / Gaussian; untick to hide the gas behind opaque walls.
     </div>
 
     <label class="field">Supply
@@ -4165,7 +4165,7 @@ async function addCloneInstance(srcGroup, opts) {
 function ctxAll(fn) { if (state.instances.length) ctxEach(fn); else fn(); }
 // Start one built instance simulating (mass network, live-leak watch, glass walls). Safe mid-run: touches only this instance.
 function startInstanceSim(inst) {
-  withInstance(inst, () => { massBuild(); liveWatchStart(); setPartsGlass(true); });
+  withInstance(inst, () => { massBuild(); liveWatchStart(); setPartsGlass(!!volXray); });
   inst.active = true; inst.frames = 0; inst.startedAt = performance.now();
 }
 // <instances:end>
@@ -4307,13 +4307,9 @@ function updatePartThermalTint(links) {
     }
     let [r, g, b] = jsThermalRamp(level);
     r += (1.0 - r) * danger; g += (0.08 - g) * danger; b += (0.04 - b) * danger;
-    const mg = wallGlow(part);
-    if (mg && mg.T > 700) {   // red-hot wall (blackbody) from the hottest melt region
-      const bb = flameBB(mg.T), k = Math.min((mg.T - 700) / 900, 1);
-      r = r + (bb[0] - r) * k; g = g + (bb[1] - g) * k; b = b + (bb[2] - b) * k; level = Math.max(level, 0.3 + 0.7 * k);
-    }
-    const glass = state.simRunning ? 2.2 : 1;   // the walls are translucent while simulating: lift the tint so it still reads
-    const inten = Math.min((level * 0.55 + danger * 0.75) * glass, 2.5);
+    // X-ray / glass see-through: quiet thermal/stress tint only. Parts must NOT look like light sources
+    // (no glass boost, no wallGlow blackbody emissive). Interior lighting lives in the volume/splat shaders via the SDF.
+    const inten = Math.min(level * 0.22 + danger * 0.35, 0.55);
     for (const m of part.meshes) {
       const mats = Array.isArray(m.material) ? m.material : [m.material];
       for (const mt of mats) {
@@ -7060,11 +7056,10 @@ let volTilesPerRow = 1, volTexW = VOL_RES, volTexH = VOL_RES;
 //  - the density sample is taken first and the (more expensive) SDF only
 //    where there is gas.
 // X-ray (uXray): gas inside a container/cavity (SDF interior) gets a hue
-// shift toward cold-cyan/warm-amber by its temperature colour, a density-
-// weighted self-emissive glow that is brighter deep inside than at the wall,
-// a lifted additive offset, and a thin rim light at the wall — and the mesh
-// is drawn with depth testing OFF (see ensureVolumetricMesh) so the walls
-// don't hide it. Nothing about the part meshes changes.
+// shift toward cold-cyan/warm-amber by its temperature colour and a soft
+// cavity-deep fill (no wall-rim add). Depth testing stays ON so the volume
+// never punches holes in the shells; see-through comes from setPartsGlass
+// while X-ray is on. Part meshes are not made into light sources.
 const VOLUMETRIC_VERTEX_SHADER = `
   varying vec3 vLocalPos; // box-local position in [-0.5, 0.5]^3, used to derive the ray direction per-fragment
   void main() {
@@ -7190,17 +7185,16 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
         dens *= mask;
         if (dens > 0.003) {
           float stepWorld = dt * stepScale * worldPerT;
-          float absorb = 1.0 - exp(-dens * stepWorld / vox * uVolAbsorb * (uXray > 0.5 ? 1.4 : 1.0)); // X-ray gas must read over a bright wall
+          float absorb = 1.0 - exp(-dens * stepWorld / vox * uVolAbsorb * (uXray > 0.5 ? 1.05 : 1.0)); // slight lift only; do not flatten alpha
           if (uXray > 0.5) {
+            // Interior lighting of the FLUID only (depthIn from the cavity SDF). No wall-rim add that paints the shell as a light source.
             float depthIn = clamp(-sd / (sdVox * 5.0), 0.0, 1.0);          // 0 at the wall .. 1 deep inside
-            float rim = exp(-pow(sd / (sdVox * 1.2), 2.0));                // thin lit band right at the wall
-            float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);     // temperature proxy from the baked thermal colour
-            vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm); // cold cyan -> hot amber
-            vec3 lit = mix(col, tint, 0.3);                                // hue shift
-            float glow = uXrayGlow * (0.6 + 0.4 * depthIn);                // internal illumination, strongest away from the wall
-            vec3 emit = lit * (1.0 + glow) + vec3(0.02, 0.05, 0.08) * glow; // self-emissive + lifted offset
+            float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);
+            vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm);
+            vec3 lit = mix(col, tint, 0.22);
+            float glow = uXrayGlow * 0.35 * depthIn;                       // soft fill, cavity-deep only
+            vec3 emit = lit * (1.0 + glow);
             accumColor += transmittance * absorb * emit;
-            accumColor += transmittance * (1.0 - exp(-dens * 0.6)) * rim * tint * 0.45 * uXrayGlow; // wall rim light
           } else {
             accumColor += transmittance * absorb * col;
           }
@@ -7216,8 +7210,8 @@ const VOLUMETRIC_FRAGMENT_SHADER = `
     // accumColor is premultiplied by alpha; the material uses NormalBlending
     // (straight alpha), so un-premultiply before output. Soft tone-map keeps
     // emissive glow from clipping to flat white.
-    vec3 rgb = accumColor / alpha;
-    rgb = 1.0 - exp(-rgb * 1.25);
+    vec3 rgb = accumColor / max(alpha, 1e-4);
+    rgb = rgb / (1.0 + rgb * 0.55);
     gl_FragColor = vec4(rgb, alpha);
 #endif
   }
@@ -7247,9 +7241,9 @@ function ensureVolumetricMesh() {
     fragmentShader: VOLUMETRIC_FRAGMENT_SHADER,
     transparent: true,
     depthWrite: false,
-    // X-ray ON draws the gas regardless of the (opaque) part shells in front
-    // of it; OFF restores ordinary depth testing, where the walls hide it.
-    depthTest: !volXray,
+    // Always depth-tested: X-ray must not punch holes in the shells. See-through
+    // is setPartsGlass while X-ray is on; the shader lights the fluid, not the wall.
+    depthTest: true,
     side: THREE.BackSide, // see camera-inside-the-box note below
   });
   volMesh = new THREE.Mesh(geo, mat);
@@ -7463,7 +7457,7 @@ function rebuildVolumetricDensity() {
 //  The shared density grid covers the whole 37-unit stack in ~0.65-unit voxels, so a Ø0.2 pipe never registers in it (and its
 //  SDF mask used to kill what did). Each fitted tube therefore gets its own TUBE-ALIGNED volume: a 1-D density/colour profile
 //  along the bore (TUBE_BINS bins, filled each rebuild from the CPU-mirrored particle positions) is ray-marched analytically
-//  inside the bore capsules (ray/cylinder chords, a few samples per chord, radial falloff + wall rim light). Its resolution is
+//  inside the bore capsules (ray/cylinder chords, a few samples per chord, radial falloff + soft cavity fill). Its resolution is
 //  a fraction of the bore, so the gas in a thin pipe is drawn crisply at any zoom, with no voxel blockiness.
 //
 //  Emissive cores: the same GPU particle stream (identical positions, SDF-corrected, full frame rate) is also drawn as tiny
@@ -7557,12 +7551,10 @@ const TUBE_FRAGMENT_SHADER = `
         if (uXray > 0.5) {
           float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);
           vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm);
-          vec3 lit = mix(col, tint, 0.3);
-          float depthIn = 1.0 - rn;
-          float glow = uXrayGlow * (0.7 + 0.5 * depthIn);
-          emit = lit * (1.0 + glow) + vec3(0.02, 0.05, 0.08) * glow;
-          float rim = exp(-pow((rn - 0.9) / 0.12, 2.0));
-          acc += transmittance * (1.0 - exp(-dens * 0.5)) * rim * tint * 0.5 * uXrayGlow;
+          vec3 lit = mix(col, tint, 0.22);
+          float depthIn = 1.0 - rn;                                         // cavity-deep fill only (rn=0 at bore centre)
+          float glow = uXrayGlow * 0.35 * depthIn;
+          emit = lit * (1.0 + glow);
         }
         acc += transmittance * absorb * emit * 1.0;
         transmittance *= (1.0 - absorb);
@@ -7572,8 +7564,8 @@ const TUBE_FRAGMENT_SHADER = `
     }
     float alpha = 1.0 - transmittance;
     if (alpha < 0.003) discard;
-    vec3 rgb = acc / alpha;
-    rgb = 1.0 - exp(-rgb * 1.25);
+    vec3 rgb = acc / max(alpha, 1e-4);
+    rgb = rgb / (1.0 + rgb * 0.55);
     gl_FragColor = vec4(rgb, alpha);
   }
 `;
@@ -7600,7 +7592,7 @@ function ensureTubeVolumes() {
         uBoxMin: { value: bmin }, uBoxMax: { value: bmax }, uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uAbsorb: { value: 0.55 }, uInvDelta: { value: new THREE.Matrix4() },
       },
       vertexShader: TUBE_VERTEX_SHADER, fragmentShader: TUBE_FRAGMENT_SHADER,
-      transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.BackSide,
+      transparent: true, depthWrite: false, depthTest: true, side: THREE.BackSide,
     });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
     mesh.scale.copy(size); mesh.position.copy(ctr); mesh.frustumCulled = false; mesh.renderOrder = 10; mesh.visible = false;
@@ -7665,7 +7657,7 @@ function tubeVolUpload(stride) {
 function updateTubeVolumes(visible) {
   const tv = ensureTubeVolumes();
   if (!tv) return;
-  for (const m of tv.meshes) { m.visible = visible; m.material.uniforms.uXray.value = volXray ? 1 : 0; m.material.depthTest = !volXray; }
+  for (const m of tv.meshes) { m.visible = visible; m.material.uniforms.uXray.value = volXray ? 1 : 0; m.material.depthTest = true; }
 }
 
 // Emissive cores: the point-sprite stream drawn a second time as tiny additive hot cores (smooth, GPU-positioned).
@@ -7688,7 +7680,7 @@ function buildParticleCores(pointsObj) {
         vec3 hot = mix(col, vec3(1.0), 0.3) * (0.8 + 1.0 * core);
         gl_FragColor = vec4(hot, core * 0.55);
       }`,
-    transparent: true, depthWrite: false, depthTest: !volXray, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending,
   });
   particleCoreSystem = new THREE.Points(pointsObj.geometry, mat);
   particleCoreSystem.frustumCulled = false; particleCoreSystem.renderOrder = 11; particleCoreSystem.visible = false;
@@ -7697,7 +7689,7 @@ function buildParticleCores(pointsObj) {
 function updateParticleCores(visible) {
   if (!particleCoreSystem) return;
   particleCoreSystem.visible = visible;
-  particleCoreSystem.material.depthTest = !volXray;
+  particleCoreSystem.material.depthTest = true;
 }
 
 // Called once per rendered frame (from animateBase) while the volumetric
@@ -7775,8 +7767,8 @@ function updateVolumetricRender(nowMs) {
 //             texture-free (gas past a wall fades out across the splat).
 //             Live leaks skip it exactly as the leak volume does
 //             (VOL_NO_WALL): they are CPU-collided and vent into open air.
-//  X-ray      same hue shift / interior glow / wall rim light as the
-//             ray-march, from the interpolated sd; depthTest off while on.
+//  X-ray      same hue shift / soft cavity fill as the ray-march, from the
+//             interpolated sd; depthTest stays on (see-through via setPartsGlass).
 //  pressure   per-particle aPress (log-scaled owner psi, falling along the
 //             path) swells the splat and raises its density; live leaks use
 //             the group's remaining dp.
@@ -7868,12 +7860,11 @@ const GS_BAKED_FRAG = THERMAL_RAMP_GLSL + GS_KERNEL_FRAG + `
     if (uXray > 0.5) {
       if (vHue.a > 0.0) col = mix(col, vHue.rgb, 0.35);
       float depthIn = clamp(-vSd / (vSdVox * 5.0), 0.0, 1.0);
-      float rim = exp(-pow(vSd / (vSdVox * 1.2), 2.0));
       float warm = clamp((col.r - col.b) * 0.9 + 0.5, 0.0, 1.0);
       vec3 tint = mix(vec3(0.25, 0.72, 1.0), vec3(1.0, 0.55, 0.2), warm);
-      vec3 lit = mix(col, tint, 0.3);
-      float glow = uXrayGlow * (0.6 + 0.4 * depthIn);
-      rgb = (lit * (1.0 + 0.5 * glow) + vec3(0.02, 0.05, 0.08) * glow + tint * rim * 0.35 * uXrayGlow) * a;
+      vec3 lit = mix(col, tint, 0.22);
+      float glow = uXrayGlow * 0.35 * depthIn;                             // cavity fill only; no wall-rim add
+      rgb = lit * (1.0 + 0.5 * glow) * a;
     } else {
       rgb = col * (1.0 + 0.5 * g) * a;
     }
@@ -7954,7 +7945,7 @@ function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart
       uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 },
     }, sdfUniforms),
     vertexShader: GS_BAKED_VERT, fragmentShader: GS_BAKED_FRAG,
-    transparent: true, depthWrite: false, depthTest: !volXray, side: THREE.DoubleSide,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
   });
   gsApplyBlending(mat);
   gsMesh = new THREE.Mesh(geo, mat);
@@ -8053,16 +8044,14 @@ document.getElementById('volumetricToggle').onchange = (e) => {
   if (!volEnabled) { updateTubeVolumes(false); updateParticleCores(false); }
 };
 
-// X-ray toggle (default ON). Applies to the volumetric gas only: parts are
-// never made transparent. ON = depth test off + interior glow/hue shift so
-// gas inside a container/cavity reads through the wall; OFF = the ordinary
-// depth-tested, un-lit gas (hidden behind opaque shells). Works the same
-// whether or not Flow Selection Mode's own see-through part materials are
-// active (there the walls are already ~transparent; the glow still applies).
+// X-ray toggle (default ON). Lights the FLUID inside cavities (hue/fill via uXray); depth testing stays ON so walls
+// are not punched through. See-through is setPartsGlass while X-ray + sim are on — part meshes are not emissive light sources.
 function applyVolXray() {
   updateTubeVolumes(volEnabled && state.simRunning); updateParticleCores(volEnabled && state.simRunning);
-  if (volMesh) { volMesh.material.uniforms.uXray.value = volXray ? 1 : 0; volMesh.material.depthTest = !volXray; }
-  if (gsMesh) { gsMesh.material.uniforms.uXray.value = volXray ? 1 : 0; gsMesh.material.depthTest = !volXray; }
+  if (volMesh) { volMesh.material.uniforms.uXray.value = volXray ? 1 : 0; volMesh.material.depthTest = true; }
+  if (gsMesh) { gsMesh.material.uniforms.uXray.value = volXray ? 1 : 0; gsMesh.material.depthTest = true; }
+  if (particleCoreSystem) particleCoreSystem.material.depthTest = true;
+  if (typeof setPartsGlass === 'function' && state.simRunning) setPartsGlass(!!volXray);
   volLastBuildAt = -Infinity; // re-bake the splat colours (contents hue is only applied while X-ray is on)
 }
 document.getElementById('xrayToggle').onchange = (e) => { volXray = e.target.checked; applyVolXray(); };
@@ -10547,7 +10536,8 @@ function plumeFrame(inst, now) {
   dt = Math.min(dt, 0.1);
   if (plume.needPreroll) { plume.needPreroll = false; plumePreroll(D, F, 3.2); }
   plume.tclock += dt;
-  wallFrame(dt, chambers);
+  // Melting deferred: do NOT step wall heating every frame (wallPartEnv allocated hg/Tg arrays per part per call).
+  // Data hooks stay on window.arcFlowWall for on-demand reads.
   plume.fl = Math.max(-1.2, Math.min(1.2, plume.fl - plume.fl * dt / 0.3 + 0.35 * Math.sqrt(2 * dt / 0.3) * randn()));   // chamber combustion instability: correlated random, no period
   plumeBurnUniform.value = 0.12 + 0.88 * (D.comb ? D.comb.st.burn : 1);
   const cap = Math.min(D.cfg.count, PLUME_MAX);
@@ -11106,7 +11096,7 @@ playBtn.onclick = async () => {
     state.simRunning = true;
     // Plume follows the chamber that has inflow; no forced preset.
     if (state.instances.some(i => i.built)) { for (const i of state.instances) if (i.built) startInstanceSim(i); }
-    else { massBuild(); liveWatchStart(); setPartsGlass(true); }
+    else { massBuild(); liveWatchStart(); setPartsGlass(!!volXray); }
     pfsActivate();   // pressure solver (no-op unless ?solver=pressure / the checkbox)
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
