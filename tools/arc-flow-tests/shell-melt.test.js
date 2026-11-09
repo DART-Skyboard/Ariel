@@ -13,7 +13,7 @@ const H = require('./harness');
   for (const n of names) if (new RegExp('^(async )?function ' + n + '\\(', 'm').test(probe) || new RegExp('^(const|let) ' + n + '\\b', 'm').test(probe)) exportNames.push(n);
   const h = await H.build({
     regions: ['booleansys', 'shellsys'].concat(/<meltsys:begin>/.test(probe) ? ['meltsys'] : [], /<ltcbpwatch:begin>/.test(probe) ? ['ltcbpwatch'] : []),
-    fns: ['worldTrianglesForPart', 'worldTrianglesForPartRaw', 'dropPartGeometryCaches', 'invalidateWorldTriCache', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex', 'penMinOverlap', 'detectPenetrationJoint', 'detectAutoPenetrationJoints', 'partWorldAABB'],
+    fns: ['worldTrianglesForPart', 'worldTrianglesForPartRaw', 'dropPartGeometryCaches', 'invalidateWorldTriCache', 'penIndexForPart', 'signedDistanceToMesh', 'buildTriangleSpatialIndex', 'triIndexInit', 'triIndexAdd', 'penMinOverlap', 'detectPenetrationJoint', 'detectAutoPenetrationJoints', 'partWorldAABB'],
     lets: ['_worldTriCache', '_rawTriCache', '_penIndexCache'],
     skip: ['setLoading', 'renderPartDetail', 'refreshPartOpenings', 'refreshAllOpenings'],
     globals: { refreshAllOpenings() {}, renderChannelFlowReport() {}, window: { dispatchEvent() {}, addEventListener() {} }, CustomEvent: function (t, o) { this.type = t; this.detail = o && o.detail; } },
