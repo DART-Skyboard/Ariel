@@ -214,7 +214,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v74</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v75</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -396,7 +396,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       Pressure solver
     </label>
     <div class="sec-sub">
-      On (default since v74; <code>?solver=baked</code> turns it off): flow is driven by the pressure differences in a lumped network &mdash; helium blowdown and regulator, liquid channels, an accumulating chamber with a choked throat, spill to the atmosphere. The feed lines prime first, then the propellant that reaches the chamber stays inside the cavity until the chamber pressure is high enough to choke the throat, and only then jets out through the neck (this start-up is shown in slow motion, x0.03, then ramps to real time; <code>?slowmo=1</code> turns that off). Off: the baked waypoint flow. Applied when Simulate starts. Fluid that crosses into the atmosphere is what the plume and LTCBP evaluate.
+      On (default since v75; <code>?solver=baked</code> turns it off): flow is driven by the pressure differences in a lumped network &mdash; helium blowdown and regulator, liquid channels, an accumulating chamber with a choked throat, spill to the atmosphere. The feed lines prime first, then the propellant that reaches the chamber stays inside the cavity until the chamber pressure is high enough to choke the throat, and only then jets out through the neck (this start-up is shown in slow motion, x0.03, then ramps to real time; <code>?slowmo=1</code> turns that off). Off: the baked waypoint flow. Applied when Simulate starts. Fluid that crosses into the atmosphere is what the plume and LTCBP evaluate.
       <label class="field" style="margin-top:6px">Solver time scale <input type="number" id="solverTimeScale" value="1" min="0.01" max="100" step="0.1" style="width:70px"></label>
     </div>
     <div class="sec-sub">
@@ -3565,7 +3565,7 @@ function ltcbpCheckResolution(inst, opts) {
     const probe0 = ltcbpSdfAt(inst.sdf, g); if (!probe0) continue;
     pt.copy(g).addScaledVector(n, (k & 1 ? 0.5 : -0.5) * probe0.edge);          // half a voxel off the surface, alternating sides
     const here = ltcbpSdfAt(inst.sdf, pt); if (!here) continue;
-    // Solver v74 perf: probe the part itself first, then only parts whose AABB is closer than the best |d| so far (an exact mesh query
+    // Solver v75 perf: probe the part itself first, then only parts whose AABB is closer than the best |d| so far (an exact mesh query
     // on every part of the 223k-tri demo was ~3 s per probe on software GL, i.e. the whole main thread mid-run in v73)
     let exact = ps.idxs[ps.pi] ? signedDistanceToMesh(pt, ps.idxs[ps.pi]) : Infinity;
     for (let q = 0; q < ps.idxs.length; q++) {
@@ -3654,7 +3654,7 @@ function rebuildInstanceSDF(inst, opts) {
 // Interval tick (hooked on the Boolean's autosync): adaptive-resolution checks while the sim runs.  ONE shared time budget per tick
 // (state.ltcbpBudgetMs, default 2 ms), round-robin over instances, so the watch never blocks a frame.
 let _ltcbpRR = 0, _ltcbpNextAt = 0;
-// Solver v74 perf guard: one exact-mesh probe step can blow far past the 2 ms budget (v73 demo on software GL: ~3 s per probe, which kept
+// Solver v75 perf guard: one exact-mesh probe step can blow far past the 2 ms budget (v73 demo on software GL: ~3 s per probe, which kept
 // the main thread busy for the whole run). When a tick overruns its budget 4x, the next tick waits 49x what it used (<= 2% duty cycle).
 function ltcbpAutoTick() {
   if (state.ltcbpAdaptive === false || !state.simRunning) return 0;
@@ -6332,7 +6332,7 @@ const PARTICLE_SHADER_CORE = `
     return c0.xyz * p.x + c1.xyz * p.y + c2.xyz * p.z + c3.xyz;
   }
 
-  // CHAMBER CAVITY (pressure mode, v74): gas that has reached the chamber stays inside its cavity until the solver's throat
+  // CHAMBER CAVITY (pressure mode, v75): gas that has reached the chamber stays inside its cavity until the solver's throat
   // opens (Pc high enough to choke). Per particle a stable rank in [0,1); ranks below uThroatGate pass on through the neck.
   float gHeld = 0.0;
   float pfsRank() { return fract(aPhase * 7.31 + aLatU * 3.7 + aLatV * 5.3 + 0.5); }
@@ -11699,7 +11699,7 @@ function debugReadParticlePositions(tOverride) {
 // ═══════════════════════════════════════════════════════════════════════
 //  PRESSURE-DRIVEN FLOW SOLVER  (PressureFlowSim, inst.solverMode === 'pressure')
 //
-//  Default (v74+) is pressure mode: the "Pressure solver" checkbox starts checked; ?solver=baked (or unchecking it) gives the old
+//  Default (v75+) is pressure mode: the "Pressure solver" checkbox starts checked; ?solver=baked (or unchecking it) gives the old
 //  baked waypoint flow, where nothing in this block runs and every hook below is gated on pfsAnyPressure().
 //  Pressure mode (applied when Simulate starts):
 //   network   nodes = cavities (container / chamber) + the ATM sink; edges = flow links (and every unmatched exit / nozzle
@@ -11711,7 +11711,7 @@ function debugReadParticlePositions(tOverride) {
 //                           ullage back to the setpoint (part internalPsi) while the helium tank is above it
 //             liquid edge   solveChannelFlow (Darcy-Weisbach + minor losses) at P_up - P_down
 //             chamber       accumulating gas node, Pc = m R Tc / V (semi-implicit, stable); choked/subsonic throat
-//                           mdot from the nozzle area (Ae/eps) and the preset's gamma / mw / Tc. CLOSED CAVITY (v74): the throat
+//                           mdot from the nozzle area (Ae/eps) and the preset's gamma / mw / Tc. CLOSED CAVITY (v75): the throat
 //                           edge stays shut (e.open = false) until Pc reaches the choking pressure Pa / (2/(g+1))^(g/(g-1)) or the
 //                           feed has equalised with the chamber (inflow < 2% of its peak), then latches open; it shuts again only
 //                           if Pc falls back to ~ambient. The GPU particles follow it: gas past the chamber station is held in the
@@ -11780,7 +11780,7 @@ function pfsChamberAxis(part) {
   return { pts, r, cum, n, vol, throat: ti, len: cum[n - 1], dir: u.clone().negate() };
 }
 
-// THIN-CHANNEL PORT CHECK (v74). A link INTO a pipe that has a fitted bore tube is a real port only where the source opening sits
+// THIN-CHANNEL PORT CHECK (v75). A link INTO a pipe that has a fitted bore tube is a real port only where the source opening sits
 // at one of the tube's two ends. The demo fuel line runs down past the oxidizer tank and its helium bottle with a bore about one
 // SDF voxel across, so the volumetric (Boolean) joint test also reports Oxidizer -> FuelChannel and OxidizerPressure_ -> FuelChannel
 // through the pipe's side wall. Those mid-tube "joints" put oxidizer and helium (~1.8 t/s in v73) into the fuel line's network edge;
@@ -11922,7 +11922,7 @@ class PressureFlowSim {
       e.fp = FLUID_PROPS[e.fluid] || FLUID_PROPS.other;
       e.A = e.A || e.sections[e.sections.length - 1].A;
     }
-    // FEED-LINE PRIMING (v74): an edge into a chamber delivers nothing until its line volume (sum A L of the pipe sections) has
+    // FEED-LINE PRIMING (v75): an edge into a chamber delivers nothing until its line volume (sum A L of the pipe sections) has
     // been filled by what left the source; the propellant front then reaches the injector and the chamber starts to fill.
     for (const e of this.edges) {
       let V = 0; for (let k = 0; k < e.sections.length - 1; k++) V += e.sections[k].A * e.sections[k].L;
@@ -12221,7 +12221,21 @@ function pfsReleaseGates() { for (const i of state.instances || []) { const v = 
 { const el = pfsSolverEl(); if (el) { const q = new URLSearchParams(location.search).get('solver'); if (q) el.checked = q !== 'baked'; } }
 // <pfs:end>
 
-window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',
+// Test hook (headless-stall.py): GPU positions of the particles currently held in a chamber cavity, checked against the chamber mesh.
+function pfsDebugChamberHold() {
+  const cpu = state.particleCPU; if (!cpu || !particleSystem) return null;
+  const ch = state.parts.find(p => p.type === 'chamber'), idx = ch && penIndexForPart(ch); if (!idx) return null;
+  const uTime = particleSystem.material.uniforms.uTime.value, rd = debugReadParticlePositions(); if (!rd) return null;
+  const v = new THREE.Vector3(); let held = 0, inside = 0, worst = -Infinity;
+  for (let p = 0; p < cpu.count; p++) {
+    const pr = ((uTime * cpu.speed[p] + cpu.phase[p]) % 1 + 1) % 1;
+    if (bakedAhead(cpu, p, pr) || !bakedHeld(cpu, p, pr, uTime)) continue;
+    held++; const d = signedDistanceToMesh(v.set(rd.pos[3 * p], rd.pos[3 * p + 1], rd.pos[3 * p + 2]), idx);
+    if (d < 0) inside++; worst = Math.max(worst, d);
+  }
+  return { held, inside, worst: held ? worst : null, gate: cpu.gateU ? cpu.gateU.value : 1, fill: cpu.fillU ? cpu.fillU.value : 1 };
+}
+window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, chamberHold: pfsDebugChamberHold, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',
   sdAgainst: (name, flat) => { const part = state.parts.find(p => p.name === name); const idx = part && penIndexForPart(part); if (!idx) return null; const out = new Float32Array(flat.length / 3), v = new THREE.Vector3(); for (let i = 0; i < out.length; i++) out[i] = signedDistanceToMesh(v.set(flat[3*i], flat[3*i+1], flat[3*i+2]), idx); return out; },
   partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 

@@ -167,7 +167,7 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   assert.ok(Math.abs(nf.mL - mFuel0) < 1e-9 && Math.abs(nh.mG - mHe0) < 1e-9, 'a rebuilt network keeps the cavities\' live mass (' + nf.mL + ' vs ' + mFuel0 + ')');
   ok('network refresh on clone move / topology change');
 }
-// 8. CLOSED CAVITY (v74): the throat is shut at t = 0, the chamber fills, and it only opens once Pc can choke the throat;
+// 8. CLOSED CAVITY (v75): the throat is shut at t = 0, the chamber fills, and it only opens once Pc can choke the throat;
 //    the particle gate (fraction allowed through the neck) is 0 while it is shut and rises to ~1 at the steady state
 {
   const sc = makeScene(), { api, inst } = makeEnv(sc, { cont: true });
@@ -224,7 +224,7 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   assert.strictEqual(net.edges.filter(e => e.pipes.some(p => p.name === 'FuelChannel')).length, 1, 'only the fuel tank feeds the fuel line');
   ok('thin pipe: side-wall links into a fitted tube are rejected (' + 2 + ' dropped), fuel line fed only by the fuel tank');
 }
-// 12. feed-line priming (v74, metre-scale demo units): nothing reaches the chamber until each line's bore volume has filled; then the
+// 12. feed-line priming (v75, metre-scale demo units): nothing reaches the chamber until each line's bore volume has filled; then the
 //     chamber pressure builds with the throat shut, and only after that does the throat open
 {
   const sc = makeScene(), { api, inst } = makeEnv(sc, { cont: true, unit: 1 });
