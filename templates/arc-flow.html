@@ -3471,7 +3471,11 @@ function meshesIntersect(a, b) {
 // <ltcbpwatch:begin>
 // LTCBP live watch (spec 18).  While the sim runs, LTCBP (a) re-checks the resolution of the baked collision SDF against the exact mesh
 // and adapts it, and (b) rebuilds an instance's SDF when the Boolean (booleanSyncInstance) reports a collision-body change — animated GLB
-// skin / morph / node motion, CPU vertex edits.  Everything is per instance (inst.ltcbp), throttled and coalesced.
+// skin / morph / node motion, CPU vertex edits.  Everything is per instance (inst.ltcbpWatch), throttled and coalesced.
+// NOTE: NOT inst.ltcbp: that field is the Instance's outside-air leak-event ARRAY (Instance ctor / pfs reset it to []), and an
+// empty array is truthy, so sharing the name made ltcbpState return the array: scale undefined -> NaN SDF resolution for the
+// Simulate bake and every LTCBP rebuild -> 0-length NaN x NaN SDF textures in the live uniforms once the sim draws (glTexStorage2D
+// "dimensions not positive" + glTexSubImage2D "level of detail outside of range", and collision silently lost).
 const LTCBP_SCALE_MIN = 0.6, LTCBP_SCALE_MAX = 2.0;
 const LTCBP_CHECK_MS = 1000;      // resolution check interval per instance
 const LTCBP_REBUILD_MS = 800;     // minimum gap between two SDF rebuild starts per instance
@@ -3479,11 +3483,11 @@ const LTCBP_PROBES = 96, LTCBP_ERR_HI = 0.75, LTCBP_ERR_LO = 0.15;   // probe co
 const _deformHooks = new WeakMap();
 function ltcbpNow() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
 function ltcbpState(inst) {
-  return inst.ltcbp || (inst.ltcbp = { scale: 1, lastCheck: -1e9, lastRebuild: -1e9, lowStreak: 0, rebuilds: 0, checks: 0, sdfStale: false, job: null, again: false, history: [], pass: null, sliceStats: null });
+  return inst.ltcbpWatch || (inst.ltcbpWatch = { scale: 1, lastCheck: -1e9, lastRebuild: -1e9, lowStreak: 0, rebuilds: 0, checks: 0, sdfStale: false, job: null, again: false, history: [], pass: null, sliceStats: null });
 }
 // Resolution LTCBP is currently asking for: scale multiplies the coarse budget and every fine region's per-axis resolution.
 function ltcbpResolution(inst) {
-  const s = inst ? ltcbpState(inst).scale : 1;
+  const s0 = inst ? ltcbpState(inst).scale : 1, s = Number.isFinite(s0) && s0 > 0 ? s0 : 1;
   return { scale: s, coarse: Math.round(SDF_COARSE_RES * s), fine: Math.round(SDF_FINE_RES * s) };
 }
 // Per-part deformation hooks: fn({type:'deform'|'move'|'melt', inst, part}) runs when that part's collision body changed.  Returns an unsubscribe fn.
@@ -3602,7 +3606,12 @@ function ltcbpOnChange(inst, kind, parts) {
   return true;
 }
 // Swap a freshly built SDF into the instance's live uniform objects (the particle + volumetric materials share them by reference).
+function ltcbpSDFUsable(sdf) {   // every texture dimension finite and > 0 (an unusable bake must never replace the live SDF)
+  const ok = (w, h) => Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0;
+  return !!(sdf && sdf.coarse && ok(sdf.coarse.texW, sdf.coarse.texH) && ok(sdf.atlasW, sdf.atlasH));
+}
 function ltcbpSwapSDF(inst, sdf) {
+  if (!ltcbpSDFUsable(sdf)) { console.warn('LTCBP: rebuilt SDF has invalid dimensions; keeping the current one', sdf && sdf.info); return false; }
   const old = inst.sdf, set = (inst.ctx && inst.ctx.sdfUniformSet) || state.sdfUniformSet;
   inst.sdf = sdf; if (state.activeInstanceId === inst.id || inst.ctx === state || !inst.ctx) state.sdf = sdf;
   let swapped = false;
@@ -3632,8 +3641,8 @@ function rebuildInstanceSDF(inst, opts) {
         st.again = false; st.lastRebuild = ltcbpNow();
         await withInstanceAsync(inst, async () => {
           const sdf = await buildCollisionSDF(inst.links || state.currentLinks, inst.parts, inst, { quiet: true, resScale: st.scale, sliceMs: state.ltcbpSliceMs != null ? state.ltcbpSliceMs : 2, now: state.ltcbpSliceNow, yieldFn: state.ltcbpSliceYield, sliceStats: st.sliceStats || (st.sliceStats = {}) });
-          if (!sdf) return;
-          ltcbpSwapSDF(inst, sdf); out = sdf;
+          if (!sdf || !ltcbpSwapSDF(inst, sdf) && inst.sdf !== sdf) return;   // refused (unusable bake): keep the live SDF
+          out = sdf;
         });
         st.sdfStale = false; st.rebuilds++; inst.sdfVersion = (inst.sdfVersion || 0) + 1;
       } while (st.again);
@@ -5694,7 +5703,8 @@ async function buildCollisionSDF(links, parts, inst, opts) {
   // opts (background rebuilds, spec 18): quiet = no loading overlay / rAF; resScale = LTCBP's resolution multiplier; sliceMs = time-sliced voxel fill.
   const quiet = !!(opts && opts.quiet), SL = quiet ? () => {} : setLoading;
   const tick = () => new Promise(r => quiet ? setTimeout(r, 0) : requestAnimationFrame(r));
-  const rs = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
+  const rs0 = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
+  const rs = Number.isFinite(rs0) ? rs0 : 1;   // a NaN scale would give NaN grid res -> 0-length, NaN-sized SDF textures
   const scaleRes = (res, cap) => rs === 1 ? res : res.map(v => Math.max(4, Math.min(cap, Math.round(v * rs))));
   const sliceMs = (opts && opts.sliceMs) || 0, sliceOpts = sliceMs ? { sliceMs, now: opts.now, yieldFn: opts.yieldFn, sliceStats: opts.sliceStats } : null;
   const classified = (parts || state.parts).filter(p => p.type);
