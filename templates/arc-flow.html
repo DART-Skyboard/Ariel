@@ -10145,6 +10145,31 @@ function upstreamContents(part, depth) {
   }
   return fallback || part.contents || '';
 }
+// Combustion's read of what a feed channel carries. A pipe that merely passes THROUGH another tank's wall (Boolean auto-penetration
+// joint: link.auto / link.boolean) gets a propellant link from that tank as well as the explicit opening-to-opening link from its
+// real source, and upstreamContents returns whichever comes first in the Map. On Quick Rocket FuelChannel runs through the
+// Oxidizer tank, so it traced as 'oxidizer' -> both feeds oxidizer -> of = 0 with mdot > 0 -> "one propellant only" -> cold flow.
+// Explicit (opening) links win; auto/Boolean ones are only used when a channel has no explicit propellant source.
+function combFeedContents(part, depth) {
+  depth = depth || 0;
+  if (!part || depth > 8) return '';
+  if (part.type === 'container' && part.contents) return part.contents;
+  const links = state.currentLinks;
+  if (!links) return part.contents || '';
+  const expl = [], auto = [];
+  for (const [src, tgt] of links) for (const l of asLinkArray(tgt)) {
+    if (linkTarget(l) !== part || l.kind === 'pressurant') continue;
+    (l.auto || l.boolean ? auto : expl).push(src);
+  }
+  for (const list of [expl, auto]) {
+    let fuel = false, ox = false, other = '';
+    for (const src of list) { const c = combFeedContents(src, depth + 1); if (c === 'fuel') fuel = true; else if (c === 'oxidizer') ox = true; else if (c && !other) other = c; }
+    if (fuel !== ox) return fuel ? 'fuel' : 'oxidizer';
+    if (fuel && ox) return 'mixed';
+    if (other) return other;
+  }
+  return upstreamContents(part, depth);
+}
 function chamberMixture(ch) {
   if (pfsAnyPressure()) { const pm = pfsMixture(ch); if (pm) return pm; }   // pressure solver: what actually arrives at the chamber
   // Combustion needs both fuel and oxidizer. Sum the mass flow of each
@@ -10156,7 +10181,7 @@ function chamberMixture(ch) {
     const links = state.currentLinks;
     // Only channels that actually feed this chamber (compare the link's target part, not the link record).
     if (links && !allLinks(links, part).some(l => linkTarget(l) === ch && l.kind !== 'pressurant')) continue;
-    const contents = upstreamContents(part, 0);
+    const contents = combFeedContents(part, 0);   // explicit feeds before Boolean pass-through links (see combFeedContents)
     if (contents === 'fuel') mFuel += f.mdot;
     else if (contents === 'oxidizer') mOx += f.mdot;
   }
