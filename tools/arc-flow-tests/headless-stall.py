@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.abspath(os.pat
 HTML = os.environ.get('ARC_HTML', REPO + '/templates/arc-flow.html')
 BAKE_LIMIT_S = float(os.environ.get('BAKE_LIMIT_S', 240)); FRAMES_LIMIT_S = float(os.environ.get('FRAMES_LIMIT_S', 60))
 HOLD_SLOP = float(os.environ.get('HOLD_SLOP', 1e-4))   # every held chamber particle strictly inside the mesh (sd < 0); only float slop allowed
+HOLD_SPAN = float(os.environ.get('HOLD_SPAN', 0.6)); CONE_SPAN = float(os.environ.get('CONE_SPAN', 0.5)); CONE_IN_FRAC = float(os.environ.get('CONE_IN_FRAC', 0.98))
 LONGTASK_LIMIT_MS = float(os.environ.get('LONGTASK_LIMIT_MS', 15000))
 OBS = """()=>{window.__lt=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__lt.push([e.startTime,e.duration])}).observe({entryTypes:['longtask']})}catch(e){}}"""
 async def main():
@@ -82,10 +83,16 @@ async def main():
                 if h['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % h)
             await pg.wait_for_timeout(15000)
             s1 = await pg.evaluate(SNAP); print('later snapshot', s1)
+            fl = await pg.evaluate('()=>window.arcFlowDebug.chamberFlow()'); print('cone flow', fl)
+            if not fl or not fl['n']: fails.append('no flowing particles in the nozzle cone after the throat opened: %r' % fl)
+            else:
+                if fl['inside'] < CONE_IN_FRAC * fl['n']: fails.append('cone particles outside the bell before the exit plane: %r' % fl)
+                if fl['span']['p90'] < CONE_SPAN: fails.append('cone stream does not fill the bell (p90 radius / local wall %.2f < %.2f): %r' % (fl['span']['p90'], CONE_SPAN, fl))
             # (a) deterministic cavity check: force every chamber-bound particle into the held state (gate 0, chamber full, lines
             # primed), read their GPU positions and test them against the chamber mesh; then restore the live uniforms
             hf = await pg.evaluate("()=>{const c=window.arcFlow.state.particleCPU; if(!c||!c.gateU) return null; const g=c.gateU.value,f=c.fillU.value,pr=Array.from(c.primeU.value); c.gateU.value=0; c.fillU.value=1; c.primeU.value.fill(1); const h=window.arcFlowDebug.chamberHold(); c.gateU.value=g; c.fillU.value=f; pr.forEach((v,i)=>c.primeU.value[i]=v); return h}")
             print('forced hold', hf)
+            if hf and hf.get('span') and hf['span']['p90'] < HOLD_SPAN: fails.append('held gas is an axis bundle, not a chamber fill (p90 radius / local wall %.2f < %.2f): %r' % (hf['span']['p90'], HOLD_SPAN, hf))
             if not hf or not hf['held']: fails.append('no chamber-bound particles to hold: %r' % hf)
             elif hf['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % hf)
             if not (s1 and s1['open'] and s1['mdot'] > 0): fails.append('throat never opened / no flow after accumulation: %r' % s1)

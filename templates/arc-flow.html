@@ -1598,9 +1598,13 @@ function onSceneLoaded(object) {
   const assembly = new THREE.Group();
   assembly.name = 'assembly';
   assembly.userData.isAssembly = true;
+  // Parent the assembly under the root BEFORE attaching the pivots: attach() keeps each pivot's world transform relative to the
+  // assembly's CURRENT world matrix, and an unparented assembly sits at the origin, so adding it to the (floor-lifted) root
+  // afterwards applied the root's lift a second time to every mesh (Quick Rocket meshes 4.74 above their DEMO_PORTS openings: the
+  // feed entrances and the nozzle sat 4.7 below the real chamber, so the baked path ran a straight column through it and the bell).
   const newPivots = state.parts.slice(-byName.size).map(p => p.pivot);
+  state.root.add(assembly); assembly.updateWorldMatrix(true, false);
   for (const pv of newPivots) assembly.attach(pv);
-  state.root.add(assembly);
 
   // Non-destructive group tree: if the GLB has named parent groups, record
   // them so the Parts panel can show the hierarchy. Simulation parts stay
@@ -5861,6 +5865,66 @@ function fineRegionIndexAt(point, collisionSDF) {
   return -1;
 }
 
+// CHAMBER STATIONS (v75, pressure mode). The flowing path through a chamber, sampled from pfsChamberAxis (exact mesh distance along the
+// nozzle axis, clipped to the part's box): stations from the feed-entrance level down to the throat, the throat, the diverging cone,
+// and the exit plane. Containment radius = local wall distance minus a small skin, so the stream fills the chamber, necks at the throat
+// and opens out to fill the bell instead of running as a nozzle-radius column. Speed multipliers make the throat and the cone visibly
+// faster than the chamber (v ~ 1/A in the chamber, kept at the throat speed through the supersonic bell). null -> old path.
+function pfsPathStationsOn() { try { return typeof pfsWanted === 'function' && pfsWanted(); } catch (e) { return false; } }
+const _pfsAxisCache = new Map();
+function pfsAxisCached(part) {
+  const key = state.sdf, hit = _pfsAxisCache.get(part);
+  if (hit && hit.key === key) return hit.ax;
+  let ax = null; try { ax = pfsChamberAxis(part); } catch (e) { ax = null; }
+  _pfsAxisCache.set(part, { key, ax }); return ax;
+}
+// Local wall radius of each axis station: the cross-section's radius (min over 4 perpendicular rays, bisection on the exact mesh SDF),
+// not the inscribed-ball r (which in the dome is the distance to the top face and in the bell the perpendicular distance to the cone).
+function pfsAxisWallR(ax, part) {
+  if (ax.rw) return ax.rw;
+  const idx = penIndexForPart(part), box = partWorldAABB(part), L = box.getSize(new THREE.Vector3()).length();
+  const d = ax.dir.clone().normalize(), ref = Math.abs(d.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const e1 = new THREE.Vector3().crossVectors(d, ref).normalize(), e2 = new THREE.Vector3().crossVectors(d, e1).normalize();
+  const dirs = [e1, e1.clone().negate(), e2, e2.clone().negate()], c = new THREE.Vector3(), q = new THREE.Vector3();
+  const rw = new Float32Array(ax.n);
+  for (let i = 0; i < ax.n; i++) {
+    c.set(ax.pts[3 * i], ax.pts[3 * i + 1], ax.pts[3 * i + 2]);
+    let best = Infinity;
+    for (const e of dirs) {
+      let lo = 0, hi = ax.r[i];   // inside up to the inscribed radius; walk out until the wall is crossed
+      while (hi < L && signedDistanceToMesh(q.copy(c).addScaledVector(e, hi), idx) < 0) { lo = hi; hi *= 1.5; }
+      if (hi >= L) continue;   // this ray escapes (open end / lip): ignore it
+      for (let k = 0; k < 10; k++) { const m = 0.5 * (lo + hi); if (signedDistanceToMesh(q.copy(c).addScaledVector(e, m), idx) < 0) lo = m; else hi = m; }
+      best = Math.min(best, lo);
+    }
+    rw[i] = Math.max(isFinite(best) ? best : (i ? rw[i - 1] : ax.r[i]), ax.r[i]);
+  }
+  ax.rw = rw; return rw;
+}
+function pfsChamberStations(part, entry, budget) {
+  if (!(budget >= 4) || !part.openings.some(o => o.role === 'nozzle')) return null;
+  const ax = pfsAxisCached(part); if (!ax || ax.n < 6 || !(ax.throat > 0 && ax.throat < ax.n - 1)) return null;
+  const P = i => new THREE.Vector3(ax.pts[3 * i], ax.pts[3 * i + 1], ax.pts[3 * i + 2]), d = ax.dir;
+  // first station at or below the feed-entrance level (the dome above the injector is not on the flow path)
+  let iS = 0;
+  if (entry) { const te = entry.clone().sub(P(0)).dot(d); while (iS < ax.throat - 1 && P(iS).sub(P(0)).dot(d) < te) iS++; }
+  const it = ax.throat, iE = ax.n - 1, nAvail = budget - 2;   // minus throat + exit plane
+  const nCh = Math.max(1, Math.min(it - iS, Math.round(nAvail * 0.45))), nCo = Math.max(1, Math.min(iE - it - 1, nAvail - nCh));
+  const idx = [];
+  for (let k = 0; k < nCh; k++) idx.push(Math.round(iS + (it - iS) * k / nCh));
+  idx.push(it);
+  for (let k = 1; k <= nCo; k++) idx.push(Math.round(it + (iE - it) * k / (nCo + 1)));
+  idx.push(iE);
+  const rw = pfsAxisWallR(ax, part), rt = rw[it], out = [];
+  let last = -1;
+  for (const i of idx) {
+    if (i <= last) continue; last = i;
+    const r = rw[i], skin = Math.max(r * 0.08, 0.01), cone = i > it;
+    out.push({ p: P(i), r, rad: Math.max(r - skin, r * 0.5), mult: i === it ? 1.6 : cone ? 1.6 * r / rt : 0, kind: i === it ? 'throat' : i === iE ? 'exit' : cone ? 'cone' : 'chamber' });
+  }
+  out.dir = d.clone().normalize();
+  return out.length >= 3 ? out : null;
+}
 function buildParticlePath(part, links, depth, collisionSDF) {
   // Waypoints: [own centroid, own exit point, next part's centroid, ...]
   // terminating at the chamber's nozzle exit, then arcing on to where it
@@ -5888,7 +5952,8 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   let reachedNozzle = false;
   let exitIdx = MAX_WAYPOINTS; // waypoint index of the nozzle exit plane (the live exhaust plume takes over from here)
   let chambIdx = MAX_WAYPOINTS; // last waypoint inside the chamber cavity (pressure mode holds gas here until the throat chokes)
-  let feedPart = null, feedStart = 0, prevVia = 0, curVia = 0;   // the part feeding the chamber + the waypoint where it starts (priming front)
+  let feedPart = null, feedStart = 0, prevVia = 0, curVia = 0;
+  let exitPlaneIdx = -1; const wMult = new Map();   // pressure-mode chamber stations: index of the exit-plane station, per-waypoint speed multipliers   // the part feeding the chamber + the waypoint where it starts (priming front)
 
   // A part's own particles might start directly in the chamber itself.
   if (cur.type === 'chamber') {
@@ -5945,6 +6010,15 @@ function buildParticlePath(part, links, depth, collisionSDF) {
       }
       chambIdx = path.length - 1;
       feedPart = chainParts[chainIdx - 1] || null; feedStart = chainIdx >= 2 ? prevVia : curVia;
+      // pressure mode: replace the centroid -> exit+2 jump (a straight column through the chamber and the bell) with cavity stations
+      const st = pfsPathStationsOn() ? pfsChamberStations(cur, path[path.length - 2], MAX_WAYPOINTS - 2 - path.length) : null;
+      if (st) {
+        path.pop(); radii.pop(); flowR.pop(); exhaust.pop(); partOfWp.pop();
+        chambIdx = path.length;
+        for (const q of st) { path.push(q.p); radii.push(q.rad); flowR.push(q.r); exhaust.push(false); partOfWp.push(chainIdx); if (q.mult) wMult.set(path.length - 1, q.mult); }
+        exitPlaneIdx = path.length - 1;
+        nozzle = { centroid: st[st.length - 1].p, normal: st.dir, radius: st[st.length - 1].r };
+      }
       path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
       radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(chainIdx);
       reachedNozzle = true;
@@ -5957,7 +6031,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // each particle gets its own random landing offset, so the whole stream
   // together reads as a dispersing exhaust plume rather than a single line.
   if (reachedNozzle) {
-    exitIdx = path.length - 1;
+    exitIdx = exitPlaneIdx >= 0 ? exitPlaneIdx : path.length - 1;   // free jet (no wall push, plume hand-off) only past the exit plane
     const exitPt = path[path.length - 1];
     const dropHeight = Math.max(exitPt.y, 0.1);
     const spreadX = (Math.random() - 0.5) * dropHeight * 0.7;
@@ -5978,7 +6052,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   // 100:1 area ratio stays watchable); the physical v = Q / A numbers are reported separately by computeChannelFlows.
   const Aref = Math.PI * flowR[0] * flowR[0];
   const wgt = [];
-  for (let i = 0; i < nReal; i++) wgt.push(exhaust[i] ? 1.0 : Math.max(0.4, Math.min(6.0, Math.sqrt(Aref / (Math.PI * flowR[i] * flowR[i])))));
+  for (let i = 0; i < nReal; i++) wgt.push(exhaust[i] ? 1.0 : Math.max(0.4, Math.min(wMult.has(i) ? 9.0 : 6.0, Math.sqrt(Aref / (Math.PI * flowR[i] * flowR[i])) * (wMult.get(i) || 1))));
   const dur = [];
   for (let i = 0; i < MAX_WAYPOINTS - 1; i++) {
     if (i < nReal - 1) dur.push(Math.max(points[i].distanceTo(points[i + 1]), 1e-3) / (0.5 * (wgt[i] + wgt[i + 1])));
@@ -6915,21 +6989,25 @@ async function bakeInstanceCore(inst, links) {
 // particle never leaves that inscribed ball. Each point is re-checked against the mesh; a failure is dropped (never placed).
 const PFS_HOLD_POOL = 384;
 function pfsHoldPool(part) {
-  const ax = pfsChamberAxis(part), idx = penIndexForPart(part); if (!ax || !idx) return null;
+  const ax = pfsAxisCached(part), idx = penIndexForPart(part); if (!ax || !idx) return null;
   const st = []; let wsum = 0;
-  for (let i = 0; i < ax.throat; i++) { const r = ax.r[i]; if (r > 1e-3) { wsum += r * r * r; st.push([i, wsum]); } }
+  const rw = pfsAxisWallR(ax, part), rt = rw[ax.throat];   // not the neck: stations upstream of the throat still near the throat's radius are skipped
+  for (let i = 0; i < ax.throat; i++) { const r = rw[i]; if (r > 1e-3 && r > 1.2 * rt) { wsum += r * r; st.push([i, wsum]); } }
+  const hz = ax.n > 1 ? ax.len / (ax.n - 1) : 0;
   if (!st.length) return null;
   let seed = 0x9e3779b9 ^ (part.name || '').length; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
   const out = [], v = new THREE.Vector3();
-  for (let tries = 0; out.length < PFS_HOLD_POOL * 6 && tries < PFS_HOLD_POOL * 4; tries++) {
+  for (let tries = 0; out.length < PFS_HOLD_POOL * 6 && tries < PFS_HOLD_POOL * 6; tries++) {
     const w = rnd() * wsum; let k = 0; while (k < st.length - 1 && st[k][1] < w) k++;
-    const i = st[k][0], r = ax.r[i], skin = Math.max(r * 0.08, 0.01), R = Math.max(r - skin, 0) * 0.85;
-    let ox, oy, oz; do { ox = rnd() * 2 - 1; oy = rnd() * 2 - 1; oz = rnd() * 2 - 1; } while (ox * ox + oy * oy + oz * oz > 1);
-    ox *= R; oy *= R; oz *= R;
+    // candidates fill the local cross-section out to the wall (1.6 r covers a cylinder or cone wall beyond the inscribed ball), uniform in
+    // area so the outer ring is not starved; the mesh test below is what keeps them inside, so no shrink factor
+    const i = st[k][0], r = rw[i], skin = Math.max(r * 0.06, 0.01), R = Math.max(r - skin, 0);
+    const rr = R * Math.sqrt(rnd()), th = rnd() * 2 * Math.PI, ox = rr * Math.cos(th), oz = rr * Math.sin(th), oy = (rnd() * 2 - 1) * hz * 0.5;
     const cx = ax.pts[3 * i], cy = ax.pts[3 * i + 1], cz = ax.pts[3 * i + 2];
-    // the swirl rotates (ox, oz) about the vertical; check 4 phases of it against the real mesh
+    // the swirl rotates (ox, oz) about the vertical through the station: check 8 phases of the whole orbit against the real mesh with a
+    // skin margin (a smooth wall cannot bulge inward by more than the skin between 45-degree samples at these radii)
     let ok = true;
-    for (let q = 0; q < 4 && ok; q++) { const a = q * Math.PI * 0.5, ca = Math.cos(a), sa = Math.sin(a); if (signedDistanceToMesh(v.set(cx + ox * ca - oz * sa, cy + oy, cz + ox * sa + oz * ca), idx) > -0.5 * skin) ok = false; }
+    for (let q = 0; q < 8 && ok; q++) { const a = q * Math.PI * 0.25, ca = Math.cos(a), sa = Math.sin(a); if (signedDistanceToMesh(v.set(cx + ox * ca - oz * sa, cy + oy, cz + ox * sa + oz * ca), idx) > -skin) ok = false; }
     if (ok) out.push(cx, cy, cz, ox, oy, oz);
   }
   return out.length ? Float32Array.from(out) : null;
@@ -11820,12 +11898,16 @@ function pfsChamberAxis(part) {
   const idx = penIndexForPart(part);
   if (!noz || !idx) return null;
   const O = openingLiveCentroid(noz).clone(), u = openingLiveNormal(noz).clone().negate();   // u points into the chamber
-  const size = partWorldAABB(part).getSize(new THREE.Vector3()), Lmax = size.length();
+  const box = partWorldAABB(part), size = box.getSize(new THREE.Vector3()), Lmax = size.length();
+  // only inside the part's own box: below an OPEN bell the mesh SDF's sign is not meaningful (|sd| is the distance to the rim, and the
+  // sign test still reads "inside"), so a march that starts below the exit plane would count open air as cavity
+  const bx = box.clone().expandByScalar(Math.max(Lmax * 1e-3, 1e-4));
   const NS = 120, h = Lmax / NS, s = [];
   let started = false, miss = 0;
   const p = new THREE.Vector3();
   for (let k = 0; k <= NS; k++) {
     p.copy(O).addScaledVector(u, k * h);
+    if (!bx.containsPoint(p)) { if (started) break; continue; }
     const sd = signedDistanceToMesh(p, idx);
     if (sd < 0) { started = true; miss = 0; s.push({ t: k * h, r: -sd }); } else if (started && ++miss >= 3) break;
   }
@@ -11837,8 +11919,12 @@ function pfsChamberAxis(part) {
     pts[3 * i] = p.x; pts[3 * i + 1] = p.y; pts[3 * i + 2] = p.z; r[i] = Math.max(s[i].r, 1e-3);
     if (i) cum[i] = cum[i - 1] + Math.hypot(pts[3 * i] - pts[3 * i - 3], pts[3 * i + 1] - pts[3 * i - 2], pts[3 * i + 2] - pts[3 * i - 1]);
   }
-  let vol = 0, ti = 0;
-  for (let i = 0; i < n; i++) { if (r[i] < r[ti]) ti = i; if (i) vol += Math.PI * 0.25 * (r[i] * r[i] + r[i - 1] * r[i - 1]) * (cum[i] - cum[i - 1]); }
+  let vol = 0, ti = Math.min(1, n - 1);
+  // throat = narrowest station, ignoring the first (injector dome) and last (exit lip) stations, whose r is the distance to an end face
+  // walk off the dome first: from the top, r rises to the chamber's own wall distance; the throat is the narrowest point after that
+  let i0 = Math.min(1, n - 1); while (i0 < n - 2 && r[i0 + 1] >= r[i0] - 1e-6) i0++;
+  const i1 = Math.max(i0, Math.floor(n * 0.9)); ti = i0;
+  for (let i = 0; i < n; i++) { if (i >= i0 && i <= i1 && r[i] < r[ti]) ti = i; if (i) vol += Math.PI * 0.25 * (r[i] * r[i] + r[i - 1] * r[i - 1]) * (cum[i] - cum[i - 1]); }
   return { pts, r, cum, n, vol, throat: ti, len: cum[n - 1], dir: u.clone().negate() };
 }
 
@@ -12304,16 +12390,53 @@ function pfsDebugChamberHold() {
   const cpu = state.particleCPU; if (!cpu || !particleSystem) return null;
   const ch = state.parts.find(p => p.type === 'chamber'), idx = ch && penIndexForPart(ch); if (!idx) return null;
   const uTime = particleSystem.material.uniforms.uTime.value, rd = debugReadParticlePositions(); if (!rd) return null;
-  const v = new THREE.Vector3(); let held = 0, inside = 0, worst = -Infinity;
+  const v = new THREE.Vector3(); let held = 0, inside = 0, worst = -Infinity; const span = [];
+  const ax = pfsAxisCached(ch); if (ax) pfsAxisWallR(ax, ch);
   for (let p = 0; p < cpu.count; p++) {
     const pr = ((uTime * cpu.speed[p] + cpu.phase[p]) % 1 + 1) % 1;
     if (bakedAhead(cpu, p, pr) || !bakedHeld(cpu, p, pr, uTime)) continue;
-    held++; const d = signedDistanceToMesh(v.set(rd.pos[3 * p], rd.pos[3 * p + 1], rd.pos[3 * p + 2]), idx);
+    held++; v.set(rd.pos[3 * p], rd.pos[3 * p + 1], rd.pos[3 * p + 2]); const d = signedDistanceToMesh(v, idx);
     if (d < 0) inside++; worst = Math.max(worst, d);
+    if (ax) { const q = pfsAxisSpan(ax, v); if (q) span.push(q.ratio); }
   }
-  return { held, inside, worst: held ? worst : null, gate: cpu.gateU ? cpu.gateU.value : 1, fill: cpu.fillU ? cpu.fillU.value : 1 };
+  return { held, inside, worst: held ? worst : null, gate: cpu.gateU ? cpu.gateU.value : 1, fill: cpu.fillU ? cpu.fillU.value : 1, span: pfsSpanStats(span) };
 }
-window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, chamberHold: pfsDebugChamberHold, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',
+// distance of world point v from the chamber axis, over the local wall distance r of the nearest axis station (1 = at the inscribed
+// radius; a cylinder wall is at ~1, a cone wall at 1/cos(half-angle)); t = position along the axis from the top station
+function pfsAxisSpan(ax, v) {
+  const x0 = ax.pts[0], y0 = ax.pts[1], z0 = ax.pts[2], d = ax.dir;
+  const t = (v.x - x0) * d.x + (v.y - y0) * d.y + (v.z - z0) * d.z;
+  if (t < -1e-6 || t > ax.len + 1e-6) return null;
+  let i = 0; while (i < ax.n - 1 && ax.cum[i + 1] < t) i++;
+  const px = x0 + d.x * t, py = y0 + d.y * t, pz = z0 + d.z * t, rad = Math.hypot(v.x - px, v.y - py, v.z - pz);
+  const rw = ax.rw || ax.r;
+  return { t, i, rad, ratio: rad / Math.max(rw[i], 1e-6) };
+}
+function pfsSpanStats(a) {
+  if (!a.length) return null; a.sort((x, y) => x - y);
+  const q = f => +a[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(3);
+  return { n: a.length, p50: q(0.5), p90: q(0.9), max: q(1) };
+}
+// After the throat opens: GPU particles currently inside the diverging cone (between the throat and the exit plane along the axis) -
+// how many are inside the chamber mesh, and how far out toward the wall they spread (ratio to the local wall distance).
+function pfsDebugChamberFlow() {
+  const cpu = state.particleCPU; if (!cpu || !particleSystem) return null;
+  const ch = state.parts.find(p => p.type === 'chamber'), idx = ch && penIndexForPart(ch), ax = ch && pfsAxisCached(ch); if (!idx || !ax) return null;
+  pfsAxisWallR(ax, ch);
+  const rd = debugReadParticlePositions(); if (!rd) return null;
+  const uTime = particleSystem.material.uniforms.uTime.value, v = new THREE.Vector3(), tT = ax.cum[ax.throat];
+  let n = 0, inside = 0, worst = -Infinity; const span = [];
+  for (let p = 0; p < cpu.count; p++) {
+    if (!(cpu.chambIdx[p] < MAX_WAYPOINTS)) continue;
+    const pr = ((uTime * cpu.speed[p] + cpu.phase[p]) % 1 + 1) % 1;
+    if (bakedAhead(cpu, p, pr) || bakedHeld(cpu, p, pr, uTime)) continue;
+    v.set(rd.pos[3 * p], rd.pos[3 * p + 1], rd.pos[3 * p + 2]);
+    const q = pfsAxisSpan(ax, v); if (!q || q.t <= tT || q.t >= ax.len - 1e-3 || q.ratio > 3) continue;
+    n++; const d = signedDistanceToMesh(v, idx); if (d < 0) inside++; worst = Math.max(worst, d); span.push(q.ratio);
+  }
+  return { n, inside, worst: n ? worst : null, span: pfsSpanStats(span), throatR: ax.rw[ax.throat], exitR: ax.rw[ax.n - 1] };
+}
+window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, chamberHold: pfsDebugChamberHold, chamberFlow: pfsDebugChamberFlow, chamberAxis: (name) => { const part = name ? state.parts.find(p => p.name === name) : state.parts.find(p => p.type === 'chamber'); const ax = part && pfsChamberAxis(part); return ax ? { n: ax.n, throat: ax.throat, len: ax.len, r: Array.from(ax.r), pts: Array.from(ax.pts), dir: ax.dir.toArray() } : null; }, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',
   sdAgainst: (name, flat) => { const part = state.parts.find(p => p.name === name); const idx = part && penIndexForPart(part); if (!idx) return null; const out = new Float32Array(flat.length / 3), v = new THREE.Vector3(); for (let i = 0; i < out.length; i++) out[i] = signedDistanceToMesh(v.set(flat[3*i], flat[3*i+1], flat[3*i+2]), idx); return out; },
   partBox: (name) => { const part = state.parts.find(p => p.name === name); if (!part) return null; const b = partWorldAABB(part); return { min: b.min.toArray(), max: b.max.toArray(), openings: part.openings.map(o => ({ role: o.role, c: openingLiveCentroid(o).toArray(), n: openingLiveNormal(o).toArray(), r: o.radius })) }; } });
 
