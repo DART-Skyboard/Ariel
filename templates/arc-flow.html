@@ -566,21 +566,35 @@ const FUEL_SPECIES = {
   hyp: { label: 'Hypergolic MMH / N2O4', fuel: { C: 1, H: 6,  N: 2, M: 46.07 }, ox: { O: 4, M: 92.01 }, ofNom: 1.9, tAuto: 0,   tK: 1.00 },   // tAuto 0 = hypergolic: lights on contact
 };
 for (const k in FUEL_SPECIES) { const f = FUEL_SPECIES[k]; f.ofStoich = (2 * f.fuel.C + f.fuel.H / 2) / f.ox.O * f.ox.M / f.fuel.M; }
-// Simple-equilibrium reaction products of a fuel at mixture ratio `of` (mass O/F): oxygen goes to H -> H2O first, then C -> CO, then CO -> CO2 (fuel-rich: leftover H as H2,
+// Simple-equilibrium reaction products of a fuel at mixture ratio `of` (mass O/F): oxygen goes to C -> CO first, then H -> H2O (fuel-rich: CO + H2 + soot), then the water-gas shift sets the CO/CO2 and H2/H2O split at the gas temperature T, and spare oxygen finishes CO -> CO2 (fuel-rich: leftover H as H2,
 // leftover C as CO, and soot once carbon outruns oxygen: the soot yield rises with the C/O atom ratio (onset ~0.3, nearly all of the excess by ~0.7, 2CO -> C + CO2);
 // lean: leftover O2). Returns moles per mole of fuel and MASS fractions of the exhaust. This is what the flame colour, afterburn fuel and smoke are derived from.
 const SOOT_C_FRAC = 0.45;     // fraction of the carbon that can end up as soot at saturation (rest stays CO / CO2)
-function combProducts(fuelKey, of) {
+// Water-gas shift CO + H2O <=> CO2 + H2 brought to equilibrium at temperature T (K) by moving the extent xi (moles per mole of fuel): K(T) = exp(4577.8/T - 4.33)
+// (Moe 1962 / Gordon-McBride fit, ~700-3000 K). K < 1 above ~1100 K, so a hot chamber keeps CO + H2O; cooler gas shifts to CO2 + H2. Mutates and returns mol.
+function wgsEquilibrate(mol, T) {
+  if (!(T > 300)) return mol;
+  const K = Math.exp(4577.8 / T - 4.33), co = mol.CO, w = mol.H2O, c2 = mol.CO2, h = mol.H2;
+  const a = 1 - K, b = c2 + h + K * (co + w), c = c2 * h - K * co * w, lo = -Math.min(c2, h), hi = Math.min(co, w);
+  let xi = 0;
+  if (Math.abs(a) < 1e-9) xi = -c / b;
+  else { const d = Math.sqrt(Math.max(b * b - 4 * a * c, 0)), r1 = (-b + d) / (2 * a), r2 = (-b - d) / (2 * a); xi = r1 >= lo - 1e-12 && r1 <= hi + 1e-12 ? r1 : r2; }
+  xi = Math.min(Math.max(xi, lo), hi);
+  mol.CO -= xi; mol.H2O -= xi; mol.CO2 += xi; mol.H2 += xi;
+  return mol;
+}
+function combProducts(fuelKey, of, T) {
   const f = FUEL_SPECIES[fuelKey] || FUEL_SPECIES.rp1, F = f.fuel, o = of > 0 ? of : f.ofNom;
   let O = o * F.M / f.ox.M * f.ox.O;                                  // oxygen atoms per mole of fuel
   const O0 = O;
   const mol = { H2O: 0, H2: 0, CO: 0, CO2: 0, C: 0, N2: F.N / 2, O2: 0 };
+  mol.CO = Math.min(F.C, O); O -= mol.CO; mol.C = F.C - mol.CO;      // oxygen goes to carbon first (CO + H2 basis, as in rich combustion); carbon that finds no oxygen is soot
   mol.H2O = Math.min(F.H / 2, O); O -= mol.H2O; mol.H2 = F.H / 2 - mol.H2O;
-  mol.CO = Math.min(F.C, O); O -= mol.CO; mol.C = F.C - mol.CO;      // carbon that finds no oxygen is soot
   const r = F.C / Math.max(O0, 1e-9), k = Math.min(mol.CO / 2, F.C * SOOT_C_FRAC * _flSS(0.30, 0.70, r));   // carbon-rich: 2CO -> C + CO2
   mol.CO -= 2 * k; mol.CO2 += k; mol.C += k;
   const up = Math.min(mol.CO, O); mol.CO -= up; mol.CO2 += up; O -= up;   // spare oxygen finishes CO -> CO2
   mol.O2 = O / 2;
+  if (T > 0) wgsEquilibrate(mol, T);     // temperature-dependent CO/CO2 and H2/H2O split (omit T for the plain oxygen-allocation split)
   const M = { H2O: 18.015, H2: 2.016, CO: 28.01, CO2: 44.01, C: 12.011, N2: 28.014, O2: 32.0 }, mass = {}; let tot = 0;
   for (const g in mol) { mass[g] = mol[g] * M[g]; tot += mass[g]; }
   for (const g in mass) mass[g] /= tot;
@@ -592,7 +606,7 @@ function combProducts(fuelKey, of) {
 //   nox 0..1 = thermal-NO index from the ambient N2 x O2 the hot jet entrains                              products = the full mass-fraction table
 const SOOT_REF = 0.04, CHEM_K = 1.6, K_SOOT = 10, K_STEAM = 1;     // soot mass for full colour; mass-extinction ratio soot : condensed water
 function flameSpecies(fuelKey, of, atm) {
-  const f = FUEL_SPECIES[fuelKey] || FUEL_SPECIES.rp1, pr = combProducts(fuelKey, of), m = pr.mass;
+  const f = FUEL_SPECIES[fuelKey] || FUEL_SPECIES.rp1, pr = combProducts(fuelKey, of, atm && atm.T), m = pr.mass;
   const g = (atm && atm.gas) || {}, pRel = atm && atm.pRel != null ? Math.max(atm.pRel, 0) : 1;
   const soot = Math.min(1, m.C / SOOT_REF);
   const hmass = f.fuel.H / f.fuel.M;
@@ -9304,9 +9318,9 @@ function chamberFuelSpecies(ch, cfg) {
   const k = (ch && ch.fuelSpecies) || (el && el.value) || (cfg && cfg.fuel) || 'rp1';
   return FUEL_SPECIES[k] ? k : 'rp1';
 }
-function plumeEnv(ch, cfg, paPsi) {
+function plumeEnv(ch, cfg, paPsi, TcK) {
   const key = chamberFuelSpecies(ch, cfg), mix = ch && state.channelFlows ? chamberMixture(ch) : null;
-  const atm = atmoNow(paPsi), sp = flameSpecies(key, mix && mix.of > 0 ? mix.of : 0, { gas: atm.gas, pRel: Math.max(paPsi, 0) / 14.696 });
+  const atm = atmoNow(paPsi), sp = flameSpecies(key, mix && mix.of > 0 ? mix.of : 0, { gas: atm.gas, pRel: Math.max(paPsi, 0) / 14.696, T: TcK });
   const tint = [atm.tint[0], atm.tint[1] * (1 - 0.10 * sp.nox), atm.tint[2] * (1 - 0.30 * sp.nox)];   // thermal NO2 browns the smoke
   return { fuel: key, of: sp.of, phi: sp.phi, soot: sp.soot, chem: sp.chem, yf: sp.yf, products: sp.products, nox: sp.nox, smkMax: sp.smkMax, steam: sp.steam, o2Rel: Math.max(paPsi, 0) / 14.696 * atm.o2 / 0.21, tint };
 }
@@ -10353,7 +10367,7 @@ function plumeCurrentDerived() {
   const pc = chamberPcPsi(c.ch, cfg);
   const kPc = pfsAnyPressure() ? 1 : (mass.on ? Math.max(0.05, Math.min(1, mass.K)) : 1);   // pressure solver: chamberPcPsi is already the real Pc
   const cb = plumeChamberComb(c, cfg, pc * kPc, 0);
-  const D = plumeDerive(cfg, pc * kPc * cb.kPc, cb.Tc, pa, F.re, plumeEnv(c.ch, cfg, pa));
+  const D = plumeDerive(cfg, pc * kPc * cb.kPc, cb.Tc, pa, F.re, plumeEnv(c.ch, cfg, pa, cb.Tc));
   D.comb = cb;
   return { D, F, c };
 }
@@ -10510,7 +10524,7 @@ function plumeFrame(inst, now) {
     const pc = chamberPcPsi(c.ch, cfg);
     const pa = Math.max(parseFloat(atmoPsiEl.value) || 0, 0);
     const cb = plumeChamberComb(c, cfg, pc, Math.min(Math.max((now - (plume.lastAt || now)) / 1000, 0), 0.1));
-    const D = plumeDerive(cfg, pc * cb.kPc * (1 + 0.04 * plume.fl), cb.Tc * (1 + 0.03 * plume.fl), pa, F.re, plumeEnv(c.ch, cfg, pa));
+    const D = plumeDerive(cfg, pc * cb.kPc * (1 + 0.04 * plume.fl), cb.Tc * (1 + 0.03 * plume.fl), pa, F.re, plumeEnv(c.ch, cfg, pa, cb.Tc));
     D.comb = cb;
     let inst = plume.perChamber.get(c.ch);
     if (!inst) {
