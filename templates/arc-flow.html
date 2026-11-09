@@ -6408,7 +6408,8 @@ const PARTICLE_SHADER_CORE = `
       float ang = uTime * (0.25 + 0.5 * pfsRank()) + aPhase * 6.2831;
       float ca = cos(ang), sa = sin(ang);
       vec3 d = vec3(aLatU * ca - aLatV * sa, h3, aLatU * sa + aLatV * ca);
-      pos = centerPos + d * rad * 0.95 + eddy * rad * 0.06;
+      float dl = length(d); if (dl > 1.0) d /= dl;   // unit ball, not the cube: corners poked through the wall
+      pos = centerPos + d * rad * 0.7 + eddy * rad * 0.04;
     }
 
     // ── Real mesh collision: pull the particle back off the wall ────────
@@ -7395,9 +7396,11 @@ function bakedHeld(cpu, p, progress, uTime) {
   if (rank < g || progress < cpu.knotData[p * MAX_WAYPOINTS + ci]) return false;
   const b = (p * MAX_WAYPOINTS + ci) * 3, rad = cpu.radiusData[p * MAX_WAYPOINTS + ci];
   const h3 = _fract(ph * 13.7) * 2 - 1, ang = uTime * (0.25 + 0.5 * rank) + ph * 6.2831, ca = Math.cos(ang), sa = Math.sin(ang);
-  _bheld.x = cpu.waypointData[b] + (lu * ca - lv * sa) * rad * 0.95;
-  _bheld.y = cpu.waypointData[b + 1] + h3 * rad * 0.95;
-  _bheld.z = cpu.waypointData[b + 2] + (lu * sa + lv * ca) * rad * 0.95;
+  let dx = lu * ca - lv * sa, dy = h3, dz = lu * sa + lv * ca; const dl = Math.hypot(dx, dy, dz);
+  if (dl > 1) { dx /= dl; dy /= dl; dz /= dl; }          // unit ball, as the shader
+  _bheld.x = cpu.waypointData[b] + dx * rad * 0.7;
+  _bheld.y = cpu.waypointData[b + 1] + dy * rad * 0.7;
+  _bheld.z = cpu.waypointData[b + 2] + dz * rad * 0.7;
   _bheld.hidden = _fract(ph * 5.17 + lv * 2.3 + lu * 1.9) >= (cpu.fillU ? cpu.fillU.value : 1);
   return true;
 }
@@ -11785,16 +11788,28 @@ function pfsChamberAxis(part) {
 // SDF voxel across, so the volumetric (Boolean) joint test also reports Oxidizer -> FuelChannel and OxidizerPressure_ -> FuelChannel
 // through the pipe's side wall. Those mid-tube "joints" put oxidizer and helium (~1.8 t/s in v73) into the fuel line's network edge;
 // the solver ignores them (Flow Graph owns the joint test itself). Returns false for such a side-wall link.
+// Tube lookup aligned with Flow Graph's thin-channel list (PR #36: sdf.thinChannels / tubeSet.thinChannels, entries carry the SAME
+// segs / minRIn / firstSeg objects as buildTubeSet plus refined, voxelsAcrossBore, regions[]). Feature-detected: with the list present
+// the channel entry wins (so the capsule chain and the refined collision body are the same geometry); without it (current main) the
+// plain fitted tube from buildTubeSet is used. Returns the tube-like object or null.
+function pfsTubeMap() {
+  const sd = state.sdf, ts = sd && sd.tubes; if (!ts || !ts.byPart) return null;
+  const list = (sd.thinChannels && sd.thinChannels.channels) || sd.thinChannels || ts.thinChannels || null;
+  if (!Array.isArray(list) || !list.length) return ts.byPart;
+  const m = new Map(ts.byPart);
+  for (const ch of list) if (ch && ch.part && ch.segs && ch.segs.length) m.set(ch.part, ch);
+  return m;
+}
 function pfsTubePortOk(src, l, tubes) {
   const t = linkTarget(l), tube = tubes && t && tubes.get(t);
   if (!tube || !tube.segs || !tube.segs.length || !l.viaOpening || !pfsIsCavity(src)) return true;
   const c = openingLiveCentroid(l.viaOpening), sg = tube.segs, A = sg[0].a, B = sg[sg.length - 1].b;
   const rO = Math.max(sg[0].oA || sg[0].rA, sg[sg.length - 1].oB || sg[sg.length - 1].rB, 1e-4);
-  const tol = Math.max(3 * rO, 2 * (l.viaOpening.radius || 0) + rO);
+  const tol = Math.max(3 * rO, 0.05);   // bore-scale only: the Boolean's synthetic joint openings are ~1 unit wide and would always pass
   return Math.min(c.distanceTo(A), c.distanceTo(B)) <= tol;
 }
 function pfsRejectedLinks(inst) {   // for the snapshot / LIVE BOARD: the side-wall links pfsBuildNetwork drops
-  const tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.byPart : null, src = (inst.links && inst.links.size) ? inst.links : state.currentLinks, out = [];
+  const tubes = pfsTubeMap(), src = (inst.links && inst.links.size) ? inst.links : state.currentLinks, out = [];
   if (src) for (const p of inst.parts) for (const l of allLinks(src, p)) if (!pfsTubePortOk(p, l, tubes)) out.push(p.name + ' -> ' + (linkTarget(l) || {}).name);
   return out;
 }
@@ -11802,7 +11817,7 @@ function pfsRejectedLinks(inst) {   // for the snapshot / LIVE BOARD: the side-w
 // Network: nodes = cavities (+ the ATM sink, node -1), edges from allLinks (every link of a part, so a multi-link part gets
 // several edges) and from unmatched exit / nozzle openings (-> ATM).
 function pfsBuildNetwork(inst) {
-  const unit = pfsUnit(), tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.byPart : null;
+  const unit = pfsUnit(), tubes = pfsTubeMap();
   const partSet = new Set(inst.parts);
   const src = (inst.links && inst.links.size) ? inst.links : state.currentLinks;
   const lmap = new Map();
@@ -12094,6 +12109,10 @@ function pfsSyncMass(sol) {
   }
 }
 
+function pfsEdgeTubes(e) {   // which bore geometry each pipe of the edge solved with (fitted tube / Flow Graph refined channel)
+  const m = pfsTubeMap();
+  return e.pipes.map(p => { const t = m && m.get(p); return t ? { name: p.name, minRIn: +(t.minRIn != null ? t.minRIn : t.segs[0].rA).toPrecision(4), segs: t.segs.length, refined: !!t.refined, voxelsAcrossBore: t.voxelsAcrossBore != null ? +(+t.voxelsAcrossBore).toFixed(2) : null } : { name: p.name, tube: false }; });
+}
 function pfsEdgePrime(e) { return e.primed ? 1 : Math.min(e.vFill / Math.max(e.Vline, 1e-12), 1); }
 // priming fraction of the feed line `fp` (the part right before the chamber on a particle path): max over the edges it carries
 function pfsFeedPrime(sol, fp) {
@@ -12109,7 +12128,7 @@ function pfsSnapshot(inst) {
     mode: sol.inst.solverMode, t: +sol.t.toFixed(4), rejectedLinks: pfsRejectedLinks(sol.inst), atmPsi: psi(sol.pa), emitK: +sol.K.toFixed(4),
     nodes: sol.nodes.map(n => ({ id: n.id, name: n.name, kind: n.kind, contents: n.contents || 'gas', psi: psi(n.P), massKg: +(n.kind === 'liquid' ? n.mL : n.mG).toPrecision(5),
       massKg0: +(n.kind === 'liquid' ? n.mL0 : n.mG0).toPrecision(5), ullageKg: n.kind === 'liquid' ? +n.mG.toPrecision(4) : undefined, V_m3: +n.V.toPrecision(5), T: +n.T.toFixed(1), mdotIn: +n.mIn.toPrecision(4), mdotOut: +n.mOut.toPrecision(4) })),
-    gate: +(sol.gate || 0).toFixed(4), slowmo: sol.slowmo != null ? +sol.slowmo.toFixed(3) : 1, fill: +(sol.fill != null ? sol.fill : 1).toFixed(4), edges: sol.edges.map(e => ({ id: e.id, name: e.name, kind: e.kind, fluid: e.fluid, open: e.open, primed: e.primed, prime: +pfsEdgePrime(e).toFixed(4), from: e.from.id, to: e.to ? e.to.id : 'ATM', mdot: +e.mdot.toPrecision(5), vPhys: +e.vPhys.toFixed(2), area_m2: +e.A.toPrecision(4), links: e.chain.length, pipes: e.pipes.map(p => p.name) })),
+    gate: +(sol.gate || 0).toFixed(4), slowmo: sol.slowmo != null ? +sol.slowmo.toFixed(3) : 1, fill: +(sol.fill != null ? sol.fill : 1).toFixed(4), edges: sol.edges.map(e => ({ id: e.id, name: e.name, kind: e.kind, fluid: e.fluid, open: e.open, primed: e.primed, prime: +pfsEdgePrime(e).toFixed(4), from: e.from.id, to: e.to ? e.to.id : 'ATM', mdot: +e.mdot.toPrecision(5), vPhys: +e.vPhys.toFixed(2), area_m2: +e.A.toPrecision(4), links: e.chain.length, pipes: e.pipes.map(p => p.name), tubes: pfsEdgeTubes(e) })),
   };
 }
 function pfsActivate() {

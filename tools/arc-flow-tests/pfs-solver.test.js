@@ -218,11 +218,14 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   const fuCh = sc.parts.find(p => p.name === 'FuelChannel');
   sc.links.get(sc.ox).push({ target: fuCh, viaOpening: sc.ox.openings[1], entrance: fuCh.openings[0], kind: 'propellant' });
   sc.links.get(sc.heO).push({ target: fuCh, viaOpening: sc.heO.openings[0], entrance: fuCh.openings[0], kind: 'pressurant' });
+  // live v73 shape: a synthetic joint opening ~1.1 units wide whose centre sits 1.2 units from the tube's entrance end
+  const synth = op('joint', 1.68, 27.16, -0.36, 1.107);   // not in the part's own openings list
+  sc.links.get(sc.ox).push({ target: fuCh, viaOpening: synth, entrance: synth, kind: 'propellant' });
   const net = api.pfsBuildNetwork(inst);
   same(net.edges.map(e => e.name).sort(), ['CombustionChamber \u2192 ATM', 'Fuel \u2192 CombustionChamber', 'FuelPressure \u2192 Fuel', 'Oxidizer \u2192 CombustionChamber', 'OxidizerPressure_ \u2192 Oxidizer'].sort());
   const fe = net.edges.find(e => e.from.part === sc.fu); same(fe.pipes.map(p => p.name), ['FuelChannel']);
   assert.strictEqual(net.edges.filter(e => e.pipes.some(p => p.name === 'FuelChannel')).length, 1, 'only the fuel tank feeds the fuel line');
-  ok('thin pipe: side-wall links into a fitted tube are rejected (' + 2 + ' dropped), fuel line fed only by the fuel tank');
+  ok('thin pipe: side-wall links into a fitted tube are rejected (' + 3 + ' dropped), fuel line fed only by the fuel tank');
 }
 // 12. feed-line priming (v75, metre-scale demo units): nothing reaches the chamber until each line's bore volume has filled; then the
 //     chamber pressure builds with the throat shut, and only after that does the throat open
@@ -241,5 +244,21 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   assert.ok(tPrime > 0 && tOpen > tPrime, 'prime ' + tPrime + ' then open ' + tOpen);
   const snap = api.pfsSnapshot(inst); assert.ok(snap.edges.filter(e => e.to === chN.id).every(e => e.prime > 0));
   ok('feed-line priming: first line primed at ' + (tPrime * 1000).toFixed(0) + ' ms, throat opens at ' + (tOpen * 1000).toFixed(0) + ' ms');
+}
+// 13. Flow Graph thin-channel list (PR #36 shape, feature-detected): a refined channel entry for the fuel line is what the network solves with
+{
+  const sc = makeScene(), { api, inst, ctx } = makeEnv(sc);
+  const fuCh = sc.parts.find(p => p.name === 'FuelChannel'), base = sc.tubes.get(fuCh);
+  const segs = base.segs.map(g => Object.assign({}, g, { rA: 0.08, rB: 0.08 }));
+  ctx.state.sdf.thinChannels = [{ part: fuCh, name: 'FuelChannel', segs, minRIn: 0.08, maxRIn: 0.08, firstSeg: 0, refined: true, voxelsAcrossBore: 4.4, coarseVoxelsAcrossBore: 0.9, regions: [{ kind: 'channel' }] }];
+  const sol = inst.solver = new api.PressureFlowSim(inst);
+  const e = sol.edges.find(x => x.from.part === sc.fu && x.to);
+  const r = 0.08 * 0.0254; assert.ok(Math.abs(e.sections[0].A - Math.PI * r * r) / (Math.PI * r * r) < 1e-6, 'channel bore used');
+  const t = api.pfsSnapshot(inst).edges.find(x => x.name === e.name).tubes[0];
+  assert.ok(t.refined === true && t.voxelsAcrossBore === 4.4 && t.segs === 2, JSON.stringify(t));
+  delete ctx.state.sdf.thinChannels;
+  const e2 = new api.PressureFlowSim(inst).edges.find(x => x.from.part === sc.fu && x.to);
+  assert.ok(Math.abs(e2.sections[0].A - Math.PI * Math.pow(0.09 * 0.0254, 2)) < 1e-12, 'falls back to the fitted tube without the list');
+  ok('thin-channel list (refined, ' + t.voxelsAcrossBore + ' voxels across) is preferred; plain fitted tube without it');
 }
 console.log(n + ' passed');

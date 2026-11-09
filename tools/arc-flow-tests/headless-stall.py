@@ -66,6 +66,10 @@ async def main():
             if not s0 or s0['mode'] != 'pressure': fails.append('pressure solver is not the default: %r' % s0)
             elif s0['t'] < 0.02 and (s0['open'] or s0['mdot'] > 0): fails.append('throat flowing at t=%.4f: %r' % (s0['t'], s0))
             if s0 and not any(a > 0 for _, a in s0['fuel']): fails.append('no fuel-line edge with a bore area: %r' % s0['fuel'])
+            t1 = time.time()
+            await pg.evaluate("()=>new Promise(r=>{let n=0;(function f(){if(++n>=60)r();else requestAnimationFrame(f)})()})")
+            tf = time.time() - t1
+            lt = await pg.evaluate('()=>window.__lt')   # long tasks of start + 60 frames, before the debug readbacks below
             holds = []
             for _ in range(12):
                 h = await pg.evaluate('()=>window.arcFlowDebug.chamberHold()')
@@ -75,13 +79,15 @@ async def main():
             print('chamber hold samples', holds[:3])
             for h in holds:
                 if h['inside'] < 0.95 * h['held']: fails.append('held particles outside the chamber cavity: %r' % h)
-            t1 = time.time()
-            await pg.evaluate("()=>new Promise(r=>{let n=0;(function f(){if(++n>=60)r();else requestAnimationFrame(f)})()})")
-            tf = time.time() - t1
             await pg.wait_for_timeout(15000)
             s1 = await pg.evaluate(SNAP); print('later snapshot', s1)
+            # (a) deterministic cavity check: force every chamber-bound particle into the held state (gate 0, chamber full, lines
+            # primed), read their GPU positions and test them against the chamber mesh; then restore the live uniforms
+            hf = await pg.evaluate("()=>{const c=window.arcFlow.state.particleCPU; if(!c||!c.gateU) return null; const g=c.gateU.value,f=c.fillU.value,pr=Array.from(c.primeU.value); c.gateU.value=0; c.fillU.value=1; c.primeU.value.fill(1); const h=window.arcFlowDebug.chamberHold(); c.gateU.value=g; c.fillU.value=f; pr.forEach((v,i)=>c.primeU.value[i]=v); return h}")
+            print('forced hold', hf)
+            if not hf or not hf['held']: fails.append('no chamber-bound particles to hold: %r' % hf)
+            elif hf['inside'] < 0.95 * hf['held']: fails.append('held particles outside the chamber cavity: %r' % hf)
             if not (s1 and s1['open'] and s1['mdot'] > 0): fails.append('throat never opened / no flow after accumulation: %r' % s1)
-            lt = await pg.evaluate('()=>window.__lt')
             post = [d for s, d in lt if s + d > sim_at - tsim * 0 and s >= sim_at - 50]
             print('bake+start %.1fs, 60 frames %.1fs, post-start longest task %.0f ms' % (tsim, tf, max(post or [0])))
             if tf > FRAMES_LIMIT_S: fails.append('60 frames took %.1fs (> %ss)' % (tf, FRAMES_LIMIT_S))
