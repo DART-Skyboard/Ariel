@@ -214,7 +214,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v73</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v74</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -2057,12 +2057,7 @@ function wireDetailEvents(part) {
     updatePartThermalTint(state.currentLinks);
   };
   if (f('f_matid')) { f('f_matid').onchange = e => { applyMaterial(part, e.target.value); if (typeof wallReset === 'function') wallReset(part); renderPartDetail(); matRefresh(); }; matRefresh(); }
-  for (const [ck, , clo, chi] of CUSTOM_FIELDS) if (f('f_cm_' + ck)) f('f_cm_' + ck).oninput = e => {
-    const v = parseFloat(e.target.value); if (!(v >= clo && v <= chi)) return;
-    part.custom = customAlloy(part); part.custom[ck] = v; if (ck === 'rho') part.densityKgM3 = v;
-    if (part.custom.Tliq < part.custom.Tm) part.custom.Tliq = part.custom.Tm;
-    if (typeof wallReset === 'function') wallReset(part); matRefresh();
-  };
+  // Custom alloy form inputs removed — melting deferred; existing part.custom data is left intact.
   if (f('f_purity')) f('f_purity').oninput = e => { const v = parseFloat(e.target.value); if (v >= 30 && v <= 100) { part.purity = v / 100; wallReset(part); } };
   if (f('f_regen')) f('f_regen').onchange = e => { part.regen = e.target.checked ? undefined : false; wallReset(part); };
   if (f('f_film')) f('f_film').oninput = e => { const v = parseFloat(e.target.value); if (v >= 0 && v <= 90) { part.film = v / 100; wallReset(part); } };
@@ -8908,7 +8903,7 @@ const MATERIALS = {
   inconel:   ['Inconel 718 (chamber/nozzle superalloy)',    8190, 200, 1035, 11.4, 435, 0.70, 1200],
   cfrp:      ['Carbon-fibre composite (COPV)',              1600, 140, 1500,   5, 800, 0.85,  450],
   glass:     ['Borosilicate glass',                         2230,  64,   50, 1.1, 830, 0.90,  750],
-  custom:    ['Custom alloy (enter your own values)',       7800, 200,  300,  20, 500, 0.60, 1200],   // placeholder row: the real values live on part.custom (see matOf)
+  custom:    ['Custom alloy (stored data; UI deferred)',    7800, 200,  300,  20, 500, 0.60, 1200],   // data hook only: real values on part.custom; not offered in the material dropdown for new picks
 };
 const MAT_DEFAULT = 'al2195';
 // Custom alloy for an imported part: part.custom = { Tm, Tliq (K), yieldMPa, rho (kg/m3), mu (Pa s), E (GPa), k (W/m K), cp (J/kg K), eps }.
@@ -8926,7 +8921,9 @@ function applyMaterial(part, id) {
   return true;
 }
 function matOptionsHtml(part) {
-  return Object.keys(MATERIALS).map(k => `<option value="${k}" ${(part.matId || MAT_DEFAULT) === k ? 'selected' : ''}>${MATERIALS[k][0]}</option>`).join('');
+  // Melting deferred: Custom alloy is a DATA hook only — keep showing it if this part already has matId==='custom', but do not offer it as a new choice.
+  return Object.keys(MATERIALS).filter(k => k !== 'custom' || (part && part.matId === 'custom'))
+    .map(k => `<option value="${k}" ${(part.matId || MAT_DEFAULT) === k ? 'selected' : ''}>${MATERIALS[k][0]}</option>`).join('');
 }
 function matBlockHtml(part) {
   const m = matOf(part);
@@ -8934,7 +8931,7 @@ function matBlockHtml(part) {
     <select id="f_matid">${matOptionsHtml(part)}</select>
     <label class="field">Wall thickness (mm, 0 = auto)</label>
     <input type="number" id="f_wall" value="${part.wallMm || 0}" min="0" step="0.5">
-    ${part.matId === 'custom' ? customAlloyHtml(part) : ''}
+    ${part.matId === 'custom' ? '<div class="readout" style="font-size:10px;line-height:1.4;opacity:.85">Custom alloy data is stored on this part (editing deferred with melting).</div>' : ''}
     <div class="readout" id="f_matprops" style="font-size:10px;line-height:1.5">${matPropsText(m, part)}</div>
     <div class="readout" id="f_stress" style="font-size:11px;line-height:1.5"></div>`;
 }
@@ -8952,13 +8949,10 @@ function matPropsText(m, part) {
   if (part) { const a = partAlloy(part), lbl = a.kind === 'decomp' ? 'decomposes' : a.kind === 'soften' ? 'softens' : 'melts'; t += `<br>${lbl} ${a.Tm}${a.Tliq > a.Tm ? '–' + a.Tliq : ''} K` + (a.mu != null ? ` · molten μ ${a.mu >= 1 ? a.mu.toExponential(1) : (a.mu * 1000).toFixed(1) + ' m'}Pa·s` : ''); }
   return t;
 }
+// Bounds for preset load of matCustom only (no panel form). Melting deferred.
 const CUSTOM_FIELDS = [['Tm', 'Melting point / solidus (K)', 300, 6000, 10], ['Tliq', 'Liquidus (K, ≥ solidus)', 300, 6000, 10], ['yieldMPa', 'Yield strength (MPa)', 1, 5000, 10],
   ['rho', 'Density (kg/m³)', 100, 25000, 10], ['mu', 'Molten viscosity (Pa·s)', 1e-5, 1e8, 'any'], ['E', 'Young’s modulus (GPa)', 1, 700, 1], ['k', 'Conductivity (W/m·K)', 0.1, 500, 'any'], ['cp', 'Specific heat (J/kg·K)', 100, 5000, 10], ['eps', 'Emissivity (0–1)', 0, 1, 0.05]];
-function customAlloyHtml(part) {
-  const c = customAlloy(part);
-  return `<div class="readout" style="font-size:10px;line-height:1.4">Custom alloy for this part (SI units):</div>` + CUSTOM_FIELDS.map(([k, l, lo, hi, st]) =>
-    `<label class="field">${l}</label><input type="number" id="f_cm_${k}" value="${c[k]}" min="${lo}" max="${hi}" step="${st}">`).join('');
-}
+// Custom-alloy form builder removed (melting deferred). part.custom / matCustom still load; CUSTOM_FIELDS bounds are for preset I/O only.
 function partRadiusM(part) {
   const b = partWorldAABB(part), s = b.getSize(new THREE.Vector3());
   const d = [s.x, s.y, s.z].sort((a, c) => a - c);
