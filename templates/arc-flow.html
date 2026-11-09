@@ -1239,6 +1239,10 @@ async function loadDemo2() {
     const _pa = await presetBeginAsset('aj10cquick.glb', buf, 'demo2');
     const object = await loadFromArrayBuffer('aj10cquick.glb', buf, null);
     onSceneLoaded(object);
+    // Register the asset FIRST: presets match parts against registered assets. Applying before this left the preset
+    // "pending" (applied later inside presetEndAsset), so the chamber was not yet a chamber when the nozzle / plume setup
+    // below ran, and the pending apply then wiped the chamber's openings: no nozzle, no plume, a static model.
+    await presetEndAsset(_pa);
     // Apply the intended preset for this model (types, contents, pressures).
     try {
       const pr = await fetch(DEMO2_PRESET_URL);
@@ -1250,7 +1254,10 @@ async function loadDemo2() {
         for (const part of state.parts) {
           if (part.type !== 'chamber') continue;
           const ops = detectOpenings(part);
-          if (!ops.length) continue;
+          // The AJ-10C chamber mesh is closed (no boundary loops), so detection finds nothing and, without a nozzle, the
+          // plume never fires and the baked flow has nowhere to exit: the demo played as a static model. Fall back to an
+          // exit-plane nozzle taken from the bell's own geometry.
+          if (!ops.length) { const noz = demoBellNozzle(part); if (noz) { attachOpeningMarker(part, noz); part.openings = [noz]; } continue; }
           ops.sort((a, b) => a.centroid.y - b.centroid.y);
           if (!ops.some(o => o.role === 'nozzle')) {
             ops[0].role = 'nozzle';
@@ -1265,13 +1272,37 @@ async function loadDemo2() {
         }
       }
     } catch (pe) { console.warn('Demo 2 preset apply failed', pe); }
-    await presetEndAsset(_pa);
   } catch (err) {
     console.error(err);
     alert('Could not load Demo 2: ' + err.message);
   } finally {
     setLoading(false);
   }
+}
+
+// Nozzle exit plane of a chamber whose mesh has no detectable opening: the lowest ~4% of its world-space vertices form the
+// bell lip; their centre is the exit centroid and their farthest radial distance the exit radius. Flow direction: down.
+function demoBellNozzle(part) {
+  if (!part || !part.meshes || !part.meshes.length) return null;
+  const box = partWorldAABB(part); if (box.isEmpty()) return null;
+  const h = box.max.y - box.min.y; if (!(h > 0)) return null;
+  const yCut = box.min.y + h * 0.04, v = new THREE.Vector3(), lip = [];
+  for (const m of part.meshes) {
+    const pos = m.geometry && m.geometry.attributes && m.geometry.attributes.position; if (!pos) continue;
+    m.updateWorldMatrix(true, false);
+    const step = Math.max(1, Math.floor(pos.count / 20000));
+    for (let i = 0; i < pos.count; i += step) { v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld); if (v.y <= yCut) lip.push(v.x, v.z); }
+  }
+  let cx = (box.min.x + box.max.x) / 2, cz = (box.min.z + box.max.z) / 2, r = 0;
+  if (lip.length >= 6) {
+    let sx = 0, sz = 0; const n = lip.length / 2;
+    for (let i = 0; i < lip.length; i += 2) { sx += lip[i]; sz += lip[i + 1]; }
+    cx = sx / n; cz = sz / n;
+    for (let i = 0; i < lip.length; i += 2) r = Math.max(r, Math.hypot(lip[i] - cx, lip[i + 1] - cz));
+  }
+  if (!(r > 0)) r = 0.45 * Math.min(box.max.x - box.min.x, box.max.z - box.min.z);
+  const centroid = new THREE.Vector3(cx, box.min.y, cz);
+  return { id: 'paint-demo2-nozzle', points: [], centroid, normal: new THREE.Vector3(0, -1, 0), perimeter: 2 * Math.PI * r, radius: r, role: 'nozzle' };
 }
 
 async function resetAndLoadDemo() {
@@ -2821,14 +2852,22 @@ const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture
 //  links.nodes: Map(part -> { part, role, kind, pressurizedBy })  (also state.flowNodes)
 //
 //  Older code paths store a single link object per part; every consumer goes through asLinkArray / firstLink /
-//  allLinks so both shapes still work. firstLink() prefers a propellant edge (particle paths walk to the nozzle).
+//  allLinks so both shapes still work. firstLink() prefers an edge into a chamber, then a propellant edge (particle paths walk to the nozzle).
 // ═══════════════════════════════════════════════════════════════════════
 
 // <flowgraph:begin>
 function asLinkArray(v) { return !v ? [] : (Array.isArray(v) ? v : [v]); }
 function firstLink(links, part) {
   const v = asLinkArray(links && links.get(part));
-  return v.find(l => l.kind === 'propellant') || v[0];
+  if (v.length < 2) return v[0];
+  // A part with a direct edge into a chamber feeds it through that edge. Without this, a manifold where several feed pipes
+  // touch each other as well as the chamber (AJ-10C Quick: f1..f4 / o1..o4 all meet at the injector plate) walked
+  // pipe -> pipe -> pipe ... past every 8-hop guard, so each tank read "closed - no flow", all baked fluid was hidden and
+  // the particle paths never reached the nozzle. Order: propellant edge into a chamber; any edge into a chamber when the
+  // part has no propellant edge; then the first propellant edge (unchanged); then the first edge.
+  const isCh = l => { const t = linkTarget(l); return !!t && t.type === 'chamber'; };
+  const prop = v.filter(l => l.kind === 'propellant');
+  return prop.find(isCh) || (prop.length ? null : v.find(isCh)) || prop[0] || v[0];
 }
 function allLinks(links, part) { return asLinkArray(links && links.get(part)); }
 // The part a link points at. Link values are link records, never parts: always go through this, never compare a link to a part.
@@ -3542,7 +3581,7 @@ function ltcbpCheckResolution(inst, opts) {
     const parts = (inst.parts || []).filter(p => p.type && p.meshes && p.meshes.length && !(p.melt && p.melt.full)).slice(0, 24);
     if (!parts.length) return { skipped: 'no-parts' };
     st.lastCheck = now; st.checks++;
-    st.pass = { parts, per: Math.max(2, Math.ceil(LTCBP_PROBES / parts.length)), idxs: null, pi: 0, k: 0, errs: [], tris: null, sdf: inst.sdf };
+    st.pass = { parts, per: Math.max(2, Math.ceil(LTCBP_PROBES / parts.length)), idxs: null, boxes: null, pi: 0, k: 0, errs: [], tris: null, sdf: inst.sdf };
   }
   const ps = st.pass;
   if (st.job || inst.sdf !== ps.sdf) { st.pass = null; return { skipped: 'rebuilding' }; }   // the SDF was swapped mid-pass: start over next time
@@ -3553,6 +3592,7 @@ function ltcbpCheckResolution(inst, opts) {
   while (ps.pi < parts.length) {
     if (over()) { st.lastBudgetUsed = ltcbpPerf() - t0; return { pending: true, probesDone: errs.length }; }
     if (!ps.idxs) { ps.idxs = parts.map(p => penIndexForPart(p)); steps++; continue; }
+    if (!ps.boxes) { ps.boxes = parts.map(p => partWorldAABB(p)); steps++; continue; }
     const part = parts[ps.pi];
     if (!ps.tris) { ps.tris = worldTrianglesForPart(part); steps++; continue; }
     const tris = ps.tris, nt = Math.floor(tris.length / 3), k = ps.k;
@@ -3564,8 +3604,18 @@ function ltcbpCheckResolution(inst, opts) {
     const probe0 = ltcbpSdfAt(inst.sdf, g); if (!probe0) continue;
     pt.copy(g).addScaledVector(n, (k & 1 ? 0.5 : -0.5) * probe0.edge);          // half a voxel off the surface, alternating sides
     const here = ltcbpSdfAt(inst.sdf, pt); if (!here) continue;
+    // Exact distance = the nearest surface over every part. Probe the part this probe came from first (the point sits half a voxel
+    // off its surface), then only parts whose bounding box is closer than the best so far: a part farther away cannot win, and an
+    // index queried with a point far outside its grid scans every shell of the grid (that full scan, x15 parts, per probe, was
+    // taking ~half the main thread while AJ-10C Quick ran). Same result, a fraction of the work.
     let exact = Infinity;
-    for (const ix of ps.idxs) { const d = signedDistanceToMesh(pt, ix); if (Math.abs(d) < Math.abs(exact)) exact = d; }
+    const own = ps.idxs[ps.pi];
+    if (own) exact = signedDistanceToMesh(pt, own);
+    for (let q = 0; q < ps.idxs.length; q++) {
+      const ix = ps.idxs[q]; if (!ix || q === ps.pi) continue;
+      const bx = ps.boxes[q]; if (bx && !bx.isEmpty() && bx.distanceToPoint(pt) >= Math.abs(exact)) continue;
+      const d = signedDistanceToMesh(pt, ix); if (Math.abs(d) < Math.abs(exact)) exact = d;
+    }
     if (!isFinite(exact)) continue;
     errs.push(Math.abs(here.d - exact) / here.edge);
   }
@@ -3646,19 +3696,26 @@ function rebuildInstanceSDF(inst, opts) {
 }
 // Interval tick (hooked on the Boolean's autosync): adaptive-resolution checks while the sim runs.  ONE shared time budget per tick
 // (state.ltcbpBudgetMs, default 2 ms), round-robin over instances, so the watch never blocks a frame.
-let _ltcbpRR = 0;
+// Duty cap: a single probe (one exact signedDistanceToMesh) cannot be split, and on dense meshes such as AJ-10C Quick one costs
+// 50-250 ms, so the 2 ms budget alone still let this watch take ~1/3 of the main thread every 250 ms tick (the demo ran at a
+// fraction of its frame rate). After a tick that clearly overran its budget (> 4x and > 16 ms), rest long enough that the watch stays under
+// state.ltcbpDuty (default 4%) of wall time. Results are unchanged; only how soon a verdict arrives.
+let _ltcbpRR = 0, _ltcbpRestUntil = -Infinity;
 function ltcbpAutoTick() {
   if (state.ltcbpAdaptive === false || !state.simRunning) return 0;
+  if (ltcbpPerf() < _ltcbpRestUntil) return 0;
   const list = (state.instances || []).filter(i => i.built && !i.baking && i.sdf);
   if (!list.length) return 0;
   const total = state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2, t0 = ltcbpPerf();
+  const rest = () => { const spent = ltcbpPerf() - t0, duty = state.ltcbpDuty != null ? state.ltcbpDuty : 0.04; if (spent > Math.max(4 * total, 16) && duty > 0 && duty < 1) _ltcbpRestUntil = ltcbpPerf() + spent * (1 / duty - 1); };
   let n = 0;
   for (let k = 0; k < list.length; k++) {
     const left = total - (ltcbpPerf() - t0); if (k > 0 && left <= 0) break;
     const idx = (_ltcbpRR + k) % list.length;
-    try { const r = ltcbpCheckResolution(list[idx], { budgetMs: Math.max(left, 0.25) }); if (!r.skipped) n++; if (r.pending) { _ltcbpRR = idx; return n; } } catch (e) { console.warn('ltcbp check', e); }
+    try { const r = ltcbpCheckResolution(list[idx], { budgetMs: Math.max(left, 0.25) }); if (!r.skipped) n++; if (r.pending) { _ltcbpRR = idx; rest(); return n; } } catch (e) { console.warn('ltcbp check', e); }
   }
   _ltcbpRR = (_ltcbpRR + 1) % list.length;
+  rest();
   return n;
 }
 // ── Hooks for the deferred melt conversion (spec 22/25): data fields + format stub only; nothing here converts or melts anything. ──
@@ -10825,6 +10882,7 @@ async function spawnDemo(which) {
       if (cur) { cur.kind = which === 1 ? 'demo' : 'demo2'; cur.name = kind; }
       labelSpawn(kind, 1, state.root && state.root.children[0]);
       renderTabs();
+      if (which === 2) autoPlayLoadedDemo(kind);   // Demo 2 builds + plays on its own (see autoPlayLoadedDemo)
       return;
     }
     // Mark the original as an assembly if it is not already.
@@ -10983,7 +11041,7 @@ async function loadIntoTab(name, kind, loader) {
   renderTabs();
 }
 document.getElementById('btnLoadDemo').onclick = () => loadIntoTab('Quick Rocket', 'demo', loadDemo);
-document.getElementById('btnLoadDemo2').onclick = () => loadIntoTab('AJ-10C Quick', 'demo2', loadDemo2);
+document.getElementById('btnLoadDemo2').onclick = async () => { await loadIntoTab('AJ-10C Quick', 'demo2', loadDemo2); autoPlayLoadedDemo('AJ-10C Quick'); };
 document.getElementById('thermalResolution').onchange = (e) => {
   initFloorHeatSystem(parseInt(e.target.value));
 };
@@ -11033,8 +11091,28 @@ function setPartsGlass(on) {
 
 // Play / Simulate
 const playBtn = document.getElementById('playBtn');
-playBtn.onclick = async () => {
-  if (!state.simRunning) {
+// Non-blocking notice in the loading overlay (used by the unattended demo auto-start instead of alert/confirm, which would
+// stall a tab nobody is watching). Shown for `ms`, then hidden unless something else re-used the overlay meanwhile.
+let _simNoticeTimer = null;
+function simNotice(msg, ms) {
+  console.warn('[arc-flow] ' + msg);
+  setLoading(true, msg);
+  clearTimeout(_simNoticeTimer);
+  _simNoticeTimer = setTimeout(() => { if (loadingText.textContent === msg) setLoading(false); }, ms || 7000);
+}
+let simStarting = false;   // a start (bake) is in flight: a second click / auto-start must not run a parallel bake
+// The Simulate start path, shared by the button and the demo auto-start.
+//   opts.unattended: no alert()/confirm() — required-part / seal problems are reported in the overlay and the start
+//   is abandoned (seals the preset marks as forcedSealTo are already honoured by runSealCheck).
+//   opts.isCurrent(): optional guard; when it returns false after the bake (the scene / tab changed under us) the
+//   start is dropped instead of flipping a different scene into the running state.
+// Resolves true when the simulation is running.
+async function startSimulation(opts) {
+  opts = opts || {};
+  if (state.simRunning) return true;
+  if (simStarting) return false;
+  const unattended = !!opts.unattended;
+  {
     const hasContainer = state.parts.some(p => p.type === 'container');
     const hasChannel = state.parts.some(p => p.type === 'pipe');
     const hasPressure = state.parts.some(p => p.type === 'pressure' || (p.type === 'container' && p.contents === 'helium'));
@@ -11043,19 +11121,24 @@ playBtn.onclick = async () => {
       if (!hasContainer) missing.push('Container');
       if (!hasChannel) missing.push('Channel');
       if (!hasPressure) missing.push('Pressure Chamber');
+      if (unattended) { simNotice('Auto-start skipped: required parts missing (' + missing.join(', ') + '). Assign them, then press Simulate.', 9000); return false; }
       alert('Required parts missing: ' + missing.join(', ') + '.\nAssign at least one of each before simulating.');
-      return;
+      return false;
     }
     const sealResults = runSealCheck();
     const bad = sealResults.filter(r => !r.ok);
     if (bad.length) {
       const msg = bad.map(b => `${b.from} → ${b.to}: gap of ${b.dist.toFixed(3)} units.`).join('\n');
+      if (unattended) {
+        simNotice('Auto-start stopped: ' + bad.length + ' connection(s) are not flush (' + bad.slice(0, 3).map(b => b.from + ' → ' + b.to).join(', ') + (bad.length > 3 ? ', …' : '') + '). Press Simulate to review them.', 10000);
+        return false;
+      }
       const confirmed = confirm(
         `${bad.length} connection(s) are farther apart than expected for a flush seal:\n\n${msg}\n\n` +
         `If these parts are genuinely meant to connect (e.g. a tack-welded or fastened joint rather than a perfectly flush one), ` +
         `tap OK to treat them as sealed and continue. Tap Cancel to stop and check the file instead.`
       );
-      if (!confirmed) return;
+      if (!confirmed) return false;
       if (!state.forcedSeals) state.forcedSeals = new Set();
       for (const b of bad) state.forcedSeals.add(b.key);
     }
@@ -11083,20 +11166,24 @@ playBtn.onclick = async () => {
     // fix, fine-region triangle pre-filtering, lower coarse resolution —
     // see those functions' own comments), so the remaining wait is far
     // shorter besides being visibly in-progress the whole time.
-    playBtn.disabled = true;
+    playBtn.disabled = true; simStarting = true;
+    const bakeRoot = state.root;
     try {
       await buildParticleSystem();
     } finally {
       setLoading(false);
-      playBtn.disabled = false;
+      playBtn.disabled = false; simStarting = false;
     }
+    if (state.root !== bakeRoot || (opts.isCurrent && !opts.isCurrent())) return false;   // the scene changed during the bake
+    if (unattended && !state.instances.some(i => i.built)) { simNotice('Auto-start: the bake produced no fluid (no container feeds a connected path). Check the part setup, then press Simulate.', 10000); return false; }
     // buildFlowGraph (run inside the bake above) stashes parts whose meshes
     // overlap with no continuous cavity between them. Surface them rather
     // than silently doing nothing: this is "touch/intersect but no fluid
     // path", distinct from parts that simply were never meant to join.
     renderJointReport();
     const rejected = state.autoPenetrationRejected || [];
-    if (rejected.length) {
+    if (rejected.length && unattended) console.warn('[arc-flow] touching parts with no fluid path: ' + rejected.map(r => r.partA.name + ' ↔ ' + r.partB.name).join(', '));
+    else if (rejected.length) {
       const msg = rejected.map(r => `${r.partA.name} ↔ ${r.partB.name}`).join('\n');
       alert(
         `${rejected.length} part pair(s) physically touch or overlap, but no continuous hollow ` +
@@ -11111,14 +11198,38 @@ playBtn.onclick = async () => {
     pfsActivate();   // pressure solver (no-op unless ?solver=pressure / the checkbox)
     playBtn.textContent = '■ Stop';
     playBtn.classList.add('playing');
-  } else {
+    return true;
+  }
+}
+function stopSimulation() {
+  {
     state.simRunning = false;
     ctxAll(() => { massReset(); liveReset(); plumeReset(); setPartsGlass(false); });
     for (const i of state.instances) i.active = false;
     playBtn.textContent = '▶ Simulate';
     playBtn.classList.remove('playing');
   }
+}
+playBtn.onclick = async () => {
+  if (!state.simRunning) await startSimulation();
+  else stopSimulation();
 };
+// Demo 2 (AJ-10C Quick) is an official, fully-configured demo: once it has loaded, build and play it exactly like a
+// confirmed Simulate click (same overlay / async bake), so it never sits there as a static model. Guarded so a tab
+// switch, Clear or another load during the bake drops the start rather than running the wrong scene.
+async function autoPlayLoadedDemo(label) {
+  const root = state.root, tab = activeTab;
+  if (!root || !state.parts.length || state.simRunning) return false;
+  await new Promise(r => requestAnimationFrame(() => r()));   // let the loaded model paint once before the bake starts
+  if (state.root !== root || activeTab !== tab) return false;
+  try {
+    return await startSimulation({ unattended: true, isCurrent: () => state.root === root && activeTab === tab });
+  } catch (e) {
+    console.error('auto-start ' + (label || ''), e);
+    simNotice('Auto-start failed: ' + e.message + '. Press Simulate to retry.', 10000);
+    return false;
+  }
+}
 
 // Mobile panel toggles
 document.getElementById('toggleLeft').onclick = () => document.getElementById('leftPanel').classList.toggle('open');
