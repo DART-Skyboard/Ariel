@@ -102,16 +102,32 @@ def volume_material():
     one_minus = b.math('SUBTRACT', 1.0, out(nz, 'Value'), y=-180)
     nmul = b.math('MULTIPLY', out(noise, 'Fac'), out(nz, 'Value'), y=-240)
     nadd = b.math('ADD', out(one_minus, 'Value'), out(nmul, 'Value'), y=-200)
-    dmul = b.math('MULTIPLY', out(dens, 'Value'), out(nadd, 'Value'), y=-100)
+    # grid density -> smoothstep mask (soft particle edges); also masks the emission below
+    gd = b.node('ShaderNodeAttribute', attribute_type='GEOMETRY', attribute_name='density', y=-20)
+    gd.name = 'AF_GridDensity'
+    mr = b.node('ShaderNodeMapRange', interpolation_type='SMOOTHSTEP', y=-20)
+    mr.name = 'AF_DensityEdge'
+    inp(mr, 'From Min').default_value = 0.0
+    inp(mr, 'From Max').default_value = 0.6
+    b.link(out(gd, 'Fac'), inp(mr, 'Value'))
+    dm0 = b.math('MULTIPLY', out(dens, 'Value'), out(nadd, 'Value'), y=-100)
+    dmul = b.math('MULTIPLY', out(dm0, 'Value'), out(mr, 'Result'), y=-100)
     em, ab, an = _value(b, 'AF_Emission', 0.0, y=-420), _value(b, 'AF_Absorb', 0.5, y=-540), _value(b, 'AF_Anisotropy', 0.3, y=-660)
     ign = b.node('ShaderNodeAttribute', attribute_type='OBJECT', attribute_name='af_ignition', y=-420)
     ramp = _ramp(b, out(ign, 'Fac'), y=-420)
     pv = b.node('ShaderNodeVolumePrincipled', y=100)
+    try:
+        inp(pv, 'Density Attribute').default_value = ''      # the grid is applied through AF_DensityEdge
+    except KeyError:
+        pass
     b.link(out(mix, 'Result'), inp(pv, 'Color'))
     b.link(out(dmul, 'Value'), inp(pv, 'Density'))
     b.link(out(an, 'Value'), inp(pv, 'Anisotropy'))
     b.link(out(ramp, 'Color'), inp(pv, 'Emission Color'))
-    b.link(out(em, 'Value'), inp(pv, 'Emission Strength'))
+    # emission does not scale with density in Principled Volume: mask it with the grid, otherwise the whole
+    # volume bounds glow (view-filling fog in EEVEE, blocky tiles in Cycles)
+    emm = b.math('MULTIPLY', out(em, 'Value'), out(mr, 'Result'), y=-420)
+    b.link(out(emm, 'Value'), inp(pv, 'Emission Strength'))
     ab2 = b.math('MULTIPLY', out(ab, 'Value'), 1.0, y=-540)
     try:
         b.link(out(mix, 'Result'), inp(pv, 'Absorption Color'))
@@ -201,6 +217,37 @@ def feedback_material():
     o = b.node('ShaderNodeOutputMaterial', y=0)
     b.link(out(emit, 'Emission'), inp(o, 'Surface'))
     return m
+
+
+def _try(mat, attr, val):
+    if hasattr(mat, attr):
+        try:
+            setattr(mat, attr, val)
+        except Exception:
+            pass
+
+
+def engine_compat(mat, kind):
+    """Per-material settings so the same node trees render in EEVEE (4.2+ EEVEE Next and legacy) and Cycles.
+    Re-applied on every bind, so materials from older files are fixed too.  kind: points | volume | splat | xray | feedback."""
+    if mat is None:
+        return
+    if kind in ('splat', 'xray'):
+        set_blended(mat)                                   # BLENDED (EEVEE Next) / BLEND (legacy); transparent shadows
+        _try(mat, 'use_transparency_overlap', True)        # overlapping splats / both wall sides sort correctly
+        _try(mat, 'shadow_method', 'HASHED')               # legacy EEVEE shadow of blended surfaces
+        _try(mat, 'use_backface_culling', False)
+        _try(mat, 'show_transparent_back', True)
+    elif kind == 'points':
+        _try(mat, 'surface_render_method', 'DITHERED')     # deferred: transmission + correct depth for instanced spheres
+        _try(mat, 'blend_method', 'HASHED')
+        _try(mat, 'use_raytrace_refraction', True)         # EEVEE Next: refract through the transmissive droplets
+        _try(mat, 'shadow_method', 'HASHED')
+        _try(mat, 'use_transparent_shadow', True)
+    elif kind == 'volume':
+        _try(mat, 'volume_intersection_method', 'ACCURATE')
+    elif kind == 'feedback':
+        _try(mat, 'surface_render_method', 'DITHERED')
 
 
 def set_params(mat, **values):

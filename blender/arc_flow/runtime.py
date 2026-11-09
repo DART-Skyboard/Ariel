@@ -3,6 +3,7 @@ particle objects, X-ray/tint, feedback, timeline sync."""
 import json
 import math
 import os
+import zlib
 
 import bpy
 import numpy as np
@@ -26,6 +27,7 @@ class Runtime:
         self.world = None
         self.dirty = True
         self.running = False
+        self.baking = False        # bake walks the timeline with frame_set; the frame handler must stay out
         self.recording = False
         self.cache = None
         self.rec_cache = None
@@ -55,7 +57,9 @@ def get_scene():
 
 
 # ----------------------------------------------------------------------------- scene -> world
-def _mesh_arrays(obj, deps):
+def _mesh_arrays(obj, deps, polys=False):
+    """Evaluated (modifiers, shape keys, armature) mesh.  Returns (verts, loop_tris) or, with polys=True,
+    (verts, loop_tris, (loop_totals, loop_vertices)) so the field path keeps the quad / n-gon structure."""
     ev = obj.evaluated_get(deps)
     me = ev.to_mesh()
     try:
@@ -65,21 +69,68 @@ def _mesh_arrays(obj, deps):
         me.vertices.foreach_get('co', v)
         t = np.empty(nt * 3, np.int64)
         me.loop_triangles.foreach_get('vertices', t)
-        return v.reshape(-1, 3), t.reshape(-1, 3)
+        v, t = v.reshape(-1, 3), t.reshape(-1, 3)
+        if not polys:
+            return v, t
+        npl, nl = len(me.polygons), len(me.loops)
+        tot = np.empty(npl, np.int64)
+        me.polygons.foreach_get('loop_total', tot)
+        lv = np.empty(nl, np.int64)
+        me.loops.foreach_get('vertex_index', lv)
+        return v, t, (tot, lv)
     finally:
         ev.to_mesh_clear()
 
 
-def _field(obj, deps):
+def _mesh_sig(obj, v, pl):
     p = obj.arc_flow
-    v, t = _mesh_arrays(obj, deps)
-    sig = (v.shape[0], t.shape[0], float(v.sum()), float((v * v).sum()), p.cavity_mode, p.resolution, p.lotcbp_level)
+    return (v.shape[0], len(pl[0]), zlib.crc32(np.ascontiguousarray(v, np.float32).tobytes()),
+            zlib.crc32(np.ascontiguousarray(pl[1]).tobytes()), p.cavity_mode, p.resolution, p.lotcbp_level)
+
+
+def _field(obj, deps):
+    """PartField of the evaluated mesh.  The quad / n-gon structure is passed on: PartField quadrangulates its
+    own collision copy (the user's object is never modified).  Unchanged geometry -> cached field (no rebuild)."""
+    p = obj.arc_flow
+    v, t, pl = _mesh_arrays(obj, deps, polys=True)
+    sig = _mesh_sig(obj, v, pl)
     hit = RT.field_cache.get(obj.name)
     if hit and hit[0] == sig:
         return hit[1], v, t
-    fld = SDF.PartField(v, t, p.cavity_mode, p.resolution, p.lotcbp_level)
+    fld = SDF.PartField(v, pl, p.cavity_mode, p.resolution, p.lotcbp_level)
     RT.field_cache[obj.name] = (sig, fld)
     return fld, v, t
+
+
+def _may_deform(obj):
+    """Cheap test: can this object's evaluated mesh change over time (valves, shape keys, armatures, modifiers)?"""
+    me = obj.data
+    if me is None:
+        return False
+    if me.shape_keys is not None or len(obj.modifiers) or obj.find_armature() is not None:
+        return True
+    ad = getattr(me, 'animation_data', None)
+    return ad is not None and (ad.action is not None or len(ad.drivers))
+
+
+def update_animated(scene, world):
+    """Per sim step: evaluated matrices for every part, plus re-built fields for parts whose evaluated mesh
+    changed (signature check in _field; unchanged meshes are skipped).  Pushes both through World.update_animated,
+    which rebuilds cavities / joints / openings only when something actually changed."""
+    deps = bpy.context.evaluated_depsgraph_get()
+    mats, fields = [], []
+    for i, o in enumerate(RT.parts):
+        mats.append(np.array(o.evaluated_get(deps).matrix_world))
+        f = None
+        if _may_deform(o) and i < len(world.parts):
+            try:
+                fld, _v, _t = _field(o, deps)
+                if fld is not world.parts[i].field:
+                    f = fld
+            except Exception as ex:
+                RT.msg = "Arc Flow: field refresh failed for %s: %s" % (o.name, ex)
+        fields.append(f)
+    return world.update_animated(mats, fields=fields)
 
 
 def _emit_faces(obj, v, t):
@@ -179,7 +230,7 @@ def build_world(scene):
             emit = dict(mode=p.emit_mode, rate=p.emit_rate, speed=sp, fluid=ef, radius=p.emit_radius, inward=p.emit_inward,
                         particle_volume=p.emit_volume, cap=int(min(max(p.emit_rate * 25.0, 500), 40000)),
                         faces=_emit_faces(o, v, t) if p.emit_mode == 'FACES' else None)
-        parts.append(W.PartSpec(o.name, fld, np.array(o.matrix_world), role, fluid=fi, fill_mode=fill_mode, fill_value=fill_val,
+        parts.append(W.PartSpec(o.name, fld, np.array(o.evaluated_get(deps).matrix_world), role, fluid=fi, fill_mode=fill_mode, fill_value=fill_val,
                                 pressure=(p.pressure or None), n_particles=p.particles, mat_custom=p.material_dict(),
                                 wall=p.wall, emit=emit))
     e = af.env
@@ -284,6 +335,8 @@ def bind_objects(scene):
         mats = {}
         for kind, attr, base in (('points', 'pt_material', base_pts), ('volume', 'rm_material', base_vol), ('splat', 'gs_material', base_spl)):
             mats[kind] = _own_material(base, fl.name, attr, fl)
+        for kind, key in (('points', 'points'), ('volume', 'volume'), ('splat', 'splat')):
+            shading.engine_compat(mats[key], kind)
         shading.set_params(mats['points'], AF_Color=fl.color, AF_TintMix=1.0)
         shading.set_params(mats['splat'], AF_Color=fl.color, AF_TintMix=1.0, AF_Sharpness=fl.gs_blend, AF_Emission=af.xray_emission if af.xray else 1.0)
         shading.set_params(mats['volume'], AF_ColorA=fl.rm_color_a, AF_ColorB=fl.rm_color_b, AF_Density=fl.rm_density, AF_Noise=fl.rm_noise,
@@ -318,7 +371,7 @@ def bind_objects(scene):
             if gname == 'AF_Points':
                 gn.set_modifier_inputs(mr, {"Instance Object": fl.pt_object, "Use Object": fl.pt_object is not None,
                                             "Instance Collection": fl.pt_collection, "Use Collection": bool(fl.pt_use_collection and fl.pt_collection),
-                                            "Scale": fl.pt_scale})
+                                            "Scale": fl.pt_scale, "Subdivisions": fl.pt_subdivisions})
             elif gname == 'AF_RayMarch':
                 gn.set_modifier_inputs(mr, {"Density": fl.rm_density * 0.02, "Voxel Size": voxel, "Radius Scale": fl.rm_radius})
             else:
@@ -349,6 +402,7 @@ def bind_objects(scene):
 def apply_xray(scene):
     af = scene.arc_flow
     xm = shading.xray_material()
+    shading.engine_compat(xm, 'xray')
     shading.set_params(xm, AF_Opacity=af.xray_opacity)
     for o in scene.objects:
         if o.type != 'MESH':
@@ -434,8 +488,12 @@ def apply_state(scene, world, snap=None):
         p.temp_now, p.stress_now, p.pressure_now = float(te[i]), float(st[i]), float(pr[i])
     # feedback
     fbv = _feedback_value(af, src)
-    for o in {af.feedback_obj} - {None}:
+    targets = {af.feedback_obj} - {None}
+    targets |= {o for o in scene.objects if o.get('af_fb_target')}
+    for o in targets:
         o['af_fb'] = fbv
+        if o.get('af_fb_target') not in (None, 'OBJECT'):
+            o.update_tag()          # drivers reading af_fb (modifier / particles / field / GN input)
 
 
 def _feedback_value(af, src):
@@ -527,6 +585,7 @@ def sim_frame(scene, frame):
     if last is None or frame < last or frame > last + 240:
         seed = cache.get(frame)
         if frame <= start or seed is None:
+            update_animated(scene, world)        # fill the start-frame geometry (valve state, poses)
             world.reset()
             _eval_math(scene, world)
             RT.last_frame = start
@@ -542,7 +601,9 @@ def sim_frame(scene, frame):
         return stepped
     dt = 1.0 / fps(scene)
     while RT.last_frame < frame:
-        world.set_matrices([np.array(o.matrix_world) for o in RT.parts])
+        if RT.baking and scene.frame_current != RT.last_frame + 1:
+            scene.frame_set(RT.last_frame + 1)     # evaluate animated poses / deformations of the frame being made
+        update_animated(scene, world)
         _eval_math(scene, world)
         world.step(dt)
         RT.last_frame += 1
@@ -573,6 +634,8 @@ def flush_cache(scene, force=False):
 def on_frame_change(scene, *args):
     af = getattr(scene, 'arc_flow', None)
     if af is None or (RT.scene_name and scene.name != RT.scene_name):
+        return
+    if RT.baking:            # bake drives frame_set itself; never recurse or apply a stale cache mid-bake
         return
     frame = scene.frame_current
     try:
@@ -674,18 +737,24 @@ def bake(scene, progress=None):
     start_f, end_f = frame_range(scene)
     was_running = RT.running
     RT.running = False
-    ensure_world(scene)
-    cache = ensure_cache(scene)
-    cache.layout = _layout()
-    if not cache.compatible(RT.world.N):
-        cache.frames.clear()
-    missing = [f for f in range(start_f, end_f + 1) if f not in cache]
-    if missing:
-        RT.last_frame = None
-        for k, f in enumerate(range(start_f, end_f + 1)):
-            sim_frame(scene, f)
-            if progress:
-                progress(k, end_f - start_f + 1)
+    orig_frame = scene.frame_current
+    RT.baking = True
+    try:
+        scene.frame_set(start_f)               # build + reset on the start frame's animated state
+        ensure_world(scene)
+        cache = ensure_cache(scene)
+        cache.layout = _layout()
+        if not cache.compatible(RT.world.N):
+            cache.frames.clear()
+        missing = [f for f in range(start_f, end_f + 1) if f not in cache]
+        if missing:
+            RT.last_frame = None
+            for k, f in enumerate(range(start_f, end_f + 1)):
+                sim_frame(scene, f)            # frame_set(f) inside, so animated parts move during the bake
+                if progress:
+                    progress(k, end_f - start_f + 1)
+    finally:
+        RT.baking = False
     path = baked_path(af)
     sub = Cache(layout=cache.layout)
     sub.frames = {f: cache.frames[f] for f in range(start_f, end_f + 1) if f in cache.frames}
@@ -694,6 +763,8 @@ def bake(scene, progress=None):
     af.baked, af.baked_file = True, path
     RT.cache = sub
     af.status = "Baked %d frames -> %s" % (len(sub.frames), os.path.basename(path))
+    if scene.frame_current != orig_frame:
+        scene.frame_set(orig_frame)            # handler now plays the baked frame back
     return path
 
 
