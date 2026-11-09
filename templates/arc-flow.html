@@ -392,11 +392,11 @@ input[type=range]{width:100%;accent-color:var(--acc);}
       <div class="sec-sub">Fixed amount: containers deplete and the flow stops when they are empty. A typed total is shared between the oxidizer (or fuel) containers by volume, and capped at what fits; blank uses each part's own Mass, else the demo fill.</div>
     </div>
     <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-      <input type="checkbox" id="solverPressure" style="width:auto;margin:0;">
+      <input type="checkbox" id="solverPressure" checked style="width:auto;margin:0;">
       Pressure solver
     </label>
     <div class="sec-sub">
-      Off (default): the baked waypoint flow. On (<code>?solver=pressure</code>): flow is driven by the pressure differences in a lumped network &mdash; helium blowdown and regulator, liquid channels, an accumulating chamber with a choked throat, spill to the atmosphere. Applied when Simulate starts. Fluid that crosses into the atmosphere is what the plume and LTCBP evaluate.
+      On (default since v74; <code>?solver=baked</code> turns it off): flow is driven by the pressure differences in a lumped network &mdash; helium blowdown and regulator, liquid channels, an accumulating chamber with a choked throat, spill to the atmosphere. The feed lines prime first, then the propellant that reaches the chamber stays inside the cavity until the chamber pressure is high enough to choke the throat, and only then jets out through the neck (this start-up is shown in slow motion, x0.03, then ramps to real time; <code>?slowmo=1</code> turns that off). Off: the baked waypoint flow. Applied when Simulate starts. Fluid that crosses into the atmosphere is what the plume and LTCBP evaluate.
       <label class="field" style="margin-top:6px">Solver time scale <input type="number" id="solverTimeScale" value="1" min="0.01" max="100" step="0.1" style="width:70px"></label>
     </div>
     <div class="sec-sub">
@@ -2803,6 +2803,7 @@ function detectAutoPenetrationJoints(candidateParts, skipPair) {
 // on the floor. The previous budget (6) was too tight — particles from the
 // propellant tanks never actually reached the nozzle, only ones that
 // started directly inside the chamber did.
+const PFS_FEED_MAX = 8;   // pressure mode: feed lines into a chamber whose priming front the particles show (uPrime[])
 const MAX_WAYPOINTS = 32; // was 10: thin-channel centerlines (a pipe follows its own bore, not just its bbox centre) need extra waypoint slots
 const TEX_COLS = 16;   // particles per texture line (keeps the waypoint texture short: 16384 particles = 1024 lines)
 // particleSystem / particleSplatMaterial are declared near the floor-heat
@@ -3552,7 +3553,7 @@ function ltcbpCheckResolution(inst, opts) {
   const over = () => steps > 0 && ltcbpPerf() - t0 >= budget;
   while (ps.pi < parts.length) {
     if (over()) { st.lastBudgetUsed = ltcbpPerf() - t0; return { pending: true, probesDone: errs.length }; }
-    if (!ps.idxs) { ps.idxs = parts.map(p => penIndexForPart(p)); steps++; continue; }
+    if (!ps.idxs) { ps.idxs = parts.map(p => penIndexForPart(p)); ps.boxes = parts.map(p => partWorldAABB(p).clone()); steps++; continue; }
     const part = parts[ps.pi];
     if (!ps.tris) { ps.tris = worldTrianglesForPart(part); steps++; continue; }
     const tris = ps.tris, nt = Math.floor(tris.length / 3), k = ps.k;
@@ -3564,8 +3565,14 @@ function ltcbpCheckResolution(inst, opts) {
     const probe0 = ltcbpSdfAt(inst.sdf, g); if (!probe0) continue;
     pt.copy(g).addScaledVector(n, (k & 1 ? 0.5 : -0.5) * probe0.edge);          // half a voxel off the surface, alternating sides
     const here = ltcbpSdfAt(inst.sdf, pt); if (!here) continue;
-    let exact = Infinity;
-    for (const ix of ps.idxs) { const d = signedDistanceToMesh(pt, ix); if (Math.abs(d) < Math.abs(exact)) exact = d; }
+    // Solver v74 perf: probe the part itself first, then only parts whose AABB is closer than the best |d| so far (an exact mesh query
+    // on every part of the 223k-tri demo was ~3 s per probe on software GL, i.e. the whole main thread mid-run in v73)
+    let exact = ps.idxs[ps.pi] ? signedDistanceToMesh(pt, ps.idxs[ps.pi]) : Infinity;
+    for (let q = 0; q < ps.idxs.length; q++) {
+      const ix = ps.idxs[q]; if (q === ps.pi || !ix) continue;
+      if (ps.boxes && ps.boxes[q] && ps.boxes[q].distanceToPoint(pt) >= Math.abs(exact)) continue;
+      const d = signedDistanceToMesh(pt, ix); if (Math.abs(d) < Math.abs(exact)) exact = d;
+    }
     if (!isFinite(exact)) continue;
     errs.push(Math.abs(here.d - exact) / here.edge);
   }
@@ -3646,9 +3653,18 @@ function rebuildInstanceSDF(inst, opts) {
 }
 // Interval tick (hooked on the Boolean's autosync): adaptive-resolution checks while the sim runs.  ONE shared time budget per tick
 // (state.ltcbpBudgetMs, default 2 ms), round-robin over instances, so the watch never blocks a frame.
-let _ltcbpRR = 0;
+let _ltcbpRR = 0, _ltcbpNextAt = 0;
+// Solver v74 perf guard: one exact-mesh probe step can blow far past the 2 ms budget (v73 demo on software GL: ~3 s per probe, which kept
+// the main thread busy for the whole run). When a tick overruns its budget 4x, the next tick waits 49x what it used (<= 2% duty cycle).
 function ltcbpAutoTick() {
   if (state.ltcbpAdaptive === false || !state.simRunning) return 0;
+  const tA = ltcbpPerf();
+  if (tA < _ltcbpNextAt) return 0;
+  const n = ltcbpAutoTickBody(), used = ltcbpPerf() - tA, tot = state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2;
+  if (used > 4 * tot) _ltcbpNextAt = ltcbpPerf() + 49 * used;
+  return n;
+}
+function ltcbpAutoTickBody() {
   const list = (state.instances || []).filter(i => i.built && !i.baking && i.sdf);
   if (!list.length) return 0;
   const total = state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2, t0 = ltcbpPerf();
@@ -4021,7 +4037,7 @@ function shareInstanceBake(inst, rootInst) {
   state.sdf = R.sdf; inst.sdf = R.sdf;
   state.pathMeta = new Map(); for (const [p, m] of (R.pathMeta || [])) state.pathMeta.set(mapP(p), Object.assign({}, m, { partOfWp: Array.isArray(m.partOfWp) ? m.partOfWp.map(mapP) : m.partOfWp }));
   state.channelFlows = new Map(); for (const [p, f] of (R.channelFlows || [])) state.channelFlows.set(mapP(p), f);
-  state.particleCPU = Object.assign({}, rc, { ownerPart: rc.ownerPart.map(mapP), liveArr: new Float32Array(rc.count), affGroup: new Int16Array(rc.count).fill(-1), liveAttr: null, rank: null, shared: true });
+  state.particleCPU = Object.assign({}, rc, { ownerPart: rc.ownerPart.map(mapP), liveArr: new Float32Array(rc.count), affGroup: new Int16Array(rc.count).fill(-1), liveAttr: null, rank: null, shared: true, feedParts: (rc.feedParts || []).map(mapP) });
   state.root.updateMatrixWorld(true);
   live.bakedM.clear(); live.snap.clear(); live.chainCache.clear(); live.autoOk.clear();
   for (const cp of inst.parts) {
@@ -4039,7 +4055,7 @@ function shareInstanceBake(inst, rootInst) {
   for (const [rp, cp] of rp2cp) { const bx = R.follow.box.get(rp), c0 = R.follow.c0.get(rp); if (bx) follow.box.set(cp, bx); if (c0) follow.c0.set(cp, c0); }
   inst.bakeMatrix = rootInst.bakeMatrix ? rootInst.bakeMatrix.clone() : new THREE.Matrix4();
   inst.sharedFrom = rootInst.id;
-  bakeInstanceRender(R.sdf, { count: rc.count, waypointData: rc.waypointData, radiusData: rc.radiusData, knotData: rc.knotData, wpPart: rc.wpPart, wpGround: rc.wpGround, phase: rc.phase, speed: rc.speed, thermalSeed: rc.thermalSeed, latU: rc.latU, latV: rc.latV, exitIdxData: rc.exitIdx, ownerPart: state.particleCPU.ownerPart }, rc.tex);
+  bakeInstanceRender(R.sdf, { count: rc.count, waypointData: rc.waypointData, radiusData: rc.radiusData, knotData: rc.knotData, wpPart: rc.wpPart, wpGround: rc.wpGround, phase: rc.phase, speed: rc.speed, thermalSeed: rc.thermalSeed, latU: rc.latU, latV: rc.latV, exitIdxData: rc.exitIdx, chambIdxData: rc.chambIdx, feedIdxData: rc.feedIdx, feedStartData: rc.feedStart, ownerPart: state.particleCPU.ownerPart }, rc.tex);
   followTick(true);
 }
 // (Re)build one instance on its own, without touching any other: shared bake when allowed, else its own bake. Starts it when a run is on.
@@ -5871,11 +5887,14 @@ function buildParticlePath(part, links, depth, collisionSDF) {
   let cur = part, chainIdx = 0;
   let reachedNozzle = false;
   let exitIdx = MAX_WAYPOINTS; // waypoint index of the nozzle exit plane (the live exhaust plume takes over from here)
+  let chambIdx = MAX_WAYPOINTS; // last waypoint inside the chamber cavity (pressure mode holds gas here until the throat chokes)
+  let feedPart = null, feedStart = 0, prevVia = 0, curVia = 0;   // the part feeding the chamber + the waypoint where it starts (priming front)
 
   // A part's own particles might start directly in the chamber itself.
   if (cur.type === 'chamber') {
     const nozzle = cur.openings.find(o => o.role === 'nozzle');
     if (nozzle) {
+      chambIdx = 0;
       // Fill the cavity first, then squeeze toward the nozzle. The
       // converging section accelerates the flow as the area drops.
       const c = partCentroid(cur);
@@ -5906,6 +5925,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
     if (nextTube) rPort = Math.min(rPort, nextTube.segs[0].rA);
     path.push(link.viaOpening.centroid);
     radii.push(rPort * 0.85); flowR.push(rPort); exhaust.push(false); partOfWp.push(chainIdx);
+    prevVia = curVia; curVia = path.length - 1;
     partExitIdx[chainIdx] = path.length - 1;
     cur = link.target; chainIdx++; chainParts.push(cur);
     if (nextTube) {
@@ -5923,6 +5943,8 @@ function buildParticlePath(part, links, depth, collisionSDF) {
         const c = partCentroid(cur);
         nozzle = { centroid: c.clone().setY(c.y - partContainmentRadius(cur)), normal: new THREE.Vector3(0, -1, 0), radius: Math.max(partContainmentRadius(cur) * 0.3, 0.2) };
       }
+      chambIdx = path.length - 1;
+      feedPart = chainParts[chainIdx - 1] || null; feedStart = chainIdx >= 2 ? prevVia : curVia;
       path.push(nozzle.centroid.clone().add(nozzle.normal.clone().multiplyScalar(2)));
       radii.push(nozzle.radius * 0.9); flowR.push(nozzle.radius); exhaust.push(true); partOfWp.push(chainIdx);
       reachedNozzle = true;
@@ -5984,7 +6006,7 @@ function buildParticlePath(part, links, depth, collisionSDF) {
     owners.push(chainParts[partOfWp[Math.min(w, partOfWp.length - 1)]] || part);
     ground.push(reachedNozzle && w > exitIdx ? 1 : 0);
   }
-  return { points, radii: radiiOut, fineIdx, exitIdx, knots, owners, ground };
+  return { points, radii: radiiOut, fineIdx, exitIdx, knots, owners, ground, chambIdx: reachedNozzle ? chambIdx : MAX_WAYPOINTS, feedPart: reachedNozzle ? feedPart : null, feedStart };
 }
 
 // Shared GLSL for sampling the collision SDF — used by the particle vertex
@@ -6248,6 +6270,12 @@ const PARTICLE_SHADER_CORE = `
   attribute float aExit;   // waypoint index of this particle's nozzle exit plane (>= MAX_WAYPOINTS: never reaches one)
   uniform float uBurn;
   uniform float uHidePost; // 1 = the live rocket-plume model draws everything past the nozzle, so hide the baked post-nozzle stretch
+  attribute float aChamb;  // last waypoint inside the chamber cavity (>= MAX_WAYPOINTS: path has no chamber)
+  uniform float uThroatGate; // pressure mode: 0 = throat closed (gas accumulates in the cavity) .. 1 = all gas passes (baked mode: always 1)
+  uniform float uChamberFill; // pressure mode: 0..1 how far the chamber has filled toward choking; held gas shows in that proportion
+  attribute float aFeed;   // index of the feed line into the chamber (uPrime), -1 none
+  attribute float aFeedS;  // waypoint where that feed line starts
+  uniform float uPrime[${PFS_FEED_MAX}]; // pressure mode: 0..1 how far each feed line has been primed by the solver (1 = full, baked mode)
   varying float vThermal;
   varying float vProgress;
 
@@ -6304,6 +6332,25 @@ const PARTICLE_SHADER_CORE = `
     return c0.xyz * p.x + c1.xyz * p.y + c2.xyz * p.z + c3.xyz;
   }
 
+  // CHAMBER CAVITY (pressure mode, v74): gas that has reached the chamber stays inside its cavity until the solver's throat
+  // opens (Pc high enough to choke). Per particle a stable rank in [0,1); ranks below uThroatGate pass on through the neck.
+  float gHeld = 0.0;
+  float pfsRank() { return fract(aPhase * 7.31 + aLatU * 3.7 + aLatV * 5.3 + 0.5); }
+  float gAhead = 0.0;
+  // ahead of the priming front: fluid has not got this far down the feed line yet since Simulate (hidden)
+  bool pfsAhead(float row, float progress) {
+    if (aFeed < -0.5 || aChamb > ${MAX_WAYPOINTS}.0 - 0.5) return false;
+    float pr = 1.0;
+    for (int k = 0; k < ${PFS_FEED_MAX}; k++) if (abs(float(k) - aFeed) < 0.5) pr = uPrime[k];
+    if (pr > 0.999) return false;
+    float kS = sampleWaypointKnot(row, aFeedS), kC = sampleWaypointKnot(row, aChamb);
+    return progress > kS + pr * (kC - kS);
+  }
+  bool pfsHeldHidden() { return gAhead > 0.5 || (gHeld > 0.5 && fract(aPhase * 5.17 + aLatV * 2.3 + aLatU * 1.9) >= uChamberFill); }
+  bool pfsHeld(float row, float progress) {
+    if (aChamb > ${MAX_WAYPOINTS}.0 - 0.5 || uThroatGate > 0.999 || pfsRank() < uThroatGate) return false;
+    return progress >= sampleWaypointKnot(row, aChamb);
+  }
   float gSeg = 0.0;      // set by computeParticlePosition: waypoint segment index, fraction along it, and its span in progress units
   float gSegT = 0.0;
   float gSegSpan = 0.1;
@@ -6350,6 +6397,19 @@ const PARTICLE_SHADER_CORE = `
     vec3 eddy = vec3(sin(progress * 41.0 + ph * 3.0), cos(progress * 33.0 + ph * 5.0), sin(progress * 27.0 + ph * 2.0));
     vec3 lateral = (aLatU * right + aLatV * up2) * rad + eddy * rad * 0.10 * progress;
     vec3 pos = centerPos + lateral;
+    gHeld = 0.0; gAhead = pfsAhead(aRow, progress) ? 1.0 : 0.0;
+    if (gAhead < 0.5 && pfsHeld(aRow, progress)) {
+      // held in the chamber: spread over the cavity around its last in-chamber station, slow swirl; the SDF confinement below
+      // (bisection toward the station) keeps every held particle inside the cavity wall
+      gHeld = 1.0; seg = aChamb; segT = 0.0; gSeg = seg; gSegT = 0.0;
+      vec4 c4 = sampleWaypoint(aRow, aChamb);
+      centerPos = c4.xyz; rad = c4.w;
+      float h3 = fract(aPhase * 13.7) * 2.0 - 1.0;
+      float ang = uTime * (0.25 + 0.5 * pfsRank()) + aPhase * 6.2831;
+      float ca = cos(ang), sa = sin(ang);
+      vec3 d = vec3(aLatU * ca - aLatV * sa, h3, aLatU * sa + aLatV * ca);
+      pos = centerPos + d * rad * 0.95 + eddy * rad * 0.06;
+    }
 
     // ── Real mesh collision: pull the particle back off the wall ────────
     // The old behavior (lateral offset scaled by a crude per-part cylinder
@@ -6386,7 +6446,7 @@ const PARTICLE_SHADER_CORE = `
           if (sdfAt(centerPos + lat * m, fineIdx) < -skin) lo = m; else hi = m;
         }
         pos = centerPos + lat * lo;
-      } else if (gSeg >= aExit - 1.0 && sdc > 0.0) {
+      } else if (gHeld < 0.5 && gSeg >= aExit - 1.0 && sdc > 0.0) {
         // open air downstream of the nozzle exit plane: free jet, no wall push
       } else {
         vec3 n = sdfGradient(pos, fineIdx); // points toward increasing distance, i.e. OUTWARD
@@ -6404,8 +6464,10 @@ const PARTICLE_SHADER_CORE = `
 const PARTICLE_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSize;
   void main() {
-    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    float pr0 = fract(uTime * aSpeed + aPhase);
+    if (aLive > 0.5 || (uHidePost > 0.5 && !pfsHeld(aRow, pr0) && segOfProgress(aRow, pr0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
+    if (pfsHeldHidden()) { vThermal = 0.0; vProgress = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec4 mv = modelViewMatrix * vec4(pos, 1.0);
     gl_Position = projectionMatrix * mv;
     gl_PointSize = uSize * (200.0 / -mv.z);
@@ -6421,8 +6483,10 @@ const PARTICLE_SPLAT_VERTEX_SHADER = PARTICLE_SHADER_CORE + `
   uniform float uSplatSize;
   varying float vHeightAboveFloor;
   void main() {
-    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+    float pr0 = fract(uTime * aSpeed + aPhase);
+    if (aLive > 0.5 || (uHidePost > 0.5 && !pfsHeld(aRow, pr0) && segOfProgress(aRow, pr0) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vec3 pos = computeParticlePosition();
+    if (pfsHeldHidden()) { vThermal = 0.0; vProgress = 0.0; vHeightAboveFloor = 100.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
     vHeightAboveFloor = pos.y; // floor is always at world y = 0 in this tool
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
     gl_PointSize = uSplatSize;
@@ -6762,6 +6826,8 @@ async function bakeInstanceCore(inst, links) {
   const knotData = [];     // MAX_WAYPOINTS floats per particle: cumulative path-time at which each waypoint is reached (0..1), from the continuity (v ∝ 1/A) law
   const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
   const exitIdxData = []; // per particle: waypoint index of the nozzle exit plane
+  const chambIdxData = []; // per particle: last waypoint inside the chamber cavity (MAX_WAYPOINTS = none), see pfsHeld in the shader
+  const feedParts = [], feedIdxData = [], feedStartData = [];   // pressure-mode priming front: which feed line (index into feedParts, -1 none) + its first waypoint
   const wpPart = [], wpGround = []; // per particle waypoint: owning part id / ground-anchored flag (fluid follows its parts)
   state.parts.forEach((q, qi) => { q.followId = qi < FOLLOW_ROWS ? qi : -1; });
   const phase = [];
@@ -6777,7 +6843,8 @@ async function bakeInstanceCore(inst, links) {
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
       for (const r of path.radii) radiusData.push(r);
       for (const fi of path.fineIdx) fineIdxData.push(fi);
-      exitIdxData.push(path.exitIdx);
+      exitIdxData.push(path.exitIdx); chambIdxData.push(path.chambIdx);
+      { let fi = path.feedPart ? feedParts.indexOf(path.feedPart) : -1; if (path.feedPart && fi < 0 && feedParts.length < PFS_FEED_MAX) { fi = feedParts.length; feedParts.push(path.feedPart); } feedIdxData.push(fi); feedStartData.push(path.feedStart || 0); }
       for (const k of path.knots) knotData.push(k);
       for (let w = 0; w < MAX_WAYPOINTS; w++) { wpPart.push(path.owners[w].followId); wpGround.push(path.ground[w]); }
       ownerPart.push(part);
@@ -6817,7 +6884,7 @@ async function bakeInstanceCore(inst, links) {
   // decoding the tiled packing back out) since they're the same arrays
   // already built above.
   state.particleCPU = {
-    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData,
+    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData, chambIdx: chambIdxData, feedParts, feedIdx: feedIdxData, feedStart: feedStartData,
     wpPart: Int16Array.from(wpPart), wpGround: Uint8Array.from(wpGround), // owning part id / ground flag per waypoint (CPU mirror of the shader's follow)
     liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
     affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
@@ -6826,12 +6893,15 @@ async function bakeInstanceCore(inst, links) {
   followRebase();      // fluid-follows-parts: deltas are measured from this same bake state
   inst.sharedFrom = null;
   inst.bakeMatrix = inst.root ? (inst.root.updateWorldMatrix(true, false), inst.root.matrixWorld.clone()) : new THREE.Matrix4();
-  bakeInstanceRender(collisionSDF, { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, ownerPart }, null);
+  bakeInstanceRender(collisionSDF, { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, chambIdxData, feedIdxData, feedStartData, ownerPart }, null);
 }
 // Everything after the path bake: GPU textures + the point / Gaussian / core / floor-splat render objects for the CURRENT context.
 // `shared` ({waypointTex, waypointFineTex, texHeight}) reuses another instance's baked textures (a shared-bake clone).
 function bakeInstanceRender(collisionSDF, A, shared) {
   const { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, ownerPart } = A;
+  const chambIdxData = A.chambIdxData && A.chambIdxData.length === count ? A.chambIdxData : new Array(count).fill(MAX_WAYPOINTS);
+  const feedIdxData = A.feedIdxData && A.feedIdxData.length === count ? A.feedIdxData : new Array(count).fill(-1);
+  const feedStartData = A.feedStartData && A.feedStartData.length === count ? A.feedStartData : new Array(count).fill(0);
   let waypointTex, waypointFineTex, texHeight;
   if (shared) { waypointTex = shared.waypointTex; waypointFineTex = shared.waypointFineTex; texHeight = shared.texHeight; }
   else {
@@ -6883,7 +6953,11 @@ function bakeInstanceRender(collisionSDF, A, shared) {
   // volumetric ray-march material, so both read identical geometry data.
   const sdfSet = makeSDFUniformSet(collisionSDF);
   state.sdfUniformSet = sdfSet;
-  const sdfUniforms = Object.assign({ uWaypointFine: { value: waypointFineTex } }, sdfSet);
+  // uThroatGate (pressure mode): fraction of the gas that has reached the chamber and may pass the throat (1 = all, baked mode).
+  // One shared {value} object for the point, Gaussian and floor-splat materials; pfsFrame writes it per instance.
+  const throatGateU = { value: 1 }, chamberFillU = { value: 1 }, primeU = { value: new Float32Array(PFS_FEED_MAX).fill(1) };
+  state.particleCPU.gateU = throatGateU; state.particleCPU.fillU = chamberFillU; state.particleCPU.primeU = primeU;
+  const sdfUniforms = Object.assign({ uWaypointFine: { value: waypointFineTex }, uThroatGate: throatGateU, uChamberFill: chamberFillU, uPrime: primeU }, sdfSet);
   if (sdfUniforms.uSDFCoarse.value.needsUpdate !== undefined) sdfUniforms.uSDFCoarse.value.needsUpdate = true;
   if (sdfUniforms.uSDFFineAtlas.value.needsUpdate !== undefined) sdfUniforms.uSDFFineAtlas.value.needsUpdate = true;
 
@@ -6901,6 +6975,9 @@ function bakeInstanceRender(collisionSDF, A, shared) {
   liveAttr.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('aLive', liveAttr);
   geo.setAttribute('aExit', new THREE.InstancedBufferAttribute(new Float32Array(exitIdxData), 1));
+  geo.setAttribute('aChamb', new THREE.InstancedBufferAttribute(new Float32Array(chambIdxData), 1));
+  geo.setAttribute('aFeed', new THREE.InstancedBufferAttribute(new Float32Array(feedIdxData), 1));
+  geo.setAttribute('aFeedS', new THREE.InstancedBufferAttribute(new Float32Array(feedStartData), 1));
   state.particleCPU.liveAttr = liveAttr;
   geo.instanceCount = count;
 
@@ -7301,6 +7378,30 @@ function bakedSegment(cpu, p, progress) {
   _bseg.segT = Math.max(0, Math.min(1, (progress - kPrev) / Math.max(kEnd - kPrev, 1e-5)));
 }
 
+// CPU mirror of the shader's pfsHeld()/held placement (CHAMBER CAVITY, pressure mode). true -> _bheld = held position.
+const _bheld = { x: 0, y: 0, z: 0 };
+const _fract = v => v - Math.floor(v);
+function bakedAhead(cpu, p, progress) {
+  const fi = cpu.feedIdx ? cpu.feedIdx[p] : -1, ci = cpu.chambIdx ? cpu.chambIdx[p] : MAX_WAYPOINTS;
+  if (fi < 0 || !(ci < MAX_WAYPOINTS) || !cpu.primeU) return false;
+  const pr = cpu.primeU.value[fi]; if (!(pr < 0.999)) return false;
+  const kS = cpu.knotData[p * MAX_WAYPOINTS + cpu.feedStart[p]], kC = cpu.knotData[p * MAX_WAYPOINTS + ci];
+  return progress > kS + pr * (kC - kS);
+}
+function bakedHeld(cpu, p, progress, uTime) {
+  const ci = cpu.chambIdx ? cpu.chambIdx[p] : MAX_WAYPOINTS, g = cpu.gateU ? cpu.gateU.value : 1;
+  if (!(ci < MAX_WAYPOINTS) || g > 0.999) return false;
+  const lu = cpu.latU[p], lv = cpu.latV[p], ph = cpu.phase[p], rank = _fract(ph * 7.31 + lu * 3.7 + lv * 5.3 + 0.5);
+  if (rank < g || progress < cpu.knotData[p * MAX_WAYPOINTS + ci]) return false;
+  const b = (p * MAX_WAYPOINTS + ci) * 3, rad = cpu.radiusData[p * MAX_WAYPOINTS + ci];
+  const h3 = _fract(ph * 13.7) * 2 - 1, ang = uTime * (0.25 + 0.5 * rank) + ph * 6.2831, ca = Math.cos(ang), sa = Math.sin(ang);
+  _bheld.x = cpu.waypointData[b] + (lu * ca - lv * sa) * rad * 0.95;
+  _bheld.y = cpu.waypointData[b + 1] + h3 * rad * 0.95;
+  _bheld.z = cpu.waypointData[b + 2] + (lu * sa + lv * ca) * rad * 0.95;
+  _bheld.hidden = _fract(ph * 5.17 + lv * 2.3 + lu * 1.9) >= (cpu.fillU ? cpu.fillU.value : 1);
+  return true;
+}
+
 // Rebuilds the CPU density+color volume from the current particle state —
 // the direct counterpart to ArcVolumetricFluidRenderer.bakeVolume(), but
 // splatting discrete particle positions into cells (accumulate-and-
@@ -7358,9 +7459,13 @@ function rebuildVolumetricDensity() {
   for (let p = 0; p < count; p += stride) {
     if (liveHidden && liveHidden[p] > 0.5) continue; // taken over by the live leak system (rendered via the leak volume instead)
     const progress = ((uTime * speed[p] + phase[p]) % 1 + 1) % 1; // fract(), matching GLSL's always-positive fract()
+    if (bakedAhead(cpu, p, progress)) continue;        // pressure mode: ahead of the feed line's priming front
+    const held = bakedHeld(cpu, p, progress, uTime);   // pressure mode: still inside the chamber cavity (throat not open for it)
+    if (held && _bheld.hidden) continue;               // chamber not that full yet
     bakedSegment(cpu, p, progress);
+    if (held) { _bseg.seg = cpu.chambIdx[p]; _bseg.segT = 0; }
     const seg = _bseg.seg, segT = _bseg.segT;
-    if (plumeHidePostUniform.value > 0.5 && seg >= cpu.exitIdx[p]) continue; // past the nozzle: the live exhaust plume draws that
+    if (!held && plumeHidePostUniform.value > 0.5 && seg >= cpu.exitIdx[p]) continue; // past the nozzle: the live exhaust plume draws that
     const segB = Math.min(seg + 1, MW - 1);
     const baseA = (p * MW + seg) * 3, baseB = (p * MW + segB) * 3;
     tmpA.set(waypointData[baseA], waypointData[baseA + 1], waypointData[baseA + 2]);
@@ -7390,9 +7495,9 @@ function rebuildVolumetricDensity() {
     const eddyZ = Math.sin(progress * 27.0 + ph * 2.0);
 
     const lu = latU[p], lv = latV[p];
-    const px = tmpA.x + (tmpB.x - tmpA.x) * segT + (lu * rx + lv * ux) * rad + eddyX * rad * 0.10 * progress;
-    const py = tmpA.y + (tmpB.y - tmpA.y) * segT + (lu * ry + lv * uy) * rad + eddyY * rad * 0.10 * progress;
-    const pz = tmpA.z + (tmpB.z - tmpA.z) * segT + (lu * rz + lv * uz) * rad + eddyZ * rad * 0.10 * progress;
+    const px = held ? _bheld.x : tmpA.x + (tmpB.x - tmpA.x) * segT + (lu * rx + lv * ux) * rad + eddyX * rad * 0.10 * progress;
+    const py = held ? _bheld.y : tmpA.y + (tmpB.y - tmpA.y) * segT + (lu * ry + lv * uy) * rad + eddyY * rad * 0.10 * progress;
+    const pz = held ? _bheld.z : tmpA.z + (tmpB.z - tmpA.z) * segT + (lu * rz + lv * uz) * rad + eddyZ * rad * 0.10 * progress;
 
     // NOTE: deliberately skips the GPU shader's final SDF-based wall-
     // collision correction (sdfAt/sdfGradient push-back): the ray march's own
@@ -7838,11 +7943,13 @@ const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
   void main() {
     if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 pos = computeParticlePosition();           // also sets vThermal / vProgress
+    if (pfsHeldHidden()) { vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     // path tangent + containment radius, re-read the cheap way (2 fetches)
     float seg = gSeg, segT = gSegT;
     vec4 a4 = sampleWaypoint(aRow, seg);
     vec4 b4 = sampleWaypoint(aRow, min(seg + 1.0, ${MAX_WAYPOINTS - 1}.0));
     vec3 vel = gPartRot * (b4.xyz - a4.xyz) * (aSpeed * 0.35 / gSegSpan);   // d(position)/d(second): progress advances at uTime*aSpeed, uTime at 0.35/s
+    if (gHeld > 0.5) vel *= 0.05;   // held in the chamber cavity: slow swirl, not a streak toward the throat
     float rad = mix(a4.w, b4.w, segT);
     float press = aPress * (1.0 - 0.35 * vProgress);
     float sigma = clamp(rad * 0.25, uGsSize * 0.12, uGsSize * 3.0) * (0.8 + 0.55 * press);
@@ -7934,7 +8041,7 @@ function gsSceneSigma(sdf) {
 // and its SDF uniform objects — nothing is duplicated.
 function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart, count) {
   const geo = gsQuadGeometry();
-  for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive']) geo.setAttribute(k, pointGeo.getAttribute(k));
+  for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive', 'aExit', 'aChamb', 'aFeed', 'aFeedS']) if (pointGeo.getAttribute(k)) geo.setAttribute(k, pointGeo.getAttribute(k));
   const press = new Float32Array(count), hue = new Float32Array(count * 4);
   const pCache = new Map();
   for (let p = 0; p < count; p++) {
@@ -9209,7 +9316,7 @@ function massFrame(inst, now) {
   if (!state.simRunning || !mass.on) { if (mass.lastUI) { mass.lastUI = 0; const el = document.getElementById('massStatus'); if (el) el.innerHTML = ''; } return; }
   if (!mass.lastAt) mass.lastAt = now;
   const dt = Math.min((now - mass.lastAt) / 1000, 0.1); mass.lastAt = now;
-  if (dt > 0) { if (pfsAnyPressure()) pfsFrame(dt, now); massStep(dt, now); }
+  if (dt > 0) { if (pfsAnyPressure()) pfsFrame(dt, now, inst); massStep(dt, now); }
   if (now - mass.lastSync > 100) { mass.lastSync = now; if (!pfsAnyPressure()) massSync(); }
   if (now - mass.lastUI > 300) {
     mass.lastUI = now;
@@ -11592,8 +11699,9 @@ function debugReadParticlePositions(tOverride) {
 // ═══════════════════════════════════════════════════════════════════════
 //  PRESSURE-DRIVEN FLOW SOLVER  (PressureFlowSim, inst.solverMode === 'pressure')
 //
-//  Default is solverMode 'baked': nothing in this block runs and every hook below is gated on pfsAnyPressure().
-//  Pressure mode (?solver=pressure or the "Pressure solver" checkbox, applied when Simulate starts):
+//  Default (v74+) is pressure mode: the "Pressure solver" checkbox starts checked; ?solver=baked (or unchecking it) gives the old
+//  baked waypoint flow, where nothing in this block runs and every hook below is gated on pfsAnyPressure().
+//  Pressure mode (applied when Simulate starts):
 //   network   nodes = cavities (container / chamber) + the ATM sink; edges = flow links (and every unmatched exit / nozzle
 //             opening, which goes to ATM). A part with several links (allLinks) gets one edge per link. Pipes are not
 //             nodes: they are the conductance of the edge (fitted-tube sections via state.sdf.tubes, else the port bores).
@@ -11603,7 +11711,11 @@ function debugReadParticlePositions(tOverride) {
 //                           ullage back to the setpoint (part internalPsi) while the helium tank is above it
 //             liquid edge   solveChannelFlow (Darcy-Weisbach + minor losses) at P_up - P_down
 //             chamber       accumulating gas node, Pc = m R Tc / V (semi-implicit, stable); choked/subsonic throat
-//                           mdot from the nozzle area (Ae/eps) and the preset's gamma / mw / Tc
+//                           mdot from the nozzle area (Ae/eps) and the preset's gamma / mw / Tc. CLOSED CAVITY (v74): the throat
+//                           edge stays shut (e.open = false) until Pc reaches the choking pressure Pa / (2/(g+1))^(g/(g-1)) or the
+//                           feed has equalised with the chamber (inflow < 2% of its peak), then latches open; it shuts again only
+//                           if Pc falls back to ~ambient. The GPU particles follow it: gas past the chamber station is held in the
+//                           cavity (shader pfsHeld) and the fraction allowed through the neck is sol.gate = throat mdot / inflow.
 //             ATM edges     spill; a node at zero mass stops its flow
 //   particles tracers carrying mass weights (see the particle section), LTCBP counts only what crosses into ATM.
 // ═══════════════════════════════════════════════════════════════════════
@@ -11611,11 +11723,17 @@ const PFS_DT_MAX = 0.004;           // s, max lumped sub-step
 const PFS_ULLAGE_MIN = 0.02;        // min ullage volume fraction (keeps P finite when a tank is brim full)
 const PFS_R_AIR = 287.05;           // J/(kg K) ambient gas in a cold chamber
 const PFS_T_AMB = 288.15;
+const PFS_STALL_FRAC = 0.02;
+// Start-up slow motion (display only): the line priming + chamber fill take ~50 ms of physical time on the demo, too fast to see the
+// cavity fill. Until every throat has opened the solver clock runs at this fraction of real time, then ramps to 1x over 1.5 s of wall
+// time. All quantities stay physical (it is the same solve, just a slower clock). ?slowmo=1 turns it off, ?slowmo=0.1 sets the fraction.
+const PFS_STARTUP_SLOWMO = (() => { try { const v = parseFloat(new URLSearchParams(location.search).get('slowmo')); return v > 0 && v <= 1 ? v : 0.03; } catch (e) { return 0.03; } })();        // throat also opens once the chamber inflow has fallen below this fraction of its peak (feed equalised)
+function pfsChokeRatio(g) { return Math.pow(2 / (g + 1), g / (g - 1)); }   // critical Pb / P0
 const pfsSolverEl = () => document.getElementById('solverPressure');
 function pfsWanted() {
   const el = pfsSolverEl();
   if (el) return !!el.checked;
-  return new URLSearchParams(location.search).get('solver') === 'pressure';
+  return new URLSearchParams(location.search).get('solver') !== 'baked';
 }
 function pfsPaAbs() { return Math.max(parseFloat(atmoPsiEl.value) || 0, 0) * PSI_PA; }
 function pfsUnit() { return state.flowUnitM || FLOW_UNIT_M_DEFAULT; }
@@ -11662,6 +11780,25 @@ function pfsChamberAxis(part) {
   return { pts, r, cum, n, vol, throat: ti, len: cum[n - 1], dir: u.clone().negate() };
 }
 
+// THIN-CHANNEL PORT CHECK (v74). A link INTO a pipe that has a fitted bore tube is a real port only where the source opening sits
+// at one of the tube's two ends. The demo fuel line runs down past the oxidizer tank and its helium bottle with a bore about one
+// SDF voxel across, so the volumetric (Boolean) joint test also reports Oxidizer -> FuelChannel and OxidizerPressure_ -> FuelChannel
+// through the pipe's side wall. Those mid-tube "joints" put oxidizer and helium (~1.8 t/s in v73) into the fuel line's network edge;
+// the solver ignores them (Flow Graph owns the joint test itself). Returns false for such a side-wall link.
+function pfsTubePortOk(src, l, tubes) {
+  const t = linkTarget(l), tube = tubes && t && tubes.get(t);
+  if (!tube || !tube.segs || !tube.segs.length || !l.viaOpening || !pfsIsCavity(src)) return true;
+  const c = openingLiveCentroid(l.viaOpening), sg = tube.segs, A = sg[0].a, B = sg[sg.length - 1].b;
+  const rO = Math.max(sg[0].oA || sg[0].rA, sg[sg.length - 1].oB || sg[sg.length - 1].rB, 1e-4);
+  const tol = Math.max(3 * rO, 2 * (l.viaOpening.radius || 0) + rO);
+  return Math.min(c.distanceTo(A), c.distanceTo(B)) <= tol;
+}
+function pfsRejectedLinks(inst) {   // for the snapshot / LIVE BOARD: the side-wall links pfsBuildNetwork drops
+  const tubes = state.sdf && state.sdf.tubes ? state.sdf.tubes.byPart : null, src = (inst.links && inst.links.size) ? inst.links : state.currentLinks, out = [];
+  if (src) for (const p of inst.parts) for (const l of allLinks(src, p)) if (!pfsTubePortOk(p, l, tubes)) out.push(p.name + ' -> ' + (linkTarget(l) || {}).name);
+  return out;
+}
+
 // Network: nodes = cavities (+ the ATM sink, node -1), edges from allLinks (every link of a part, so a multi-link part gets
 // several edges) and from unmatched exit / nozzle openings (-> ATM).
 function pfsBuildNetwork(inst) {
@@ -11669,7 +11806,7 @@ function pfsBuildNetwork(inst) {
   const partSet = new Set(inst.parts);
   const src = (inst.links && inst.links.size) ? inst.links : state.currentLinks;
   const lmap = new Map();
-  if (src) for (const p of inst.parts) { const ls = allLinks(src, p).filter(l => partSet.has(linkTarget(l))); if (ls.length) lmap.set(p, ls); }
+  if (src) for (const p of inst.parts) { const ls = allLinks(src, p).filter(l => partSet.has(linkTarget(l)) && pfsTubePortOk(p, l, tubes)); if (ls.length) lmap.set(p, ls); }
   const nodes = [], nodeOf = new Map();
   for (const p of inst.parts) if (pfsIsCavity(p)) { const n = { id: nodes.length, part: p, name: p.name, edgesOut: [], edgesIn: [] }; nodes.push(n); nodeOf.set(p, n); }
   const edges = [];
@@ -11748,7 +11885,7 @@ class PressureFlowSim {
     const Rhe = R_UNIV / FLUID_PROPS.helium.M;
     for (const n of this.nodes) {
       const p = n.part, T = p.tempK > 0 ? p.tempK : PFS_T_AMB;
-      n.T = T; n.mL = 0; n.mG = 0; n.mL0 = 0; n.mG0 = 0; n.mIn = 0; n.mOut = 0; n.peak = 0; n.axis = null;
+      n.T = T; n.mL = 0; n.mG = 0; n.mL0 = 0; n.mG0 = 0; n.mIn = 0; n.mOut = 0; n.peak = 0; n.axis = null; n.inPeak = 0;
       const Vmesh = computeVolume(p) * u3;
       if (p.type === 'chamber') {
         n.kind = 'chamber'; n.axis = pfsChamberAxis(p);
@@ -11771,7 +11908,7 @@ class PressureFlowSim {
     }
     for (const e of this.edges) {
       const src = e.from;
-      e.mdot = 0; e.acc = 0; e.dmd = 0; e.vPhys = 0; e.vol = 0;
+      e.mdot = 0; e.acc = 0; e.dmd = 0; e.vPhys = 0; e.vol = 0; e.open = true;
       e.Cd = e.toAtm ? 0.62 : 1;
       if (src.kind === 'chamber') {
         const nozzle = e.exitOp && e.exitOp.role === 'nozzle';
@@ -11779,10 +11916,17 @@ class PressureFlowSim {
         const Ae = Math.PI * e.exitR * e.exitR * unit * unit;
         e.A = nozzle ? Math.max(Ae / Math.max(cfg.eps || 1, 1), AT_MIN_M2) : Ae;
         e.Cd = nozzle ? 1 : 0.62;
+        if (nozzle) e.open = false;   // closed cavity: no flow through the neck until Pc can choke it (see sub())
       } else if (src.kind === 'gas') { e.kind = (e.to && e.to.kind === 'liquid') ? 'regulator' : 'gas'; e.fluid = 'helium'; }
       else { e.kind = e.toAtm ? 'spill' : 'liquid'; e.fluid = src.contents; }
       e.fp = FLUID_PROPS[e.fluid] || FLUID_PROPS.other;
       e.A = e.A || e.sections[e.sections.length - 1].A;
+    }
+    // FEED-LINE PRIMING (v74): an edge into a chamber delivers nothing until its line volume (sum A L of the pipe sections) has
+    // been filled by what left the source; the propellant front then reaches the injector and the chamber starts to fill.
+    for (const e of this.edges) {
+      let V = 0; for (let k = 0; k < e.sections.length - 1; k++) V += e.sections[k].A * e.sections[k].L;
+      e.Vline = V; e.vFill = 0; e.primed = !(e.to && e.to.kind === 'chamber') || !(V > 0);
     }
     for (const n of this.nodes) { n.openKind = 'closed'; }
     // which cavities have an open path to ATM (for the UI status)
@@ -11795,6 +11939,7 @@ class PressureFlowSim {
       n.openKind = kind;
     }
     this.mixOfStoich = null;
+    this.gate = this.edges.some(e => e.kind === 'throat') ? 0 : 1; this.fill = this.gate;
   }
   nodeP(n) {
     if (n.kind === 'liquid') return n.mG * n.R * n.T / Math.max(n.V - n.mL / n.rho, PFS_ULLAGE_MIN * n.V);
@@ -11821,7 +11966,7 @@ class PressureFlowSim {
         m = solveChannelFlow(e.sections, e.fp, Pup, Pdn, { Cd: e.Cd, Kin: 0.5, Kbend: e.kbend, T: src.T }).mdot;
         return Math.min(m, need / h); }
       case 'throat': case 'gasleak':
-        if (src.mG <= 0) return 0;
+        if (src.mG <= 0 || !e.open) return 0;
         m = pfsGasMdot(Pup, Pdn, e.A, src.gamma, src.R, src.T, e.Cd);
         { const d = 1e-3 * Pup; e.dmd = (pfsGasMdot(Pup + d, Pdn, e.A, src.gamma, src.R, src.T, e.Cd) - m) / d; }
         return m;
@@ -11851,13 +11996,21 @@ class PressureFlowSim {
       this.chamberThermo(c, h);
       const P0 = this.nodeP(c); c.P = P0;
       let sIn = 0, sOut = 0, inM = 0, outM = 0;
-      for (const e of c.edgesIn) { sIn += e.dmd; inM += e.mdot; }
+      for (const e of c.edgesIn) if (e.primed) { sIn += e.dmd; inM += e.mdot; }
+      c.inPeak = Math.max(c.inPeak || 0, inM);
+      {   // throat latch: closed cavity until Pc chokes the throat (or the feed has equalised with the chamber)
+        const Pch = pa / pfsChokeRatio(c.gamma), stalled = c.inPeak > 0 && inM < PFS_STALL_FRAC * c.inPeak && P0 > 1.02 * pa;
+        for (const e of c.edgesOut) if (e.kind === 'throat') {
+          if (!e.open && (P0 >= Pch || stalled)) { e.open = true; e.openedAt = this.t; }
+          else if (e.open && P0 < 1.01 * pa && inM <= 0) e.open = false;
+        }
+      }
       for (const e of c.edgesOut) { e.mdot = this.edgeFlow(e, h); sOut += e.dmd; outM += e.mdot; }
       const cap = c.V / (c.R * c.T);
       const dP = h * (inM - outM) / (cap + h * (sIn + sOut));
       let P1 = Math.max(P0 + dP, Math.max(pa, 1));
       const dP1 = P1 - P0;
-      for (const e of c.edgesIn) e.mdot = Math.max(0, e.mdot - e.dmd * dP1);
+      for (const e of c.edgesIn) if (e.primed) e.mdot = Math.max(0, e.mdot - e.dmd * dP1);
       for (const e of c.edgesOut) e.mdot = Math.max(0, e.mdot + e.dmd * dP1);
       c.mG = P1 * cap; c.P = P1;
     }
@@ -11867,6 +12020,10 @@ class PressureFlowSim {
       s.mOut += e.mdot; if (d) d.mIn += e.mdot;
       if (s.kind === 'liquid') s.mL = Math.max(s.mL - m, 0); else if (s.kind === 'gas') s.mG = Math.max(s.mG - m, 0);
       if (d && d.kind !== 'chamber') { if (e.kind === 'liquid') d.mL += m; else d.mG += m; }
+      if (!e.primed) {   // still filling the feed line (mass is in the pipe, not yet in the chamber)
+        const rho = e.kind === 'liquid' || e.kind === 'spill' ? e.fp.rho : Math.max(s.P / (s.R * s.T), 1e-6);
+        e.vFill += m / rho; if (e.vFill >= e.Vline) { e.primed = true; e.primedAt = this.t; }
+      }
     }
     // 4. continuous flow: containers are replenished as they are used; otherwise they deplete
     if (cont) for (const n of this.nodes) {
@@ -11887,7 +12044,7 @@ class PressureFlowSim {
   // chamber gas: cold ambient air until both propellants arrive, then combustion products at the preset's Tc / mw / gamma
   chamberThermo(c, h) {
     const cfg = this.cfg; let inF = 0, inO = 0;
-    for (const e of c.edgesIn) { if (e.fluid === 'fuel') inF += e.mdot; else if (e.fluid === 'oxidizer') inO += e.mdot; }
+    for (const e of c.edgesIn) { if (!e.primed) continue; if (e.fluid === 'fuel') inF += e.mdot; else if (e.fluid === 'oxidizer') inO += e.mdot; }
     c.inFuel = inF; c.inOx = inO;
     const stoich = (window.ofPerSystem && window.ofPerSystem[c.part.name] != null) ? window.ofPerSystem[c.part.name] : (window.ofTarget || 2.3);
     const mixK = inF > 0 && inO > 0 ? Math.exp(-Math.pow(Math.log((inO / inF) / stoich), 2)) : 0;
@@ -11897,7 +12054,25 @@ class PressureFlowSim {
     const a = 1 - Math.exp(-h / 0.01);
     c.T += (Tt - c.T) * a; c.R += (Rt - c.R) * a; c.gamma += (gt - c.gamma) * a; c.burn = w;
   }
-  advance(dt, cont) { this.step(dt * this.timeScale, cont); this.updateEmission(); pfsSyncMass(this); }
+  advance(dt, cont) { this.step(dt * this.timeScale, cont); this.updateEmission(); this.updateGate(dt); pfsSyncMass(this); }
+  // fraction of the gas that has reached a chamber and may continue through the neck (GPU particles: uThroatGate), smoothed
+  updateGate(dt) {
+    let tgt = 1, fill = 1, any = false;
+    const pa = this.pa;
+    for (const c of this.nodes) {
+      if (c.kind !== 'chamber' || !c.edgesOut.length) continue;
+      let out = 0, inM = 0, open = false;
+      for (const e of c.edgesOut) { out += e.mdot; if (e.kind !== 'throat' || e.open) open = true; }
+      for (const e of c.edgesIn) if (e.primed) inM += e.mdot;
+      const g = !open ? 0 : (inM > 1e-12 ? Math.min(out / inM, 1) : 1);
+      const Pch = pa / pfsChokeRatio(c.gamma), f = open ? 1 : Math.max(0, Math.min(1, (c.P - pa) / Math.max(Pch - pa, 1)));
+      tgt = any ? Math.max(tgt, g) : g; fill = any ? Math.max(fill, f) : f; any = true;
+    }
+    this.fill = fill;
+    if (!(dt > 0)) { this.gate = tgt; return; }
+    this.gate += (tgt - this.gate) * (1 - Math.exp(-dt / 0.2));
+    if (this.gate > 0.995) this.gate = 1; if (this.gate < 1e-3) this.gate = 0;
+  }
   // emission strength K = actual nozzle mass flow / the preset's design mass flow (pc_design * At / c*), 0..1; drives plume emission
   updateEmission() {
     let K = 0, tot = 0;
@@ -11919,15 +12094,22 @@ function pfsSyncMass(sol) {
   }
 }
 
+function pfsEdgePrime(e) { return e.primed ? 1 : Math.min(e.vFill / Math.max(e.Vline, 1e-12), 1); }
+// priming fraction of the feed line `fp` (the part right before the chamber on a particle path): max over the edges it carries
+function pfsFeedPrime(sol, fp) {
+  let best = -1;
+  for (const e of sol.edges) if (e.to && e.to.kind === 'chamber' && (e.pipes.length ? e.pipes[e.pipes.length - 1] === fp : e.from.part === fp)) best = Math.max(best, pfsEdgePrime(e));
+  return best < 0 ? 1 : best;
+}
 function pfsSnapshot(inst) {
   const sol = (inst || (state.instances || []).find(i => i.solver) || {}).solver;
   if (!sol) return null;
   const psi = Pa => +(Pa / PSI_PA).toFixed(3);
   return {
-    mode: sol.inst.solverMode, t: +sol.t.toFixed(4), atmPsi: psi(sol.pa), emitK: +sol.K.toFixed(4),
+    mode: sol.inst.solverMode, t: +sol.t.toFixed(4), rejectedLinks: pfsRejectedLinks(sol.inst), atmPsi: psi(sol.pa), emitK: +sol.K.toFixed(4),
     nodes: sol.nodes.map(n => ({ id: n.id, name: n.name, kind: n.kind, contents: n.contents || 'gas', psi: psi(n.P), massKg: +(n.kind === 'liquid' ? n.mL : n.mG).toPrecision(5),
       massKg0: +(n.kind === 'liquid' ? n.mL0 : n.mG0).toPrecision(5), ullageKg: n.kind === 'liquid' ? +n.mG.toPrecision(4) : undefined, V_m3: +n.V.toPrecision(5), T: +n.T.toFixed(1), mdotIn: +n.mIn.toPrecision(4), mdotOut: +n.mOut.toPrecision(4) })),
-    edges: sol.edges.map(e => ({ id: e.id, name: e.name, kind: e.kind, fluid: e.fluid, from: e.from.id, to: e.to ? e.to.id : 'ATM', mdot: +e.mdot.toPrecision(5), vPhys: +e.vPhys.toFixed(2), area_m2: +e.A.toPrecision(4), links: e.chain.length, pipes: e.pipes.map(p => p.name) })),
+    gate: +(sol.gate || 0).toFixed(4), slowmo: sol.slowmo != null ? +sol.slowmo.toFixed(3) : 1, fill: +(sol.fill != null ? sol.fill : 1).toFixed(4), edges: sol.edges.map(e => ({ id: e.id, name: e.name, kind: e.kind, fluid: e.fluid, open: e.open, primed: e.primed, prime: +pfsEdgePrime(e).toFixed(4), from: e.from.id, to: e.to ? e.to.id : 'ATM', mdot: +e.mdot.toPrecision(5), vPhys: +e.vPhys.toFixed(2), area_m2: +e.A.toPrecision(4), links: e.chain.length, pipes: e.pipes.map(p => p.name) })),
   };
 }
 function pfsActivate() {
@@ -11940,6 +12122,7 @@ function pfsActivate() {
   if (want) for (const inst of pfsInstances()) pfsSyncMass(inst.solver);
 }
 function pfsDeactivate() {
+  if (typeof pfsReleaseGates === 'function') try { pfsReleaseGates(); } catch (e) {}
   for (const inst of state.instances || []) { if (inst.solverMode === 'pressure') { inst.solverMode = 'baked'; inst.solver = null; inst.ltcbp = []; } }
 }
 // Manual stepping for tests: advance every pressure instance `sec` seconds in `dt`-sized frames.
@@ -11971,7 +12154,12 @@ function pfsCarryState(old, nw) {
     const f = n.V > 0 && o.V > 0 ? n.V / o.V : 1;     // cavity volume may have changed (re-shelled): keep density, scale mass
     n.mL = Math.min(o.mL * f, n.kind === 'liquid' ? n.V * n.rho : o.mL * f); n.mG = o.mG * f; n.T = o.T; n.peak = o.peak; n.mIn = o.mIn; n.mOut = o.mOut; n.P = nw.nodeP(n);
   }
-  nw.t = old.t; nw.timeScale = old.timeScale;
+  nw.t = old.t; nw.timeScale = old.timeScale; nw.gate = old.gate;
+  const wasOpen = new Set(old.edges.filter(e => e.kind === 'throat' && e.open).map(e => e.from.part));
+  for (const e of nw.edges) if (e.kind === 'throat' && wasOpen.has(e.from.part)) e.open = true;
+  const ekey = e => e.name + '|' + e.pipes.map(p => p.name).join('+'), oldE = new Map(old.edges.map(e => [ekey(e), e]));
+  for (const e of nw.edges) { const o = oldE.get(ekey(e)); if (o) { e.primed = o.primed; e.vFill = o.vFill; } }   // a re-built network does not re-close a running throat
+  for (const n of nw.nodes) { const o = by.get(n.part); if (o) n.inPeak = o.inPeak || 0; }
 }
 function pfsRefreshInstance(inst) {
   const sol = inst.solver; if (!sol || inst.solverMode !== 'pressure') return false;
@@ -12005,13 +12193,32 @@ if (typeof window !== 'undefined' && window.addEventListener) window.addEventLis
   const id = ev && ev.detail && ev.detail.id;
   for (const inst of state.instances || []) if (inst.solverMode === 'pressure' && (id == null || inst.id === id)) inst.dirty.network = true;
 });
-function pfsFrame(dt, now) {
-  for (const inst of pfsInstances()) if (inst.dirty && inst.dirty.network) pfsRefreshInstance(inst);
+// Called from massFrame once per instance per frame (inside that instance's ctx): step ONLY that instance (v73 stepped every
+// pressure instance on every instance's call, i.e. N clones -> N^2 solver steps and refreshes per frame, and N x real time).
+// inst null (legacy single-context frame) -> every pressure instance.
+function pfsFrame(dt, now, inst) {
+  const list = inst ? (inst.solverMode === 'pressure' && inst.solver ? [inst] : []) : pfsInstances();
+  if (!list.length) return;
+  for (const i of list) if (i.dirty && i.dirty.network && (!i._pfsRefreshAt || now - i._pfsRefreshAt > 200)) { i._pfsRefreshAt = now; pfsRefreshInstance(i); }   // animated GLBs dirty this every frame: at most 5 refreshes/s
   const cont = massContinuous();
   const el = document.getElementById('solverTimeScale'), ts = el ? Math.max(parseFloat(el.value) || 1, 0.001) : 1;
-  for (const inst of pfsInstances()) { inst.solver.timeScale = ts; inst.solver.advance(Math.min(dt, 0.1), cont); }
+  for (const i of list) {
+    const sol = i.solver;
+    let slow = 1;
+    if (PFS_STARTUP_SLOWMO < 1 && !sol._slowDone) {
+      if (sol.edges.some(e => e.kind === 'throat' && !e.open)) sol._slowWall = now;
+      if (sol._slowWall == null) sol._slowDone = true;
+      else { slow = Math.min(1, PFS_STARTUP_SLOWMO + (1 - PFS_STARTUP_SLOWMO) * (now - sol._slowWall) / 1500); if (slow >= 1) sol._slowDone = true; }
+    }
+    sol.slowmo = slow; sol.timeScale = ts * slow; sol.advance(Math.min(dt, 0.1), cont);
+    const cpu = (!inst || i === inst) ? state.particleCPU : null;   // the ctx-swapped particle set of this instance
+    if (cpu && cpu.gateU) cpu.gateU.value = i.solver.gate;
+    if (cpu && cpu.fillU) cpu.fillU.value = i.solver.fill != null ? i.solver.fill : 1;
+    if (cpu && cpu.primeU && cpu.feedParts) for (let k = 0; k < cpu.feedParts.length && k < PFS_FEED_MAX; k++) cpu.primeU.value[k] = pfsFeedPrime(i.solver, cpu.feedParts[k]);
+  }
 }
-{ const el = pfsSolverEl(); if (el && new URLSearchParams(location.search).get('solver') === 'pressure') el.checked = true; }
+function pfsReleaseGates() { for (const i of state.instances || []) { const v = typeof ctxView === 'function' ? ctxView(i) : null; const c = v && v.particleCPU; if (c && c.gateU) { c.gateU.value = 1; c.fillU.value = 1; c.primeU.value.fill(1); } } const c = state.particleCPU; if (c && c.gateU) { c.gateU.value = 1; c.fillU.value = 1; c.primeU.value.fill(1); } }
+{ const el = pfsSolverEl(); if (el) { const q = new URLSearchParams(location.search).get('solver'); if (q) el.checked = q !== 'baked'; } }
 // <pfs:end>
 
 window.arcFlowDebug = Object.assign(window.arcFlowDebug || {}, { readParticles: debugReadParticlePositions, solverSnapshot: () => pfsSnapshot(), solverStep: (sec, dt) => { pfsAdvanceAll(sec, dt); return pfsSnapshot(); }, solverMode: () => pfsInstances().length ? 'pressure' : 'baked',

@@ -167,4 +167,79 @@ let n = 0; const ok = (name) => { n++; console.log('ok -', name); };
   assert.ok(Math.abs(nf.mL - mFuel0) < 1e-9 && Math.abs(nh.mG - mHe0) < 1e-9, 'a rebuilt network keeps the cavities\' live mass (' + nf.mL + ' vs ' + mFuel0 + ')');
   ok('network refresh on clone move / topology change');
 }
+// 8. CLOSED CAVITY (v74): the throat is shut at t = 0, the chamber fills, and it only opens once Pc can choke the throat;
+//    the particle gate (fraction allowed through the neck) is 0 while it is shut and rises to ~1 at the steady state
+{
+  const sc = makeScene(), { api, inst } = makeEnv(sc, { cont: true });
+  const sol = inst.solver = new api.PressureFlowSim(inst);
+  const chN = sol.nodeOf.get(sc.ch), th = sol.edges.find(e => e.kind === 'throat');
+  assert.ok(th && th.open === false && th.mdot === 0 && sol.gate === 0 && sol.fill === 0, 'throat shut, gate 0 at t = 0');
+  const pa = sol.pa, Pch = pa / Math.pow(2 / (chN.gamma + 1), chN.gamma / (chN.gamma - 1));
+  let tOpen = null, maxPbefore = 0, minGateBefore = 1;
+  for (let k = 0; k < 400 && tOpen == null; k++) {
+    sol.advance(0.0005, true);
+    if (th.open) tOpen = sol.t; else { maxPbefore = Math.max(maxPbefore, chN.P); assert.strictEqual(th.mdot, 0, 'no throat flow while shut'); assert.ok(sol.gate < 1e-6, 'particles held while shut'); }
+  }
+  assert.ok(tOpen != null && tOpen > 0, 'throat opens after accumulation');
+  assert.ok(chN.P >= Pch * 0.999, 'opened at the choking pressure: Pc ' + (chN.P / 6894.757).toFixed(1) + ' >= ' + (Pch / 6894.757).toFixed(1) + ' psi');
+  assert.ok(maxPbefore > pa * 1.5, 'chamber pressure built up while the throat was shut: ' + (maxPbefore / 6894.757).toFixed(1) + ' psi');
+  run(sol, 1, 0.02, true);
+  assert.ok(th.open && th.mdot > 0, 'throat flowing'); assert.ok(sol.gate > 0.95 && sol.fill === 1, 'gate ~1 at steady state: ' + sol.gate);
+  const snap = api.pfsSnapshot(inst); assert.ok(snap.gate > 0.95 && snap.edges.find(e => e.kind === 'throat').open === true);
+  ok('closed cavity: throat shut at t=0, opens at Pc ' + (Pch / 6894.757).toFixed(1) + ' psi after ' + (tOpen * 1000).toFixed(1) + ' ms, gate 0 -> ' + sol.gate.toFixed(3));
+}
+// 9. a feed that can never reach the choking pressure: the throat opens once the chamber has equalised with the feed (inflow stalled)
+{
+  const sc = makeScene(); sc.ox.internalPsi = 18; sc.fu.internalPsi = 18;
+  const { api, inst } = makeEnv(sc, { cont: true });
+  const sol = inst.solver = new api.PressureFlowSim(inst);
+  const chN = sol.nodeOf.get(sc.ch), th = sol.edges.find(e => e.kind === 'throat');
+  const Pch = sol.pa / Math.pow(2 / (chN.gamma + 1), chN.gamma / (chN.gamma - 1));
+  run(sol, 3, 0.01, true);
+  assert.ok(th.open, 'opened on stalled inflow'); assert.ok(chN.P < Pch, 'below choke: ' + chN.P);
+  assert.ok(th.mdot > 0 && sol.gate > 0.5, 'subsonic outflow after opening: ' + th.mdot + ' gate ' + sol.gate);
+  ok('low feed pressure: throat opens on equalised feed (subsonic), gate ' + sol.gate.toFixed(2));
+}
+// 10. thin fuel pipe: the Fuel -> chamber edge runs through the fitted tube capsules with a non-zero bore area on every section
+{
+  const sc = makeScene(), { api, inst } = makeEnv(sc);
+  const net = api.pfsBuildNetwork(inst);
+  const e = net.edges.find(x => x.from.part === sc.fu && x.to && x.to.part === sc.ch);
+  assert.ok(e, 'Fuel -> chamber edge'); same(e.pipes.map(p => p.name), ['FuelChannel']);
+  assert.ok(e.sections.length >= 3 && e.sections.every(s => s.A > 0 && s.D > 0), 'non-zero sections');
+  const r = 0.09 * 0.0254, Abore = Math.PI * r * r;
+  assert.ok(e.sections.slice(0, -1).every(s => Math.abs(s.A - Abore) / Abore < 1e-6), 'tube bore area (not the port or the coarse grid)');
+  ok('thin fuel pipe: network edge through tube capsules, bore A = ' + Abore.toExponential(3) + ' m^2');
+}
+// 11. side-wall "joints" into a thin pipe (v73 live: Oxidizer -> FuelChannel, OxidizerPressure_ -> FuelChannel where the fuel line runs
+//     past the oxidizer tank) are not ports: the network keeps only links whose source opening sits at a tube end
+{
+  const sc = makeScene(), { api, inst } = makeEnv(sc);
+  const fuCh = sc.parts.find(p => p.name === 'FuelChannel');
+  sc.links.get(sc.ox).push({ target: fuCh, viaOpening: sc.ox.openings[1], entrance: fuCh.openings[0], kind: 'propellant' });
+  sc.links.get(sc.heO).push({ target: fuCh, viaOpening: sc.heO.openings[0], entrance: fuCh.openings[0], kind: 'pressurant' });
+  const net = api.pfsBuildNetwork(inst);
+  same(net.edges.map(e => e.name).sort(), ['CombustionChamber \u2192 ATM', 'Fuel \u2192 CombustionChamber', 'FuelPressure \u2192 Fuel', 'Oxidizer \u2192 CombustionChamber', 'OxidizerPressure_ \u2192 Oxidizer'].sort());
+  const fe = net.edges.find(e => e.from.part === sc.fu); same(fe.pipes.map(p => p.name), ['FuelChannel']);
+  assert.strictEqual(net.edges.filter(e => e.pipes.some(p => p.name === 'FuelChannel')).length, 1, 'only the fuel tank feeds the fuel line');
+  ok('thin pipe: side-wall links into a fitted tube are rejected (' + 2 + ' dropped), fuel line fed only by the fuel tank');
+}
+// 12. feed-line priming (v74, metre-scale demo units): nothing reaches the chamber until each line's bore volume has filled; then the
+//     chamber pressure builds with the throat shut, and only after that does the throat open
+{
+  const sc = makeScene(), { api, inst } = makeEnv(sc, { cont: true, unit: 1 });
+  const sol = inst.solver = new api.PressureFlowSim(inst);
+  const chN = sol.nodeOf.get(sc.ch), th = sol.edges.find(e => e.kind === 'throat'), feeds = sol.edges.filter(e => e.to === chN);
+  assert.ok(feeds.length === 2 && feeds.every(e => !e.primed && e.Vline > 0), 'feed lines start empty');
+  let tPrime = null, tOpen = null;
+  for (let k = 0; k < 4000 && tOpen == null; k++) {
+    sol.advance(0.002, true);
+    if (tPrime == null && feeds.some(e => e.primed)) tPrime = sol.t;
+    if (tPrime == null) { assert.ok(Math.abs(chN.P - sol.pa) < 1, 'chamber untouched before a line is primed'); assert.strictEqual(th.mdot, 0); }
+    if (th.open) tOpen = sol.t;
+  }
+  assert.ok(tPrime > 0 && tOpen > tPrime, 'prime ' + tPrime + ' then open ' + tOpen);
+  const snap = api.pfsSnapshot(inst); assert.ok(snap.edges.filter(e => e.to === chN.id).every(e => e.prime > 0));
+  ok('feed-line priming: first line primed at ' + (tPrime * 1000).toFixed(0) + ' ms, throat opens at ' + (tOpen * 1000).toFixed(0) + ' ms');
+}
 console.log(n + ' passed');
