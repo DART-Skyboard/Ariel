@@ -214,7 +214,7 @@ input[type=range]{width:100%;accent-color:var(--acc);}
 <div id="hdr">
   <span class="hl">Arc Flow</span>
   <div class="hs"></div>
-  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v73</span>
+  <span class="ht">Mechanical Fluid Flow · Propulsion Prototyping · v75</span>
   <span id="partCount"></span>
   <button id="playBtn" disabled>▶ Simulate</button>
   <button id="moveBtn" class="hback" style="margin-right:6px">✥ Move</button><a class="hback" href="/">← Grid</a>
@@ -2873,7 +2873,7 @@ function booleanSyncAll() {
 let _bsTimer = null;
 function booleanAutoSync(on, ms) {
   if (_bsTimer) { clearInterval(_bsTimer); _bsTimer = null; }
-  if (on !== false && typeof setInterval === 'function') _bsTimer = setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) { booleanSyncAll(); if (typeof ltcbpAutoTick === 'function') ltcbpAutoTick(); } }, ms || 250);
+  if (on !== false && typeof setInterval === 'function') _bsTimer = setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) { if (state.simRunning) state.lotbcbpLive = true; if (typeof lotbcbpPickMode === 'function' && !state.lotbcbpMode) state.lotbcbpMode = lotbcbpPickMode(state.parts); booleanSyncAll(); if (typeof ltcbpAutoTick === 'function') ltcbpAutoTick(); } }, ms || 250);
   return !!_bsTimer;
 }
 // Per-instance tagging: roles / kinds / pressurizedBy for just this instance's links + parts.
@@ -2904,7 +2904,7 @@ function instanceJointRegions(inst, cap, tubeSet) {
 // <booleansys:end>
 if (state.systemGrouping == null) state.systemGrouping = booleanSystemGrouping;
 if (typeof window !== 'undefined') {
-  window.arcFlowBoolean = { booleanSystems, booleanSystemGrouping, booleanSyncInstance, booleanSyncAll, booleanAutoSync, booleanRefreshInstance, instanceJointRegions, booleanCacheStats, booleanCacheReset };
+  window.arcFlowBoolean = { booleanSystems, booleanSystemGrouping, booleanSyncInstance, booleanSyncAll, booleanAutoSync, booleanRefreshInstance, instanceJointRegions, booleanCacheStats, booleanCacheReset, collectThinChannelRegions };
   booleanAutoSync(true);
 }
 
@@ -3274,9 +3274,36 @@ function ltcbpCheckResolution(inst, opts) {
 function ltcbpAdapt(inst, opts) { return ltcbpCheckResolution(inst, opts); }
 // Called by booleanSyncInstance when an instance's collision body changed.  'deform' (animated geometry) always refreshes the SDF;
 // plain rigid edits only when state.ltcbpAuto === 'all' (the user re-bakes after dragging parts as before).
+// Auto-pick how this assembly should be watched: tessellation (thin channels / adaptive SDF),
+// Boolean (intersecting unjoined cavities), or both. Driven by part roles — not a separate script.
+function lotbcbpPickMode(parts) {
+  const list = parts || state.parts || [];
+  let pipes = 0, vessels = 0, moving = 0;
+  for (const p of list) {
+    if (!p || !p.type) continue;
+    if (p.type === 'pipe' || (typeof isThinChannelCandidate === 'function' && isThinChannelCandidate(p))) pipes++;
+    if (p.type === 'container' || p.type === 'chamber') vessels++;
+    if (p.animated || p.userData && (p.userData.animated || p.userData.valve || p.userData.moving)) moving++;
+  }
+  if (pipes && vessels) return 'both';
+  if (pipes || moving) return 'tessellation';
+  if (vessels) return 'boolean';
+  return 'both';
+}
 function ltcbpOnChange(inst, kind, parts) {
   if (!inst || !inst.sdf || inst.baking || state.ltcbpAuto === false) return false;
-  if (kind !== 'deform' && state.ltcbpAuto !== 'all') return false;
+  // Continuous LOTBCBP: while the sim (or any animation) is running, rigid moves of animated parts
+  // (valves, sliding geometry) also rebuild — not only skinned/morph deform. Outside a run, plain
+  // rigid edits still wait for ltcbpAuto==='all' so dragging parts in the editor stays cheap.
+  const live = !!(state.simRunning || state.lotbcbpLive);
+  if (state.ltcbpAuto !== 'all') {
+    const mode = state.lotbcbpMode || lotbcbpPickMode(inst.parts || parts);
+    const wantTess = mode === 'tessellation' || mode === 'both';
+    const wantBool = mode === 'boolean' || mode === 'both';
+    if (kind === 'deform') { if (!(wantTess || wantBool)) return false; }
+    else if (kind === 'transform' || kind === 'rebuild') { if (!(live && (wantTess || wantBool))) return false; }
+    else return false;
+  }
   ltcbpState(inst).sdfStale = true;
   rebuildInstanceSDF(inst, { reason: kind });
   return true;
@@ -3328,7 +3355,7 @@ function rebuildInstanceSDF(inst, opts) {
 // (state.ltcbpBudgetMs, default 2 ms), round-robin over instances, so the watch never blocks a frame.
 let _ltcbpRR = 0;
 function ltcbpAutoTick() {
-  if (state.ltcbpAdaptive === false || !state.simRunning) return 0;
+  if (state.ltcbpAdaptive === false || !(state.simRunning || state.lotbcbpLive)) return 0;
   const list = (state.instances || []).filter(i => i.built && !i.baking && i.sdf);
   if (!list.length) return 0;
   const total = state.ltcbpBudgetMs != null ? state.ltcbpBudgetMs : 2, t0 = ltcbpPerf();
@@ -3352,7 +3379,7 @@ const VG_BRICK = 8;
 const VG_FORMAT = { format: 'arcflow-voxelgrid', version: 1, brick: VG_BRICK, frame: 'instance-local', key: '(bx+512)+1024*((by+512)+1024*(bz+512))', brickIndex: 'x+8*(y+8*z)', value: 'density kg/m3 (0 = empty)', implemented: false };
 function vgKey(bx, by, bz) { return (bx + 512) + 1024 * ((by + 512) + 1024 * (bz + 512)); }
 function vgUnkey(k) { return [(k % 1024) - 512, (Math.floor(k / 1024) % 1024) - 512, Math.floor(k / 1048576) - 512]; }
-if (typeof window !== 'undefined') window.arcFlowWatch = { ltcbpResolution, ltcbpCheckResolution, ltcbpAdapt, rebuildInstanceSDF, ltcbpState, registerDeformHook, ltcbpSdfAt, ltcbpAutoTick, partMelt, VG_FORMAT, vgKey, vgUnkey };
+if (typeof window !== 'undefined') window.arcFlowWatch = { ltcbpResolution, ltcbpCheckResolution, ltcbpAdapt, rebuildInstanceSDF, ltcbpState, registerDeformHook, ltcbpSdfAt, ltcbpAutoTick, partMelt, VG_FORMAT, vgKey, vgUnkey, collectThinChannelRegions, fitTubeForPart, buildTubeSet, isThinChannelCandidate, lotbcbpPickMode, quadrangulateFlatTris, quadsToFlatTris, projectQuadsForSdf, subdivideLargeQuads };
 // <ltcbpwatch:end>
 
 // <instances:begin>
@@ -4120,6 +4147,11 @@ const SDF_MAX_PART_REGIONS = 24;          // part regions reserved out of SDF_MA
 const SDF_PART_MIN_CELLS = 14;           // the part's thinnest bbox dimension gets at least this many voxels, budget permitting
 const SDF_PART_BUDGET = { chamber: 4000, container: 2400, pipe: 1200, other: 1200 }; // soft: accuracy first (builds are async/time-sliced); a heavy scene is the user's call to lighten // voxel cap per part region by kind (mobile cap: ~15k for the default 7-part demo)
 const SDF_PART_MAX_AXIS = 48;            // per-axis cap for one part region
+const SDF_THIN_VOXELS = 4;               // target voxels across a thin channel's min bore (Task B)
+const SDF_THIN_MAX_AXIS = 32;            // per-axis cap for one thin-channel segment box
+const SDF_THIN_PAD = 1.75;               // radial pad around a channel segment = boreR * this
+const SDF_THIN_MAX_REGIONS = 16;         // hard cap on channel segment regions (joint+part share the rest)
+
 const SDF_VIRTUAL_EDGE_VOXELS = 1.8; // tighter for better fluid-collision resolution on coarse faces     // ...but never split below this many voxels
 const SDF_VIRTUAL_EDGE_CELLS = 4;        // triangles longer than this many spatial-index cells (and > SDF_VIRTUAL_EDGE_VOXELS voxels) are virtually bisected
 const SDF_VIRTUAL_PHONG_ALPHA = 0.75;    // Phong-tessellation strength when a bisected edge's endpoints carry smooth vertex normals (0 = flat midpoints)
@@ -4279,9 +4311,9 @@ function collectWorldTriangles(parts) {
 // found" — the standard practical acceleration structure for baking an
 // SDF from a mesh, letting the per-voxel cost scale with LOCAL triangle
 // density instead of the whole model's triangle count.
-function buildTriangleSpatialIndex(tris) {
-  const bounds = new THREE.Box3();
-  for (let i = 0; i < tris.length; i++) bounds.expandByPoint(tris[i]);
+function triIndexInit(tris, bounds0) {
+  let bounds = bounds0;
+  if (!bounds) { bounds = new THREE.Box3(); for (let i = 0; i < tris.length; i++) bounds.expandByPoint(tris[i]); }
   const size = new THREE.Vector3(); bounds.getSize(size);
   size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
   const triCount = tris.length / 3;
@@ -4320,7 +4352,12 @@ function buildTriangleSpatialIndex(tris) {
   };
   const buckets = new Map(); // "cx,cy,cz" -> [triIndex0, triIndex0, triIndex0 (its 3 vertex slots), triIndex1, ...]
   const keyOf = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
-  for (let i = 0; i < tris.length; i += 3) {
+  return { tris, bounds, cellSize, dims, buckets, keyOf, cellOf };
+}
+// Buckets triangles [from, to) (vertex-slot indices, multiples of 3) into the index; resumable so a background build can slice it.
+function triIndexAdd(ix, from, to) {
+  const { tris, buckets, keyOf, cellOf } = ix;
+  for (let i = from; i < to; i += 3) {
     const a = tris[i], b = tris[i+1], c = tris[i+2];
     // Bucket a triangle into every cell its (axis-aligned) bounding box
     // touches, not just its centroid's cell — otherwise a large triangle
@@ -4340,7 +4377,9 @@ function buildTriangleSpatialIndex(tris) {
       }
     }
   }
-  return { tris, bounds, cellSize, dims, buckets, keyOf, cellOf };
+}
+function buildTriangleSpatialIndex(tris, bounds0) {
+  const ix = triIndexInit(tris, bounds0); triIndexAdd(ix, 0, tris.length); return ix;
 }
 
 // Nearest-triangle search using the spatial index: starts at the query
@@ -4528,6 +4567,151 @@ function signedDistanceToMesh(point, trisOrIndex) {
 // per-part world triangles are never modified. Sub-triangles that fall
 // outside `clipBox` (when given) are discarded, and `capObj.left` bounds the
 // total number of triangles ADDED so a pathological import cannot explode.
+// ── QUAD RULE (LOTBCBP): collision-body projection runs on quads, not raw triangles. ─────────────────────────────
+// Incoming glTF/Three meshes are usually triangulated (or occasionally carry n-gons already fan-triangulated).
+// We re-form quads by pairing coplanar neighbors that share an edge, treat leftovers as degenerate quads (d==c),
+// virtually subdivide THOSE quads (1→4) for Level-of-Tessellation, then emit two triangles per leaf quad only for
+// the point-triangle distance query. This is the web/runtime path — not Blender's Convert to Quads operator.
+function quadFromTwoTris(a, b, c, d, e, f) {
+  // Pair triangle (a,b,c) with (d,e,f) that share an edge: return ordered quad (a,b,c,d) or null.
+  const eq = (u, v) => u === v || (u.x === v.x && u.y === v.y && u.z === v.z);
+  const verts = [a, b, c], other = [d, e, f];
+  // Find the vertex of other not on first tri (= opposite), and the shared edge.
+  let opp = null, shared = [];
+  for (const v of other) {
+    const hit = verts.find(u => eq(u, v));
+    if (hit) shared.push(hit); else opp = v;
+  }
+  if (shared.length !== 2 || !opp) return null;
+  // Order: start at a non-shared? Build convex: shared[0], unique0, shared[1], opp where unique0 is the first-tri vertex not shared.
+  const uniq = verts.find(u => !shared.some(s => eq(s, u)));
+  if (!uniq) return null;
+  return [shared[0], uniq, shared[1], opp];
+}
+function trisAreCoplanar(a, b, c, d, e, f, eps) {
+  const n1 = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
+  const n2 = new THREE.Vector3().subVectors(e, d).cross(new THREE.Vector3().subVectors(f, d));
+  if (n1.lengthSq() < 1e-18 || n2.lengthSq() < 1e-18) return false;
+  n1.normalize(); n2.normalize();
+  return Math.abs(n1.dot(n2)) >= (eps == null ? 0.985 : eps);
+}
+// Flat Vector3[3N] → flat Vector3[4M] quads. Greedy: pair each unpaired tri with a coplanar neighbor across its longest edge.
+function quadrangulateFlatTris(tris) {
+  const n = Math.floor((tris || []).length / 3);
+  if (n <= 0) return [];
+  const used = new Uint8Array(n);
+  // edge key → list of tri indices (undirected)
+  const edges = new Map();
+  const ek = (u, v) => {
+    const au = u.x + ',' + u.y + ',' + u.z, av = v.x + ',' + v.y + ',' + v.z;
+    return au < av ? au + '|' + av : av + '|' + au;
+  };
+  for (let i = 0; i < n; i++) {
+    const a = tris[i * 3], b = tris[i * 3 + 1], c = tris[i * 3 + 2];
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = ek(u, v); let arr = edges.get(k); if (!arr) edges.set(k, arr = []); arr.push(i);
+    }
+  }
+  const quads = [];
+  for (let i = 0; i < n; i++) {
+    if (used[i]) continue;
+    const a = tris[i * 3], b = tris[i * 3 + 1], c = tris[i * 3 + 2];
+    // Prefer pairing across the longest edge.
+    const eab = a.distanceToSquared(b), ebc = b.distanceToSquared(c), eca = c.distanceToSquared(a);
+    const edgeOrder = eab >= ebc && eab >= eca ? [[a, b], [b, c], [c, a]]
+      : ebc >= eca ? [[b, c], [a, b], [c, a]] : [[c, a], [a, b], [b, c]];
+    let paired = false;
+    for (const [u, v] of edgeOrder) {
+      const nbrs = edges.get(ek(u, v)) || [];
+      for (const j of nbrs) {
+        if (j === i || used[j]) continue;
+        const d = tris[j * 3], e = tris[j * 3 + 1], f = tris[j * 3 + 2];
+        if (!trisAreCoplanar(a, b, c, d, e, f)) continue;
+        const q = quadFromTwoTris(a, b, c, d, e, f);
+        if (!q) continue;
+        // Convex check: diagonals ac (q0-q2) and q1-q3 should cross inside — skip if a diagonal vertex is outside.
+        quads.push(q[0], q[1], q[2], q[3]);
+        used[i] = used[j] = 1; paired = true; break;
+      }
+      if (paired) break;
+    }
+    if (!paired) { // degenerate quad (triangle): d == c so quadsToFlatTris emits one triangle
+      quads.push(a, b, c, c); used[i] = 1;
+    }
+  }
+  return quads;
+}
+function quadsToFlatTris(quads) {
+  const out = [];
+  for (let i = 0; i < quads.length; i += 4) {
+    const a = quads[i], b = quads[i + 1], c = quads[i + 2], d = quads[i + 3];
+    out.push(a, b, c);
+    if (d !== c && !(d.x === c.x && d.y === c.y && d.z === c.z)) out.push(a, c, d);
+  }
+  return out;
+}
+function subdivideLargeQuads(quads, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved) {
+  // 1 quad → 4 child quads when any edge exceeds maxEdge (Phong-project midpoints when .n is present).
+  const out = []; let added = 0;
+  const cap = capObj || { left: Infinity };
+  const mid = (u, v) => {
+    const m = new THREE.Vector3().addVectors(u, v).multiplyScalar(0.5);
+    if (phongAlpha && u.n && v.n) {
+      const n = u.n.clone().add(v.n).normalize();
+      const push = n.dot(new THREE.Vector3().subVectors(m, u));
+      // Simple Phong: project midpoint onto the average tangent plane blend.
+      m.addScaledVector(n, -push * phongAlpha * 0.5);
+      m.n = n;
+    }
+    return m;
+  };
+  const stack = [];
+  for (let i = 0; i < quads.length; i += 4) stack.push(quads[i], quads[i + 1], quads[i + 2], quads[i + 3]);
+  while (stack.length) {
+    const d = stack.pop(), c = stack.pop(), b = stack.pop(), a = stack.pop();
+    if (clipBox) {
+      const bb = new THREE.Box3().expandByPoint(a).expandByPoint(b).expandByPoint(c).expandByPoint(d);
+      if (!clipBox.intersectsBox(bb)) continue;
+    }
+    const e0 = a.distanceTo(b), e1 = b.distanceTo(c), e2 = c.distanceTo(d), e3 = d.distanceTo(a);
+    const long = Math.max(e0, e1, e2, e3);
+    const lim = (maxEdgeCurved != null && a.n && b.n && c.n) ? Math.min(maxEdge, maxEdgeCurved) : maxEdge;
+    const degen = (d === c) || (d.x === c.x && d.y === c.y && d.z === c.z);
+    if (long > lim && cap.left > 0) {
+      if (degen) {
+        // Degenerate quad (=triangle): fall back to triangle bisection into 2 tris → 2 degenerate quads
+        if (cap.left <= 0) { out.push(a, b, c, c); continue; }
+        const edges = [[a, b, e0], [b, c, e1], [c, a, a.distanceTo(c)]];
+        edges.sort((p, q) => q[2] - p[2]);
+        const [u, v] = edges[0];
+        const m = mid(u, v); cap.left--; added++;
+        // Rebuild two tris as degenerate quads
+        if (u === a && v === b) { stack.push(a, m, c, c, m, b, c, c); }
+        else if (u === b && v === c) { stack.push(a, b, m, m, a, m, c, c); }
+        else { stack.push(a, b, m, m, b, c, m, m); }
+        continue;
+      }
+      if (cap.left <= 0) { out.push(a, b, c, d); continue; }
+      const ab = mid(a, b), bc = mid(b, c), cd = mid(c, d), da = mid(d, a);
+      const cc = mid(ab, cd); // center (also avg of bc,da roughly)
+      cc.copy(ab).add(bc).add(cd).add(da).multiplyScalar(0.25);
+      if (phongAlpha && a.n && b.n && c.n && d.n) {
+        cc.n = a.n.clone().add(b.n).add(c.n).add(d.n).normalize();
+      }
+      cap.left -= 4; added += 4;
+      stack.push(a, ab, cc, da, ab, b, bc, cc, cc, bc, c, cd, da, cc, cd, d);
+      continue;
+    }
+    out.push(a, b, c, d);
+  }
+  return { quads: out, added };
+}
+function projectQuadsForSdf(tris, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved) {
+  const quads = quadrangulateFlatTris(tris);
+  const sub = subdivideLargeQuads(quads, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved);
+  return { tris: quadsToFlatTris(sub.quads), added: sub.added, quadCount: sub.quads.length / 4, inputTris: Math.floor(tris.length / 3) };
+}
+
 function subdivideLargeTris(tris, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved) {
   if (maxEdgeCurved == null) maxEdgeCurved = maxEdge;
   const maxEC2 = maxEdgeCurved * maxEdgeCurved;
@@ -4594,9 +4778,9 @@ function subdivideLargeTris(tris, maxEdge, clipBox, capObj, phongAlpha, maxEdgeC
 // Same cell-size rule buildTriangleSpatialIndex applies to a triangle list
 // (≈6 triangles per cell over the list's bounds), so subdivision can be
 // sized against the index it feeds.
-function estimateSpatialIndexCell(tris) {
-  const b = new THREE.Box3();
-  for (let i = 0; i < tris.length; i++) b.expandByPoint(tris[i]);
+function estimateSpatialIndexCell(tris, b0) {
+  let b = b0;
+  if (!b) { b = new THREE.Box3(); for (let i = 0; i < tris.length; i++) b.expandByPoint(tris[i]); }
   const sz = b.getSize(new THREE.Vector3());
   const vol = Math.max(sz.x, 0.001) * Math.max(sz.y, 0.001) * Math.max(sz.z, 0.001);
   const targetCells = Math.max(8, Math.min(65536, Math.ceil((tris.length / 3) / 6)));
@@ -4651,12 +4835,95 @@ function sdfGridPrep(bounds, res, tris, opts) {
     // (same widening the joint/part triangle pre-filter uses): a huge
     // ground-plane-sized triangle is only subdivided where it can matter.
     const clip = (opts && opts.clipBox) || bounds.clone ? ((opts && opts.clipBox) || bounds.clone().expandByScalar(diag * 0.5)) : null;
-    const sub = subdivideLargeTris(tris, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+    const sub = (opts && opts.trianglesOnly) ? subdivideLargeTris(tris, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge)
+      : projectQuadsForSdf(tris, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
     work = sub.tris;
-    if (opts && opts.stats) opts.stats.virtualAdded += sub.added;
+    if (opts && opts.stats) { opts.stats.virtualAdded += sub.added; if (sub.quadCount != null) opts.stats.quads = (opts.stats.quads || 0) + sub.quadCount; }
   }
   if (opts && opts.stats) opts.stats.voxels += out.length;
   const index = buildTriangleSpatialIndex(work);
+  return { R, size, diag, out, index, bounds };
+}
+// ── Time-sliced pre-work for background rebuilds (state.ltcbpSliceMs): triangle collection, bounds, large-triangle subdivision and
+// the spatial index are done in small resumable chunks; slicer.due() yields to the event loop once the slice is spent.  The results are
+// identical to the synchronous functions (same code, same order), which stay for the initial bake.  (One part's cached world-triangle
+// list is still produced in a single step; copying it out is chunked.)
+function makeSlicer(opts) {
+  const sliceMs = (opts && opts.sliceMs) || 2, now = (opts && opts.now) || (() => performance.now());
+  const yieldFn = (opts && opts.yieldFn) || (() => new Promise(r => setTimeout(r, 0))), ss = opts && opts.sliceStats;
+  let t0 = now();
+  return { yields: 0, async due() {
+    const dt = now() - t0; if (dt < sliceMs) return;
+    this.yields++; if (ss) { ss.yields = this.yields; ss.slices = this.yields + 1; ss.maxSliceMs = Math.max(ss.maxSliceMs || 0, dt); }
+    await yieldFn(); t0 = now();
+  } };
+}
+async function collectWorldTrianglesAsync(parts, slicer) {
+  const tris = [];
+  for (const part of parts) {
+    const pt = worldTrianglesForPart(part);
+    for (let i = 0; i < pt.length; i++) { tris.push(pt[i]); if ((i & 4095) === 4095) await slicer.due(); }
+    await slicer.due();
+  }
+  return tris;
+}
+async function trisBoundsAsync(tris, slicer) {
+  const b = new THREE.Box3();
+  for (let i = 0; i < tris.length; i++) { b.expandByPoint(tris[i]); if ((i & 4095) === 4095) await slicer.due(); }
+  return b;
+}
+async function subdivideLargeTrisAsync(tris, slicer, maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved) {
+  const out = []; let added = 0;
+  for (let i = 0; i < tris.length; i += 3 * 128) {   // capObj is shared and the loop is per triangle, so chunking gives the same output
+    const r = subdivideLargeTris(tris.slice(i, i + 3 * 128), maxEdge, clipBox, capObj, phongAlpha, maxEdgeCurved);
+    for (let k = 0; k < r.tris.length; k++) out.push(r.tris[k]);
+    added += r.added; await slicer.due();
+  }
+  return { tris: out, added };
+}
+async function buildTriangleSpatialIndexAsync(tris, slicer) {
+  const ix = triIndexInit(tris, await trisBoundsAsync(tris, slicer));
+  for (let i = 0; i < tris.length; i += 3 * 256) { triIndexAdd(ix, i, Math.min(tris.length, i + 3 * 256)); await slicer.due(); }
+  return ix;
+}
+async function sdfGridPrepAsync(bounds, res, tris, opts, slicer) {
+  const R = Array.isArray(res) ? res : [res, res, res];
+  const size = new THREE.Vector3(); bounds.getSize(size);
+  size.x = Math.max(size.x, 0.001); size.y = Math.max(size.y, 0.001); size.z = Math.max(size.z, 0.001);
+  const diag = size.length();
+  const out = new Float32Array(R[0] * R[1] * R[2]);
+  let work = tris;
+  if (!opts || opts.subdivide !== false) {
+    const voxelEdge = Math.max(size.x / R[0], size.y / R[1], size.z / R[2]);
+    // Only split triangles that are genuinely OVERSIZE for what is being
+    // asked of them: longer than several spatial-index cells AND several
+    // voxels. (Measured: splitting a sparse mesh down to ~voxel size makes the
+    // build 10-40x SLOWER with bit-identical distances, because the exact
+    // point-triangle distance never needed the subdivision — it only helps
+    // when a big face would otherwise be bucketed into dozens of cells of a
+    // finer index built for the dense geometry around it.)
+    const cellEst = estimateSpatialIndexCell(tris, await trisBoundsAsync(tris, slicer));
+    const voxelMul = (opts && opts.booleanTight) ? 1.2 : SDF_VIRTUAL_EDGE_VOXELS;
+    const maxEdge = Math.max(SDF_VIRTUAL_EDGE_CELLS * cellEst, voxelMul * voxelEdge);
+    const cap = (opts && opts.cap) || { left: SDF_VIRTUAL_EXTRA_TRI_CAP };
+    // Sub-triangles beyond half a grid-diagonal from the grid are dropped
+    // (same widening the joint/part triangle pre-filter uses): a huge
+    // ground-plane-sized triangle is only subdivided where it can matter.
+    const clip = (opts && opts.clipBox) || bounds.clone ? ((opts && opts.clipBox) || bounds.clone().expandByScalar(diag * 0.5)) : null;
+    // Quad rule on the async path too: form quads, subdivide as quads (chunked), emit tris for the distance fill.
+    if (opts && opts.trianglesOnly) {
+      const sub = await subdivideLargeTrisAsync(tris, slicer, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+      work = sub.tris; if (opts && opts.stats) opts.stats.virtualAdded += sub.added;
+    } else {
+      const quads = quadrangulateFlatTris(tris); await slicer.due();
+      const sub = subdivideLargeQuads(quads, maxEdge, clip, cap, opts && opts.phongAlpha, SDF_VIRTUAL_EDGE_VOXELS * voxelEdge);
+      await slicer.due();
+      work = quadsToFlatTris(sub.quads);
+      if (opts && opts.stats) { opts.stats.virtualAdded += sub.added; opts.stats.quads = (opts.stats.quads || 0) + sub.quads.length / 4; }
+    }
+  }
+  if (opts && opts.stats) opts.stats.voxels += out.length;
+  const index = await buildTriangleSpatialIndexAsync(work, slicer);
   return { R, size, diag, out, index, bounds };
 }
 // One z-row of the voxel fill (shared by the sync and the time-sliced fill).
@@ -4675,16 +4942,9 @@ function sampleSDFGrid(bounds, res, tris, opts) {
 // Time-sliced fill for background rebuilds: holds the main thread for at most sliceMs (default 2) between yields.
 // opts.now / opts.yieldFn are test hooks; opts.sliceStats collects { slices, maxSliceMs }.
 async function sampleSDFGridAsync(bounds, res, tris, opts) {
-  const sliceMs = (opts && opts.sliceMs) || 2, now = (opts && opts.now) || (() => performance.now());
-  const yieldFn = (opts && opts.yieldFn) || (() => new Promise(r => setTimeout(r, 0)));
-  const g = sdfGridPrep(bounds, res, tris, opts), p = new THREE.Vector3();
-  let t0 = now(), slices = 1, maxMs = 0;
-  for (let z = 0; z < g.R[2]; z++) for (let y = 0; y < g.R[1]; y++) {
-    sdfGridRow(g, y, z, p);
-    const dt = now() - t0;
-    if (dt >= sliceMs) { if (dt > maxMs) maxMs = dt; await yieldFn(); t0 = now(); slices++; }
-  }
-  const ss = opts && opts.sliceStats; if (ss) { ss.slices = (ss.slices || 0) + slices; ss.maxSliceMs = Math.max(ss.maxSliceMs || 0, maxMs); }
+  const slicer = (opts && opts.slicer) || makeSlicer(opts);
+  const g = await sdfGridPrepAsync(bounds, res, tris, opts, slicer), p = new THREE.Vector3();
+  for (let z = 0; z < g.R[2]; z++) for (let y = 0; y < g.R[1]; y++) { sdfGridRow(g, y, z, p); await slicer.due(); }
   return g.out;
 }
 
@@ -5321,6 +5581,83 @@ function collectJointRegions(links, cap, tubeSet, parts) {
   return regions;
 }
 
+// Thin-channel fine regions (Task B): when a fitted tube's bore is only a few coarse voxels across, place
+// segment boxes along the tube axis sized so the bore gets >= SDF_THIN_VOXELS voxels. Reuses fitTubeForPart /
+// buildTubeSet output (same segs / minRIn / firstSeg) — additive, not a parallel tube format. Chamber and tank
+// walls stay sealed: these regions only refine the channel and its immediate wall, they do not open new holes.
+function collectThinChannelRegions(tubeSet, cap, coarseVoxel) {
+  const regions = [], channels = [];
+  if (!tubeSet || !tubeSet.list || !tubeSet.list.length) return { regions, channels };
+  const maxR = cap == null ? SDF_THIN_MAX_REGIONS : Math.max(0, cap);
+  for (const tube of tubeSet.list) {
+    if (regions.length >= maxR) break;
+    const bore = Math.max(tube.minRIn || 0, 1e-4);
+    const boreDia = bore * 2;
+    const coarseAcross = coarseVoxel > 0 ? boreDia / coarseVoxel : 0;
+    const targetH = boreDia / SDF_THIN_VOXELS;
+    // Refine when the coarse grid (or a typical part-region voxel) cannot resolve the bore.
+    const needs = !(coarseAcross >= SDF_THIN_VOXELS * 0.9);
+    const chRegs = [];
+    if (needs) {
+      for (const sg of tube.segs) {
+        if (regions.length >= maxR) break;
+        const ax = new THREE.Vector3().subVectors(sg.b, sg.a);
+        const len = ax.length() || 1e-6; ax.multiplyScalar(1 / len);
+        const r = Math.max(sg.rA || bore, sg.rB || bore, bore);
+        const pad = Math.max(r * SDF_THIN_PAD, targetH * 2);
+        // Split long segments so each box stays near-cubic and cheap.
+        const boxLen = Math.max(pad * 2.2, targetH * (SDF_THIN_MAX_AXIS * 0.45));
+        const nBox = Math.max(1, Math.ceil(len / boxLen));
+        for (let i = 0; i < nBox; i++) {
+          if (regions.length >= maxR) break;
+          const tMid = (i + 0.5) / nBox;
+          const half = (len / nBox) * 0.5 + pad;
+          const c = sg.a.clone().lerp(sg.b, tMid);
+          const hx = Math.abs(ax.x) * half + pad, hy = Math.abs(ax.y) * half + pad, hz = Math.abs(ax.z) * half + pad;
+          const box = new THREE.Box3(
+            new THREE.Vector3(c.x - hx, c.y - hy, c.z - hz),
+            new THREE.Vector3(c.x + hx, c.y + hy, c.z + hz));
+          const size = box.getSize(new THREE.Vector3());
+          const g = adaptiveGridRes(size, targetH, SDF_PART_BUDGET.pipe, 6, SDF_THIN_MAX_AXIS);
+          const cross = [
+            { a: 0, w: size.x },
+            { a: 1, w: size.y },
+            { a: 2, w: size.z }];
+          // Prefer the axes most perpendicular to the tube axis (smallest |dot| with ax).
+          cross.sort((u, v) => Math.abs([ax.x, ax.y, ax.z][u.a]) - Math.abs([ax.x, ax.y, ax.z][v.a]));
+          for (const { a, w } of cross.slice(0, 2)) {
+            const need = Math.ceil(w / Math.max(targetH, 1e-6));
+            g.res[a] = Math.min(SDF_THIN_MAX_AXIS, Math.max(g.res[a], need, SDF_THIN_VOXELS));
+          }
+          const edges = [size.x / g.res[0], size.y / g.res[1], size.z / g.res[2]];
+          const voxelEdge = Math.max(edges[cross[0].a], edges[cross[1].a]);
+          const reg = { box, parts: [tube.part], kind: 'channel', name: tube.name, res: g.res.slice(), autoRefine: true,
+            boreR: bore, center: c.clone(), axis: ax.clone(), voxelEdge, segIndex: tube.segs.indexOf(sg) };
+          regions.push(reg); chRegs.push(reg);
+        }
+      }
+    }
+    tube.thinRegions = chRegs;
+    const voxAcross = chRegs.length
+      ? Math.min(...chRegs.map(r => boreDia / Math.max(r.voxelEdge, 1e-6)))
+      : coarseAcross;
+    channels.push({
+      part: tube.part, name: tube.name,
+      minRIn: tube.minRIn, maxRIn: tube.maxRIn, rOutMax: tube.rOutMax, L: tube.L, nSegs: tube.nSegs,
+      segs: tube.segs, firstSeg: tube.firstSeg, wp: tube.wp, aabb: tube.aabb,
+      refined: chRegs.length > 0, voxelsAcrossBore: +voxAcross.toFixed(2),
+      coarseVoxelsAcrossBore: +coarseAcross.toFixed(2),
+      tessellation: chRegs.length ? 'booleanTight' : 'default',
+      regions: chRegs.map(r => ({ kind: r.kind, name: r.name, res: r.res.slice(), voxelEdge: +r.voxelEdge.toFixed(4),
+        boreR: r.boreR, center: [r.center.x, r.center.y, r.center.z],
+        axis: [r.axis.x, r.axis.y, r.axis.z], boxMin: [r.box.min.x, r.box.min.y, r.box.min.z],
+        boxMax: [r.box.max.x, r.box.max.y, r.box.max.z] })),
+    });
+  }
+  tubeSet.thinChannels = channels;
+  return { regions, channels };
+}
+
 // One adaptive region per classified part (task #51): box = the part's
 // world bounding box + a small pad, resolution from adaptiveGridRes() so the
 // part's thinnest dimension gets SDF_PART_MIN_CELLS voxels where the
@@ -5373,7 +5710,7 @@ async function buildCollisionSDF(links, parts, inst, opts) {
   const tick = () => new Promise(r => quiet ? setTimeout(r, 0) : requestAnimationFrame(r));
   const rs = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
   const scaleRes = (res, cap) => rs === 1 ? res : res.map(v => Math.max(4, Math.min(cap, Math.round(v * rs))));
-  const sliceMs = (opts && opts.sliceMs) || 0, sliceOpts = sliceMs ? { sliceMs, now: opts.now, yieldFn: opts.yieldFn, sliceStats: opts.sliceStats } : null;
+  const sliceMs = (opts && opts.sliceMs) || 0, slicer = sliceMs ? makeSlicer({ sliceMs, now: opts.now, yieldFn: opts.yieldFn, sliceStats: opts.sliceStats }) : null, sliceOpts = slicer ? { slicer } : null;
   const classified = (parts || state.parts).filter(p => p.type);
   if (!classified.length) { state.sdf = null; return null; }
   const tStart = performance.now();
@@ -5383,7 +5720,7 @@ async function buildCollisionSDF(links, parts, inst, opts) {
   for (const part of classified) for (const m of part.meshes) sceneBounds.expandByObject(m);
   sceneBounds.expandByScalar(Math.max(sceneBounds.getSize(new THREE.Vector3()).length() * 0.02, 0.05));
 
-  const allTris = collectWorldTriangles(classified);
+  const allTris = slicer ? await collectWorldTrianglesAsync(classified, slicer) : collectWorldTriangles(classified);
   SL(true, 'Building collision data… (coarse grid)');
   await tick();
   const sceneSize = sceneBounds.getSize(new THREE.Vector3());
@@ -5401,11 +5738,20 @@ async function buildCollisionSDF(links, parts, inst, opts) {
   const tubeSet = buildTubeSet(classified);
 
   const partRegions = collectPartRegions(classified);
+  // Estimate the coarse voxel so thin channels know whether they need local refinement (before the coarse bake finishes we
+  // already know the res from adaptiveGridRes above).
+  const coarseVoxelEst = Math.max(sceneSize.x / coarseRes[0], sceneSize.y / coarseRes[1], sceneSize.z / coarseRes[2]);
+  // Prefer channel + joint slots over part regions when the atlas is tight: a missing bore is worse than a coarser tank.
+  const thinCap = Math.min(SDF_THIN_MAX_REGIONS, Math.max(0, SDF_MAX_FINE_REGIONS - Math.min(partRegions.length, 8) - 4));
+  const thin = collectThinChannelRegions(tubeSet, thinCap, coarseVoxelEst);
+  const jointCap = Math.max(0, SDF_MAX_FINE_REGIONS - partRegions.length - thin.regions.length);
   // per-instance: LTCBP regions cached in instance-local space and re-projected from the instance's world transform
-  const jointRegions = inst ? instanceJointRegions(inst, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet) : collectJointRegions(links, SDF_MAX_FINE_REGIONS - partRegions.length, tubeSet, classified);
-  const regions = jointRegions.concat(partRegions).map(r => rs === 1 ? r : Object.assign({}, r, { res: scaleRes(r.res, 64) }));
+  const jointRegions = inst ? instanceJointRegions(inst, jointCap, tubeSet) : collectJointRegions(links, jointCap, tubeSet, classified);
+  // Order in the atlas: thin-channel segments, then joints, then per-part regions (shader picks the finest covering sample).
+  const regions = thin.regions.concat(jointRegions).concat(partRegions).map(r => rs === 1 ? r : Object.assign({}, r, { res: scaleRes(r.res, 64) }));
   const fineCount = regions.length;
-  const partStart = jointRegions.length;
+  const channelCount = thin.regions.length;
+  const partStart = channelCount + jointRegions.length;
 
   // Shelf-pack every region's tiled block into one atlas (blocks differ in
   // size because each region has its own per-axis resolution).
@@ -5433,7 +5779,7 @@ async function buildCollisionSDF(links, parts, inst, opts) {
 
   for (let i = 0; i < regions.length; i++) {
     const region = regions[i];
-    SL(true, `Building collision data… (${region.kind === 'part' ? 'part ' + (i - partStart + 1) + '/' + partRegions.length : 'joint ' + (i + 1) + '/' + jointRegions.length})`);
+    SL(true, `Building collision data… (${region.kind === 'channel' ? 'channel ' + (i + 1) + '/' + channelCount : region.kind === 'part' ? 'part ' + (i - partStart + 1) + '/' + partRegions.length : 'joint ' + (i - channelCount + 1) + '/' + jointRegions.length})`);
     await tick();
     const tRegion = performance.now();
     // Filter down to triangles actually near this region's (small, padded)
@@ -5452,13 +5798,14 @@ async function buildCollisionSDF(links, parts, inst, opts) {
     const queryBox = region.box.clone().expandByScalar(region.kind === 'part'
       ? Math.max(regVoxel * 8, regSize.length() * 0.2)
       : Math.max(regSize.length(), 0.1) * 0.5);
-    const allLocalTris = region.kind === 'part' ? allTris : collectWorldTriangles(region.parts);
+    const allLocalTris = region.kind === 'part' ? allTris : slicer ? await collectWorldTrianglesAsync(region.parts, slicer) : collectWorldTriangles(region.parts);
     const localTris = [];
     const _triBoxTmp = new THREE.Box3();
     for (let ti = 0; ti < allLocalTris.length; ti += 3) {
       const a = allLocalTris[ti], b = allLocalTris[ti+1], c = allLocalTris[ti+2];
       _triBoxTmp.makeEmpty().expandByPoint(a).expandByPoint(b).expandByPoint(c);
       if (queryBox.intersectsBox(_triBoxTmp)) localTris.push(a, b, c);
+      if (slicer && ((ti / 3) & 511) === 511) await slicer.due();
     }
     // Boolean / auto-refine joints request tighter virtual subdivision so
     // the collision body tessellation follows the higher joint resolution.
@@ -5491,14 +5838,18 @@ async function buildCollisionSDF(links, parts, inst, opts) {
     fineMin, fineSize, fineRes, fineBlockOrigin, fineTpr,
     fineAtlasTexture, atlasW, atlasH,
     tubes: tubeSet,
+    thinChannels: thin.channels,
     buildMs: Math.round(performance.now() - tStart),
     info: {
       coarseRes: coarse.resXYZ, coarseVoxelEdge: +Math.max(coarse.boundsSize.x / coarse.resXYZ[0], coarse.boundsSize.y / coarse.resXYZ[1], coarse.boundsSize.z / coarse.resXYZ[2]).toFixed(4),
       coarseMs: Math.round(coarseMs), atlas: [atlasW, atlasH], voxels: stats.voxels, virtualTrisAdded: stats.virtualAdded,
-      regions: regionInfo,
+      regions: regionInfo, channelCount, partStart,
       tubes: tubeSet.list.map(t => ({ name: t.name, lengthModel: +t.L.toFixed(3), minBoreDia: +(t.minRIn * 2).toFixed(4), maxBoreDia: +(t.maxRIn * 2).toFixed(4), segments: t.nSegs, rings: t.nRings,
         fitMs: Math.round(t.fitMs), analytic: true, legacyGridVoxelEdge: (regionInfo.find(r => r.name === t.name) || {}).voxelEdge || null,
         legacyVoxelsAcrossBore: (regionInfo.find(r => r.name === t.name) || {}).voxelEdge ? +((t.minRIn * 2) / regionInfo.find(r => r.name === t.name).voxelEdge).toFixed(2) : null })),
+      thinChannels: thin.channels.map(c => ({ name: c.name, minRIn: +c.minRIn.toFixed(4), maxRIn: +c.maxRIn.toFixed(4), L: +c.L.toFixed(3), nSegs: c.nSegs,
+        firstSeg: c.firstSeg, refined: c.refined, voxelsAcrossBore: c.voxelsAcrossBore, coarseVoxelsAcrossBore: c.coarseVoxelsAcrossBore,
+        tessellation: c.tessellation, regions: c.regions })),
       tubeFitMs: tubeSet.ms, tubesFailed: tubeSet.failed,
     },
   };
