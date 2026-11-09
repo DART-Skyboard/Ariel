@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright
 HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 HTML = os.environ.get('ARC_HTML', REPO + '/templates/arc-flow.html')
 BAKE_LIMIT_S = float(os.environ.get('BAKE_LIMIT_S', 240)); FRAMES_LIMIT_S = float(os.environ.get('FRAMES_LIMIT_S', 60))
+HOLD_SLOP = float(os.environ.get('HOLD_SLOP', 1e-4))   # every held chamber particle strictly inside the mesh (sd < 0); only float slop allowed
 LONGTASK_LIMIT_MS = float(os.environ.get('LONGTASK_LIMIT_MS', 15000))
 OBS = """()=>{window.__lt=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__lt.push([e.startTime,e.duration])}).observe({entryTypes:['longtask']})}catch(e){}}"""
 async def main():
@@ -78,7 +79,7 @@ async def main():
                 await pg.wait_for_timeout(1500)
             print('chamber hold samples', holds[:3])
             for h in holds:
-                if h['inside'] < 0.95 * h['held']: fails.append('held particles outside the chamber cavity: %r' % h)
+                if h['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % h)
             await pg.wait_for_timeout(15000)
             s1 = await pg.evaluate(SNAP); print('later snapshot', s1)
             # (a) deterministic cavity check: force every chamber-bound particle into the held state (gate 0, chamber full, lines
@@ -86,7 +87,7 @@ async def main():
             hf = await pg.evaluate("()=>{const c=window.arcFlow.state.particleCPU; if(!c||!c.gateU) return null; const g=c.gateU.value,f=c.fillU.value,pr=Array.from(c.primeU.value); c.gateU.value=0; c.fillU.value=1; c.primeU.value.fill(1); const h=window.arcFlowDebug.chamberHold(); c.gateU.value=g; c.fillU.value=f; pr.forEach((v,i)=>c.primeU.value[i]=v); return h}")
             print('forced hold', hf)
             if not hf or not hf['held']: fails.append('no chamber-bound particles to hold: %r' % hf)
-            elif hf['inside'] < 0.95 * hf['held']: fails.append('held particles outside the chamber cavity: %r' % hf)
+            elif hf['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % hf)
             if not (s1 and s1['open'] and s1['mdot'] > 0): fails.append('throat never opened / no flow after accumulation: %r' % s1)
             post = [d for s, d in lt if s + d > sim_at - tsim * 0 and s >= sim_at - 50]
             print('bake+start %.1fs, 60 frames %.1fs, post-start longest task %.0f ms' % (tsim, tf, max(post or [0])))

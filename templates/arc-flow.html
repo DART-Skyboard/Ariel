@@ -4055,7 +4055,7 @@ function shareInstanceBake(inst, rootInst) {
   for (const [rp, cp] of rp2cp) { const bx = R.follow.box.get(rp), c0 = R.follow.c0.get(rp); if (bx) follow.box.set(cp, bx); if (c0) follow.c0.set(cp, c0); }
   inst.bakeMatrix = rootInst.bakeMatrix ? rootInst.bakeMatrix.clone() : new THREE.Matrix4();
   inst.sharedFrom = rootInst.id;
-  bakeInstanceRender(R.sdf, { count: rc.count, waypointData: rc.waypointData, radiusData: rc.radiusData, knotData: rc.knotData, wpPart: rc.wpPart, wpGround: rc.wpGround, phase: rc.phase, speed: rc.speed, thermalSeed: rc.thermalSeed, latU: rc.latU, latV: rc.latV, exitIdxData: rc.exitIdx, chambIdxData: rc.chambIdx, feedIdxData: rc.feedIdx, feedStartData: rc.feedStart, ownerPart: state.particleCPU.ownerPart }, rc.tex);
+  bakeInstanceRender(R.sdf, { count: rc.count, waypointData: rc.waypointData, radiusData: rc.radiusData, knotData: rc.knotData, wpPart: rc.wpPart, wpGround: rc.wpGround, phase: rc.phase, speed: rc.speed, thermalSeed: rc.thermalSeed, latU: rc.latU, latV: rc.latV, exitIdxData: rc.exitIdx, chambIdxData: rc.chambIdx, feedIdxData: rc.feedIdx, feedStartData: rc.feedStart, ownerPart: state.particleCPU.ownerPart, holdC: rc.holdC, holdO: rc.holdO }, rc.tex);
   followTick(true);
 }
 // (Re)build one instance on its own, without touching any other: shared bake when allowed, else its own bake. Starts it when a run is on.
@@ -6270,6 +6270,8 @@ const PARTICLE_SHADER_CORE = `
   attribute float aExit;   // waypoint index of this particle's nozzle exit plane (>= MAX_WAYPOINTS: never reaches one)
   uniform float uBurn;
   uniform float uHidePost; // 1 = the live rocket-plume model draws everything past the nozzle, so hide the baked post-nozzle stretch
+  attribute vec4 aHoldC;   // chamber hold station (xyz) inside the cavity, w = 1 when a validated hold point exists (pfsHoldPool)
+  attribute vec3 aHoldO;   // offset from that station, inside its inscribed ball
   attribute float aChamb;  // last waypoint inside the chamber cavity (>= MAX_WAYPOINTS: path has no chamber)
   uniform float uThroatGate; // pressure mode: 0 = throat closed (gas accumulates in the cavity) .. 1 = all gas passes (baked mode: always 1)
   uniform float uChamberFill; // pressure mode: 0..1 how far the chamber has filled toward choking; held gas shows in that proportion
@@ -6407,9 +6409,15 @@ const PARTICLE_SHADER_CORE = `
       float h3 = fract(aPhase * 13.7) * 2.0 - 1.0;
       float ang = uTime * (0.25 + 0.5 * pfsRank()) + aPhase * 6.2831;
       float ca = cos(ang), sa = sin(ang);
-      vec3 d = vec3(aLatU * ca - aLatV * sa, h3, aLatU * sa + aLatV * ca);
-      float dl = length(d); if (dl > 1.0) d /= dl;   // unit ball, not the cube: corners poked through the wall
-      pos = centerPos + d * rad * 0.7 + eddy * rad * 0.04;
+      if (aHoldC.w > 0.5) {
+        // validated cavity hold point: swirl the offset about the vertical through its station (|offset| kept -> stays in the ball)
+        centerPos = aHoldC.xyz;
+        pos = centerPos + vec3(aHoldO.x * ca - aHoldO.z * sa, aHoldO.y, aHoldO.x * sa + aHoldO.z * ca);
+      } else {
+        vec3 d = vec3(aLatU * ca - aLatV * sa, h3, aLatU * sa + aLatV * ca);
+        float dl = length(d); if (dl > 1.0) d /= dl;
+        pos = centerPos + d * rad * 0.7 + eddy * rad * 0.04;
+      }
     }
 
     // ── Real mesh collision: pull the particle back off the wall ────────
@@ -6430,7 +6438,7 @@ const PARTICLE_SHADER_CORE = `
     // positive (through/past the wall) or inside that margin, push back
     // along the gradient toward the interior by just enough to clear it.
     float skin = max(rad * 0.08, 0.01);
-    if (sd > -skin) {
+    if (sd > -skin && !(gHeld > 0.5 && aHoldC.w > 0.5)) {
       // COLLISION BODY (v65): the cavity interior (sd < 0) is the fluid domain. The old push moved every offending particle to
       // exactly -skin, so a whole lateral cross-section that stuck out past the bore plastered itself onto the wall (and onto the
       // bell rim, where the gradient points back at the lip once the particle is in open air below the mouth).
@@ -6828,6 +6836,7 @@ async function bakeInstanceCore(inst, links) {
   const ownerPart = [];   // per particle: the part it was emitted from (live-leak system walks its baked chain)
   const exitIdxData = []; // per particle: waypoint index of the nozzle exit plane
   const chambIdxData = []; // per particle: last waypoint inside the chamber cavity (MAX_WAYPOINTS = none), see pfsHeld in the shader
+  const chambPartOf = [];  // per particle: the chamber part it is held in (hold pool, pfsHoldData)
   const feedParts = [], feedIdxData = [], feedStartData = [];   // pressure-mode priming front: which feed line (index into feedParts, -1 none) + its first waypoint
   const wpPart = [], wpGround = []; // per particle waypoint: owning part id / ground-anchored flag (fluid follows its parts)
   state.parts.forEach((q, qi) => { q.followId = qi < FOLLOW_ROWS ? qi : -1; });
@@ -6844,7 +6853,7 @@ async function bakeInstanceCore(inst, links) {
       for (const wp of path.points) waypointData.push(wp.x, wp.y, wp.z);
       for (const r of path.radii) radiusData.push(r);
       for (const fi of path.fineIdx) fineIdxData.push(fi);
-      exitIdxData.push(path.exitIdx); chambIdxData.push(path.chambIdx);
+      exitIdxData.push(path.exitIdx); chambIdxData.push(path.chambIdx); chambPartOf.push(path.chambIdx < MAX_WAYPOINTS ? path.owners[path.chambIdx] : null);
       { let fi = path.feedPart ? feedParts.indexOf(path.feedPart) : -1; if (path.feedPart && fi < 0 && feedParts.length < PFS_FEED_MAX) { fi = feedParts.length; feedParts.push(path.feedPart); } feedIdxData.push(fi); feedStartData.push(path.feedStart || 0); }
       for (const k of path.knots) knotData.push(k);
       for (let w = 0; w < MAX_WAYPOINTS; w++) { wpPart.push(path.owners[w].followId); wpGround.push(path.ground[w]); }
@@ -6884,8 +6893,9 @@ async function bakeInstanceCore(inst, links) {
   // typed arrays (not re-derived from the DataTexture, which would mean
   // decoding the tiled packing back out) since they're the same arrays
   // already built above.
+  const { holdC, holdO } = pfsHoldData(chambIdxData, chambPartOf);
   state.particleCPU = {
-    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData, chambIdx: chambIdxData, feedParts, feedIdx: feedIdxData, feedStart: feedStartData,
+    count, waypointData, radiusData, knotData, phase, speed, thermalSeed, latU, latV, ownerPart, exitIdx: exitIdxData, chambIdx: chambIdxData, feedParts, feedIdx: feedIdxData, feedStart: feedStartData, holdC, holdO,
     wpPart: Int16Array.from(wpPart), wpGround: Uint8Array.from(wpGround), // owning part id / ground flag per waypoint (CPU mirror of the shader's follow)
     liveArr: new Float32Array(count),          // aLive attribute backing store (1 = hidden, replaced by a live leak particle)
     affGroup: new Int16Array(count).fill(-1),  // which live leak group (if any) owns this baked particle
@@ -6894,7 +6904,48 @@ async function bakeInstanceCore(inst, links) {
   followRebase();      // fluid-follows-parts: deltas are measured from this same bake state
   inst.sharedFrom = null;
   inst.bakeMatrix = inst.root ? (inst.root.updateWorldMatrix(true, false), inst.root.matrixWorld.clone()) : new THREE.Matrix4();
-  bakeInstanceRender(collisionSDF, { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, chambIdxData, feedIdxData, feedStartData, ownerPart }, null);
+  bakeInstanceRender(collisionSDF, { count, waypointData, radiusData, fineIdxData, knotData, wpPart, wpGround, phase, speed, thermalSeed, latU, latV, exitIdxData, chambIdxData, feedIdxData, feedStartData, ownerPart, holdC, holdO }, null);
+}
+// CHAMBER HOLD POOL (v75). Where pressure mode parks gas in the chamber while the throat is shut. The chamber's path waypoint is
+// partCentroid with partContainmentRadius, a bounding sphere that overlaps the wall, the converging section and the neck (headless:
+// ~21% of held particles sat in or past the wall, worst 0.25"). Instead sample the cavity itself: pfsChamberAxis marches the nozzle
+// axis with the exact mesh SDF, so each station's r is the distance to the nearest wall, i.e. the ball of radius r around it lies
+// inside the cavity. A hold point = station centre + offset inside (r - skin) * 0.85, only from stations upstream of the throat (never
+// the neck), weighted by r^3. The shader swirls the offset about the vertical through the station: |offset| is preserved, so the
+// particle never leaves that inscribed ball. Each point is re-checked against the mesh; a failure is dropped (never placed).
+const PFS_HOLD_POOL = 384;
+function pfsHoldPool(part) {
+  const ax = pfsChamberAxis(part), idx = penIndexForPart(part); if (!ax || !idx) return null;
+  const st = []; let wsum = 0;
+  for (let i = 0; i < ax.throat; i++) { const r = ax.r[i]; if (r > 1e-3) { wsum += r * r * r; st.push([i, wsum]); } }
+  if (!st.length) return null;
+  let seed = 0x9e3779b9 ^ (part.name || '').length; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const out = [], v = new THREE.Vector3();
+  for (let tries = 0; out.length < PFS_HOLD_POOL * 6 && tries < PFS_HOLD_POOL * 4; tries++) {
+    const w = rnd() * wsum; let k = 0; while (k < st.length - 1 && st[k][1] < w) k++;
+    const i = st[k][0], r = ax.r[i], skin = Math.max(r * 0.08, 0.01), R = Math.max(r - skin, 0) * 0.85;
+    let ox, oy, oz; do { ox = rnd() * 2 - 1; oy = rnd() * 2 - 1; oz = rnd() * 2 - 1; } while (ox * ox + oy * oy + oz * oz > 1);
+    ox *= R; oy *= R; oz *= R;
+    const cx = ax.pts[3 * i], cy = ax.pts[3 * i + 1], cz = ax.pts[3 * i + 2];
+    // the swirl rotates (ox, oz) about the vertical; check 4 phases of it against the real mesh
+    let ok = true;
+    for (let q = 0; q < 4 && ok; q++) { const a = q * Math.PI * 0.5, ca = Math.cos(a), sa = Math.sin(a); if (signedDistanceToMesh(v.set(cx + ox * ca - oz * sa, cy + oy, cz + ox * sa + oz * ca), idx) > -0.5 * skin) ok = false; }
+    if (ok) out.push(cx, cy, cz, ox, oy, oz);
+  }
+  return out.length ? Float32Array.from(out) : null;
+}
+// per particle: aHoldC = (station xyz, 1 if this particle has a validated hold point) and aHoldO = offset; zeros = old placement
+function pfsHoldData(chambIdxData, owners) {
+  const n = chambIdxData.length, C = new Float32Array(4 * n), O = new Float32Array(3 * n), pools = new Map();
+  for (let p = 0; p < n; p++) {
+    const part = owners[p]; if (!part || !(chambIdxData[p] < MAX_WAYPOINTS)) continue;
+    if (!pools.has(part)) { let pool = null; try { pool = pfsHoldPool(part); } catch (e) { console.warn('pfsHoldPool', e); } pools.set(part, pool); }
+    const pool = pools.get(part); if (!pool) continue;
+    const j = ((p * 2654435761) >>> 0) % (pool.length / 6), b = 6 * j;
+    C[4 * p] = pool[b]; C[4 * p + 1] = pool[b + 1]; C[4 * p + 2] = pool[b + 2]; C[4 * p + 3] = 1;
+    O[3 * p] = pool[b + 3]; O[3 * p + 1] = pool[b + 4]; O[3 * p + 2] = pool[b + 5];
+  }
+  return { holdC: C, holdO: O };
 }
 // Everything after the path bake: GPU textures + the point / Gaussian / core / floor-splat render objects for the CURRENT context.
 // `shared` ({waypointTex, waypointFineTex, texHeight}) reuses another instance's baked textures (a shared-bake clone).
@@ -6903,6 +6954,7 @@ function bakeInstanceRender(collisionSDF, A, shared) {
   const chambIdxData = A.chambIdxData && A.chambIdxData.length === count ? A.chambIdxData : new Array(count).fill(MAX_WAYPOINTS);
   const feedIdxData = A.feedIdxData && A.feedIdxData.length === count ? A.feedIdxData : new Array(count).fill(-1);
   const feedStartData = A.feedStartData && A.feedStartData.length === count ? A.feedStartData : new Array(count).fill(0);
+  const holdC = A.holdC && A.holdC.length === 4 * count ? A.holdC : new Float32Array(4 * count), holdO = A.holdO && A.holdO.length === 3 * count ? A.holdO : new Float32Array(3 * count);
   let waypointTex, waypointFineTex, texHeight;
   if (shared) { waypointTex = shared.waypointTex; waypointFineTex = shared.waypointFineTex; texHeight = shared.texHeight; }
   else {
@@ -6979,6 +7031,8 @@ function bakeInstanceRender(collisionSDF, A, shared) {
   geo.setAttribute('aChamb', new THREE.InstancedBufferAttribute(new Float32Array(chambIdxData), 1));
   geo.setAttribute('aFeed', new THREE.InstancedBufferAttribute(new Float32Array(feedIdxData), 1));
   geo.setAttribute('aFeedS', new THREE.InstancedBufferAttribute(new Float32Array(feedStartData), 1));
+  geo.setAttribute('aHoldC', new THREE.InstancedBufferAttribute(holdC, 4));
+  geo.setAttribute('aHoldO', new THREE.InstancedBufferAttribute(holdO, 3));
   state.particleCPU.liveAttr = liveAttr;
   geo.instanceCount = count;
 
@@ -7396,11 +7450,16 @@ function bakedHeld(cpu, p, progress, uTime) {
   if (rank < g || progress < cpu.knotData[p * MAX_WAYPOINTS + ci]) return false;
   const b = (p * MAX_WAYPOINTS + ci) * 3, rad = cpu.radiusData[p * MAX_WAYPOINTS + ci];
   const h3 = _fract(ph * 13.7) * 2 - 1, ang = uTime * (0.25 + 0.5 * rank) + ph * 6.2831, ca = Math.cos(ang), sa = Math.sin(ang);
-  let dx = lu * ca - lv * sa, dy = h3, dz = lu * sa + lv * ca; const dl = Math.hypot(dx, dy, dz);
-  if (dl > 1) { dx /= dl; dy /= dl; dz /= dl; }          // unit ball, as the shader
-  _bheld.x = cpu.waypointData[b] + dx * rad * 0.7;
-  _bheld.y = cpu.waypointData[b + 1] + dy * rad * 0.7;
-  _bheld.z = cpu.waypointData[b + 2] + dz * rad * 0.7;
+  if (cpu.holdC && cpu.holdC[4 * p + 3] > 0.5) {         // validated cavity hold point (pfsHoldPool), as the shader
+    const C = cpu.holdC, O = cpu.holdO, ox = O[3 * p], oz = O[3 * p + 2];
+    _bheld.x = C[4 * p] + ox * ca - oz * sa; _bheld.y = C[4 * p + 1] + O[3 * p + 1]; _bheld.z = C[4 * p + 2] + ox * sa + oz * ca;
+  } else {
+    let dx = lu * ca - lv * sa, dy = h3, dz = lu * sa + lv * ca; const dl = Math.hypot(dx, dy, dz);
+    if (dl > 1) { dx /= dl; dy /= dl; dz /= dl; }
+    _bheld.x = cpu.waypointData[b] + dx * rad * 0.7;
+    _bheld.y = cpu.waypointData[b + 1] + dy * rad * 0.7;
+    _bheld.z = cpu.waypointData[b + 2] + dz * rad * 0.7;
+  }
   _bheld.hidden = _fract(ph * 5.17 + lv * 2.3 + lu * 1.9) >= (cpu.fillU ? cpu.fillU.value : 1);
   return true;
 }
@@ -8044,7 +8103,7 @@ function gsSceneSigma(sdf) {
 // and its SDF uniform objects — nothing is duplicated.
 function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart, count) {
   const geo = gsQuadGeometry();
-  for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive', 'aExit', 'aChamb', 'aFeed', 'aFeedS']) if (pointGeo.getAttribute(k)) geo.setAttribute(k, pointGeo.getAttribute(k));
+  for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive', 'aExit', 'aChamb', 'aFeed', 'aFeedS', 'aHoldC', 'aHoldO']) if (pointGeo.getAttribute(k)) geo.setAttribute(k, pointGeo.getAttribute(k));
   const press = new Float32Array(count), hue = new Float32Array(count * 4);
   const pCache = new Map();
   for (let p = 0; p < count; p++) {
