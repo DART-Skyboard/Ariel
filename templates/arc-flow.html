@@ -9814,14 +9814,19 @@ function plumeEnsureGaussian() {
   ['aPos', 'aVel', 'aAlpha', 'aSize', 'aT', 'aSh', 'aSmk', 'aSp'].forEach((k, i) => geo.setAttribute(k, plume.gsAttrs[i]));
   geo.instanceCount = 0;
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uGsTrail: { value: 0.02 }, uGsMaxStretch: { value: 3.0 }, uGain: { value: 0.05 }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
+    uniforms: { uGsTrail: { value: 0.02 }, uGsMaxStretch: { value: 3.0 }, uGain: { value: 0.05 }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) }, uPx: { value: 600 } },
     vertexShader: GS_BILLBOARD_VERT + `
+      uniform float uPx;
       attribute vec3 aPos; attribute vec3 aVel; attribute float aAlpha; attribute float aSize; attribute float aT; attribute float aSh; attribute float aSmk; attribute vec3 aSp;
       varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
       void main() {
         if (aAlpha <= 0.002) { vQ = vec2(9.0); vAtten = 0.0; vT = 0.0; vSh = 0.0; vSmk = 0.0; vA = 0.0; vH = 0.0; vSp = vec3(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
-        vT = aT; vSh = aSh; vSmk = aSmk; vA = aAlpha; vSp = aSp; vH = aPos.y;
-        gsPlace(aPos, aVel, aSize * 0.2, position.xy);   // aSize is the sprite diameter; the quad spans 2.5 sigma each side
+        vT = aT; vSh = aSh; vSmk = aSmk; vSp = aSp; vH = aPos.y;
+        // same on-screen size window + alpha compensation as the Points layer (10..160 px): a big smoke parcel near the camera
+        // must not become a billboard that covers the vehicle, and a far one stays a faint haze, not a speck
+        float zv = max(-(viewMatrix * vec4(aPos, 1.0)).z, 0.1), raw = aSize * uPx / zv, sz = clamp(raw, 10.0, 160.0);
+        vA = aAlpha * min(1.0, (raw * raw) / (sz * sz) * 1.6);
+        gsPlace(aPos, aVel, sz * zv / uPx * 0.2, position.xy);   // sz is the clamped sprite diameter; the quad spans 2.5 sigma each side
       }`,
     fragmentShader: PLUME_SHADE_GLSL + GS_KERNEL_FRAG + `
       varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
@@ -10657,6 +10662,7 @@ function plumeFrame(inst, now) {
   P.points.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); if (P.gs) P.gs.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); P.vol.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]);
   const camFov = camera.fov * Math.PI / 180;
   P.points.material.uniforms.uPx.value = renderer.domElement.height / (2 * Math.tan(camFov / 2));
+  if (P.gs) P.gs.material.uniforms.uPx.value = P.points.material.uniforms.uPx.value;
   P.points.material.uniforms.uHeat.value = floorMat.uniforms.uHeat.value;
   P.points.visible = renderMode === 'points' || farOnly;
 
