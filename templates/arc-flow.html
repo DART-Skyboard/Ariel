@@ -7846,7 +7846,7 @@ const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
   varying float vDens;
   varying vec4 vHue;
   void main() {
-    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 pos = computeParticlePosition();           // also sets vThermal / vProgress
     // path tangent + containment radius, re-read the cheap way (2 fetches)
     float seg = gSeg, segT = gSegT;
@@ -7945,6 +7945,9 @@ function gsSceneSigma(sdf) {
 function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart, count) {
   const geo = gsQuadGeometry();
   for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive']) geo.setAttribute(k, pointGeo.getAttribute(k));
+  // nozzle-exit index, so the splats hide the baked post-nozzle stretch while the live plume draws it (uHidePost), exactly like the
+  // Points/Volumetric baked layers; without it the baked jet kept drawing as a blown-out white wash under the live Gaussian plume
+  geo.setAttribute('aExit', pointGeo.getAttribute('aExit') || new THREE.InstancedBufferAttribute(new Float32Array(count).fill(1e6), 1));
   const press = new Float32Array(count), hue = new Float32Array(count * 4);
   const pCache = new Map();
   for (let p = 0; p < count; p++) {
@@ -7966,7 +7969,7 @@ function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart
       uTime: pointUniforms.uTime,                // shared reference — one clock
       uWaypoints: pointUniforms.uWaypoints, uTexHeight: pointUniforms.uTexHeight,
       uGsSize: { value: gsSceneSigma(sdf) }, uGsTrail: { value: 0.03 }, uGsMaxStretch: { value: 3.5 }, uGsGain: { value: 0.35 },
-      uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 },
+      uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uHidePost: plumeHidePostUniform,
     }, sdfUniforms),
     vertexShader: GS_BAKED_VERT, fragmentShader: GS_BAKED_FRAG,
     transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
