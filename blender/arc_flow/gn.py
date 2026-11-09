@@ -360,3 +360,181 @@ def set_modifier_inputs(mod, values):
             continue
         if item.name in values and values[item.name] is not None:
             _set_input(mod, item.identifier, values[item.name])
+
+
+# ----------------------------------------------------------------------------- LOTBCBP mesh-tool groups (GN editor)
+# Plain node groups built from built-in nodes only, so they can be wired next to any other Blender node or the
+# nodes of other extensions.  They mirror the Python library path (core.quads / PartField):
+#   AF LOTBCBP Quads       clean (merge by distance) + all-quad split of tris / n-gons (each face -> n quads)
+#   AF LOTBCBP Tessellate  quad-first virtual tessellation (midpoint quad split; optional smooth = Phong-like)
+#   AF LOTBCBP Analyze     per-face attributes af_is_quad / af_face_area + quad fraction
+#   AF LOTBCBP Prep        Quads -> Tessellate -> Analyze -> AF_Feedback, the one-click setup group
+LOTBCBP_GROUPS = ("AF LOTBCBP Prep", "AF LOTBCBP Quads", "AF LOTBCBP Tessellate", "AF LOTBCBP Analyze", "AF_Feedback")
+
+
+def quads_group(name="AF LOTBCBP Quads"):
+    ng = fresh_group(name)
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
+    add_socket(ng, "Merge Distance", 'NodeSocketFloat', 'INPUT', 1e-4, 0.0, desc="Merge duplicate vertices closer than this")
+    add_socket(ng, "Quad Split", 'NodeSocketBool', 'INPUT', True, desc="Split every face into quads (triangles -> 3, n-gons -> n)")
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+    b = Builder(ng)
+    gi, go = b.group_io()
+    mbd = b.node('GeometryNodeMergeByDistance', y=0)
+    b.link(out(gi, 'Geometry'), inp(mbd, 'Geometry'))
+    b.link(out(gi, 'Merge Distance'), inp(mbd, 'Distance'))
+    sub = b.node('GeometryNodeSubdivideMesh', y=-150)
+    b.link(out(mbd, 'Geometry'), inp(sub, 'Mesh'))
+    inp(sub, 'Level').default_value = 1
+    sw = _sw_geo(b, out(gi, 'Quad Split'), out(mbd, 'Geometry'), out(sub, 'Mesh'))
+    b.link(sw, inp(go, 'Geometry'))
+    return ng
+
+
+def tessellate_group(name="AF LOTBCBP Tessellate"):
+    ng = fresh_group(name)
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
+    add_socket(ng, "Level", 'NodeSocketInt', 'INPUT', 1, 0, 6, desc="LOTBCBP level: quad splits per face")
+    add_socket(ng, "Smooth", 'NodeSocketBool', 'INPUT', True, desc="Project new points onto the smooth limit surface")
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+    b = Builder(ng)
+    gi, go = b.group_io()
+    lin = b.node('GeometryNodeSubdivideMesh', y=0)
+    b.link(out(gi, 'Geometry'), inp(lin, 'Mesh')); b.link(out(gi, 'Level'), inp(lin, 'Level'))
+    sm = b.node('GeometryNodeSubdivisionSurface', y=-200)
+    b.link(out(gi, 'Geometry'), inp(sm, 'Mesh')); b.link(out(gi, 'Level'), inp(sm, 'Level'))
+    sw = _sw_geo(b, out(gi, 'Smooth'), out(lin, 'Mesh'), out(sm, 'Mesh'))
+    b.link(sw, inp(go, 'Geometry'))
+    return ng
+
+
+def analyze_group(name="AF LOTBCBP Analyze"):
+    ng = fresh_group(name)
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+    add_socket(ng, "Quad Fraction", 'NodeSocketFloat', 'OUTPUT')
+    add_socket(ng, "Face Count", 'NodeSocketInt', 'OUTPUT')
+    b = Builder(ng)
+    gi, go = b.group_io()
+    cof = b.node('GeometryNodeCornersOfFace', y=200)
+    eq = b.node('FunctionNodeCompare', data_type='INT', operation='EQUAL', y=200)
+    b.link(out(cof, 'Total'), eq.inputs[2]); eq.inputs[3].default_value = 4
+    st = b.node('GeometryNodeStoreNamedAttribute', data_type='BOOLEAN', domain='FACE', y=0)
+    inp(st, 'Name').default_value = 'af_is_quad'
+    b.link(out(gi, 'Geometry'), inp(st, 'Geometry')); b.link(out(eq, 'Result'), inp(st, 'Value'))
+    area = b.node('GeometryNodeInputMeshFaceArea', y=-150)
+    st2 = b.node('GeometryNodeStoreNamedAttribute', data_type='FLOAT', domain='FACE', y=0)
+    inp(st2, 'Name').default_value = 'af_face_area'
+    b.link(out(st, 'Geometry'), inp(st2, 'Geometry')); b.link(out(area, 'Area'), inp(st2, 'Value'))
+    stat = b.node('GeometryNodeAttributeStatistic', data_type='FLOAT', domain='FACE', y=-300)
+    b.link(out(gi, 'Geometry'), inp(stat, 'Geometry')); b.link(out(eq, 'Result'), inp(stat, 'Attribute'))
+    dsz = b.node('GeometryNodeAttributeDomainSize', component='MESH', y=-450)
+    b.link(out(gi, 'Geometry'), inp(dsz, 'Geometry'))
+    b.link(out(st2, 'Geometry'), inp(go, 'Geometry'))
+    b.link(out(stat, 'Mean'), inp(go, 'Quad Fraction'))
+    b.link(out(dsz, 'Face Count'), inp(go, 'Face Count'))
+    return ng
+
+
+def prep_group(name="AF LOTBCBP Prep"):
+    for n, fn in (("AF LOTBCBP Quads", quads_group), ("AF LOTBCBP Tessellate", tessellate_group),
+                  ("AF LOTBCBP Analyze", analyze_group), ("AF_Feedback", feedback_group)):
+        if n not in bpy.data.node_groups or not bpy.data.node_groups[n].nodes:
+            fn()
+    ng = fresh_group(name)
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'INPUT')
+    add_socket(ng, "Merge Distance", 'NodeSocketFloat', 'INPUT', 1e-4, 0.0)
+    add_socket(ng, "Quad Split", 'NodeSocketBool', 'INPUT', False, desc="Off: keep the mesh as is when it is already quads (use Convert to Quads first)")
+    add_socket(ng, "Level", 'NodeSocketInt', 'INPUT', 0, 0, 6, desc="LOTBCBP tessellation level (0 = off)")
+    add_socket(ng, "Smooth", 'NodeSocketBool', 'INPUT', True)
+    add_socket(ng, "Feedback", 'NodeSocketFloat', 'INPUT', 0.0, desc="Arc Flow feedback value (driven by Assign Feedback > Geometry Nodes)")
+    add_socket(ng, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+    add_socket(ng, "Quad Fraction", 'NodeSocketFloat', 'OUTPUT')
+    b = Builder(ng)
+    gi, go = b.group_io()
+    chain = out(gi, 'Geometry')
+    for gname, ins in (("AF LOTBCBP Quads", ('Merge Distance', 'Quad Split')), ("AF LOTBCBP Tessellate", ('Level', 'Smooth'))):
+        n = b.node('GeometryNodeGroup', y=0)
+        n.node_tree = bpy.data.node_groups[gname]
+        b.link(chain, inp(n, 'Geometry'))
+        for k in ins:
+            b.link(out(gi, k), inp(n, k))
+        chain = out(n, 'Geometry')
+    an = b.node('GeometryNodeGroup', y=0)
+    an.node_tree = bpy.data.node_groups["AF LOTBCBP Analyze"]
+    b.link(chain, inp(an, 'Geometry'))
+    fb = b.node('GeometryNodeGroup', y=0)
+    fb.node_tree = bpy.data.node_groups["AF_Feedback"]
+    b.link(out(an, 'Geometry'), inp(fb, 'Geometry')); b.link(out(gi, 'Feedback'), inp(fb, 'Value'))
+    b.link(out(fb, 'Geometry'), inp(go, 'Geometry'))
+    b.link(out(an, 'Quad Fraction'), inp(go, 'Quad Fraction'))
+    return ng
+
+
+def ensure_lotbcbp_group(name):
+    ng = bpy.data.node_groups.get(name)
+    if ng is None or not ng.nodes:
+        ng = {"AF LOTBCBP Prep": prep_group, "AF LOTBCBP Quads": quads_group, "AF LOTBCBP Tessellate": tessellate_group,
+              "AF LOTBCBP Analyze": analyze_group, "AF_Feedback": feedback_group}[name]()
+    return ng
+
+
+def find_af_node(tree, group_name="AF LOTBCBP Prep"):
+    for n in tree.nodes:
+        if n.bl_idname == 'GeometryNodeGroup' and n.node_tree is not None and n.node_tree.name == group_name:
+            return n
+    return None
+
+
+def has_af_setup(obj):
+    for m in getattr(obj, 'modifiers', []):
+        if m.type == 'NODES' and m.node_group is not None and find_af_node(m.node_group) is not None:
+            return True
+    return False
+
+
+def prep_object(obj, insert=False):
+    """One-click GN setup: put the AF LOTBCBP Prep group into the object's Geometry Nodes graph.  No modifier
+    -> a new 'AF LOTBCBP' modifier + tree wired Input -> Prep -> Output (with an 'AF Feedback' input).  An existing
+    GN tree -> the node is added next to the Group Output (inserted before it if insert=True).  Returns (mod, node)."""
+    prep = ensure_lotbcbp_group("AF LOTBCBP Prep")
+    mod = None
+    for m in obj.modifiers:
+        if m.type == 'NODES' and m.node_group is not None:
+            mod = m
+            if find_af_node(m.node_group) is not None:
+                return m, find_af_node(m.node_group)
+    if mod is None:
+        mod = obj.modifiers.new("AF LOTBCBP", 'NODES')
+        tree = bpy.data.node_groups.new("AF_GN_%s" % slug(obj.name), 'GeometryNodeTree')
+        add_socket(tree, "Geometry", 'NodeSocketGeometry', 'INPUT')
+        add_socket(tree, "AF Feedback", 'NodeSocketFloat', 'INPUT', 0.0, desc="Arc Flow feedback value")
+        add_socket(tree, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+        b = Builder(tree)
+        gi, go = b.group_io()
+        go.location = (700, 0)
+        n = b.node('GeometryNodeGroup', x=200, y=0)
+        n.node_tree = prep
+        b.link(out(gi, 'Geometry'), inp(n, 'Geometry'))
+        b.link(out(gi, 'AF Feedback'), inp(n, 'Feedback'))
+        b.link(out(n, 'Geometry'), inp(go, 'Geometry'))
+        mod.node_group = tree
+        try:
+            mod.is_active = True
+        except Exception:
+            pass
+        return mod, n
+    tree = mod.node_group
+    go = next((n for n in tree.nodes if n.bl_idname == 'NodeGroupOutput'), None)
+    n = tree.nodes.new('GeometryNodeGroup')
+    n.node_tree = prep
+    n.location = ((go.location.x - 250) if go else 0, (go.location.y - 250) if go else 0)
+    if insert and go is not None and go.inputs and go.inputs[0].is_linked:
+        src = go.inputs[0].links[0].from_socket
+        tree.links.new(src, inp(n, 'Geometry'))
+        tree.links.new(out(n, 'Geometry'), go.inputs[0])
+    try:
+        mod.is_active = True
+    except Exception:
+        pass
+    return mod, n

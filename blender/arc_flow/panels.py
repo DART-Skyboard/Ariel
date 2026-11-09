@@ -22,7 +22,7 @@ def _status_line(layout, af):
 
 class AF_PT_main(_Base, Panel):
     bl_idname = "AF_PT_main"
-    bl_label = "Arc Flow  |  LOTCBP"
+    bl_label = "Arc Flow  |  LOTBCBP"
 
     def draw(self, ctx):
         l = self.layout
@@ -74,6 +74,7 @@ def draw_part(l, ctx):
     op = row.operator("arcflow.set_role", text="Collider", depress=(p.role == 'COLLIDER')); op.role = 'COLLIDER'
     op = row.operator("arcflow.set_role", text="None", depress=(p.role == 'NONE')); op.role = 'NONE'
     l.menu("AF_MT_part_presets", text="Part presets", icon='PRESET')
+    l.operator_menu_enum("arcflow.assign_role", "role", text="Assign role (selected)", icon='OBJECT_DATA')
     if p.role != 'NONE':
         col = l.column(align=True)
         col.prop(p, "cavity_mode")
@@ -164,13 +165,28 @@ class AF_PT_fluids(_Base, Panel):
             if f.fluid_role != 'GENERIC':
                 c.prop(f, "flame_t")
             b.prop(f, "render_mode", expand=True)
+            r = b.row(align=True)
+            r.label(text="Preset:")
+            for key, lab in (('POINTS', "Points"), ('RAYMARCH', "Ray-march"), ('SPLAT', "Splat")):
+                op = r.operator("arcflow.render_preset", text=lab)
+                op.index, op.preset = i, key
             if f.render_mode == 'POINTS':
                 c = b.box()
                 c.label(text="Points", icon='POINTCLOUD_DATA')
+                r = c.row(align=True)
+                r.scale_y = 1.2
+                op = r.operator("arcflow.assign_point_source", text="Assign Selected Mesh", icon='EYEDROPPER')
+                op.index, op.target, op.clear = i, 'POINTS', False
+                op = r.operator("arcflow.assign_point_source", text="", icon='X')
+                op.index, op.target, op.clear = i, 'POINTS', True
+                c.label(text="Point source: %s" % (f.pt_object.name if f.pt_object else "icosphere"), icon='MESH_ICOSPHERE')
                 c.prop(f, "pt_object"); c.prop(f, "pt_use_collection")
                 if f.pt_use_collection:
                     c.prop(f, "pt_collection")
                 c.prop(f, "pt_scale")
+                sub = c.row()
+                sub.enabled = f.pt_object is None and not f.pt_use_collection
+                sub.prop(f, "pt_subdivisions")
                 c.prop(f, "pt_material")
                 c.label(text="Edit the shader in the Shader Editor; edit AF Cards / AF Render in Geometry Nodes", icon='NODETREE')
             elif f.render_mode == 'RAYMARCH':
@@ -182,6 +198,13 @@ class AF_PT_fluids(_Base, Panel):
             else:
                 c = b.box()
                 c.label(text="Gaussian splat", icon='LIGHTPROBE_SPHERE')
+                r = c.row(align=True)
+                r.scale_y = 1.2
+                op = r.operator("arcflow.assign_point_source", text="Assign Selected Mesh", icon='EYEDROPPER')
+                op.index, op.target, op.clear = i, 'SPLAT', False
+                op = r.operator("arcflow.assign_point_source", text="", icon='X')
+                op.index, op.target, op.clear = i, 'SPLAT', True
+                c.label(text="Splat source: %s" % (f.gs_object.name if f.gs_object else "icosphere"), icon='MESH_ICOSPHERE')
                 for k in ("gs_resolution", "gs_density", "gs_scale", "gs_blend", "gs_object", "gs_material"):
                     c.prop(f, k)
         if af.fluids:
@@ -319,14 +342,23 @@ class AF_PT_xray(_Base, Panel):
         b.label(text="Feedback", icon='LIGHT_AREA')
         r = b.row(align=True)
         r.operator("arcflow.add_feedback_plane", icon='MESH_PLANE')
-        r.operator("arcflow.assign_feedback", icon='EYEDROPPER')
+        r.operator("arcflow.assign_feedback", icon='EYEDROPPER').target = 'OBJECT'
+        b.label(text="Feed the active object's:", icon='LINKED')
+        g = b.grid_flow(columns=2, align=True)
+        for key, lab, icon in (('MODIFIER', "Modifier", 'MODIFIER'), ('PARTICLES', "Particles", 'PARTICLES'),
+                               ('PHYSICS', "Force field", 'FORCE_FORCE'), ('GN', "Geometry Nodes", 'GEOMETRY_NODES')):
+            g.operator("arcflow.assign_feedback", text=lab, icon=icon).target = key
+        b.operator_menu_enum("arcflow.assign_feedback", "target", text="Other / custom path...")
         b.prop(af, "feedback_obj")
         b.prop(af, "feedback_mode")
+        tg = [o.name for o in ctx.scene.objects if o.get('af_fb_target')]
+        if tg:
+            b.label(text="Targets: " + ", ".join(tg)[:60], icon='DOT')
 
 
 class AF_PT_solver(_Base, Panel):
     bl_idname = "AF_PT_solver"
-    bl_label = "Solver (LOTCBP)"
+    bl_label = "Solver (LOTBCBP)"
     bl_parent_id = "AF_PT_main"
     bl_options = {'DEFAULT_CLOSED'}
 

@@ -207,6 +207,7 @@ PART_PRESETS = {
     'TANK_LIQUID': ("Pressurised liquid tank", dict(role='CONTAINER', cavity_mode='SHELL', pressure=5.0e5, fill_percent=80.0, material='STAINLESS_STEEL', wall=0.004)),
     'TANK_OPEN': ("Open box / bucket (solid body)", dict(role='CONTAINER', cavity_mode='SOLID', pressure=0.0, fill_percent=60.0, material='INDUSTRIAL_STEEL')),
     'PIPE': ("Pipe / hose / vein", dict(role='TRANSPORT', cavity_mode='AUTO', material='STAINLESS_STEEL', wall=0.003)),
+    'PRESSURE_CHAMBER': ("Pressure chamber / vessel", dict(role='CONTAINER', cavity_mode='SHELL', pressure=2.0e6, fill_percent=90.0, material='STAINLESS_STEEL', wall=0.006)),
     'CHAMBER': ("Combustion chamber", dict(role='CHAMBER', cavity_mode='AUTO', material='INCONEL', wall=0.008)),
     'NOZZLE': ("Nozzle / bell", dict(role='CHAMBER', cavity_mode='AUTO', material='COPPER', wall=0.004)),
     'ENV': ("Collider (floor, walls)", dict(role='COLLIDER', cavity_mode='SOLID')),
@@ -484,20 +485,114 @@ class AF_OT_add_feedback_plane(Operator):
         return {'FINISHED'}
 
 
+FEEDBACK_TARGETS = [
+    ('OBJECT', "Object / material", "Active object (mesh, curve, hair curves, point cloud, text...): custom property 'af_fb' + feedback material"),
+    ('MODIFIER', "Modifier", "Drive a numeric setting of the active modifier (strength, factor, height, offset, ...)"),
+    ('PARTICLES', "Particle system", "Drive the active particle system's emission velocity (normal factor)"),
+    ('PHYSICS', "Physics / force field", "Drive the force-field strength (adds a field if the object has none)"),
+    ('GN', "Geometry Nodes", "Feed the AF LOTBCBP Prep / AF_Feedback node of the object's Geometry Nodes graph (prepares it if needed)"),
+    ('CUSTOM', "Custom property path", "Drive any property path on the object"),
+]
+_MOD_PROPS = ('strength', 'factor', 'height', 'offset', 'thickness', 'angle', 'deform_axis', 'width', 'scale', 'ratio', 'speed', 'iterations')
+
+
+def _drive(owner, path, src, gain, offset, index=-1):
+    try:
+        owner.driver_remove(path, index)
+    except Exception:
+        pass
+    fc = owner.driver_add(path, index) if index >= 0 else owner.driver_add(path)
+    if isinstance(fc, list):
+        fc = fc[0]
+    d = fc.driver
+    d.type = 'SCRIPTED'
+    var = d.variables.new()
+    var.name = 'fb'
+    var.type = 'SINGLE_PROP'
+    var.targets[0].id_type = 'OBJECT'
+    var.targets[0].id = src
+    var.targets[0].data_path = '["af_fb"]'
+    d.expression = "fb * %r + %r" % (float(gain), float(offset))
+    return fc
+
+
 class AF_OT_assign_feedback(Operator):
     bl_idname = "arcflow.assign_feedback"
     bl_label = "Assign Active Object"
-    bl_description = "Use the active object (mesh, hair curves, anything with a material) as the feedback asset"
+    bl_description = ("Use the active object as a feedback target: object / material, a modifier setting, a particle system, a physics "
+                      "force field, its Geometry Nodes graph, or any property path.  The value (0..1) is written to 'af_fb' every frame")
+    bl_options = {'REGISTER', 'UNDO'}
+    target: EnumProperty(name="Feed", items=FEEDBACK_TARGETS, default='OBJECT')
+    gain: FloatProperty(name="Gain", default=1.0)
+    offset: FloatProperty(name="Offset", default=0.0)
+    data_path: StringProperty(name="Property path", default="", description="CUSTOM: e.g. modifiers[\"Wave\"].height or field.flow")
 
     def execute(self, ctx):
         o = ctx.object
         if o is None:
             return {'CANCELLED'}
-        _af(ctx).feedback_obj = o
+        af = _af(ctx)
         o['af_fb'] = 0.0
-        if o.data is not None and hasattr(o.data, 'materials') and not len(o.data.materials):
-            o.data.materials.append(shading.feedback_material())
-        self.report({'INFO'}, "Feedback value is written to the custom property 'af_fb' (read it with an Attribute node, type Object)")
+        o['af_fb_target'] = self.target
+        if af.feedback_obj is None or self.target == 'OBJECT':
+            af.feedback_obj = o
+        t = self.target
+        try:
+            if t == 'OBJECT':
+                if o.data is not None and hasattr(o.data, 'materials') and not len(o.data.materials):
+                    o.data.materials.append(shading.feedback_material())
+                msg = "custom property 'af_fb' (Attribute node, type Object)"
+            elif t == 'MODIFIER':
+                m = o.modifiers.active if o.modifiers else None
+                if m is None:
+                    raise RuntimeError("the object has no modifier")
+                if m.type == 'NODES':
+                    t = 'GN'
+                else:
+                    prop = next((p for p in _MOD_PROPS if p in m.bl_rna.properties and m.bl_rna.properties[p].type in ('FLOAT', 'INT')
+                                 and not m.bl_rna.properties[p].is_array), None)
+                    if prop is None:
+                        raise RuntimeError("modifier %s has no numeric strength-like setting; use Custom" % m.name)
+                    _drive(o, 'modifiers["%s"].%s' % (m.name, prop), o, self.gain, self.offset)
+                    msg = "modifier %s.%s" % (m.name, prop)
+            elif t == 'PARTICLES':
+                ps = o.particle_systems.active if len(o.particle_systems) else None
+                if ps is None:
+                    raise RuntimeError("the object has no particle system")
+                _drive(ps.settings, 'normal_factor', o, self.gain, self.offset)
+                msg = "particle settings %s.normal_factor" % ps.settings.name
+            elif t == 'PHYSICS':
+                if o.field is None or o.field.type == 'NONE':
+                    ctx.view_layer.objects.active = o
+                    bpy.ops.object.forcefield_toggle()
+                _drive(o, 'field.strength', o, self.gain * 10.0, self.offset)
+                msg = "force field strength"
+            elif t == 'CUSTOM':
+                if not self.data_path:
+                    raise RuntimeError("enter a property path")
+                _drive(o, self.data_path, o, self.gain, self.offset)
+                msg = self.data_path
+            if t == 'GN':
+                if o.type != 'MESH':
+                    raise RuntimeError("Geometry Nodes feedback needs a mesh object")
+                mod, node = gn.prep_object(o)
+                ident = None
+                for it in mod.node_group.interface.items_tree:
+                    if getattr(it, 'item_type', '') == 'SOCKET' and it.in_out == 'INPUT' and it.name == 'AF Feedback':
+                        ident = it.identifier
+                if ident is None:
+                    it = mod.node_group.interface.new_socket(name="AF Feedback", in_out='INPUT', socket_type='NodeSocketFloat')
+                    ident = it.identifier
+                    gi = next((n for n in mod.node_group.nodes if n.bl_idname == 'NodeGroupInput'), None) or mod.node_group.nodes.new('NodeGroupInput')
+                    sock = next((s for s in gi.outputs if s.identifier == ident), None)
+                    if sock is not None and node.inputs.get('Feedback') is not None:
+                        mod.node_group.links.new(sock, node.inputs['Feedback'])
+                _drive(o, 'modifiers["%s"]["%s"]' % (mod.name, ident), o, self.gain, self.offset)
+                msg = "Geometry Nodes '%s' input AF Feedback" % mod.node_group.name
+        except Exception as ex:
+            self.report({'ERROR'}, "Feedback assign failed: %s" % ex)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Feedback drives %s on %s" % (msg, o.name))
         return {'FINISHED'}
 
 

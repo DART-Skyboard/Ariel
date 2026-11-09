@@ -1,4 +1,4 @@
-"""Arc Flow solver: LOTCBP collision composition, sealed-joint detection, container drain,
+"""Arc Flow solver: LOTBCBP collision composition, sealed-joint detection, container drain,
 channel flow, free flight, emitters, thermal/stress state.  Pure NumPy."""
 import math
 import numpy as np
@@ -92,6 +92,45 @@ class World:
         self._setup_transforms()
         self._build_network(force=True)
         return True
+
+    def set_fields(self, fields, mats=None):
+        """Animated / deforming collision bodies (valves, shape keys, armatures, modifiers).
+
+        fields: sequence aligned with `parts` (None = unchanged) or dict {part index: PartField}.  A part whose
+        field object differs from the current one is replaced; its LOTBCBP bricks go with the old field (the new
+        field starts unrefined and refines again on demand).  mats: optional world matrices for every part.
+        Cavities, joints and openings are re-evaluated only when a field or a matrix actually changed.
+        Returns True if anything changed."""
+        if isinstance(fields, dict):
+            items = list(fields.items())
+        else:
+            items = list(enumerate(fields or []))
+        changed = False
+        for i, f in items:
+            if f is None or i < 0 or i >= len(self.parts):
+                continue
+            if f is not self.parts[i].field:
+                self.parts[i].field = f
+                changed = True
+        moved = False
+        if mats is not None and len(self.parts):
+            new = np.stack([np.asarray(m, float) for m in mats])
+            if self._mats_key is None or new.shape != self._mats_key.shape or not np.allclose(new, self._mats_key, atol=1e-7):
+                for q, m in zip(self.parts, new):
+                    q.matrix = m.copy()
+                moved = True
+        if not (changed or moved):
+            return False
+        self._setup_transforms()
+        self._build_network(force=True)
+        if changed:
+            self.stats['refined'] = sum(q.field.n_refined for q in self.parts)
+            self.stats['field_swaps'] = self.stats.get('field_swaps', 0) + 1
+        return True
+
+    def update_animated(self, mats, fields=None):
+        """One call per sim step for animated scenes: new matrices plus any re-built (deformed) fields."""
+        return self.set_fields(fields if fields is not None else [], mats)
 
     # ------------------------------------------------------------------ composed collision queries
     def _eval_parts(self, P, bricks=True):
@@ -645,7 +684,7 @@ class World:
         return float(lo[2])
 
     def _refine(self, xw, cavs):
-        """LOTCBP: request virtual-tessellation bricks wherever particles interact with a surface."""
+        """LOTBCBP: request virtual-tessellation bricks wherever particles interact with a surface."""
         budget = self.p.refine_budget
         for k, i in enumerate(self.active):
             q = self.parts[i]
