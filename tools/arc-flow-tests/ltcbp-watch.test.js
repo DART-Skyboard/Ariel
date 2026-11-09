@@ -183,6 +183,21 @@ const H = require('./harness');
     ctx.buildCollisionSDF = rb; delete ctx.withInstanceAsync;
   });
 
+  await test('watch state does not collide with the Instance leak-event array inst.ltcbp (NaN SDF res -> mid-sim texture warnings)', async () => {
+    const A = makeInst('A', new THREE.Vector3()); A.inst.ltcbp = [];   // what the real Instance ctor / pfs toggle set
+    const st = api.ltcbpState(A.inst);
+    assert.ok(!Array.isArray(st) && st.scale === 1, 'watch state is its own object');
+    assert.ok(Array.isArray(A.inst.ltcbp) && A.inst.ltcbp.length === 0, 'leak-event array untouched');
+    const r = api.ltcbpResolution(A.inst); assert.ok(Number.isFinite(r.coarse) && r.coarse > 0 && Number.isFinite(r.fine), JSON.stringify(r));
+    st.scale = undefined; assert.strictEqual(api.ltcbpResolution(A.inst).scale, 1, 'non-finite scale falls back to 1');
+    st.scale = 1;
+    const sdf = await bake(A);
+    assert.ok(sdf.coarse.texW > 0 && sdf.coarse.texH > 0 && sdf.atlasW > 0 && sdf.atlasH > 0, 'finite SDF texture dims');
+    A.inst.sdf = sdf;
+    const bad = Object.assign({}, sdf, { coarse: Object.assign({}, sdf.coarse, { texW: NaN, texH: NaN }) });
+    assert.strictEqual(api.ltcbpSwapSDF(A.inst, bad), false, 'unusable SDF refused'); assert.strictEqual(A.inst.sdf, sdf, 'live SDF kept');
+  });
+
   await test('hooks for the deferred melt: per-part material fields, deform hooks, sparse voxel-grid key format (stub)', () => {
     const A = makeInst('A', new THREE.Vector3()); const m0 = api.partMelt(A.tank);
     assert.strictEqual(m0.id, 'al2195'); assert.ok(m0.densityKgM3 > 2000 && m0.meltPointK > 500);
