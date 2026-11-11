@@ -140,21 +140,29 @@
     /* Front-camera try-on stage */
     #tryonStage {
       position: fixed; inset: 0;
-      z-index: 15;
+      z-index: 50;
       display: none;
       background: #000;
-      transform: scaleX(-1);
     }
     #tryonStage.active { display: block; }
     #tryonVideo {
       width: 100%; height: 100%;
       object-fit: cover;
       display: block;
+      transform: scaleX(-1);
     }
     #tryonOverlay {
       position: absolute; inset: 0;
       width: 100%; height: 100%;
       pointer-events: none;
+      transform: scaleX(-1);
+    }
+    #tryonStatus {
+      position: absolute; bottom: 20px; left: 50%;
+      transform: translateX(-50%);
+      color: #00ffff; font-size: 0.8rem;
+      background: rgba(0,0,0,0.5); padding: 4px 10px; border-radius: 12px;
+      pointer-events: none; z-index: 2;
     }
   </style>
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
@@ -210,6 +218,7 @@
   <div id="tryonStage">
     <video id="tryonVideo" playsinline muted autoplay></video>
     <canvas id="tryonOverlay"></canvas>
+    <div id="tryonStatus">Starting camera…</div>
   </div>
 
   <script type="module">
@@ -233,10 +242,28 @@
     const iconMuted = document.getElementById('iconMuted');
     const iconUnmuted = document.getElementById('iconUnmuted');
 
+    const tryonStatus = document.getElementById('tryonStatus');
+
     let tryonActive = false;
     let landmarker, renderer, scene, camera, anchor, glasses;
     let stream = null;
     let rafId = null;
+
+    // Force background video to play even when server sends wrong MIME type
+    (async () => {
+      try {
+        const r = await fetch('https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail.mp4');
+        if (r.ok) {
+          const blob = await r.blob();
+          const url = URL.createObjectURL(new Blob([blob], { type: 'video/mp4' }));
+          bgvid.src = url;
+          bgvid.play().catch(() => {});
+        }
+      } catch (e) {
+        console.warn('BG video blob load failed, falling back to source', e);
+        bgvid.play().catch(() => {});
+      }
+    })();
 
     // ——— Original model-viewer AR logic ———
     btnToggleAR.addEventListener('click', () => {
@@ -346,8 +373,10 @@
 
     async function startTryOn() {
       try {
+        tryonStatus.textContent = 'Requesting camera…';
+        tryonStage.classList.add('active');
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { facingMode: { exact: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false
         });
         tryonVideo.srcObject = stream;
@@ -355,14 +384,17 @@
 
         bgvid.style.display = 'none';
         viewer.style.display = 'none';
-        tryonStage.classList.add('active');
         btnTryOn.textContent = 'Exit Try-On';
         btnTryOn.classList.add('active');
         tryonActive = true;
+        tryonStatus.textContent = 'Tracking…';
 
         await setupTracking();
       } catch (e) {
-        alert('Front camera access is required for try-on: ' + e.message);
+        console.error('Try-on start failed', e);
+        tryonStatus.textContent = 'Camera failed: ' + (e.message || e.name);
+        alert('Front camera access is required for try-on: ' + (e.message || e.name));
+        stopTryOn();
       }
     }
 
