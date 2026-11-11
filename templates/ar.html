@@ -2,448 +2,317 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>DART Dovetail &lt;model-viewer&gt; Integration</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DART Dovetail — Front-Camera Try-On</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <style>
-    /* Base styles for dark, futuristic theme */
     html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      /* Dark background */
-    /*  background: #ddaaff;; *//* Deep blue-ish dark */
-      color: #00ffff; /* Cyan text */
-      font-family: 'Rajdhani', sans-serif; /* Futuristic font */
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background: #05080d; color: #00ffff;
+      font-family: 'Rajdhani', system-ui, sans-serif;
       overflow: hidden;
-      position: relative; /* Needed for pseudo-element grid */
     }
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap');
 
-    /* Optional: Add a subtle grid background */
-    body::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        pointer-events: none; /* Allows clicks to pass through */
-        background-image:
-            linear-gradient(to right, rgba(0, 255, 255, 0.05) 1px, transparent 1px),
-            linear-gradient(to bottom, rgba(0, 255, 255, 0.05) 1px, transparent 1px);
-        background-size: 20px 20px; /* Adjust grid size */
-        z-index: 0; /* Place behind content */
+    #stage {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      transform: scaleX(-1); /* mirror so tracking matches visual */
+      background: #000;
     }
-  #bgvid {
-      position: fixed;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      object-fit: cover;
-      z-index: -10;
+    #video {
+      width: 100%; height: 100%; object-fit: cover;
+      display: block;
+    }
+    #overlay {
+      position: absolute; inset: 0; width: 100%; height: 100%;
       pointer-events: none;
     }
 
-    model-viewer {
-      width: 100%;
-      height: 100%;
-      background: transparent; /* Keep transparent for AR pass-through */
-      display: block;
-      position: relative; /* Ensure it's above the grid background */
-      z-index: 1;
-    }
-
-    /* --- REFACTORED HEADER/TOOLBAR STYLES START --- */
-
-    /* Container for Logo and Toolbar, positioned at the top center */
+    /* Slim, frosted toolbar */
     #headertool {
-      display: flex;
-      flex-direction: column; /* Stack children (logo then toolbar) vertically */
-      align-items: center; /* Center children horizontally */
-      position: absolute;
-      top: 20px; /* Position the whole header block from the top */
-      left: 50%;
-      transform: translateX(-50%); /* Center the block horizontally */
-      z-index: 10; /* Ensure it's above model-viewer */
-      gap: 15px; /* Space between logo and toolbar */
-      margin: 0;
+      position: absolute; top: 12px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 6px;
+      pointer-events: none;
     }
-    
-    /* Styles for the logo placeholder */
     #logo {
-      /* Removed all absolute positioning properties, as the parent #headertool handles it */
-      width: 500px; 
-      height: auto; 
-      /* Add some futuristic styling to the placeholder box */
-      
+      width: min(180px, 40vw); height: auto;
+      filter: drop-shadow(0 0 8px rgba(0,255,255,0.4));
+      pointer-events: none;
     }
-
     #toolbar {
-      /* Removed all absolute positioning properties, as the parent #headertool handles it */
-      display: flex;
-      gap: 12px; /* Increased gap */
-      padding: 15px 25px; /* Padding around buttons */
-      background: rgba(10, 31, 56, 0.7); /* Semi-transparent dark background */
-      border: 1px solid #00ffff; /* Cyan border */
-      border-radius: 8px;
-      box-shadow: 0 0 15px rgba(0, 255, 255, 0.5); /* Cyan glow */
-      backdrop-filter: blur(5px); /* Optional: Frosted glass effect */
+      display: flex; gap: 8px; align-items: center;
+      padding: 6px 10px;
+      background: rgba(10, 20, 35, 0.35);
+      border: 1px solid rgba(0,255,255,0.35);
+      border-radius: 20px;
+      backdrop-filter: blur(12px) saturate(1.4);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      pointer-events: auto;
     }
-
-    /* --- REFACTORED HEADER/TOOLBAR STYLES END --- */
+    #toolbar button, #toolbar .status {
+      padding: 6px 12px;
+      background: rgba(0,255,255,0.85);
+      color: #051018;
+      border: none; border-radius: 14px;
+      font-weight: 700; font-size: 0.85rem;
+      cursor: pointer; letter-spacing: 0.4px;
+      text-transform: uppercase;
+      transition: background 0.2s, transform 0.15s;
+    }
+    #toolbar button:hover { background: #00e0e0; }
+    #toolbar button:active { transform: scale(0.97); }
+    #toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .status { background: transparent !important; color: #00ffff !important; font-size: 0.75rem; padding: 4px 8px; }
 
     #muteBtn {
-      position: absolute;
-      top: 20px;
-      right: 20px;
-      z-index: 11;
-      width: 46px;
-      height: 46px;
-      border-radius: 50%;
-      background: rgba(10, 31, 56, 0.7);
-      border: 1px solid #00ffff;
-      box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
-      backdrop-filter: blur(5px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      position: absolute; top: 12px; right: 12px; z-index: 21;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: rgba(10,20,35,0.4);
+      border: 1px solid rgba(0,255,255,0.35);
+      backdrop-filter: blur(10px);
+      display: flex; align-items: center; justify-content: center;
       cursor: pointer;
-      transition: background-color 0.3s ease, box-shadow 0.3s ease;
     }
-    #muteBtn:hover { background: rgba(0, 224, 224, 0.25); box-shadow: 0 0 20px rgba(0, 255, 255, 0.8); }
-    #muteBtn svg { width: 22px; height: 22px; fill: #00ffff; }
+    #muteBtn svg { width: 18px; height: 18px; fill: #00ffff; }
 
-
-    #toolbar button {
-      padding: 8px 16px; /* Increased padding */
-      background: #00ffff; /* Cyan background */
-      color: #0a1f38; /* Dark text */
-      border: none;
-      border-radius: 4px;
-      font-weight: bold;
-      font-size: 1rem;
+    #consent {
+      position: fixed; inset: 0; z-index: 30;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: rgba(5,8,13,0.92); gap: 16px; text-align: center; padding: 20px;
+    }
+    #consent button {
+      padding: 10px 22px; border-radius: 20px; border: none;
+      background: #00ffff; color: #051018; font-weight: 700; font-size: 1rem;
       cursor: pointer;
-      transition: background-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
-      text-transform: uppercase;
     }
-
-    #toolbar button:hover:not(:disabled) {
-      background: #00e0e0; /* Slightly darker cyan on hover */
-      box-shadow: 0 0 10px rgba(0, 255, 255, 0.7); /* More intense glow on hover */
-    }
-
-    #toolbar button:active:not(:disabled) {
-       background: #00c0c0; /* Even darker cyan on active */
-    }
-
-    #toolbar button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      box-shadow: none;
-    }
-
-     /* Style the AR prompt built into model-viewer */
-     /* Note: Directly styling shadow DOM elements like the AR button is limited */
-     /* and depends on model-viewer's internal structure. This is a common approach, */
-     /* but might not always work or be stable across versions. */
-     /* This styles the *default* AR button model-viewer shows in 3D view on mobile, NOT the native app UI */
-     model-viewer::part(default-ar-button) {
-        /* Attempt to style the default AR button if it appears (often in 3D view on mobile) */
-        background-color: #00ffff;
-        color: #0a1f38;
-        border-radius: 4px;
-        padding: 8px 16px;
-        bottom: 20px;
-        right: 20px;
-        /* Match the futuristic button style */
-        border: none;
-        font-weight: bold;
-        font-size: 1rem;
-        text-transform: uppercase;
-        box-shadow: 0 0 10px rgba(0, 255, 255, 0.5); /* Cyan glow */
-     }
-
-
-     /* Add font import */
-     @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;700&display=swap');
-
   </style>
-  <!-- Import the model-viewer component -->
-  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 </head>
 <body>
-      <!-- full‐screen video background -->
- <video id="bgvid" autoplay muted loop playsinline>
-  <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail.mp4" type="video/mp4">
-</video>
-
-<!-- Background MP3 track — controlled by speaker button -->
-<audio id="bgAudio" loop preload="none"
-  src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail_lock.mp3">
-</audio>
-
-<button id="muteBtn" aria-label="Play background track" title="Play track">
-  <svg id="iconMuted" viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.4l2.4 2.4c.06-.26.1-.53.1-.8zM19 12c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.9 8.9 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"/></svg>
-  <svg id="iconUnmuted" viewBox="0 0 24 24" style="display:none"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.47 4.47 0 0 0 2.5-4zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-</button>
-
-<!-- Header container is now properly positioned and uses flexbox for internal layout -->
-<div id="headertool">
-  <!-- Logo Placeholder added here - removed redundant div wrapper -->
-  <img id="logo" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/dovetailwhite.png" alt="dovetail">
-
-  <div id="toolbar">
-    <div>For Best AR: Switch Browser to mobile.</div>
-    <button id="exportPNG">Export PNG</button>
-    <button id="exportGLB">Export GLB</button>
-    <!-- Combined AR button -->
-    <button id="toggleAR">Start AR</button>
+  <div id="consent">
+    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/dovetailwhite.png" alt="DART Dovetail" style="width:140px;">
+    <p style="max-width:360px; line-height:1.4;">Front-camera try-on for DART Dovetail AR glasses.<br>Face & head tracking runs on-device. Nothing is uploaded.</p>
+    <button id="startBtn">Start Front Camera</button>
   </div>
-</div>
 
-  <model-viewer
-    id="viewer"
-    src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/dovetail.glb"
-	ios-src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/DART%20Dovetail.usdz"
-    alt="Arc Lake 3D Model"
-    camera-controls
-    exposure="1"
-    environment-image="neutral"
-    shadow-intensity="1"
-    ar
-    ar-modes="webxr scene-viewer quick-look"
-    interaction-prompt="auto">
-  </model-viewer>
+  <div id="stage" style="display:none;">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
 
-  <script>
-    const viewer = document.getElementById('viewer');
-    const btnPNG = document.getElementById('exportPNG');
-    const btnGLB = document.getElementById('exportGLB');
-    const btnToggleAR = document.getElementById('toggleAR'); // Get the combined button
+  <div id="headertool" style="display:none;">
+    <img id="logo" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/dovetailwhite.png" alt="dovetail">
+    <div id="toolbar">
+      <span class="status" id="status">Tracking…</span>
+      <button id="captureBtn">Capture PNG</button>
+    </div>
+  </div>
 
-    // Helper function to start AR
-    function startAR() {
-      // Check if viewer supports AR activation and trigger it
-      // Note: activateAR() is the modern way, enterAR() is older.
-      if (viewer.activateAR) {
-        console.log('Attempting to activate AR via activateAR()');
-        viewer.activateAR();
-      } else if (viewer.enterAR) {
-        console.log('Attempting to activate AR via enterAR()');
-        viewer.enterAR();
-      } else {
-        console.warn('AR activation methods (activateAR, enterAR) not available on viewer.');
-        // Provide feedback to the user if possible
-         alert('AR mode is not available on this device or browser.');
-      }
-    }
+  <button id="muteBtn" style="display:none;" aria-label="Mute">
+    <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.47 4.47 0 0 0 2.5-4zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+  </button>
 
-     // Helper function to stop AR
-     // Note: Exiting native AR modes like Scene Viewer/Quick Look is often
-     // controlled by the native UI itself (e.g., the 'X' button or system back button).
-     // These methods might primarily work for WebXR sessions, or might signal to the native app to close.
-    function stopAR() {
-       // Check if viewer supports AR exit and trigger it
-       if (viewer.exitAR) {
-         console.log('Attempting to exit AR via exitAR()');
-         viewer.exitAR();
-       } else if (viewer.dismissAR) {
-          console.log('Attempting to exit AR via dismissAR()');
-          viewer.dismissAR();
-       } else {
-         console.warn('AR exit methods (exitAR, dismissAR) not available on viewer or not applicable to current AR mode.');
-         // Provide feedback to the user if possible
-         // In native modes (Scene Viewer/Quick Look), the user typically exits
-         // using the OS-provided UI, not the web page's button.
-          alert('To exit AR, look for controls provided by your device (e.g., a back button or X icon), or follow on-screen instructions.');
-       }
-    }
+  <audio id="bgAudio" loop preload="none" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail_lock.mp3"></audio>
 
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { GLTFLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+    import { OBJLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 
-    // Export PNG handler
-    btnPNG.addEventListener('click', () => {
-      // Using viewer.toDataURL is generally the recommended way to capture the model-viewer content
+    const GLASSES_URL = 'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/dovetail.glb';
+    const FACE_URL = 'https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model.obj';
+    const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+
+    const FIT = 0.92;
+    const SMOOTH = 0.45;
+    const DROP = 0.4;
+
+    const startBtn = document.getElementById('startBtn');
+    const consent = document.getElementById('consent');
+    const stage = document.getElementById('stage');
+    const video = document.getElementById('video');
+    const header = document.getElementById('headertool');
+    const statusEl = document.getElementById('status');
+    const captureBtn = document.getElementById('captureBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const bgAudio = document.getElementById('bgAudio');
+
+    let landmarker, renderer, scene, camera, anchor, glasses;
+    let running = false;
+
+    startBtn.onclick = start;
+
+    async function start() {
       try {
-        // The toDataURL method on model-viewer captures the *3D scene*, not the live AR camera feed overlay.
-        const dataURL = viewer.toDataURL('image/png');
+        statusEl.textContent = 'Requesting camera…';
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        consent.style.display = 'none';
+        stage.style.display = 'block';
+        header.style.display = 'flex';
+        muteBtn.style.display = 'flex';
 
-        const win = window.open();
-        if (win) {
-            win.document.write(`
-              <html><body style="margin:0;background:#1a1a1a;text-align:center;color:#fff;">
-                <p style="margin-top: 20px;">Right-click (or long-press) the image to save.</p>
-                <img src="${dataURL}" style="max-width:95%;height:auto; border: 1px solid #00ffff;">
-                <p>Image exported from 3D model (desktop view). Note: This captures the 3D view, not the live AR camera view.</p>
-              </body></html>
-            `);
-             win.document.close(); // Close the document stream
-        } else {
-             alert('Popup blocked. Please allow popups to view the image.');
-        }
-      } catch (error) {
-          console.error('Error exporting PNG:', error);
-          alert('Failed to export PNG. Ensure the model is fully loaded and visible. This feature does not capture the live AR camera view.');
+        await setupTracking();
+        running = true;
+        statusEl.textContent = 'Tracking';
+      } catch (e) {
+        statusEl.textContent = 'Camera error';
+        alert('Camera access required for try-on: ' + e.message);
       }
-    });
+    }
 
-    // Export GLB handler (downloads the source file)
-    btnGLB.addEventListener('click', () => {
-      const url = viewer.getAttribute('src');
-      if (!url) {
-          alert('Model source URL not found.');
-          return;
+    async function setupTracking() {
+      const { FilesetResolver, FaceLandmarker } = await import(VISION + '/vision_bundle.mjs');
+      const files = await FilesetResolver.forVisionTasks(VISION + '/wasm');
+      const opts = (delegate) => ({
+        baseOptions: { modelAssetPath: MODEL, delegate },
+        runningMode: 'VIDEO',
+        numFaces: 1,
+        outputFacialTransformationMatrixes: true,
+        outputFaceBlendshapes: false
+      });
+      landmarker = await FaceLandmarker.createFromOptions(files, opts('GPU'))
+        .catch(() => FaceLandmarker.createFromOptions(files, opts('CPU')));
+
+      const w = video.videoWidth || 1280;
+      const h = video.videoHeight || 720;
+
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, canvas: document.getElementById('overlay') });
+      renderer.setSize(w, h, false);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(63, w / h, 0.1, 10000);
+      camera.position.set(0, 0, 0);
+
+      anchor = new THREE.Group();
+      anchor.matrixAutoUpdate = false;
+      scene.add(anchor);
+
+      // Optional canonical face occluder (depth only)
+      try {
+        const faceText = await (await fetch(FACE_URL)).text();
+        const occluder = new OBJLoader().parse(faceText);
+        occluder.traverse(m => {
+          if (m.isMesh) m.material = new THREE.MeshBasicMaterial({ colorWrite: false });
+        });
+        occluder.renderOrder = -1;
+        anchor.add(occluder);
+      } catch (_) { /* non-fatal */ }
+
+      // Load glasses
+      const gltf = await new GLTFLoader().loadAsync(GLASSES_URL);
+      glasses = gltf.scene;
+      const box = new THREE.Box3().setFromObject(glasses);
+      const size = box.getSize(new THREE.Vector3());
+      // Approximate face width from typical canonical (~12-14 cm)
+      const faceWidth = 13.5;
+      glasses.scale.setScalar(FIT * faceWidth / Math.max(size.x, 0.01));
+      glasses.position.set(0, -DROP, 2.5); // fine-tune Z for snug fit
+      anchor.add(glasses);
+
+      // Lighting
+      scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(1, 2, 3);
+      scene.add(dir);
+
+      animate();
+    }
+
+    const target = new THREE.Matrix4();
+    const tp = new THREE.Vector3(), tq = new THREE.Quaternion(), ts = new THREE.Vector3();
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    let seen = false;
+
+    function animate() {
+      if (!running) return;
+      requestAnimationFrame(animate);
+
+      if (video.readyState < 2) return;
+
+      const res = landmarker.detectForVideo(video, performance.now());
+      const found = res.facialTransformationMatrixes && res.facialTransformationMatrixes.length > 0;
+
+      if (found) {
+        target.fromArray(res.facialTransformationMatrixes[0].data).decompose(tp, tq, ts);
+        const k = seen ? SMOOTH : 1;
+        p.lerp(tp, k);
+        q.slerp(tq, k);
+        s.lerp(ts, k);
+        anchor.matrix.compose(p, q, s);
+        anchor.matrixWorldNeedsUpdate = true;
+        anchor.visible = true;
+        statusEl.textContent = 'Tracking';
+      } else {
+        anchor.visible = false;
+        statusEl.textContent = 'No face';
       }
+      seen = found;
+
+      renderer.render(scene, camera);
+    }
+
+    // Capture: composite video + overlay, download PNG
+    captureBtn.onclick = () => {
+      if (!video.videoWidth) return;
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth;
+      c.height = video.videoHeight;
+      const ctx = c.getContext('2d');
+
+      // Draw video (flip back because stage is mirrored)
+      ctx.save();
+      ctx.translate(c.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, c.width, c.height);
+      ctx.restore();
+
+      // Draw Three.js overlay (also flip to match)
+      if (renderer && renderer.domElement) {
+        ctx.save();
+        ctx.translate(c.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(renderer.domElement, 0, 0, c.width, c.height);
+        ctx.restore();
+      }
+
       const a = document.createElement('a');
-      a.href = url;
-      // Suggest a filename based on the URL or a default
-      const filename = url.substring(url.lastIndexOf('/') + 1) || 'model.glb';
-      a.download = filename;
-      document.body.appendChild(a);
+      a.href = c.toDataURL('image/png');
+      a.download = 'dart-dovetail-tryon-' + Date.now() + '.png';
       a.click();
-      document.body.removeChild(a);
-       console.log(`Downloading model from: ${url}`);
-    });
+      statusEl.textContent = 'PNG saved';
+      setTimeout(() => { if (running) statusEl.textContent = 'Tracking'; }, 1500);
+    };
 
-    // Toggle AR button logic based on AR status events
-    btnToggleAR.addEventListener('click', () => {
-        // Check the current viewer.arStatus property to decide action
-         if (viewer.arStatus === 'session-started') {
-            stopAR(); // Attempt to stop if a session is active (might only work for WebXR)
-         } else if (viewer.arStatus !== 'unavailable' && viewer.arStatus !== 'activating') {
-            // Only attempt to start if AR is not unavailable and not already trying to activate
-            startAR();
-         } else if (viewer.arStatus === 'unavailable') {
-             alert('AR mode is unavailable on this device.');
-         }
-    });
-
-
-    // Listen for AR status changes to update the button text/state
-    viewer.addEventListener('ar-status', (e) => {
-      console.log('AR status changed:', e.detail.status);
-      switch (e.detail.status) {
-        case 'session-started':
-          btnToggleAR.textContent = 'Exit AR';
-          btnToggleAR.disabled = false; // Should always be able to exit (though native UI is preferred)
-          // Optionally hide the toolbar during native AR session if it obstructs the view
-           document.getElementById('headertool').style.visibility = 'hidden'; // Hide the whole header
-          break;
-        case 'not-presenting':
-          // AR is not active. Check if it's supported to enable the button.
-           btnToggleAR.textContent = 'Start AR';
-           btnToggleAR.disabled = false; // Enable button if AR is potentially available
-           document.getElementById('headertool').style.visibility = 'visible'; // Show the whole header again
-          break;
-        case 'unavailable':
-          // AR is not supported or available on this device/browser
-          btnToggleAR.textContent = 'AR Unavailable';
-          btnToggleAR.disabled = true;
-           document.getElementById('headertool').style.visibility = 'visible'; // Show the whole header even if AR is disabled
-          break;
-        case 'error':
-           // An error occurred
-           btnToggleAR.textContent = 'AR Error';
-           btnToggleAR.disabled = true;
-           console.error('AR Error:', e.detail.error);
-           document.getElementById('headertool').style.visibility = 'visible'; // Show the whole header
-          break;
-         case 'session-ended':
-            // Session ended cleanly (e.g., exited via native UI)
-            btnToggleAR.textContent = 'Start AR'; // Go back to start state
-            btnToggleAR.disabled = false;
-            document.getElementById('headertool').style.visibility = 'visible'; // Show the whole header again
-            break;
-         case 'activating':
-            // AR is trying to start - disable button briefly
-             btnToggleAR.textContent = 'Activating AR...';
-             btnToggleAR.disabled = true;
-             // Keep toolbar visible during activation attempt
-             document.getElementById('headertool').style.visibility = 'visible'; // Keep header visible
-             break;
-         case 'ready':
-            // AR is supported and ready to start a session (often the initial state on mobile before activation)
-             btnToggleAR.textContent = 'Start AR';
-             btnToggleAR.disabled = false;
-             document.getElementById('headertool').style.visibility = 'visible'; // Show the whole header
-            break;
-
-        default:
-           // Handle other potential statuses or just ignore
-           console.log(`Unhandled AR status: ${e.detail.status}`);
-           // Don't change button state or text for unknown states, assume usable unless told otherwise
-           // Ensure it's not stuck disabled if an unknown state occurs after 'activating'
-            if (btnToggleAR.textContent === 'Activating AR...') {
-                 console.warn('AR status stuck in activating or unknown state. Attempting to reset button.');
-                 btnToggleAR.textContent = 'Start AR'; // Assume it failed activation if status doesn't change
-                 btnToggleAR.disabled = false;
-            }
-           break;
+    // Mute toggle
+    let trackPlaying = false;
+    muteBtn.onclick = () => {
+      if (!trackPlaying) {
+        bgAudio.play().catch(()=>{});
+        trackPlaying = true;
+      } else {
+        bgAudio.pause();
+        bgAudio.currentTime = 0;
+        trackPlaying = false;
       }
+    };
+
+    window.addEventListener('resize', () => {
+      if (!renderer || !video.videoWidth) return;
+      const w = video.videoWidth, h = video.videoHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
     });
-
-    // Log model load status
-    viewer.addEventListener('load', () => {
-      console.log('✅ Model loaded.');
-       // After model loads, check initial AR status to set button correctly
-       // This ensures the button state is correct on page load if AR is supported/unavailable.
-      // Use a small delay to ensure model-viewer has fully determined AR status
-      setTimeout(() => {
-        if (viewer.arStatus) {
-             console.log("Initial viewer.arStatus:", viewer.arStatus);
-             // Manually trigger the ar-status logic to set the button text/state correctly on load
-             viewer.dispatchEvent(new CustomEvent('ar-status', { detail: { status: viewer.arStatus } }));
-        } else {
-            // If arStatus property isn't immediately available, the first 'ar-status' event will handle it.
-            // The button will default to "Start AR" and become disabled only if 'unavailable' fires later.
-             console.log("viewer.arStatus not available shortly after load. Relying on first ar-status event.");
-        }
-      }, 100); // Reduced delay slightly
-    });
-
-     viewer.addEventListener('error', (e) => {
-        console.error('❌ Model failed to load:', e.detail.src || e);
-        alert('Failed to load the 3D model.');
-     });
-
-     // Initial check on page load, in case the 'load' event fires too early for arStatus
-     // or if the model is cached.
-     // Use a small delay to ensure model-viewer is fully initialized
-     setTimeout(() => {
-        if (viewer.arStatus) {
-             console.log("Initial check (delayed): viewer.arStatus:", viewer.arStatus);
-             viewer.dispatchEvent(new CustomEvent('ar-status', { detail: { status: viewer.arStatus } }));
-        } else {
-             console.log("Initial check (delayed): viewer.arStatus still not available.");
-        }
-     }, 500); // 500ms delay as a fallback
-
-     // ── Background MP3 track play/stop toggle ──
-     // The background video stays muted at all times — the speaker button
-     // controls the MP3 audio track independently.
-     const bgAudio = document.getElementById('bgAudio');
-     const muteBtn = document.getElementById('muteBtn');
-     const iconMuted = document.getElementById('iconMuted');
-     const iconUnmuted = document.getElementById('iconUnmuted');
-     let trackPlaying = false;
-
-     muteBtn.addEventListener('click', () => {
-       if (!trackPlaying) {
-         bgAudio.play().catch(() => {});
-         trackPlaying = true;
-         iconMuted.style.display = 'none';
-         iconUnmuted.style.display = 'block';
-         muteBtn.title = 'Stop track';
-         muteBtn.setAttribute('aria-label', 'Stop background track');
-       } else {
-         bgAudio.pause();
-         bgAudio.currentTime = 0;
-         trackPlaying = false;
-         iconMuted.style.display = 'block';
-         iconUnmuted.style.display = 'none';
-         muteBtn.title = 'Play track';
-         muteBtn.setAttribute('aria-label', 'Play background track');
-       }
-     });
-
   </script>
 </body>
 </html>
