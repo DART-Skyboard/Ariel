@@ -2,170 +2,386 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>DART Dovetail — Front-Camera Try-On</title>
+  <title>DART Dovetail</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <style>
-    html, body {
-      margin: 0; padding: 0; width: 100%; height: 100%;
-      background: #05080d; color: #00ffff;
-      font-family: 'Rajdhani', system-ui, sans-serif;
-      overflow: hidden;
-    }
     @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap');
 
-    #stage {
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      color: #00ffff;
+      font-family: 'Rajdhani', system-ui, sans-serif;
+      overflow: hidden;
+      position: relative;
+      background: #05080d;
+    }
+
+    body::before {
+      content: '';
+      position: absolute; inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(to right, rgba(0,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0,255,255,0.04) 1px, transparent 1px);
+      background-size: 20px 20px;
+      z-index: 0;
+    }
+
+    #bgvid {
       position: fixed; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      transform: scaleX(-1); /* mirror so tracking matches visual */
-      background: #000;
-    }
-    #video {
-      width: 100%; height: 100%; object-fit: cover;
-      display: block;
-    }
-    #overlay {
-      position: absolute; inset: 0; width: 100%; height: 100%;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      z-index: -10;
       pointer-events: none;
     }
 
-    /* Slim, frosted toolbar */
+    model-viewer {
+      width: 100%; height: 100%;
+      background: transparent;
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Slim frosted header */
     #headertool {
-      position: absolute; top: 12px; left: 50%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: absolute;
+      top: 10px;
+      left: 50%;
       transform: translateX(-50%);
       z-index: 20;
-      display: flex; flex-direction: column; align-items: center;
       gap: 6px;
+      margin: 0;
       pointer-events: none;
     }
+
     #logo {
-      width: min(180px, 40vw); height: auto;
-      filter: drop-shadow(0 0 8px rgba(0,255,255,0.4));
+      width: min(220px, 46vw);
+      height: auto;
+      filter: drop-shadow(0 0 6px rgba(0,255,255,0.35));
       pointer-events: none;
     }
+
     #toolbar {
-      display: flex; gap: 8px; align-items: center;
-      padding: 6px 10px;
-      background: rgba(10, 20, 35, 0.35);
-      border: 1px solid rgba(0,255,255,0.35);
-      border-radius: 20px;
-      backdrop-filter: blur(12px) saturate(1.4);
-      -webkit-backdrop-filter: blur(12px) saturate(1.4);
-      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      justify-content: center;
+      padding: 5px 8px;
+      background: rgba(8, 16, 28, 0.32);
+      border: 1px solid rgba(0,255,255,0.28);
+      border-radius: 22px;
+      backdrop-filter: blur(14px) saturate(1.3);
+      -webkit-backdrop-filter: blur(14px) saturate(1.3);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.22);
       pointer-events: auto;
+      max-width: 96vw;
     }
-    #toolbar button, #toolbar .status {
-      padding: 6px 12px;
-      background: rgba(0,255,255,0.85);
+
+    #toolbar .hint {
+      font-size: 0.72rem;
+      color: rgba(0,255,255,0.75);
+      padding: 0 4px;
+      white-space: nowrap;
+    }
+
+    #toolbar button {
+      padding: 5px 11px;
+      background: rgba(0,255,255,0.88);
       color: #051018;
-      border: none; border-radius: 14px;
-      font-weight: 700; font-size: 0.85rem;
-      cursor: pointer; letter-spacing: 0.4px;
+      border: none;
+      border-radius: 16px;
+      font-weight: 700;
+      font-size: 0.78rem;
+      letter-spacing: 0.3px;
+      cursor: pointer;
       text-transform: uppercase;
-      transition: background 0.2s, transform 0.15s;
+      transition: background 0.2s, transform 0.12s;
     }
-    #toolbar button:hover { background: #00e0e0; }
-    #toolbar button:active { transform: scale(0.97); }
+    #toolbar button:hover:not(:disabled) { background: #00e0e0; }
+    #toolbar button:active:not(:disabled) { transform: scale(0.97); }
     #toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .status { background: transparent !important; color: #00ffff !important; font-size: 0.75rem; padding: 4px 8px; }
+    #toolbar button.active {
+      background: #ff6b6b;
+      color: #fff;
+    }
 
     #muteBtn {
-      position: absolute; top: 12px; right: 12px; z-index: 21;
-      width: 36px; height: 36px; border-radius: 50%;
-      background: rgba(10,20,35,0.4);
-      border: 1px solid rgba(0,255,255,0.35);
+      position: absolute;
+      top: 10px; right: 10px;
+      z-index: 21;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: rgba(8, 16, 28, 0.35);
+      border: 1px solid rgba(0,255,255,0.3);
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       display: flex; align-items: center; justify-content: center;
       cursor: pointer;
     }
     #muteBtn svg { width: 18px; height: 18px; fill: #00ffff; }
 
-    #consent {
-      position: fixed; inset: 0; z-index: 30;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: rgba(5,8,13,0.92); gap: 16px; text-align: center; padding: 20px;
+    model-viewer::part(default-ar-button) {
+      background-color: #00ffff;
+      color: #051018;
+      border-radius: 16px;
+      padding: 6px 12px;
+      bottom: 16px; right: 16px;
+      border: none;
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-transform: uppercase;
     }
-    #consent button {
-      padding: 10px 22px; border-radius: 20px; border: none;
-      background: #00ffff; color: #051018; font-weight: 700; font-size: 1rem;
-      cursor: pointer;
+
+    /* Front-camera try-on stage */
+    #tryonStage {
+      position: fixed; inset: 0;
+      z-index: 15;
+      display: none;
+      background: #000;
+      transform: scaleX(-1);
+    }
+    #tryonStage.active { display: block; }
+    #tryonVideo {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    #tryonOverlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
     }
   </style>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
-  <div id="consent">
-    <img src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/dovetailwhite.png" alt="DART Dovetail" style="width:140px;">
-    <p style="max-width:360px; line-height:1.4;">Front-camera try-on for DART Dovetail AR glasses.<br>Face & head tracking runs on-device. Nothing is uploaded.</p>
-    <button id="startBtn">Start Front Camera</button>
-  </div>
+  <video id="bgvid" autoplay muted loop playsinline>
+    <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail.mp4" type="video/mp4">
+  </video>
 
-  <div id="stage" style="display:none;">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
-  </div>
+  <audio id="bgAudio" loop>
+    <source src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail_lock.mp3" type="audio/mpeg">
+  </audio>
 
-  <div id="headertool" style="display:none;">
+  <button id="muteBtn" aria-label="Play background track" title="Play track">
+    <svg id="iconMuted" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+    <svg id="iconUnmuted" viewBox="0 0 24 24" style="display:none"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+  </button>
+
+  <div id="headertool">
     <img id="logo" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/refs/heads/main/static/dovetailwhite.png" alt="dovetail">
     <div id="toolbar">
-      <span class="status" id="status">Tracking…</span>
-      <button id="captureBtn">Capture PNG</button>
+      <span class="hint">Desktop / VR</span>
+      <button id="exportPNG">Export PNG</button>
+      <button id="exportGLB">Export GLB</button>
+      <button id="toggleAR">Start AR</button>
+      <button id="toggleTryOn">Front Cam Try-On</button>
     </div>
   </div>
 
-  <button id="muteBtn" style="display:none;" aria-label="Mute">
-    <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.47 4.47 0 0 0 2.5-4zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-  </button>
+  <model-viewer
+    id="viewer"
+    src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/dovetail.glb"
+    ios-src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/DART%20Dovetail.usdz"
+    alt="DART Dovetail"
+    camera-controls
+    exposure="1"
+    environment-image="neutral"
+    shadow-intensity="1"
+    ar
+    ar-modes="webxr scene-viewer quick-look"
+    interaction-prompt="auto">
+  </model-viewer>
 
-  <audio id="bgAudio" loop preload="none" src="https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/static/dovetail_lock.mp3"></audio>
+  <!-- Front-camera try-on stage (hidden by default) -->
+  <div id="tryonStage">
+    <video id="tryonVideo" playsinline muted autoplay></video>
+    <canvas id="tryonOverlay"></canvas>
+  </div>
 
   <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { GLTFLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
-    import { OBJLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-    const GLASSES_URL = 'https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/dovetail.glb';
-    const FACE_URL = 'https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model.obj';
     const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
     const MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
-    const FIT = 0.92;
-    const SMOOTH = 0.45;
-    const DROP = 0.4;
-
-    const startBtn = document.getElementById('startBtn');
-    const consent = document.getElementById('consent');
-    const stage = document.getElementById('stage');
-    const video = document.getElementById('video');
-    const header = document.getElementById('headertool');
-    const statusEl = document.getElementById('status');
-    const captureBtn = document.getElementById('captureBtn');
-    const muteBtn = document.getElementById('muteBtn');
+    const viewer = document.getElementById('viewer');
+    const btnPNG = document.getElementById('exportPNG');
+    const btnGLB = document.getElementById('exportGLB');
+    const btnToggleAR = document.getElementById('toggleAR');
+    const btnTryOn = document.getElementById('toggleTryOn');
+    const tryonStage = document.getElementById('tryonStage');
+    const tryonVideo = document.getElementById('tryonVideo');
+    const tryonOverlay = document.getElementById('tryonOverlay');
+    const bgvid = document.getElementById('bgvid');
     const bgAudio = document.getElementById('bgAudio');
+    const muteBtn = document.getElementById('muteBtn');
+    const iconMuted = document.getElementById('iconMuted');
+    const iconUnmuted = document.getElementById('iconUnmuted');
 
+    let tryonActive = false;
     let landmarker, renderer, scene, camera, anchor, glasses;
-    let running = false;
+    let stream = null;
+    let rafId = null;
 
-    startBtn.onclick = start;
+    // ——— Original model-viewer AR logic ———
+    btnToggleAR.addEventListener('click', () => {
+      if (viewer.arStatus === 'not-presenting') {
+        if (viewer.activateAR) viewer.activateAR();
+        else if (viewer.enterAR) viewer.enterAR();
+        else alert('AR mode is not available on this device or browser.');
+      } else if (viewer.arStatus === 'presenting') {
+        if (viewer.exitAR) viewer.exitAR();
+        else if (viewer.dismissAR) viewer.dismissAR();
+        else alert('To exit AR, use the controls provided by your device.');
+      }
+    });
 
-    async function start() {
+    viewer.addEventListener('ar-status', (e) => {
+      const s = e.detail.status;
+      if (s === 'not-presenting') {
+        btnToggleAR.textContent = 'Start AR';
+        btnToggleAR.disabled = false;
+      } else if (s === 'presenting') {
+        btnToggleAR.textContent = 'Exit AR';
+      } else if (s === 'unavailable') {
+        btnToggleAR.textContent = 'AR Unavailable';
+        btnToggleAR.disabled = true;
+      }
+    });
+
+    viewer.addEventListener('load', () => {
+      setTimeout(() => {
+        if (viewer.arStatus) {
+          viewer.dispatchEvent(new CustomEvent('ar-status', { detail: { status: viewer.arStatus } }));
+        }
+      }, 100);
+    });
+
+    viewer.addEventListener('error', (e) => {
+      console.error('Model failed to load:', e.detail?.src || e);
+    });
+
+    // Export PNG (desktop / model-viewer view, or try-on composite)
+    btnPNG.addEventListener('click', async () => {
+      if (tryonActive && renderer) {
+        // Composite camera + glasses
+        const w = tryonVideo.videoWidth || 1280;
+        const h = tryonVideo.videoHeight || 720;
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.translate(w, 0); ctx.scale(-1, 1); // un-mirror for natural photo
+        ctx.drawImage(tryonVideo, 0, 0, w, h);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(tryonOverlay, 0, 0, w, h);
+        const url = c.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'dovetail-tryon.png';
+        a.click();
+        return;
+      }
       try {
-        statusEl.textContent = 'Requesting camera…';
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const dataURL = viewer.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = dataURL;
+        a.download = 'dovetail.png';
+        a.click();
+      } catch (err) {
+        alert('PNG export failed. Make sure the model is loaded.');
+      }
+    });
+
+    btnGLB.addEventListener('click', () => {
+      const url = viewer.getAttribute('src');
+      if (!url) return;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = url.split('/').pop() || 'dovetail.glb';
+      a.click();
+    });
+
+    // Background track mute
+    let trackPlaying = false;
+    muteBtn.addEventListener('click', () => {
+      if (!trackPlaying) {
+        bgAudio.play().catch(() => {});
+        trackPlaying = true;
+        iconMuted.style.display = 'none';
+        iconUnmuted.style.display = 'block';
+        muteBtn.title = 'Stop track';
+      } else {
+        bgAudio.pause();
+        bgAudio.currentTime = 0;
+        trackPlaying = false;
+        iconMuted.style.display = 'block';
+        iconUnmuted.style.display = 'none';
+        muteBtn.title = 'Play track';
+      }
+    });
+
+    // ——— Front-camera try-on toggle ———
+    btnTryOn.addEventListener('click', async () => {
+      if (tryonActive) {
+        stopTryOn();
+      } else {
+        await startTryOn();
+      }
+    });
+
+    async function startTryOn() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false
         });
-        video.srcObject = stream;
-        await video.play();
-        consent.style.display = 'none';
-        stage.style.display = 'block';
-        header.style.display = 'flex';
-        muteBtn.style.display = 'flex';
+        tryonVideo.srcObject = stream;
+        await tryonVideo.play();
+
+        bgvid.style.display = 'none';
+        viewer.style.display = 'none';
+        tryonStage.classList.add('active');
+        btnTryOn.textContent = 'Exit Try-On';
+        btnTryOn.classList.add('active');
+        tryonActive = true;
 
         await setupTracking();
-        running = true;
-        statusEl.textContent = 'Tracking';
       } catch (e) {
-        statusEl.textContent = 'Camera error';
-        alert('Camera access required for try-on: ' + e.message);
+        alert('Front camera access is required for try-on: ' + e.message);
+      }
+    }
+
+    function stopTryOn() {
+      if (rafId) cancelAnimationFrame(rafId);
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      tryonVideo.srcObject = null;
+      tryonStage.classList.remove('active');
+      bgvid.style.display = '';
+      viewer.style.display = '';
+      btnTryOn.textContent = 'Front Cam Try-On';
+      btnTryOn.classList.remove('active');
+      tryonActive = false;
+      if (renderer) {
+        renderer.dispose();
+        renderer = null;
       }
     }
 
@@ -182,10 +398,10 @@
       landmarker = await FaceLandmarker.createFromOptions(files, opts('GPU'))
         .catch(() => FaceLandmarker.createFromOptions(files, opts('CPU')));
 
-      const w = video.videoWidth || 1280;
-      const h = video.videoHeight || 720;
+      const w = tryonVideo.videoWidth || 1280;
+      const h = tryonVideo.videoHeight || 720;
 
-      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, canvas: document.getElementById('overlay') });
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, canvas: tryonOverlay });
       renderer.setSize(w, h, false);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -197,122 +413,31 @@
       anchor.matrixAutoUpdate = false;
       scene.add(anchor);
 
-      // Optional canonical face occluder (depth only)
-      try {
-        const faceText = await (await fetch(FACE_URL)).text();
-        const occluder = new OBJLoader().parse(faceText);
-        occluder.traverse(m => {
-          if (m.isMesh) m.material = new THREE.MeshBasicMaterial({ colorWrite: false });
-        });
-        occluder.renderOrder = -1;
-        anchor.add(occluder);
-      } catch (_) { /* non-fatal */ }
+      const loader = new GLTFLoader();
+      loader.load('https://raw.githubusercontent.com/DART-Skyboard/Ariel/main/templates/dovetail.glb', (gltf) => {
+        glasses = gltf.scene;
+        glasses.scale.set(1.15, 1.15, 1.15);
+        glasses.position.set(0, 0.02, -0.08);
+        anchor.add(glasses);
+      });
 
-      // Load glasses
-      const gltf = await new GLTFLoader().loadAsync(GLASSES_URL);
-      glasses = gltf.scene;
-      const box = new THREE.Box3().setFromObject(glasses);
-      const size = box.getSize(new THREE.Vector3());
-      // Approximate face width from typical canonical (~12-14 cm)
-      const faceWidth = 13.5;
-      glasses.scale.setScalar(FIT * faceWidth / Math.max(size.x, 0.01));
-      glasses.position.set(0, -DROP, 2.5); // fine-tune Z for snug fit
-      anchor.add(glasses);
+      function loop() {
+        if (!tryonActive) return;
+        rafId = requestAnimationFrame(loop);
+        if (tryonVideo.readyState < 2) return;
 
-      // Lighting
-      scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-      dir.position.set(1, 2, 3);
-      scene.add(dir);
-
-      animate();
+        const results = landmarker.detectForVideo(tryonVideo, performance.now());
+        if (results.facialTransformationMatrixes && results.facialTransformationMatrixes.length > 0) {
+          const m = results.facialTransformationMatrixes[0].data;
+          anchor.matrix.fromArray(m);
+          anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
+          // slight forward bias so glasses sit on the face
+          anchor.position.z -= 0.02;
+        }
+        renderer.render(scene, camera);
+      }
+      loop();
     }
-
-    const target = new THREE.Matrix4();
-    const tp = new THREE.Vector3(), tq = new THREE.Quaternion(), ts = new THREE.Vector3();
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    let seen = false;
-
-    function animate() {
-      if (!running) return;
-      requestAnimationFrame(animate);
-
-      if (video.readyState < 2) return;
-
-      const res = landmarker.detectForVideo(video, performance.now());
-      const found = res.facialTransformationMatrixes && res.facialTransformationMatrixes.length > 0;
-
-      if (found) {
-        target.fromArray(res.facialTransformationMatrixes[0].data).decompose(tp, tq, ts);
-        const k = seen ? SMOOTH : 1;
-        p.lerp(tp, k);
-        q.slerp(tq, k);
-        s.lerp(ts, k);
-        anchor.matrix.compose(p, q, s);
-        anchor.matrixWorldNeedsUpdate = true;
-        anchor.visible = true;
-        statusEl.textContent = 'Tracking';
-      } else {
-        anchor.visible = false;
-        statusEl.textContent = 'No face';
-      }
-      seen = found;
-
-      renderer.render(scene, camera);
-    }
-
-    // Capture: composite video + overlay, download PNG
-    captureBtn.onclick = () => {
-      if (!video.videoWidth) return;
-      const c = document.createElement('canvas');
-      c.width = video.videoWidth;
-      c.height = video.videoHeight;
-      const ctx = c.getContext('2d');
-
-      // Draw video (flip back because stage is mirrored)
-      ctx.save();
-      ctx.translate(c.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, 0, 0, c.width, c.height);
-      ctx.restore();
-
-      // Draw Three.js overlay (also flip to match)
-      if (renderer && renderer.domElement) {
-        ctx.save();
-        ctx.translate(c.width, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(renderer.domElement, 0, 0, c.width, c.height);
-        ctx.restore();
-      }
-
-      const a = document.createElement('a');
-      a.href = c.toDataURL('image/png');
-      a.download = 'dart-dovetail-tryon-' + Date.now() + '.png';
-      a.click();
-      statusEl.textContent = 'PNG saved';
-      setTimeout(() => { if (running) statusEl.textContent = 'Tracking'; }, 1500);
-    };
-
-    // Mute toggle
-    let trackPlaying = false;
-    muteBtn.onclick = () => {
-      if (!trackPlaying) {
-        bgAudio.play().catch(()=>{});
-        trackPlaying = true;
-      } else {
-        bgAudio.pause();
-        bgAudio.currentTime = 0;
-        trackPlaying = false;
-      }
-    };
-
-    window.addEventListener('resize', () => {
-      if (!renderer || !video.videoWidth) return;
-      const w = video.videoWidth, h = video.videoHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h, false);
-    });
   </script>
 </body>
 </html>
