@@ -1,11 +1,17 @@
-"""LOTCBP collision fields (NumPy).
+"""LOTBCBP collision fields (NumPy).
 
 TriSoup        triangles with angle-weighted pseudo-normals (vertex, edge, face) for a robust sign test
 virtual_subdivide   on-demand "behind the scenes" tessellation of long triangles with optional Phong smoothing
 signed_distance     exact signed distance of many points to a soup (pruned, vectorised)
-PartField      per-part coarse grid + dynamically requested refined bricks (the LOTCBP adaptive refinement)
+PartField      per-part coarse grid + dynamically requested refined bricks (the LOTBCBP adaptive refinement)
+
+Quad-first: PartField quadrangulates its collision copy of the source mesh (core.quads) and the LOTBCBP virtual
+tessellation splits quads as quads (edge midpoints + centre).  Triangles only appear at the very last step, inside
+the exact distance query.  The user's mesh is never modified.
 """
 import numpy as np
+
+from . import quads as Q
 
 # ----------------------------------------------------------------------------- triangle soup
 
@@ -339,17 +345,35 @@ def _enclosure(material, sd=None, h=None):
 
 
 class PartField:
-    """Local-space collision field of one part with dynamic (LOTCBP) brick refinement.
+    """Local-space collision field of one part with dynamic (LOTBCBP) brick refinement.
 
     mode: 'SHELL' (the surface encloses the fluid: inside = cavity), 'SOLID' (mesh is a body with
     modelled cavities: fluid only in enclosed cavities) or 'AUTO'."""
 
-    def __init__(self, verts, tris, mode='AUTO', resolution=40, level=2, smooth=True):
-        self.soup = soup_from_mesh(verts, tris)
+    def __init__(self, verts, tris, mode='AUTO', resolution=40, level=2, smooth=True, quadify=True):
+        """verts (V,3); tris: (F,3) / (F,4) int array, list of polygons, or (loop_totals, loop_vertices)."""
+        verts = np.asarray(verts, np.float64)
+        self.quadify = bool(quadify)
+        self.qsoup = None
+        self.quad_info = {}
+        self.last_refine_quads = 0
+        if self.quadify:
+            cv, cpolys, cinfo = Q.clean(verts, tris)
+            qv, qq, qinfo = Q.to_quads(cv, cpolys, strict=True, do_clean=False)
+            qinfo.update(cinfo)
+            self.quad_info = qinfo
+            self.quad_verts, self.quads = qv, qq
+            self.qsoup = Q.QuadSoup.from_mesh(qv, qq)
+            self.soup = soup_from_mesh(qv, Q.quads_to_tris(qq))
+            loop_tris = Q.fan_tris(cpolys)
+            self.openings_loops = boundary_loops(cv, loop_tris) if len(loop_tris) else []
+        else:
+            tris = Q.fan_tris(Q.as_polys(tris))
+            self.soup = soup_from_mesh(verts, tris)
+            self.openings_loops = boundary_loops(verts, tris) if len(tris) else []
         self.mode_req = mode
         self.level = int(level)
         self.smooth = smooth
-        self.openings_loops = boundary_loops(verts, tris) if len(tris) else []
         lo, hi = self.soup.bounds() if len(self.soup) else (np.zeros(3), np.ones(3) * 1e-3)
         self.bmin, self.bmax = lo, hi
         ext = np.maximum(hi - lo, 1e-6)
@@ -453,7 +477,7 @@ class PartField:
         a = np.abs(sd)
         return np.where(inside, -np.maximum(a, 1e-6), a + 1e-6), sd
 
-    # ------------------------------------------------------------------ LOTCBP dynamic refinement
+    # ------------------------------------------------------------------ LOTBCBP dynamic refinement
     def request_refine(self, P, band=None, max_new=96):
         """Refine the bricks around local points that are near the surface.  Returns number added."""
         if self.level <= 0 or len(P) == 0:
@@ -479,12 +503,20 @@ class PartField:
         nodes = (corner[:, None, :] + off[None]).reshape(-1, 3)
         # local soup: triangles near the requested cells, virtually tessellated
         lo, hi = corner.min(0) - band * 2, corner.max(0) + self.h + band * 2
-        s = self.soup
-        tmin = np.minimum(np.minimum(s.A, s.B), s.C)
-        tmax = np.maximum(np.maximum(s.A, s.B), s.C)
-        sel = np.flatnonzero(np.all(tmax >= lo, 1) & np.all(tmin <= hi, 1))
-        sub = s.take(sel) if len(sel) else s
-        sub = virtual_subdivide(sub, max_edge=self.h * 4.0, cap=6000, phong=0.6 if self.smooth else 0.0, passes=6)
+        if self.qsoup is not None and len(self.qsoup):
+            qmin, qmax = self.qsoup.bounds_each()
+            sel = np.flatnonzero(np.all(qmax >= lo, 1) & np.all(qmin <= hi, 1))
+            qsub = self.qsoup.take(sel) if len(sel) else self.qsoup
+            qsub = Q.subdivide_quads(qsub, max_edge=self.h * 4.0, cap=6000, phong=0.6 if self.smooth else 0.0, passes=6)
+            self.last_refine_quads = len(qsub)
+            sub = TriSoup(*qsub.to_tris())
+        else:
+            s = self.soup
+            tmin = np.minimum(np.minimum(s.A, s.B), s.C)
+            tmax = np.maximum(np.maximum(s.A, s.B), s.C)
+            sel = np.flatnonzero(np.all(tmax >= lo, 1) & np.all(tmin <= hi, 1))
+            sub = s.take(sel) if len(sel) else s
+            sub = virtual_subdivide(sub, max_edge=self.h * 4.0, cap=6000, phong=0.6 if self.smooth else 0.0, passes=6)
         d = signed_distance(sub, nodes).reshape(len(cid), self.F + 1, self.F + 1, self.F + 1)
         # tiles keep continuity at the border: clamp refined values to coarse +-0.5h agreement
         base = len(self.bricks)
@@ -551,6 +583,19 @@ class PartField:
                     area = m.sum() * self.h * self.h
                     ops.append(dict(centre=C[m].mean(0), normal=n / nn, radius=float(np.sqrt(area / np.pi))))
         self.openings = ops
+
+    def tessellate(self, max_edge=None, phong=None, cap=60000):
+        """Standalone LOTBCBP projection of the whole body (no simulation): the quad collision mesh, virtually
+        tessellated as quads down to max_edge (default: 2 x field voxel h) with Phong projection.  Returns a QuadSoup."""
+        if self.qsoup is None:
+            v, q, _i = Q.to_quads(np.concatenate([self.soup.A, self.soup.B, self.soup.C]),
+                                  np.arange(3 * len(self.soup)).reshape(3, -1).T)
+            base = Q.QuadSoup.from_mesh(v, q)
+        else:
+            base = self.qsoup
+        me = 2.0 * self.h if max_edge is None else float(max_edge)
+        ph = (0.6 if self.smooth else 0.0) if phong is None else float(phong)
+        return Q.subdivide_quads(base, max_edge=me, cap=cap, phong=ph, passes=12)
 
     def cavity_volume(self):
         """Estimated cavity volume (local units^3) from the coarse mask."""

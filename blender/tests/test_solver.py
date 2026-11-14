@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(HERE, '..', 'arc_flow'))
 
 from core import sdf, world, fluids, materials, mathcards, units
 from core import primitives as MS
+from core import quads as Q
 
 
 def ok(cond, msg):
@@ -41,7 +42,7 @@ def test_sdf():
     ok(f.mode == 'SOLID' and abs(f.cavity_volume() - np.pi * 0.64 * 4) / (np.pi * 0.64 * 4) < 0.08, "solid tube: auto SOLID, cavity volume within 8 %% (%.2f)" % f.cavity_volume())
     ok(len(f.openings) == 2, "solid tube: two openings detected")
     b = f.request_refine(np.array([[0, 0.8, 0.0], [0, 0.0, 0.8]]))
-    ok(b > 0 and f.n_refined == b, "LOTCBP brick refinement on demand (%d bricks)" % b)
+    ok(b > 0 and f.n_refined == b, "LOTBCBP brick refinement on demand (%d bricks)" % b)
     s2 = sdf.virtual_subdivide(sdf.soup_from_mesh(*MS.box(4, 4, 4)), 1.0)
     ok(len(s2) > 12, "virtual tessellation splits long triangles (%d tris)" % len(s2))
     v, t = MS.uvsphere(n=8, m=4)
@@ -97,7 +98,94 @@ def test_sim():
     ok(int((wp.state == 2).sum()) > 0, "after re-joining, fluid flows out again")
 
 
+def test_animated_valve():
+    """A valve that opens by MESH DEFORMATION (vertices move, matrix stays identity): the collision field is
+    rebuilt from the new mesh, pushed with World.set_fields, joints re-classify and fluid flows."""
+    sv, st = MS.uvsphere(r=1.0)
+    tv, tt = MS.tube(L=4.0, r0=0.35, r1=0.25)
+    fl = [dict(name='water', spec=fluids.FLUIDS['WATER'], temp=293.15, color=(0, 0, 1))]
+    vc, tc = MS.box(0.12, 0.9, 0.9, center=(4.28, 0, 0))          # disc closing the pipe mouth at x = 4.2
+    fc = sdf.PartField(vc, tc, 'SOLID', 24)
+    parts = [world.PartSpec('tank', sdf.PartField(sv, st, 'SHELL', 32), np.eye(4), 'CONTAINER', fluid=0, fill_value=80, pressure=5e5, n_particles=800),
+             world.PartSpec('pipe', sdf.PartField(tv, tt, 'SOLID', 48), MS.translate(None, 2.2, 0, 0), 'TRANSPORT'),
+             world.PartSpec('valve', fc, np.eye(4), 'COLLIDER')]
+    w = world.World(parts, fl, world.Env(), world.Params(net_res=36, vmax=40, seed=3))
+    st0 = sorted(o['state'] for o in w.openings)
+    ok(st0 == [world.CONNECTED, world.PLUGGED], "closed valve: pipe mouth PLUGGED, tank joint CONNECTED (%s)" % st0)
+    for k in range(30):
+        w.step(1 / 30)
+    ok(int((w.state == 2).sum()) == 0, "closed valve: sealed, no leak")
+    nb = fc.request_refine(vc[:4] * 0.999 + 0.001 * vc.mean(0))
+    ok(nb > 0 and fc.n_refined == nb, "LOTBCBP bricks on the closed valve surface (%d)" % nb)
+    mats = [q.matrix.copy() for q in w.parts]
+    ok(w.set_fields([None, None, fc], mats) is False and w.update_animated(mats) is False,
+       "unchanged field + unchanged matrices short-circuit (no network rebuild)")
+    # the valve opens: its vertices move up out of the flow path (mesh deformation, not an object transform)
+    vo = vc + np.array([0, 0, 1.4])
+    fo = sdf.PartField(vo, tc, 'SOLID', 24)
+    changed = w.update_animated(mats, fields=[None, None, fo])
+    ok(changed and w.parts[2].field is fo, "update_animated swaps the deformed valve field")
+    st1 = sorted(o['state'] for o in w.openings)
+    ok(st1 == [world.CONNECTED, world.OPEN], "open valve: pipe mouth re-classified PLUGGED -> OPEN, joint stays CONNECTED (%s)" % st1)
+    ok(fo.n_refined == 0 and all(q.field is not fc for q in w.parts), "old-mesh LOTBCBP bricks are dropped with the old field")
+    nb2 = fo.request_refine(vo[:4] * 0.999 + 0.001 * vo.mean(0))
+    ok(nb2 > 0 and fo.last_refine_quads > 0, "request_refine adds bricks on the new surface (%d bricks, %d virtual quads)" % (nb2, fo.last_refine_quads))
+    for k in range(45):
+        w.step(1 / 30)
+    free = int((w.state == 2).sum())
+    ok(free > 20, "after the valve opens, fluid flows out of the pipe (%d free particles)" % free)
+    # and closes again
+    w.set_fields({2: sdf.PartField(vc, tc, 'SOLID', 24)})
+    ok(any(o['state'] == world.PLUGGED for o in w.openings), "valve closing again re-plugs the mouth (dict form of set_fields)")
+
+
+def test_quads():
+    # triangles -> quads (pairs joined, nothing left)
+    v, t = MS.box(2, 1, 1)
+    qv, qq, info = Q.to_quads(v, t)
+    ok(qq.shape == (6, 4) and info['tris_left'] == 0 and info['split_tris'] == 0, "triangulated box -> 6 quads by joining pairs")
+    # n-gons: hexagon (even) -> 2 quads, pentagon (odd) -> all quads (midpoint split of the left-over triangle)
+    hexv = np.array([[np.cos(a), np.sin(a), 0] for a in np.linspace(0, 2 * np.pi, 7)[:-1]])
+    _v, q6, _i = Q.to_quads(hexv, [list(range(6))])
+    pv = np.array([[np.cos(a), np.sin(a), 0] for a in np.linspace(0, 2 * np.pi, 6)[:-1]])
+    _v, q5, i5 = Q.to_quads(pv, [list(range(5))])
+    ok(len(q6) == 2 and q5.shape[1] == 4 and len(q5) == 4, "n-gons -> quads (hexagon 2, pentagon 4)")
+    # messy mix: quad + tris + n-gon + duplicate vertex + zero-area face
+    mv = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0], [2, 1, 0], [3, 0.5, 0], [1, 1, 1e-12], [0.5, 0.5, 0]], float)
+    faces = [[0, 1, 2, 3], [1, 4, 5], [1, 5, 7], [4, 6, 5], [0, 8, 8], [0, 1, 8, 8]]
+    cv, cp, ci = Q.clean(mv, faces)
+    ok(ci['merged'] >= 1 and ci['degenerate'] >= 1, "clean merges the duplicate vertex and drops collapsed faces (%s)" % ci)
+    _v, qm, im = Q.to_quads(mv, faces)
+    ok(qm.shape[1] == 4 and len(qm) >= 2 and im['tris_left'] == 0, "mixed tris / quad / n-gon / bad verts -> quads only (%d)" % len(qm))
+    # topology preserving / adaptive: a dense patch stays dense (no uniform remesh)
+    sv, stt = MS.uvsphere(n=32, m=16)
+    qv, qq, _i = Q.to_quads(sv, stt)
+    ok(abs(len(qq) - len(stt) / 2) < 0.1 * len(stt), "density preserved: %d tris -> %d quads (about half, not a uniform grid)" % (len(stt), len(qq)))
+    # symmetry: a mirror-symmetric input gives a mirror-symmetric quad set
+    bv, bt = MS.box(2, 1, 1)
+    qv, qq, _i = Q.to_quads(bv, bt)
+    cen = qv[qq].mean(1)
+    mir = cen * np.array([-1, 1, 1])
+    d = np.min(np.linalg.norm(cen[:, None] - mir[None], axis=2), axis=1)
+    ok(d.max() < 1e-9, "X-symmetric source -> X-symmetric quads")
+    # LOTBCBP projection sees quads after the auto-quad step
+    tv, tt = MS.tube()
+    f = sdf.PartField(tv, tt, 'AUTO', resolution=32)
+    ok(f.qsoup is not None and len(f.qsoup) == len(f.quads) and f.quad_info['source']['tris'] == len(tt),
+       "PartField auto-quads a triangulated source (%d tris -> %d quads)" % (len(tt), len(f.quads)))
+    b = f.request_refine(np.array([[0, 0.8, 0.0], [0, 0.0, 0.8]]))
+    ok(b > 0 and f.last_refine_quads > 0, "LOTBCBP refine runs on virtual quads (%d quads for %d bricks)" % (f.last_refine_quads, b))
+    sub = Q.subdivide_quads(Q.QuadSoup.from_mesh(*Q.to_quads(*MS.box(4, 4, 4))[:2]), 1.0)
+    ok(len(sub) == 6 * 16 and sub.P.shape[1] == 4, "virtual tessellation splits quads as quads (6 -> %d)" % len(sub))
+    t2 = f.tessellate()
+    tv2, tq2 = Q.soup_to_mesh(t2)
+    ok(tq2.shape[1] == 4 and len(tq2) > len(f.quads), "standalone LOTBCBP projection returns a finer all-quad mesh (%d quads)" % len(tq2))
+    bv, bt = MS.box()
+    a = Q.analyze(bv, bt[2:])                                  # open box (one side removed)
+    ok(a['tris'] == 10 and a['boundary_edges'] == 4 and a['quad_result']['n'] == 5, "analyze reports tris / open boundary edges / quad result (%s)" % {k: a[k] for k in ('tris', 'boundary_edges')})
+
+
 if __name__ == '__main__':
-    test_units_math(); test_sdf(); test_sim()
+    test_units_math(); test_sdf(); test_quads(); test_sim(); test_animated_valve()
     print("FAILURES:", ok.fail)
     sys.exit(1 if ok.fail else 0)

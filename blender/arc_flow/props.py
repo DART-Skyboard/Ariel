@@ -76,6 +76,7 @@ class AF_FluidItem(PropertyGroup):
     pt_collection: PointerProperty(name="Instance collection", type=bpy.types.Collection)
     pt_use_collection: BoolProperty(name="Use collection", default=False)
     pt_scale: FloatProperty(name="Scale", default=1.0, min=0.0)
+    pt_subdivisions: IntProperty(name="Subdivisions", default=2, min=0, max=5, description="Subdivisions of the default icosphere point (ignored when an instance object / collection is assigned)")
     pt_material: PointerProperty(name="Shader", type=bpy.types.Material, description="Material of the instanced points (edit it in the Shader Editor)")
     # ray march card
     rm_density: FloatProperty(name="Density", default=40.0, min=0.0)
@@ -155,16 +156,16 @@ class AF_MathCard(PropertyGroup):
 # ----------------------------------------------------------------------------- object properties
 class AF_ObjectProps(PropertyGroup):
     role: EnumProperty(name="Role", items=[('NONE', "None", "Not part of the simulation"),
-                                           ('CONTAINER', "Container", "Holds a finite fill of fluid"),
-                                           ('TRANSPORT', "Transport", "Conducts fluid (pipe, hose, vein...). Starts empty"),
-                                           ('CHAMBER', "Chamber", "Same as Transport; the usual target for visual feedback (engines)"),
+                                           ('CONTAINER', "Container", "Holds a fill of fluid (tank; with a pressure set it is a pressure chamber / vessel)"),
+                                           ('TRANSPORT', "Channel / transport", "Conducts fluid (pipe, hose, duct, vein...). Starts empty"),
+                                           ('CHAMBER', "Combustion chamber", "Conducts fluid like Transport; fuel + oxidizer ignite here (combustion chambers, nozzles); the usual feedback target"),
                                            ('COLLIDER', "Collider", "Solid obstacle only")], default='NONE', update=_update_sync)
     cavity_mode: EnumProperty(name="Cavity", items=[('AUTO', "Auto", "Detect modelled inner cavities; otherwise treat the surface as enclosing the fluid"),
                                                     ('SHELL', "Surface encloses fluid", "Sealed bag / tank / pipe surface: the fluid is inside the surface"),
                                                     ('SOLID', "Solid body", "Mesh is a solid with modelled cavities. With no cavity the fluid rests on top and spills")],
                               default='AUTO', update=_update_sync)
-    resolution: IntProperty(name="Field resolution", default=40, min=8, max=96, description="Voxels along the longest side of the LOTCBP base field", update=_update_sync)
-    lotcbp_level: IntProperty(name="LOTCBP level", default=2, min=0, max=3, description="Refinement levels of the virtual tessellation bricks (0 = off)", update=_update_sync)
+    resolution: IntProperty(name="Field resolution", default=40, min=8, max=96, description="Voxels along the longest side of the LOTBCBP base field", update=_update_sync)
+    lotcbp_level: IntProperty(name="LOTBCBP level", default=2, min=0, max=3, description="Refinement levels of the virtual tessellation bricks (0 = off)", update=_update_sync)
     material: EnumProperty(name="Material", items=M.MATERIAL_ITEMS, default='INDUSTRIAL_STEEL',
                            update=lambda s, c: s.apply_material())
     density: FloatProperty(name="Density", default=7850.0, min=1.0, description="kg/m3", update=_update_sync)
@@ -250,7 +251,7 @@ class AF_Scene(PropertyGroup):
     vmax: FloatProperty(name="Max speed", default=60.0, min=1.0, description="m/s, hard clamp", update=_update_sync)
     radius_scale: FloatProperty(name="Particle size", default=1.0, min=0.05, update=_update_sync)
     seed: IntProperty(name="Seed", default=1, update=_update_sync)
-    lotcbp: BoolProperty(name="LOTCBP refinement", default=True, description="Dynamic virtual tessellation of the collision bodies where fluid touches them", update=_update_sync)
+    lotcbp: BoolProperty(name="LOTBCBP refinement", default=True, description="Dynamic virtual tessellation of the collision bodies where fluid touches them", update=_update_sync)
     max_substeps: IntProperty(name="Max substeps", default=6, min=1, max=32)
     # timeline
     use_scene_range: BoolProperty(name="Use scene frame range", default=True)
