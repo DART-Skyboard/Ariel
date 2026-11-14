@@ -3471,7 +3471,11 @@ function meshesIntersect(a, b) {
 // <ltcbpwatch:begin>
 // LTCBP live watch (spec 18).  While the sim runs, LTCBP (a) re-checks the resolution of the baked collision SDF against the exact mesh
 // and adapts it, and (b) rebuilds an instance's SDF when the Boolean (booleanSyncInstance) reports a collision-body change — animated GLB
-// skin / morph / node motion, CPU vertex edits.  Everything is per instance (inst.ltcbp), throttled and coalesced.
+// skin / morph / node motion, CPU vertex edits.  Everything is per instance (inst.ltcbpWatch), throttled and coalesced.
+// NOTE: NOT inst.ltcbp: that field is the Instance's outside-air leak-event ARRAY (Instance ctor / pfs reset it to []), and an
+// empty array is truthy, so sharing the name made ltcbpState return the array: scale undefined -> NaN SDF resolution for the
+// Simulate bake and every LTCBP rebuild -> 0-length NaN x NaN SDF textures in the live uniforms once the sim draws (glTexStorage2D
+// "dimensions not positive" + glTexSubImage2D "level of detail outside of range", and collision silently lost).
 const LTCBP_SCALE_MIN = 0.6, LTCBP_SCALE_MAX = 2.0;
 const LTCBP_CHECK_MS = 1000;      // resolution check interval per instance
 const LTCBP_REBUILD_MS = 800;     // minimum gap between two SDF rebuild starts per instance
@@ -3479,11 +3483,11 @@ const LTCBP_PROBES = 96, LTCBP_ERR_HI = 0.75, LTCBP_ERR_LO = 0.15;   // probe co
 const _deformHooks = new WeakMap();
 function ltcbpNow() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
 function ltcbpState(inst) {
-  return inst.ltcbp || (inst.ltcbp = { scale: 1, lastCheck: -1e9, lastRebuild: -1e9, lowStreak: 0, rebuilds: 0, checks: 0, sdfStale: false, job: null, again: false, history: [], pass: null, sliceStats: null });
+  return inst.ltcbpWatch || (inst.ltcbpWatch = { scale: 1, lastCheck: -1e9, lastRebuild: -1e9, lowStreak: 0, rebuilds: 0, checks: 0, sdfStale: false, job: null, again: false, history: [], pass: null, sliceStats: null });
 }
 // Resolution LTCBP is currently asking for: scale multiplies the coarse budget and every fine region's per-axis resolution.
 function ltcbpResolution(inst) {
-  const s = inst ? ltcbpState(inst).scale : 1;
+  const s0 = inst ? ltcbpState(inst).scale : 1, s = Number.isFinite(s0) && s0 > 0 ? s0 : 1;
   return { scale: s, coarse: Math.round(SDF_COARSE_RES * s), fine: Math.round(SDF_FINE_RES * s) };
 }
 // Per-part deformation hooks: fn({type:'deform'|'move'|'melt', inst, part}) runs when that part's collision body changed.  Returns an unsubscribe fn.
@@ -3602,7 +3606,12 @@ function ltcbpOnChange(inst, kind, parts) {
   return true;
 }
 // Swap a freshly built SDF into the instance's live uniform objects (the particle + volumetric materials share them by reference).
+function ltcbpSDFUsable(sdf) {   // every texture dimension finite and > 0 (an unusable bake must never replace the live SDF)
+  const ok = (w, h) => Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0;
+  return !!(sdf && sdf.coarse && ok(sdf.coarse.texW, sdf.coarse.texH) && ok(sdf.atlasW, sdf.atlasH));
+}
 function ltcbpSwapSDF(inst, sdf) {
+  if (!ltcbpSDFUsable(sdf)) { console.warn('LTCBP: rebuilt SDF has invalid dimensions; keeping the current one', sdf && sdf.info); return false; }
   const old = inst.sdf, set = (inst.ctx && inst.ctx.sdfUniformSet) || state.sdfUniformSet;
   inst.sdf = sdf; if (state.activeInstanceId === inst.id || inst.ctx === state || !inst.ctx) state.sdf = sdf;
   let swapped = false;
@@ -3632,8 +3641,8 @@ function rebuildInstanceSDF(inst, opts) {
         st.again = false; st.lastRebuild = ltcbpNow();
         await withInstanceAsync(inst, async () => {
           const sdf = await buildCollisionSDF(inst.links || state.currentLinks, inst.parts, inst, { quiet: true, resScale: st.scale, sliceMs: state.ltcbpSliceMs != null ? state.ltcbpSliceMs : 2, now: state.ltcbpSliceNow, yieldFn: state.ltcbpSliceYield, sliceStats: st.sliceStats || (st.sliceStats = {}) });
-          if (!sdf) return;
-          ltcbpSwapSDF(inst, sdf); out = sdf;
+          if (!sdf || !ltcbpSwapSDF(inst, sdf) && inst.sdf !== sdf) return;   // refused (unusable bake): keep the live SDF
+          out = sdf;
         });
         st.sdfStale = false; st.rebuilds++; inst.sdfVersion = (inst.sdfVersion || 0) + 1;
       } while (st.again);
@@ -5694,7 +5703,8 @@ async function buildCollisionSDF(links, parts, inst, opts) {
   // opts (background rebuilds, spec 18): quiet = no loading overlay / rAF; resScale = LTCBP's resolution multiplier; sliceMs = time-sliced voxel fill.
   const quiet = !!(opts && opts.quiet), SL = quiet ? () => {} : setLoading;
   const tick = () => new Promise(r => quiet ? setTimeout(r, 0) : requestAnimationFrame(r));
-  const rs = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
+  const rs0 = Math.max(0.25, (opts && opts.resScale) || (inst && typeof ltcbpResolution === 'function' ? ltcbpResolution(inst).scale : 1));
+  const rs = Number.isFinite(rs0) ? rs0 : 1;   // a NaN scale would give NaN grid res -> 0-length, NaN-sized SDF textures
   const scaleRes = (res, cap) => rs === 1 ? res : res.map(v => Math.max(4, Math.min(cap, Math.round(v * rs))));
   const sliceMs = (opts && opts.sliceMs) || 0, sliceOpts = sliceMs ? { sliceMs, now: opts.now, yieldFn: opts.yieldFn, sliceStats: opts.sliceStats } : null;
   const classified = (parts || state.parts).filter(p => p.type);
@@ -7836,7 +7846,7 @@ const GS_BAKED_VERT = PARTICLE_SHADER_CORE + GS_BILLBOARD_VERT + `
   varying float vDens;
   varying vec4 vHue;
   void main() {
-    if (aLive > 0.5) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    if (aLive > 0.5 || (uHidePost > 0.5 && segOfProgress(aRow, fract(uTime * aSpeed + aPhase)) >= aExit)) { vThermal = 0.0; vProgress = 0.0; vQ = vec2(9.0); vAtten = 0.0; vSd = 0.0; vSdVox = 1.0; vDens = 0.0; vHue = vec4(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 pos = computeParticlePosition();           // also sets vThermal / vProgress
     // path tangent + containment radius, re-read the cheap way (2 fetches)
     float seg = gSeg, segT = gSegT;
@@ -7935,6 +7945,9 @@ function gsSceneSigma(sdf) {
 function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart, count) {
   const geo = gsQuadGeometry();
   for (const k of ['aRow', 'aPhase', 'aSpeed', 'aThermal', 'aLatU', 'aLatV', 'aLive']) geo.setAttribute(k, pointGeo.getAttribute(k));
+  // nozzle-exit index, so the splats hide the baked post-nozzle stretch while the live plume draws it (uHidePost), exactly like the
+  // Points/Volumetric baked layers; without it the baked jet kept drawing as a blown-out white wash under the live Gaussian plume
+  geo.setAttribute('aExit', pointGeo.getAttribute('aExit') || new THREE.InstancedBufferAttribute(new Float32Array(count).fill(1e6), 1));
   const press = new Float32Array(count), hue = new Float32Array(count * 4);
   const pCache = new Map();
   for (let p = 0; p < count; p++) {
@@ -7956,7 +7969,7 @@ function buildGaussianBaked(pointGeo, pointUniforms, sdfUniforms, sdf, ownerPart
       uTime: pointUniforms.uTime,                // shared reference — one clock
       uWaypoints: pointUniforms.uWaypoints, uTexHeight: pointUniforms.uTexHeight,
       uGsSize: { value: gsSceneSigma(sdf) }, uGsTrail: { value: 0.03 }, uGsMaxStretch: { value: 3.5 }, uGsGain: { value: 0.35 },
-      uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 },
+      uXray: { value: volXray ? 1 : 0 }, uXrayGlow: { value: 0.65 }, uHidePost: plumeHidePostUniform,
     }, sdfUniforms),
     vertexShader: GS_BAKED_VERT, fragmentShader: GS_BAKED_FRAG,
     transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
@@ -9759,7 +9772,7 @@ function plumeEnsurePoints() {
   geo.setAttribute('position', pos);
   geo.setAttribute('aT', plume.aT); geo.setAttribute('aSh', plume.aSh); geo.setAttribute('aSmk', plume.aSmk); geo.setAttribute('aSz', plume.aSz); geo.setAttribute('aAl', plume.aAl); geo.setAttribute('aSp', plume.aSp);
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uPx: { value: 600 }, uGain: { value: 0.026 }, uHeat: { value: null }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
+    uniforms: { uPx: { value: 600 }, uGain: { value: 0.068 }, uHeat: { value: null }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
     vertexShader: `
       uniform float uPx; attribute float aT; attribute float aSh; attribute float aSmk; attribute float aSz; attribute float aAl; attribute vec3 aSp;
       varying float vT; varying vec3 vSp; varying float vSh; varying float vSmk; varying float vAl; varying float vH;
@@ -9768,6 +9781,7 @@ function plumeEnsurePoints() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
         float raw = aSz * uPx / max(-mv.z, 0.1), sz = clamp(raw, 10.0, 160.0);
+        gl_PointSize = sz;   // was never written: every plume sprite rasterised at the 1 px default (undefined on some GPUs) -> the 'thin stream'
         vAl = aAl * min(1.0, (raw * raw) / (sz * sz) * 1.6);   // a far parcel is a faint wide haze, never a bright speck: spread its energy over a soft minimum sprite
       }`,
     fragmentShader: PLUME_SHADE_GLSL + `
@@ -9800,14 +9814,19 @@ function plumeEnsureGaussian() {
   ['aPos', 'aVel', 'aAlpha', 'aSize', 'aT', 'aSh', 'aSmk', 'aSp'].forEach((k, i) => geo.setAttribute(k, plume.gsAttrs[i]));
   geo.instanceCount = 0;
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uGsTrail: { value: 0.02 }, uGsMaxStretch: { value: 3.0 }, uGain: { value: 0.05 }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) } },
+    uniforms: { uGsTrail: { value: 0.02 }, uGsMaxStretch: { value: 3.0 }, uGain: { value: 0.05 }, uAmbTint: { value: new THREE.Vector3(1, 1, 1) }, uPx: { value: 600 } },
     vertexShader: GS_BILLBOARD_VERT + `
+      uniform float uPx;
       attribute vec3 aPos; attribute vec3 aVel; attribute float aAlpha; attribute float aSize; attribute float aT; attribute float aSh; attribute float aSmk; attribute vec3 aSp;
       varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
       void main() {
         if (aAlpha <= 0.002) { vQ = vec2(9.0); vAtten = 0.0; vT = 0.0; vSh = 0.0; vSmk = 0.0; vA = 0.0; vH = 0.0; vSp = vec3(0.0); gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
-        vT = aT; vSh = aSh; vSmk = aSmk; vA = aAlpha; vSp = aSp; vH = aPos.y;
-        gsPlace(aPos, aVel, aSize * 0.2, position.xy);   // aSize is the sprite diameter; the quad spans 2.5 sigma each side
+        vT = aT; vSh = aSh; vSmk = aSmk; vSp = aSp; vH = aPos.y;
+        // same on-screen size window + alpha compensation as the Points layer (10..160 px): a big smoke parcel near the camera
+        // must not become a billboard that covers the vehicle, and a far one stays a faint haze, not a speck
+        float zv = max(-(viewMatrix * vec4(aPos, 1.0)).z, 0.1), raw = aSize * uPx / zv, sz = clamp(raw, 10.0, 160.0);
+        vA = aAlpha * min(1.0, (raw * raw) / (sz * sz) * 1.6);
+        gsPlace(aPos, aVel, sz * zv / uPx * 0.2, position.xy);   // sz is the clamped sprite diameter; the quad spans 2.5 sigma each side
       }`,
     fragmentShader: PLUME_SHADE_GLSL + GS_KERNEL_FRAG + `
       varying float vT; varying float vSh; varying float vSmk; varying float vA; varying float vH; varying vec3 vSp;
@@ -9943,6 +9962,8 @@ function plumeFitGrid(D, F) {
   const nx = Math.min(Math.max(Math.round(size.x / cell), 16), PLUME_GRID_MAX[0]);
   const ny = Math.min(Math.max(Math.round(size.y / cell), 8), PLUME_GRID_MAX[1]);
   const nz = nx;
+  // a non-finite footprint (NaN derive / degenerate chamber frame) would size the grid + its DataTextures NaN x NaN: keep the last grid
+  if (!(Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(F.C.x) && Number.isFinite(F.C.z))) return null;
   let g = plume.grid;
   const min = new THREE.Vector3(F.C.x - W, 0, F.C.z - W);
   if (!g || g.nx !== nx || g.ny !== ny || g.nz !== nz) {
@@ -9976,6 +9997,7 @@ function plumeBlur1D(src, dst, nx, ny, nz, axis) {
 
 function plumeRebuildVolume(D, F) {
   const g = plumeFitGrid(D, F), P = plume;
+  if (!g) return;
   const { nx, ny, nz, dens, tw, shw, smw, tmp, sow, chw, abw } = g;
   dens.fill(0); tw.fill(0); shw.fill(0); smw.fill(0); sow.fill(0); chw.fill(0); abw.fill(0);
   const ix = nx / g.size.x, iy = ny / g.size.y, iz = nz / g.size.z, cy = g.size.y / ny;
@@ -10108,7 +10130,7 @@ function plumeReadout() {
   propReadoutEl.innerHTML = `v<sub>e</sub> ${uSpeed(D.ve, 0)} · M<sub>e</sub> ${D.Me.toFixed(2)} · T<sub>e</sub> ${Math.round(D.Te)} K<br>` +
     `p<sub>e</sub> ${D.pe.toFixed(1)} psi vs p<sub>a</sub> ${D.pa.toFixed(2)} psi <span class="u">= ${D.regime}${D.regime === 'vacuum fan' ? '' : ' (' + D.ratio.toFixed(2) + '×)'}</span><br>` +
     `<span class="u">p<sub>c</sub> ${Math.round(D.pc)} psi · T<sub>c</sub> ${Math.round(D.Tc)} K · shock cell ${D.Ls.toFixed(2)} u · diamonds ${(D.diam * 100).toFixed(0)}%</span><br>` +
-    `<span class="u">flame: ${D.env.fuel} · O/F ${D.env.of.toFixed(2)} · products ${['CO2','H2O','CO','H2','C'].map(g => g + ' ' + (D.env.products[g] * 100).toFixed(0) + '%').join(' · ')}${D.env.nox > 0.05 ? ' · NOx ' + (D.env.nox * 100).toFixed(0) + '%' : ''} · unburnt fuel ${(D.env.yf * 100).toFixed(1)}% · ${D.env.o2Rel > 0.02 ? 'afterburn with ' + (D.env.o2Rel * 21).toFixed(1) + '% O₂ air' : 'no ambient O₂, no afterburn'}</span><br>` +
+    `<span class="u">flame: ${D.env.fuel} · O/F ${D.env.of.toFixed(2)} · products ${['CO2','H2O','CO','H2','C'].map(g => g + ' ' + (D.env.products[g] * 100).toFixed(0) + '%').join(' · ')}${D.env.nox > 0.05 ? ' · thermal-NOx index ' + D.env.nox.toFixed(2) + ' (air N₂×O₂, not a mass fraction)' : ''} · unburnt fuel ${(D.env.yf * 100).toFixed(1)}% · ${D.env.o2Rel > 0.02 ? 'afterburn with ' + (D.env.o2Rel * 21).toFixed(1) + '% O₂ air' : 'no ambient O₂, no afterburn'}</span><br>` +
     (D.comb ? `<span class="u">combustion: ${D.comb.st.lit ? 'burning ' + Math.round(D.comb.st.burn * 100) + '%' : 'COLD FLOW'} · φ ${D.comb.cr.phi.toFixed(2)} · T<sub>ad</sub> ${Math.round(D.comb.cr.Tad)} K${D.comb.cr.reason ? ' · ' + D.comb.cr.reason : ''}</span>` : '');
 }
 function upstreamContents(part, depth) {
@@ -10132,6 +10154,31 @@ function upstreamContents(part, depth) {
   }
   return fallback || part.contents || '';
 }
+// Combustion's read of what a feed channel carries. A pipe that merely passes THROUGH another tank's wall (Boolean auto-penetration
+// joint: link.auto / link.boolean) gets a propellant link from that tank as well as the explicit opening-to-opening link from its
+// real source, and upstreamContents returns whichever comes first in the Map. On Quick Rocket FuelChannel runs through the
+// Oxidizer tank, so it traced as 'oxidizer' -> both feeds oxidizer -> of = 0 with mdot > 0 -> "one propellant only" -> cold flow.
+// Explicit (opening) links win; auto/Boolean ones are only used when a channel has no explicit propellant source.
+function combFeedContents(part, depth) {
+  depth = depth || 0;
+  if (!part || depth > 8) return '';
+  if (part.type === 'container' && part.contents) return part.contents;
+  const links = state.currentLinks;
+  if (!links) return part.contents || '';
+  const expl = [], auto = [];
+  for (const [src, tgt] of links) for (const l of asLinkArray(tgt)) {
+    if (linkTarget(l) !== part || l.kind === 'pressurant') continue;
+    (l.auto || l.boolean ? auto : expl).push(src);
+  }
+  for (const list of [expl, auto]) {
+    let fuel = false, ox = false, other = '';
+    for (const src of list) { const c = combFeedContents(src, depth + 1); if (c === 'fuel') fuel = true; else if (c === 'oxidizer') ox = true; else if (c && !other) other = c; }
+    if (fuel !== ox) return fuel ? 'fuel' : 'oxidizer';
+    if (fuel && ox) return 'mixed';
+    if (other) return other;
+  }
+  return upstreamContents(part, depth);
+}
 function chamberMixture(ch) {
   if (pfsAnyPressure()) { const pm = pfsMixture(ch); if (pm) return pm; }   // pressure solver: what actually arrives at the chamber
   // Combustion needs both fuel and oxidizer. Sum the mass flow of each
@@ -10143,7 +10190,7 @@ function chamberMixture(ch) {
     const links = state.currentLinks;
     // Only channels that actually feed this chamber (compare the link's target part, not the link record).
     if (links && !allLinks(links, part).some(l => linkTarget(l) === ch && l.kind !== 'pressurant')) continue;
-    const contents = upstreamContents(part, 0);
+    const contents = combFeedContents(part, 0);   // explicit feeds before Boolean pass-through links (see combFeedContents)
     if (contents === 'fuel') mFuel += f.mdot;
     else if (contents === 'oxidizer') mOx += f.mdot;
   }
@@ -10576,10 +10623,17 @@ function plumeFrame(inst, now) {
     else {
       let w = plumeGroundWeight(i), grow = 0;
       if (P.sv[i]) {   // smoke puffs grow as they spread; in the volumetric view only the part outside the near grid is drawn as sprites (the volume holds the rest)
-        grow = Math.min(0.07 * Math.hypot(P.px[i] - P.cx[i], P.pz[i] - P.cz[i]), 30);
+        // grow with the distance travelled in 3D (a puff rising off the pad entrains air too, not only one drifting sideways); a survivor
+        // carrying its thinned siblings' weight (w > 1) is capped at unit opacity instead of saturating into an opaque dark dot
+        grow = Math.min(0.07 * Math.hypot(P.px[i] - P.cx[i], P.py[i], P.pz[i] - P.cz[i]), 30);
+        w = Math.min(w, 1);
         if (farOnly) { const e = Math.max(Math.abs(P.px[i] - gc.x) - gc.hw, Math.abs(P.pz[i] - gc.z) - gc.hw, P.py[i] - gc.top); w *= _ss(-0.1 * gc.hw, 0.1 * gc.hw, e); }
       } else if (farOnly) w = 0;
-      asz[i] = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2)) + grow; aal[i] = w;
+      const s0 = P.sizeK * re * (0.6 + 0.9 * Math.min(P.tg[i], 2));
+      // entrainment dilutes the soot: once a puff has grown past ~3x its parcel size its column density falls ~1/size^2 (soot mass is
+      // conserved over a growing area), so the far-field cloud thins out instead of stacking into a veil over the vehicle
+      const dil = Math.min(1, 3 * s0 / Math.max(s0 + grow, 1e-6));
+      asz[i] = s0 + grow; aal[i] = w * dil * dil;
     }
   }
   // Append a plume for every other chamber so each clone fires on its own.
@@ -10607,12 +10661,15 @@ function plumeFrame(inst, now) {
   }
   // (Assembly clones are now real Instances with their own plume - the old static clone fan was removed.)
   P.points.geometry.setDrawRange(0, write);
-  for (const a of [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl, P.aSp]) a.needsUpdate = true;
+  // the attribute list is built once per points geometry (plumeEnsurePoints can rebuild it), not as a fresh array every frame
+  if (!P._dirtyAttrs || P._dirtyAttrsGeo !== P.points.geometry) { P._dirtyAttrsGeo = P.points.geometry; P._dirtyAttrs = [P.points.geometry.attributes.position, P.aT, P.aSh, P.aSmk, P.aSz, P.aAl, P.aSp]; }
+  for (const a of P._dirtyAttrs) a.needsUpdate = true;
   if (P.gs) { P.gs.visible = renderMode === 'gaussian' && state.simRunning; P.gs.geometry.instanceCount = write; for (const a of P.gsAttrs) a.needsUpdate = true; }
   const amb = D.env.tint;
   P.points.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); if (P.gs) P.gs.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]); P.vol.material.uniforms.uAmbTint.value.set(amb[0], amb[1], amb[2]);
   const camFov = camera.fov * Math.PI / 180;
   P.points.material.uniforms.uPx.value = renderer.domElement.height / (2 * Math.tan(camFov / 2));
+  if (P.gs) P.gs.material.uniforms.uPx.value = P.points.material.uniforms.uPx.value;
   P.points.material.uniforms.uHeat.value = floorMat.uniforms.uHeat.value;
   P.points.visible = renderMode === 'points' || farOnly;
 

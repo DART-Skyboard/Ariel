@@ -31,8 +31,8 @@ function makeEnv() {
     console,
   };
   vm.createContext(ctx);
-  vm.runInContext(region(src, 'flowgraph') + '\n' + region(src, 'jointreport') + '\n' + fn(src, 'upstreamContents') + '\n' + fn(src, 'chamberMixture') +
-    '\nthis.__api = { buildFlowGraph, firstLink, allLinks, asLinkArray, linkTarget, renderJointReport, upstreamContents, chamberMixture };', ctx);
+  vm.runInContext(region(src, 'flowgraph') + '\n' + region(src, 'jointreport') + '\n' + fn(src, 'upstreamContents') + '\n' + fn(src, 'combFeedContents') + '\n' + fn(src, 'chamberMixture') +
+    '\nthis.__api = { buildFlowGraph, firstLink, allLinks, asLinkArray, linkTarget, renderJointReport, upstreamContents, combFeedContents, chamberMixture };', ctx);
   return { ctx, el, api: ctx.__api };
 }
 // vm contexts have their own Array.prototype: compare structurally via JSON
@@ -183,6 +183,30 @@ test('chamberMixture ignores channels that do not feed the chamber, and zero-flo
   ctx.state.channelFlows = new Map([[pOx, { mdot: 2 }], [pF, { mdot: 0 }], [other, { mdot: 5 }]]);
   const m = api.chamberMixture(ch);
   assert.strictEqual(m.mOx, 2); assert.strictEqual(m.mFuel, 0); assert.strictEqual(m.of, 0);
+});
+
+test('chamberMixture: a fuel line that passes THROUGH the oxidizer tank (Boolean auto link) still counts as fuel (Quick Rocket cold-flow bug)', () => {
+  const { ctx, api } = makeEnv();
+  const ox = part('Oxidizer', 'container', 'oxidizer', 0, 10, 0), fu = part('Fuel', 'container', 'fuel', 0, 20, 0);
+  const oxLine = part('OxidizerChannel', 'pipe', null, 0, 5, 0), fuLine = part('FuelChannel', 'pipe', null, 1, 5, 0), ch = part('Chamber', 'chamber', null, 0, 0, 0);
+  ctx.state.parts = [ox, fu, oxLine, fuLine, ch];
+  // insertion order as on Quick Rocket: the tank's pass-through auto link to the fuel line comes before the fuel tank's explicit one
+  ctx.state.currentLinks = new Map([
+    [ox, [{ target: oxLine, kind: 'propellant' }, { target: fuLine, kind: 'propellant', auto: true, boolean: true }]],
+    [fu, { target: fuLine, kind: 'propellant' }],
+    [oxLine, { target: ch, kind: 'propellant' }],
+    [fuLine, { target: ch, kind: 'mixed' }],
+  ]);
+  ctx.state.channelFlows = new Map([[oxLine, { mdot: 2 }], [fuLine, { mdot: 1 }]]);
+  assert.strictEqual(api.upstreamContents(fuLine, 0), 'oxidizer', 'first-match walk is fooled by the pass-through link');
+  assert.strictEqual(api.combFeedContents(fuLine, 0), 'fuel');
+  assert.strictEqual(api.combFeedContents(oxLine, 0), 'oxidizer');
+  const m = api.chamberMixture(ch);
+  assert.strictEqual(m.mOx, 2); assert.strictEqual(m.mFuel, 1); assert.strictEqual(m.of, 2);
+  // a line whose ONLY propellant source is an auto link still traces through it
+  const only = part('only', 'pipe', null, 3, 5, 0); ctx.state.parts.push(only);
+  ctx.state.currentLinks.set(fu, [{ target: fuLine, kind: 'propellant' }, { target: only, kind: 'propellant', auto: true }]);
+  assert.strictEqual(api.combFeedContents(only, 0), 'fuel');
 });
 
 test('upstreamContents prefers the propellant source over a helium (pressurant) edge into the same part', () => {
