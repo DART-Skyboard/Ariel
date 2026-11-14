@@ -231,4 +231,28 @@ test('Boolean/joint detection stays volumetric and render-mode independent (it o
   assert.ok(code.includes('signedDistanceToMesh'), 'cavity test is signed-distance (volumetric)');
 });
 
+test('firstLink: a manifold of feed pipes that also touch each other still routes every pipe straight into the chamber (AJ-10C Quick)', () => {
+  const { api } = makeEnv();
+  const ch = part('chamber', 'chamber', null, 0, 0, 0);
+  const tank = part('ox', 'container', 'oxidizer', 0, 5, 0), he = part('he', 'container', 'helium', 0, 8, 0);
+  const pipes = ['f1', 'f2', 'f3', 'o1'].map((n, i) => part(n, 'pipe', null, i, 2, 0));
+  const L = (target, kind) => ({ target, kind });
+  const links = new Map();
+  links.set(he, [L(tank, 'pressurant'), L(pipes[2], 'pressurant')]);
+  links.set(tank, pipes.map(p => L(p, 'propellant')));
+  // every pipe touches every later pipe AND the chamber; the pipe->pipe edges are listed first, as buildFlowGraph emits them
+  pipes.forEach((p, i) => links.set(p, [...pipes.slice(i + 1).map(q => L(q, i >= 2 ? 'mixed' : 'propellant')), L(ch, i >= 2 ? 'mixed' : 'propellant')]));
+  for (const p of pipes) assert.strictEqual(api.linkTarget(api.firstLink(links, p)), ch, p.name + ' feeds the chamber directly');
+  // the walk every consumer does (massGate / buildParticlePath): tank -> pipe -> chamber, well inside their 8-hop guards
+  let cur = tank, hops = 0; while (cur && cur.type !== 'chamber' && hops < 8) { cur = api.linkTarget(api.firstLink(links, cur)); hops++; }
+  assert.strictEqual(cur, ch); assert.strictEqual(hops, 2);
+  // unchanged where there is no chamber edge: the first propellant edge still wins, then the first edge
+  assert.strictEqual(api.linkTarget(api.firstLink(links, tank)), pipes[0]);
+  assert.strictEqual(api.linkTarget(api.firstLink(links, he)), tank);
+  // a pressurant edge straight into a chamber does not beat a propellant edge
+  const mix = part('m', 'pipe', null, 9, 2, 0), next = part('n', 'pipe', null, 9, 1, 0);
+  links.set(mix, [L(next, 'propellant'), L(ch, 'pressurant')]);
+  assert.strictEqual(api.linkTarget(api.firstLink(links, mix)), next);
+});
+
 console.log(`\n${n} tests passed`);

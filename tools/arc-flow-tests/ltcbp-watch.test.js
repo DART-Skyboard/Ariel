@@ -183,6 +183,29 @@ const H = require('./harness');
     ctx.buildCollisionSDF = rb; delete ctx.withInstanceAsync;
   });
 
+  await test('18 duty cap: when one exact probe costs far more than the tick budget (dense meshes, AJ-10C Quick), the watch rests so it stays a small share of the main thread, and still reaches its verdict', async () => {
+    const A = makeInst('A', new THREE.Vector3()); state.parts = [...A.inst.parts]; ctx.rebuildInstanceSDF = () => Promise.resolve(null);
+    A.inst.parts = [A.tank, A.flap]; A.inst.sdf = await bake(A);
+    const reference = api.ltcbpCheckResolution(A.inst, { force: true, noRebuild: true, budgetMs: 1e9 });
+    let tick = 0, sdfMs = 0; const realPerf = ctx.performance, realSd = ctx.signedDistanceToMesh;
+    ctx.performance = { now: () => tick };
+    ctx.signedDistanceToMesh = (p, ix) => { tick += 60; sdfMs += 60; return realSd(p, ix); };   // every exact probe "costs" 60 ms
+    try {
+      state.instances = [A.inst]; state.simRunning = true; state.ltcbpCheckMs = 0; state.ltcbpBudgetMs = 2; clock = 50000;
+      const st = api.ltcbpState(A.inst); st.lastCheck = -1e9; st.pass = null; st.history.length = 0;
+      api.ltcbpAutoTick(); const afterFirst = sdfMs;
+      assert.ok(afterFirst > 0, 'the first tick probes');
+      tick += 250; api.ltcbpAutoTick();
+      assert.strictEqual(sdfMs, afterFirst, 'the next 250 ms tick rests instead of probing again');
+      let wall = 0; const t0 = tick;
+      for (let i = 0; i < 4000 && !st.history.length; i++) { tick += 250; clock += 250; api.ltcbpAutoTick(); }
+      wall = tick - t0;
+      assert.ok(st.history.length === 1, 'a verdict still arrives');
+      assert.ok(sdfMs / (wall + afterFirst) < 0.06, 'probe work stays under ~5% of wall time: ' + (100 * sdfMs / (wall + afterFirst)).toFixed(1) + '%');
+      assert.ok(Math.abs(st.history[0].p90 - reference.p90) < 1e-9, 'same verdict as the unbudgeted pass');
+    } finally { ctx.performance = realPerf; ctx.signedDistanceToMesh = realSd; state.simRunning = false; }
+  });
+
   await test('hooks for the deferred melt: per-part material fields, deform hooks, sparse voxel-grid key format (stub)', () => {
     const A = makeInst('A', new THREE.Vector3()); const m0 = api.partMelt(A.tank);
     assert.strictEqual(m0.id, 'al2195'); assert.ok(m0.densityKgM3 > 2000 && m0.meltPointK > 500);
