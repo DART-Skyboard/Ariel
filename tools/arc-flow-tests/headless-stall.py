@@ -7,6 +7,9 @@ Loads templates/arc-flow.html, waits for the demo, presses Simulate, and asserts
   * no main-thread long task longer than LONGTASK_LIMIT_MS starts AFTER the sim started
     (this is the freeze the v70 live report showed: a 130-190 s diagnoseLinks block),
   * Supply defaults to Continuous Fill and switching to Fixed amount flips massContinuous().
+  * (v75) the pressure solver is the default with no query flag; right after Simulate the throat is shut (no flow), the chamber
+    then fills and the throat opens (mdot > 0); particles held in the chamber while it is shut lie inside the cavity (GPU positions
+    vs the chamber mesh); the demo fuel line's network edge runs through its fitted tube with a non-zero bore area.
 Needs: pip install playwright; env CHROME=<chromium binary>, plus (offline boxes) ARC_THREE=<dir with three.module.js, jszip.min.js>,
 ARC_JSM=<three/examples/jsm dir>, ARC_MODELS=<static/models dir>.  Without the ARC_* vars the real CDN / raw.githubusercontent URLs are used.
 Usage: python3 headless-stall.py   (exit code 1 on failure)
@@ -16,6 +19,8 @@ from playwright.async_api import async_playwright
 HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 HTML = os.environ.get('ARC_HTML', REPO + '/templates/arc-flow.html')
 BAKE_LIMIT_S = float(os.environ.get('BAKE_LIMIT_S', 240)); FRAMES_LIMIT_S = float(os.environ.get('FRAMES_LIMIT_S', 60))
+HOLD_SLOP = float(os.environ.get('HOLD_SLOP', 1e-4))   # every held chamber particle strictly inside the mesh (sd < 0); only float slop allowed
+HOLD_SPAN = float(os.environ.get('HOLD_SPAN', 0.6)); CONE_SPAN = float(os.environ.get('CONE_SPAN', 0.5)); CONE_IN_FRAC = float(os.environ.get('CONE_IN_FRAC', 0.98))
 LONGTASK_LIMIT_MS = float(os.environ.get('LONGTASK_LIMIT_MS', 15000))
 OBS = """()=>{window.__lt=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__lt.push([e.startTime,e.duration])}).observe({entryTypes:['longtask']})}catch(e){}}"""
 async def main():
@@ -57,11 +62,40 @@ async def main():
         if tsim is None: fails.append('simRunning not reached within %ss' % BAKE_LIMIT_S)
         else:
             sim_at = await pg.evaluate('()=>performance.now()')
+            SNAP = "()=>{const s=window.arcFlowDebug.solverSnapshot(); if(!s) return null; const th=s.edges.filter(e=>e.kind==='throat'); return {mode:s.mode, t:s.t, open:th.some(e=>e.open), mdot:th.reduce((a,e)=>a+e.mdot,0), gate:s.gate, fuel:s.edges.filter(e=>e.pipes.some(n=>/fuel/i.test(n))).map(e=>[e.name,e.area_m2])}}"
+            s0 = await pg.evaluate(SNAP)
+            print('first snapshot', s0)
+            if not s0 or s0['mode'] != 'pressure': fails.append('pressure solver is not the default: %r' % s0)
+            elif s0['t'] < 0.02 and (s0['open'] or s0['mdot'] > 0): fails.append('throat flowing at t=%.4f: %r' % (s0['t'], s0))
+            if s0 and not any(a > 0 for _, a in s0['fuel']): fails.append('no fuel-line edge with a bore area: %r' % s0['fuel'])
             t1 = time.time()
             await pg.evaluate("()=>new Promise(r=>{let n=0;(function f(){if(++n>=60)r();else requestAnimationFrame(f)})()})")
             tf = time.time() - t1
+            lt = await pg.evaluate('()=>window.__lt')   # long tasks of start + 60 frames, before the debug readbacks below
+            holds = []
+            for _ in range(12):
+                h = await pg.evaluate('()=>window.arcFlowDebug.chamberHold()')
+                if h and h['held']: holds.append(h)
+                if (await pg.evaluate(SNAP))['open'] and holds: break
+                await pg.wait_for_timeout(1500)
+            print('chamber hold samples', holds[:3])
+            for h in holds:
+                if h['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % h)
             await pg.wait_for_timeout(15000)
-            lt = await pg.evaluate('()=>window.__lt')
+            s1 = await pg.evaluate(SNAP); print('later snapshot', s1)
+            fl = await pg.evaluate('()=>window.arcFlowDebug.chamberFlow()'); print('cone flow', fl)
+            if not fl or not fl['n']: fails.append('no flowing particles in the nozzle cone after the throat opened: %r' % fl)
+            else:
+                if fl['inside'] < CONE_IN_FRAC * fl['n']: fails.append('cone particles outside the bell before the exit plane: %r' % fl)
+                if fl['span']['p90'] < CONE_SPAN: fails.append('cone stream does not fill the bell (p90 radius / local wall %.2f < %.2f): %r' % (fl['span']['p90'], CONE_SPAN, fl))
+            # (a) deterministic cavity check: force every chamber-bound particle into the held state (gate 0, chamber full, lines
+            # primed), read their GPU positions and test them against the chamber mesh; then restore the live uniforms
+            hf = await pg.evaluate("()=>{const c=window.arcFlow.state.particleCPU; if(!c||!c.gateU) return null; const g=c.gateU.value,f=c.fillU.value,pr=Array.from(c.primeU.value); c.gateU.value=0; c.fillU.value=1; c.primeU.value.fill(1); const h=window.arcFlowDebug.chamberHold(); c.gateU.value=g; c.fillU.value=f; pr.forEach((v,i)=>c.primeU.value[i]=v); return h}")
+            print('forced hold', hf)
+            if hf and hf.get('span') and hf['span']['p90'] < HOLD_SPAN: fails.append('held gas is an axis bundle, not a chamber fill (p90 radius / local wall %.2f < %.2f): %r' % (hf['span']['p90'], HOLD_SPAN, hf))
+            if not hf or not hf['held']: fails.append('no chamber-bound particles to hold: %r' % hf)
+            elif hf['worst'] > HOLD_SLOP: fails.append('held particles outside the chamber cavity: %r' % hf)
+            if not (s1 and s1['open'] and s1['mdot'] > 0): fails.append('throat never opened / no flow after accumulation: %r' % s1)
             post = [d for s, d in lt if s + d > sim_at - tsim * 0 and s >= sim_at - 50]
             print('bake+start %.1fs, 60 frames %.1fs, post-start longest task %.0f ms' % (tsim, tf, max(post or [0])))
             if tf > FRAMES_LIMIT_S: fails.append('60 frames took %.1fs (> %ss)' % (tf, FRAMES_LIMIT_S))
