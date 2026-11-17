@@ -337,11 +337,12 @@ async function loadAll(src){
      Emma_Character.glb            skinned model (Ariel's 172 bone names)
      Emma_Merged_Animations.glb    Ariel's clip names (Walking, Running, Regular_Jump ...) retargeted to Emma + Emma_* extras
      emma_hair_strands.bin         DHS1 strand groom (optional; no file = no strands)
+     emma_hair_config.json         optional per-cluster hair config (docs/hair-new-character.md in the game repo; may also live in the .bin header)
      emma_clips.json               preset buttons -> clip, loop mode (optional; a built-in list is used without it)
    ?emma=<branch|40-hex sha|url ending in /> picks where they come from. Default: the pinned game commit, then the
    claude/emma-assets branch of the game repo (so Emma is testable before the branch is merged). */
 const EMMA_DIR='characterassests/emma/';
-const EMMA_FILES={char:'Emma_Character.glb',anim:'Emma_Merged_Animations.glb',hair:'emma_hair_strands.bin',manifest:'emma_clips.json'};
+const EMMA_FILES={char:'Emma_Character.glb',anim:'Emma_Merged_Animations.glb',hair:'emma_hair_strands.bin',hairConfig:'emma_hair_config.json',manifest:'emma_clips.json'};
 const EMMA_DEFAULT_PRESETS=[['idle','Idle_Breathe_Blink','repeat','Idle'],['walk','Walking','repeat','Walk'],['run','Running','repeat','Run'],['jump','Regular_Jump','once','Jump'],['jump_start','Emma_Jump_Start','once','Jump start'],['jump_loop','Emma_Jump_Loop','repeat','Air loop'],['fall','Emma_Fall','repeat','Fall'],['land','Emma_Land','once','Land'],['climb','climbing_up_wall','once','Climb'],['climb_hang','Emma_Climb_Hang','repeat','Hang'],['swim','Swim_Forward','repeat','Swim'],['swing','Swing_on_Rope_to_Ground','once','Swing'],['crouch','Crouch_Walk_Right_with_Torch_inplace','repeat','Crouch'],['prone','Crawl_Backward_inplace','repeat','Crawl'],['turn_left','Emma_Turn_L','once','Turn L'],['turn_right','Emma_Turn_R','once','Turn R'],['talk','Acting_Talk','repeat','Talk'],['wave','Acting_Wave_Happy','once','Wave']].map(a=>({id:a[0],clip:a[1],loop:a[2],label:a[3]}));
 function emmaBases(){
   const e=qs.get('emma'), RAW='https://raw.githubusercontent.com/'+GAME.repo+'/', list=[];
@@ -419,8 +420,11 @@ async function loadEmma(){
     const missing=[...new Set(Object.keys(CHAR.bones).length?[]:['no bones'])]; if(missing.length) notes.push(missing.join(', '));
     fillClips();
     if(h){
-      try{ const mod=await hairModule();
-        hair=mod.buildHair(CHAR,THREE,h.buf,{character:true,getStrandFraction:strandFraction,getGravityScale:gravityScale});
+      try{ let mod=await hairModule();
+        if(!mod.HAIR_DEFAULT_CONFIG){      // game commit predates the data-driven (per-cluster) hair loader: take it from the emma-assets branch
+          for(const bs of emmaBases()){ if(bs===GAME.base) continue; try{ const r=await fetch(bs+'hair_strands.js',{cache:'no-cache'}); if(!r.ok) continue; const u=URL.createObjectURL(new Blob([await r.text()],{type:'text/javascript'})); const m2=await import(u); if(m2.HAIR_DEFAULT_CONFIG){ mod=m2; break; } }catch(e){} } }
+        const hc=await emmaFetch(EMMA_FILES.hairConfig,true); let hcfg=null; if(hc){ try{ hcfg=JSON.parse(new TextDecoder().decode(hc.buf)); }catch(e){} }
+        hair=mod.buildHair(CHAR,THREE,h.buf,{character:true,config:mod.HAIR_DEFAULT_CONFIG?(hcfg||undefined):undefined,getStrandFraction:strandFraction,getGravityScale:gravityScale});
         CHAR._hair=hair; window.DART_HAIR=hair; if(hair.setStrandFraction) hair.setStrandFraction(strandFraction());
         $('hairtoggle').textContent='Strands: on'; notes.push('strands: '+hair.stats.strands+' ('+hair.stats.guides+' simulated)'+(hair.stats.sdf?', head SDF collision':''));
       }catch(e){ hair=null; notes.push('hair: '+(e.message||e)); }
