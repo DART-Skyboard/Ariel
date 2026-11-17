@@ -29,6 +29,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #status{font:12px "IBM Plex Mono",monospace;color:var(--mute);white-space:pre-wrap;word-break:break-word}
 [hidden]{display:none!important}
 .grp{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px}
+.presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.presets button{padding:6px 4px;font-size:12px;font-weight:600}.presets button.on{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}.presets button:not(.on){background:var(--bg);color:var(--fg);border-color:var(--line)}
+#emmabar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}#emmabar>i{display:block;height:100%;width:0;background:var(--accent)}
 </style>
 <style>html{color-scheme:light dark}body{margin:0}</style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
@@ -53,6 +55,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div id="swatches" class="swatches" style="margin-top:6px" aria-label="Current board colours"></div>
         <div class="note">Everyone starts on the game's default skyboard. Press for a new combination until you find one you like.</div></div>
       <div><label for="f-prof">Your board: profile save (.json)</label><input id="f-prof" type="file" accept=".json,application/json"><div class="note">The game keeps your board on dartmeadow.space; this page can't read it. Export a profile in the game and choose it here to see your colours.</div></div>
+    </div>
+    <div class="grp" id="emmagrp">
+      <label>Emma (new playable character)</label>
+      <button id="loademma" type="button" style="padding:11px 9px;font-size:15px">Load Emma</button>
+      <div id="emmabar" hidden><i></i></div>
+      <div id="emmasrc" class="note">Clears the scene and loads Emma (model, strand hair, animation clips) through the same character setup, animation mapping and hair solver as Ariel. Reload Ariel with the button above.</div>
+      <div id="emmapresets" class="presets" hidden></div>
     </div>
     <div class="grp">
       <label>Scene</label>
@@ -322,6 +331,110 @@ async function loadAll(src){
   window.__viewerReady=true;
 }
 
+
+/* ---------- Emma: a second playable character, loaded through the SAME kernel as Ariel ----------
+   Assets live next to Ariel's in the game repo under characterassests/emma/ :
+     Emma_Character.glb            skinned model (Ariel's 172 bone names)
+     Emma_Merged_Animations.glb    Ariel's clip names (Walking, Running, Regular_Jump ...) retargeted to Emma + Emma_* extras
+     emma_hair_strands.bin         DHS1 strand groom (optional; no file = no strands)
+     emma_clips.json               preset buttons -> clip, loop mode (optional; a built-in list is used without it)
+   ?emma=<branch|40-hex sha|url ending in /> picks where they come from. Default: the pinned game commit, then the
+   claude/emma-assets branch of the game repo (so Emma is testable before the branch is merged). */
+const EMMA_DIR='characterassests/emma/';
+const EMMA_FILES={char:'Emma_Character.glb',anim:'Emma_Merged_Animations.glb',hair:'emma_hair_strands.bin',manifest:'emma_clips.json'};
+const EMMA_DEFAULT_PRESETS=[['idle','Idle_Breathe_Blink','repeat','Idle'],['walk','Walking','repeat','Walk'],['run','Running','repeat','Run'],['jump','Regular_Jump','once','Jump'],['jump_start','Emma_Jump_Start','once','Jump start'],['jump_loop','Emma_Jump_Loop','repeat','Air loop'],['fall','Emma_Fall','repeat','Fall'],['land','Emma_Land','once','Land'],['climb','climbing_up_wall','once','Climb'],['climb_hang','Emma_Climb_Hang','repeat','Hang'],['swim','Swim_Forward','repeat','Swim'],['swing','Swing_on_Rope_to_Ground','once','Swing'],['crouch','Crouch_Walk_Right_with_Torch_inplace','repeat','Crouch'],['prone','Crawl_Backward_inplace','repeat','Crawl'],['turn_left','Emma_Turn_L','once','Turn L'],['turn_right','Emma_Turn_R','once','Turn R'],['talk','Acting_Talk','repeat','Talk'],['wave','Acting_Wave_Happy','once','Wave']].map(a=>({id:a[0],clip:a[1],loop:a[2],label:a[3]}));
+function emmaBases(){
+  const e=qs.get('emma'), RAW='https://raw.githubusercontent.com/'+GAME.repo+'/', list=[];
+  if(e){ if(/^https?:/.test(e)) list.push(e.replace(/\/?$/,'/')); else if(/^[0-9a-f]{7,40}$/.test(e)) list.push(RAW+e+'/'); else list.push(RAW+'refs/heads/'+e+'/'); }
+  else { list.push(GAME.base); list.push(RAW+'refs/heads/claude/emma-assets/'); }
+  return list;
+}
+async function emmaFetch(name,opt,onprog){
+  let last=null;
+  for(const b of emmaBases()){
+    const u=(/^https?:/.test(b)?b:GAME.base)+EMMA_DIR+name+((b===GAME.base&&GAME.bust)?GAME.bust:'');
+    try{
+      const r=await fetch(u,{cache:'no-cache'}); if(!r.ok){ last=name+' '+r.status; continue; }
+      const total=+r.headers.get('content-length')||0;
+      if(!r.body||!total||!onprog) return {buf:await r.arrayBuffer(),from:b};
+      const rd=r.body.getReader(), parts=[]; let got=0;
+      for(;;){ const {done,value}=await rd.read(); if(done) break; parts.push(value); got+=value.length; onprog(got/total); }
+      const out=new Uint8Array(got); let o=0; for(const p of parts){ out.set(p,o); o+=p.length; } return {buf:out.buffer,from:b};
+    }catch(e){ last=name+' '+(e.message||e); }
+  }
+  if(opt) return null;
+  throw new Error('Emma file '+EMMA_DIR+name+' not found ('+last+'). Merge the claude/emma-assets branch of '+GAME.repo+' or open this page with ?emma=<branch|url>.');
+}
+function disposeTree(root){
+  root.traverse(o=>{ if(o.geometry&&o.geometry.dispose) o.geometry.dispose();
+    const ms=Array.isArray(o.material)?o.material:(o.material?[o.material]:[]);
+    ms.forEach(m=>{ ['map','normalMap','roughnessMap','metalnessMap','emissiveMap','aoMap','alphaMap','bumpMap'].forEach(k=>{ if(m[k]&&m[k].dispose) m[k].dispose(); }); if(m.dispose) m.dispose(); }); });
+}
+function clearCharacterScene(){        // everything character-shaped: hair, mixer, model, board
+  if(CHAR&&CHAR._hair){ try{CHAR._hair.dispose();}catch(e){} }
+  hair=null; window.DART_HAIR=null; $('hairtoggle').textContent='Strands: off'; $('hairstats').textContent='';
+  if(CHAR&&CHAR.mixer){ try{CHAR.mixer.stopAllAction();}catch(e){} }
+  if(rawAction){ rawAction=null; }
+  if(CHAR&&CHAR.root){ if(CHAR.root.parent) CHAR.root.parent.remove(CHAR.root); try{disposeTree(CHAR.root);}catch(e){} }
+  dropBoard(); rawClips=[]; CHAR=null; window.CHAR=null;
+}
+let emmaManifest=null, emmaCur=null;
+function buildEmmaPresets(){
+  const box=$('emmapresets'); box.innerHTML='';
+  const have=new Set(rawClips.map(c=>c.name));
+  const list=(emmaManifest&&emmaManifest.presets)||EMMA_DEFAULT_PRESETS;
+  list.forEach(p=>{ if(!have.has(p.clip)) return; const b=document.createElement('button'); b.type='button'; b.textContent=p.label; b.title=p.clip; b.dataset.id=p.id;
+    b.onclick=()=>playPreset(p); box.appendChild(b); });
+  box.hidden=!box.children.length;
+}
+function playPreset(p){
+  const i=rawClips.findIndex(c=>c.name===p.clip); if(i<0||!CHAR) return;
+  if(CHAR.mounted){ unmount(); if(board) board.visible=false; $('boardtoggle').textContent='Board: off'; frameCam(); }
+  stopAll(); CHAR.state=null; mode='raw';
+  const c=rawClips[i]; rawAction=CHAR.mixer.clipAction(c); rawAction.reset();
+  if(p.loop==='once'){ rawAction.setLoop(THREE.LoopOnce,1); rawAction.clampWhenFinished=true; } else rawAction.setLoop(THREE.LoopRepeat,Infinity);
+  rawAction.play(); rawAction.paused=!playing; $('scrub').max=c.duration; $('clip').value='r:'+i; emmaCur=p.id;
+  document.querySelectorAll('#emmapresets button').forEach(b=>b.classList.toggle('on',b.dataset.id===p.id));
+}
+async function loadEmma(){
+  const btn=$('loademma'), bar=$('emmabar'), fill=bar.firstElementChild; btn.disabled=true; btn.textContent='Loading Emma ...'; bar.hidden=false; fill.style.width='2%';
+  const prog=(a,b)=>f=>{ fill.style.width=Math.round((a+(b-a)*f)*100)+'%'; };
+  try{
+    status('Clearing the scene ...'); clearCharacterScene();
+    newKernel(); CHAR=K.CHAR; window.CHAR=CHAR; wantBoard=false;
+    status('Loading Emma ...\nmodel');
+    const [c,a,h,m]=await Promise.all([emmaFetch(EMMA_FILES.char,false,prog(0.02,0.6)),emmaFetch(EMMA_FILES.anim,false,prog(0.6,0.8)),emmaFetch(EMMA_FILES.hair,true,prog(0.8,0.9)),emmaFetch(EMMA_FILES.manifest,true)]);
+    emmaManifest=null; if(m){ try{ emmaManifest=JSON.parse(new TextDecoder().decode(m.buf)); }catch(e){} }
+    fill.style.width='92%';
+    const gltf=await parseGLB(c.buf);
+    K.charSetup(gltf);                                   // the game's bone map, material fix, shadows (same call as Ariel)
+    CHAR.mixer=new THREE.AnimationMixer(CHAR.root); K._charWrapMixer();
+    const box=new THREE.Box3().setFromObject(CHAR.root); const rh=box.max.y-box.min.y;
+    CHAR.rawHeight=rh>0.001?rh:1; CHAR.scaleForBoard=K._clamp(K.CHAR_BOARD_TARGET_UNITS/CHAR.rawHeight,0.02,5); CHAR.feetOffset=-box.min.y;
+    CHAR.loaded=true; CHAR.root.visible=true; scene.add(CHAR.root);
+    CHAR.root.traverse(o=>{ if(o.isMesh) o.frustumCulled=false; });
+    const notes=['Emma: '+Object.keys(CHAR.bones).length+' bones, '+(c.buf.byteLength/1e6).toFixed(1)+' MB model (from '+(c.from===GAME.base?'game commit':c.from.replace(/^https:\/\/raw\.githubusercontent\.com\//,''))+')'];
+    const ag=await parseGLB(a.buf); rawClips=ag.animations.slice(); K.buildActions(ag);
+    notes.push(rawClips.length+' clips in the animation file, '+Object.keys(CHAR.actions).filter(k=>CHAR.actions[k]).length+' game states');
+    const missing=[...new Set(Object.keys(CHAR.bones).length?[]:['no bones'])]; if(missing.length) notes.push(missing.join(', '));
+    fillClips();
+    if(h){
+      try{ const mod=await hairModule();
+        hair=mod.buildHair(CHAR,THREE,h.buf,{character:true,getStrandFraction:strandFraction,getGravityScale:gravityScale});
+        CHAR._hair=hair; window.DART_HAIR=hair; if(hair.setStrandFraction) hair.setStrandFraction(strandFraction());
+        $('hairtoggle').textContent='Strands: on'; notes.push('strands: '+hair.stats.strands+' ('+hair.stats.guides+' simulated)'+(hair.stats.sdf?', head SDF collision':''));
+      }catch(e){ hair=null; notes.push('hair: '+(e.message||e)); }
+    } else notes.push('no strand file for Emma (hair is whatever the model carries)');
+    buildEmmaPresets();
+    $('bsel').value=STATE.boardConfig.template||'B'; $('boardtoggle').textContent='Board: off';
+    playGame('idle'); $('clip').value='g:idle'; syncClipUI(); frameCam();
+    fill.style.width='100%'; status(notes.join('\n')); $('hint').textContent='One finger orbits. Two fingers: pinch to dolly, drag to pan. Right-drag pans on desktop.'; window.__emmaReady=true; window.__viewerReady=true;
+    btn.textContent='Reload Emma';
+  }catch(e){ console.error(e); status('Emma failed to load: '+(e.message||e)); btn.textContent='Load Emma'; window.__emmaError=String(e&&e.message||e); }
+  finally{ btn.disabled=false; setTimeout(()=>{ bar.hidden=true; fill.style.width='0'; },900); }
+}
+$('loademma').onclick=()=>loadEmma();
+
 /* ---------- UI ---------- */
 $('loadgame').onclick=()=>loadAll().catch(e=>status('Load failed: '+(e.message||e)));
 $('bsel').value=STATE.boardConfig.template||'B';
@@ -421,8 +534,8 @@ function tick(){
   if(hair&&(simT-statT)>0.5){ statT=simT; const s=hair.stats; $('hairstats').textContent=(s.drawn||s.strands)+' strands drawn, '+s.guides+' simulated, '+(s.ms||0).toFixed(1)+' ms/frame'+(s.contacts!=null?', '+s.contacts+' contacts':''); }
   requestAnimationFrame(tick);
 }
-window.__viewer={get CHAR(){return CHAR;},get board(){return board;},get hair(){return hair;},K:()=>K,STATE,GFX,THREE,scene,cam,ctl,renderer,frameCam,playGame,playRaw};
+window.__viewer={get CHAR(){return CHAR;},get board(){return board;},get hair(){return hair;},K:()=>K,STATE,GFX,THREE,scene,cam,ctl,renderer,frameCam,playGame,playRaw,loadEmma,playPreset,clearCharacterScene,get rawClips(){return rawClips;}};
 requestAnimationFrame(tick);
-loadAll().catch(e=>{ console.error(e); status('Could not load the game files: '+(e.message||e)+'\nPick the files from your device below instead.'); });
+if(qs.get('character')==='emma') loadEmma(); else loadAll().catch(e=>{ console.error(e); status('Could not load the game files: '+(e.message||e)+'\nPick the files from your device below instead.'); });
 </script>
 </body></html>
