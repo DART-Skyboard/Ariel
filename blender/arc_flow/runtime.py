@@ -9,6 +9,8 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from . import gn, shading
+from .core import atmosphere as ATM
+from .core import cavity as CV
 from .cachefile import Cache
 from .core import fluids as F
 from .core import mathcards as MC
@@ -41,6 +43,7 @@ class Runtime:
         self.field_cache = {}
         self.autosave_every = 48
         self.msg = ""
+        self.joints = None       # last cavity / joint classification (core.cavity.classify)
 
 
 RT = Runtime()
@@ -55,7 +58,40 @@ def get_scene():
 
 
 # ----------------------------------------------------------------------------- scene -> world
-def _mesh_arrays(obj, deps):
+def _arrays_from_mesh(me):
+    me.calc_loop_triangles()
+    nv, nt = len(me.vertices), len(me.loop_triangles)
+    v = np.empty(nv * 3, np.float64)
+    me.vertices.foreach_get('co', v)
+    t = np.empty(nt * 3, np.int64)
+    me.loop_triangles.foreach_get('vertices', t)
+    return v.reshape(-1, 3), t.reshape(-1, 3)
+
+
+def mesh_without_cuts(obj, deps):
+    """Triangle arrays of the evaluated object with the Boolean-projection 'AF Cut' modifiers left out, so the solver
+    always sees the real wall (the cut-out is implied by the cavity intersection, never double counted)."""
+    cuts = [m for m in obj.modifiers if m.name.startswith("AF Cut ")]
+    if not cuts:
+        return _mesh_arrays(obj, deps)
+    others = [m for m in obj.modifiers if m not in cuts]
+    if not others:
+        return _arrays_from_mesh(obj.data)
+    state = [(m, m.show_viewport) for m in cuts]
+    try:
+        for m, _s in state:
+            m.show_viewport = False
+        deps.update()
+        return _mesh_arrays(obj, deps, _raw=True)
+    finally:
+        for m, sv in state:
+            m.show_viewport = sv
+        deps.update()
+
+
+def _mesh_arrays(obj, deps, _raw=False):
+    if not _raw and any(m.name.startswith("AF Cut ") for m in obj.modifiers):
+        return mesh_without_cuts(obj, deps)
     ev = obj.evaluated_get(deps)
     me = ev.to_mesh()
     try:
@@ -73,11 +109,11 @@ def _mesh_arrays(obj, deps):
 def _field(obj, deps):
     p = obj.arc_flow
     v, t = _mesh_arrays(obj, deps)
-    sig = (v.shape[0], t.shape[0], float(v.sum()), float((v * v).sum()), p.cavity_mode, p.resolution, p.lotcbp_level)
+    sig = (v.shape[0], t.shape[0], float(v.sum()), float((v * v).sum()), p.cavity_mode, p.resolution, p.lotbcbp_level)
     hit = RT.field_cache.get(obj.name)
     if hit and hit[0] == sig:
         return hit[1], v, t
-    fld = SDF.PartField(v, t, p.cavity_mode, p.resolution, p.lotcbp_level)
+    fld = SDF.PartField(v, t, p.cavity_mode, p.resolution, p.lotbcbp_level)
     RT.field_cache[obj.name] = (sig, fld)
     return fld, v, t
 
@@ -148,6 +184,11 @@ def build_world(scene):
     fl = fluid_specs(scene)
     names = [f['name'] for f in fl]
     objs = [o for o in scene.objects if o.type == 'MESH' and (o.arc_flow.role != 'NONE' or o.arc_flow.is_emitter)]
+    cav_objs = []
+    if af.bool_projection:
+        from . import cavitybool
+        cav_objs = [o for o in cavitybool.cavity_objects(scene) if o not in objs]
+        objs.extend(cav_objs)
     envobj = af.env.obj if af.env.source == 'OBJECT' and af.env.obj else None
     if envobj is not None and envobj not in objs:
         objs.append(envobj)
@@ -162,6 +203,8 @@ def build_world(scene):
         role = p.role if o is not envobj or p.role != 'NONE' else 'COLLIDER'
         if o is envobj and p.role == 'NONE':
             role = 'COLLIDER'
+        if o in cav_objs:
+            role = 'CAVITY'
         fld, v, t = _field(o, deps)
         fi = names.index(p.fluid) if p.fluid in names else -1
         fill_mode, fill_val = p.fill_mode, p.fill_percent if p.fill_mode == 'PERCENT' else p.fill_volume
@@ -186,12 +229,17 @@ def build_world(scene):
     g = tuple(scene.gravity) if e.use_scene_gravity else tuple(e.gravity)
     env = W.Env(pressure=e.pressure, gravity=g, wind=tuple(e.wind), temp=e.temperature, density=e.density,
                 ground_z=None if e.ground_auto else e.ground_z, ground_on=e.ground)
+    if e.use_mix:
+        st = ATM.state({c.compound: c.fraction for c in e.mix}, e.pressure, e.temperature, abs(g[2]) or 9.80665)
+        env.density, env.mu, env.gamma, env.molar = st['rho'], st['mu'], st['gamma'], st['molar']
     if e.atmo_fluid in names:
         a = fl[names.index(e.atmo_fluid)]
         env.density = F.density_at(a['spec'], e.pressure, e.temperature)
     prm = W.Params(continuous=af.continuous, net_res=af.net_res, vmax=af.vmax, max_sub=af.max_substeps, radius_scale=af.radius_scale,
-                   seed=af.seed, lotcbp=af.lotcbp)
+                   seed=af.seed, lotbcbp=af.lotbcbp)
     world = W.World(parts, fl, env, prm)
+    if cav_objs:
+        world.on_moved = _refresh_cavity_fields
     RT.parts = [bpy.data.objects[q.name] for q in parts]
     RT.fluid_names = names
     RT.fl_slots = []
@@ -202,12 +250,40 @@ def build_world(scene):
     return world
 
 
+def _refresh_cavity_fields(world):
+    """Parts moved: re-evaluate the Fluid Cavity unions (they follow the parts) and rebuild their collision fields."""
+    deps = bpy.context.evaluated_depsgraph_get()
+    for q in world.parts:
+        if q.role != 'CAVITY':
+            continue
+        o = bpy.data.objects.get(q.name)
+        if o is None:
+            continue
+        try:
+            fld, _v, _t = _field(o, deps)
+            q.field = fld
+            q.matrix = np.array(o.matrix_world)
+        except Exception:
+            pass
+
+
+def update_joints():
+    """Refresh the joint / plug / spill report from the current world."""
+    RT.joints = None
+    if RT.world is not None:
+        try:
+            RT.joints = CV.classify(RT.world)
+        except Exception:
+            RT.joints = None
+
+
 def ensure_world(scene, force=False):
     if RT.world is None or RT.dirty or force:
         old = RT.world
         snap_last = RT.last_frame
         RT.world = build_world(scene)
         RT.dirty = False
+        update_joints()
         bind_objects(scene)
         if old is not None and snap_last is not None and RT.cache is not None and RT.running:
             s = RT.cache.get(snap_last)
@@ -542,7 +618,8 @@ def sim_frame(scene, frame):
         return stepped
     dt = 1.0 / fps(scene)
     while RT.last_frame < frame:
-        world.set_matrices([np.array(o.matrix_world) for o in RT.parts])
+        if world.set_matrices([np.array(o.matrix_world) for o in RT.parts]):
+            update_joints()
         _eval_math(scene, world)
         world.step(dt)
         RT.last_frame += 1
@@ -618,6 +695,10 @@ def start(scene, record=False, play=True):
         if old:
             RT.cache.frames = {f: s for f, s in old.frames.items()}
         RT.cache.path = work_path(af)
+    if af.bool_projection:
+        from . import cavitybool
+        if not cavitybool.cavity_objects(scene):
+            cavitybool.build_from_scene(scene)      # first run with Boolean projection on: create the Fluid Cavity objects
     ensure_world(scene, force=True)
     RT.recording = bool(record)
     if record:
@@ -738,6 +819,11 @@ def assign_selected_faces(obj):
 @persistent
 def on_load(*args):
     RT.reset_all()
+    try:
+        from . import props
+        props.migrate_all()          # 0.1.x files: lotcbp -> lotbcbp
+    except Exception:
+        pass
     for sc in bpy.data.scenes:
         af = getattr(sc, 'arc_flow', None)
         if af is None:

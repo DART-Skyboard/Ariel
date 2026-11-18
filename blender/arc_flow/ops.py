@@ -541,7 +541,132 @@ class AF_OT_demo(Operator):
         return {'FINISHED'}
 
 
-CLASSES = (AF_OT_add_fluid, AF_OT_add_pair, AF_OT_remove_fluid, AF_OT_add_phys, AF_OT_remove_phys, AF_OT_add_math, AF_OT_remove_math,
+# ----------------------------------------------------------------------------- Boolean projection (LOTBCBP)
+class AF_OT_build_cavities(Operator):
+    bl_idname = "arcflow.build_cavities"
+    bl_label = "Build Fluid Cavity"
+    bl_description = ("Find joints between parts (cavities that intersect) and create one non-destructive Fluid Cavity object per assembly: "
+                      "a live Boolean union of the connected cavities")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        from . import cavitybool
+        try:
+            rep = cavitybool.build_from_scene(ctx.scene)
+        except Exception as ex:
+            self.report({'ERROR'}, "Fluid Cavity failed: %s" % ex)
+            return {'CANCELLED'}
+        if not rep['assemblies']:
+            self.report({'WARNING'}, "No intersecting cavities found: nothing to union (%s)" % cavitybool.CV.summary(rep))
+        else:
+            self.report({'INFO'}, "%d Fluid Cavity object(s): %s" % (len(rep['assemblies']), cavitybool.CV.summary(rep)))
+        return {'FINISHED'}
+
+
+class AF_OT_clear_cavities(Operator):
+    bl_idname = "arcflow.clear_cavities"
+    bl_label = "Remove Fluid Cavities"
+    bl_description = "Delete the Fluid Cavity objects, their cavity sources and the joint cut modifiers"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        from . import cavitybool
+        cavitybool.clear_cavities(ctx.scene)
+        return {'FINISHED'}
+
+
+# ----------------------------------------------------------------------------- environment
+class AF_OT_env_preset(Operator):
+    bl_idname = "arcflow.env_apply_preset"
+    bl_label = "Apply atmosphere preset"
+    bl_description = "Copy the selected atmosphere's pressure, temperature, gravity and gas mix into the settings below"
+
+    def execute(self, ctx):
+        from . import props
+        e = ctx.scene.arc_flow.env
+        if e.preset == 'CUSTOM':
+            self.report({'INFO'}, "Custom atmosphere: edit the values directly")
+            return {'CANCELLED'}
+        props.apply_atmosphere_preset(e)
+        runtime.mark_dirty()
+        return {'FINISHED'}
+
+
+class AF_OT_env_add_compound(Operator):
+    bl_idname = "arcflow.env_add_compound"
+    bl_label = "Add compound"
+    bl_options = {'REGISTER', 'UNDO'}
+    compound: EnumProperty(name="Compound", items=lambda s, c: _atm_items())
+
+    def execute(self, ctx):
+        e = ctx.scene.arc_flow.env
+        c = e.mix.add()
+        c.compound, c.fraction = self.compound, 0.01
+        e.use_mix = True
+        runtime.mark_dirty()
+        return {'FINISHED'}
+
+    def invoke(self, ctx, ev):
+        return ctx.window_manager.invoke_props_menu(self)
+
+
+def _atm_items():
+    from .core import atmosphere as ATM
+    return ATM.COMPOUND_ITEMS
+
+
+class AF_OT_env_remove_compound(Operator):
+    bl_idname = "arcflow.env_remove_compound"
+    bl_label = "Remove compound"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: IntProperty()
+
+    def execute(self, ctx):
+        from . import props
+        e = ctx.scene.arc_flow.env
+        if 0 <= self.index < len(e.mix):
+            e.mix.remove(self.index)
+        props.recalc_density(e)
+        runtime.mark_dirty()
+        return {'FINISHED'}
+
+
+class AF_OT_env_normalise(Operator):
+    bl_idname = "arcflow.env_normalise"
+    bl_label = "Normalise mix"
+    bl_description = "Scale the mole fractions so they sum to 1"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        from . import props
+        e = ctx.scene.arc_flow.env
+        tot = sum(c.fraction for c in e.mix)
+        if tot > 0:
+            props._applying[0] = True
+            try:
+                for c in e.mix:
+                    c.fraction = c.fraction / tot
+            finally:
+                props._applying[0] = False
+        props.recalc_density(e)
+        runtime.mark_dirty()
+        return {'FINISHED'}
+
+
+class AF_OT_env_look(Operator):
+    bl_idname = "arcflow.env_apply_look"
+    bl_label = "Apply environment look"
+    bl_description = "Environment asset hook: set the world colour and fog from the atmosphere and add a ground plane with a surface material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        from . import environment
+        self.report({'INFO'}, "Environment look: " + environment.apply_look(ctx.scene))
+        return {'FINISHED'}
+
+
+CLASSES = (AF_OT_build_cavities, AF_OT_clear_cavities, AF_OT_env_preset, AF_OT_env_add_compound, AF_OT_env_remove_compound,
+           AF_OT_env_normalise, AF_OT_env_look, AF_OT_add_fluid, AF_OT_add_pair, AF_OT_remove_fluid, AF_OT_add_phys, AF_OT_remove_phys, AF_OT_add_math, AF_OT_remove_math,
            AF_OT_math_term, AF_OT_part_preset, AF_OT_set_role, AF_OT_select_faces, AF_OT_assign_faces, AF_OT_build, AF_OT_record,
            AF_OT_stop, AF_OT_bake, AF_OT_refresh, AF_OT_cache_save, AF_OT_cache_import, AF_OT_cache_pack, AF_OT_cache_unpack,
            AF_OT_export_ply, AF_OT_export_abc, AF_OT_add_feedback_plane, AF_OT_assign_feedback, AF_OT_demo)

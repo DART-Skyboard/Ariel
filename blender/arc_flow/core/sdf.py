@@ -1,9 +1,9 @@
-"""LOTCBP collision fields (NumPy).
+"""LOTBCBP collision fields (NumPy).
 
 TriSoup        triangles with angle-weighted pseudo-normals (vertex, edge, face) for a robust sign test
 virtual_subdivide   on-demand "behind the scenes" tessellation of long triangles with optional Phong smoothing
 signed_distance     exact signed distance of many points to a soup (pruned, vectorised)
-PartField      per-part coarse grid + dynamically requested refined bricks (the LOTCBP adaptive refinement)
+PartField      per-part coarse grid + dynamically requested refined bricks (the LOTBCBP adaptive refinement)
 """
 import numpy as np
 
@@ -339,7 +339,7 @@ def _enclosure(material, sd=None, h=None):
 
 
 class PartField:
-    """Local-space collision field of one part with dynamic (LOTCBP) brick refinement.
+    """Local-space collision field of one part with dynamic (LOTBCBP) brick refinement.
 
     mode: 'SHELL' (the surface encloses the fluid: inside = cavity), 'SOLID' (mesh is a body with
     modelled cavities: fluid only in enclosed cavities) or 'AUTO'."""
@@ -453,7 +453,7 @@ class PartField:
         a = np.abs(sd)
         return np.where(inside, -np.maximum(a, 1e-6), a + 1e-6), sd
 
-    # ------------------------------------------------------------------ LOTCBP dynamic refinement
+    # ------------------------------------------------------------------ LOTBCBP dynamic refinement
     def request_refine(self, P, band=None, max_new=96):
         """Refine the bricks around local points that are near the surface.  Returns number added."""
         if self.level <= 0 or len(P) == 0:

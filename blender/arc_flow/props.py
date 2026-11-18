@@ -5,6 +5,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        IntProperty, PointerProperty, StringProperty)
 from bpy.types import PropertyGroup
 
+from .core import atmosphere as ATM
 from .core import fluids as F
 from .core import materials as M
 from .core import mathcards as MC
@@ -50,6 +51,88 @@ def _xray_changed(self, context):
         runtime.mark_dirty()
     except Exception:
         pass
+
+
+def _bool_changed(self, context):
+    try:
+        from . import cavitybool, runtime
+        cavitybool.sync_visibility(self.id_data if isinstance(self.id_data, bpy.types.Scene) else context.scene)
+        runtime.mark_dirty()
+    except Exception:
+        pass
+
+
+def _cut_changed(self, context):
+    try:
+        from . import cavitybool, runtime
+        cavitybool.apply_cuts(self.id_data if isinstance(self.id_data, bpy.types.Scene) else context.scene)
+        runtime.mark_dirty()
+    except Exception:
+        pass
+
+
+def _env_preset_changed(self, context):
+    if self.preset != 'CUSTOM':
+        apply_atmosphere_preset(self)
+    _update_sync(self, context)
+
+
+_applying = [False]
+
+
+def _env_recalc(self, context):
+    if self.use_mix:
+        recalc_density(self)
+    _update_sync(self, context)
+
+
+def _mix_changed(self, context):
+    env = self.id_data.arc_flow.env
+    if _applying[0]:
+        return
+    if env.preset != 'CUSTOM':
+        _applying[0] = True
+        try:
+            env.preset = 'CUSTOM'
+        finally:
+            _applying[0] = False
+    _env_recalc(env, context)
+
+
+def gas_mix(env):
+    return ATM.normalise({c.compound: c.fraction for c in env.mix})
+
+
+def gravity_magnitude(env, scene=None):
+    if env.use_scene_gravity and scene is not None:
+        return abs(scene.gravity[2]) or 9.80665
+    return abs(env.gravity[2]) or 9.80665
+
+
+def recalc_density(env):
+    env.density = ATM.density(gas_mix(env), env.pressure, env.temperature)
+
+
+def apply_atmosphere_preset(env, key=None):
+    """Copy a preset's pressure, temperature, gravity and gas mix into the Environment settings."""
+    key = key or env.preset
+    if key not in ATM.PRESETS:
+        return
+    p = ATM.PRESETS[key]
+    _applying[0] = True
+    try:
+        env.pressure = p['pressure']
+        env.temperature = p['temperature']
+        env.use_scene_gravity = False
+        env.gravity = (0.0, 0.0, -p['gravity'])
+        env.mix.clear()
+        for cid, x in p['mix'].items():
+            c = env.mix.add()
+            c.compound, c.fraction = cid, x
+        env.use_mix = True
+        recalc_density(env)
+    finally:
+        _applying[0] = False
 
 
 # ----------------------------------------------------------------------------- fluids
@@ -163,8 +246,8 @@ class AF_ObjectProps(PropertyGroup):
                                                     ('SHELL', "Surface encloses fluid", "Sealed bag / tank / pipe surface: the fluid is inside the surface"),
                                                     ('SOLID', "Solid body", "Mesh is a solid with modelled cavities. With no cavity the fluid rests on top and spills")],
                               default='AUTO', update=_update_sync)
-    resolution: IntProperty(name="Field resolution", default=40, min=8, max=96, description="Voxels along the longest side of the LOTCBP base field", update=_update_sync)
-    lotcbp_level: IntProperty(name="LOTCBP level", default=2, min=0, max=3, description="Refinement levels of the virtual tessellation bricks (0 = off)", update=_update_sync)
+    resolution: IntProperty(name="Field resolution", default=40, min=8, max=96, description="Voxels along the longest side of the LOTBCBP base field", update=_update_sync)
+    lotbcbp_level: IntProperty(name="LOTBCBP level", default=2, min=0, max=3, description="Refinement levels of the virtual tessellation bricks (0 = off)", update=_update_sync)
     material: EnumProperty(name="Material", items=M.MATERIAL_ITEMS, default='INDUSTRIAL_STEEL',
                            update=lambda s, c: s.apply_material())
     density: FloatProperty(name="Density", default=7850.0, min=1.0, description="kg/m3", update=_update_sync)
@@ -215,20 +298,33 @@ class AF_ObjectProps(PropertyGroup):
 
 
 # ----------------------------------------------------------------------------- environment + scene
+class AF_GasComponent(PropertyGroup):
+    compound: EnumProperty(name="Compound", items=ATM.COMPOUND_ITEMS, default='N2', update=_mix_changed)
+    fraction: FloatProperty(name="Mole fraction", default=0.5, min=0.0, max=1.0, precision=4, update=_mix_changed)
+
+
 class AF_Env(PropertyGroup):
     source: EnumProperty(name="Environment", items=[('WORLD', "Blender scene", "Uses the scene gravity; open air around everything"),
                                                     ('OBJECT', "Environment object", "Fluid lives inside this asset (vacuum chamber, room, cave...)")], default='WORLD', update=_update_sync)
     obj: PointerProperty(name="Object", type=bpy.types.Object, poll=lambda s, o: o.type == 'MESH')
-    pressure: FloatProperty(name="Atmospheric pressure", default=101325.0, min=0.0, description="Pa", update=_update_sync)
+    pressure: FloatProperty(name="Atmospheric pressure", default=101325.0, min=0.0, description="Pa", update=_env_recalc)
     use_scene_gravity: BoolProperty(name="Scene gravity", default=True, update=_update_sync)
     gravity: FloatVectorProperty(name="Gravity", default=(0.0, 0.0, -9.81), subtype='ACCELERATION', size=3, update=_update_sync)
     wind: FloatVectorProperty(name="Wind velocity", default=(0.0, 0.0, 0.0), subtype='VELOCITY', size=3, update=_update_sync)
-    temperature: FloatProperty(name="Temperature", default=293.15, min=0.0, description="K", update=_update_sync)
+    temperature: FloatProperty(name="Temperature", default=293.15, min=0.0, description="K", update=_env_recalc)
     density: FloatProperty(name="Atmospheric density", default=1.225, min=0.0, description="kg/m3", update=_update_sync)
     atmo_fluid: EnumProperty(name="Atmospheric fluid", items=fluid_items, update=_update_sync)
     ground: BoolProperty(name="Ground plane", default=True, update=_update_sync)
     ground_auto: BoolProperty(name="Auto height", default=True, description="Ground sits at the lowest simulation part", update=_update_sync)
     ground_z: FloatProperty(name="Ground height", default=0.0, unit='LENGTH', update=_update_sync)
+    # atmosphere (gas mix drives density, drag, viscosity and exhaust expansion)
+    preset: EnumProperty(name="Atmosphere", items=ATM.PRESET_ITEMS, default='CUSTOM', update=_env_preset_changed,
+                         description="Earth, Mars, Venus, Titan, Jupiter: sets pressure, temperature, gravity and the gas mix")
+    use_mix: BoolProperty(name="Gas mix drives the ambient gas", default=False, update=_env_recalc,
+                          description="Density, viscosity and heat-capacity ratio of the ambient gas follow the mix below at the ambient pressure and temperature")
+    mix: CollectionProperty(type=AF_GasComponent)
+    look_world: BoolProperty(name="World colour and fog", default=False, description="Environment asset look: sky colour and fog density follow the atmosphere")
+    look_ground: BoolProperty(name="Ground plane material", default=False, description="Environment asset look: add / update an AF_Ground plane with a surface material")
 
 
 class AF_Scene(PropertyGroup):
@@ -250,7 +346,16 @@ class AF_Scene(PropertyGroup):
     vmax: FloatProperty(name="Max speed", default=60.0, min=1.0, description="m/s, hard clamp", update=_update_sync)
     radius_scale: FloatProperty(name="Particle size", default=1.0, min=0.05, update=_update_sync)
     seed: IntProperty(name="Seed", default=1, update=_update_sync)
-    lotcbp: BoolProperty(name="LOTCBP refinement", default=True, description="Dynamic virtual tessellation of the collision bodies where fluid touches them", update=_update_sync)
+    lotbcbp: BoolProperty(name="LOTBCBP refinement", default=True, description="Dynamic virtual tessellation of the collision bodies where fluid touches them", update=_update_sync)
+    # Boolean projection (LOTBCBP): union of connected cavities as a real Boolean result
+    bool_projection: BoolProperty(name="Boolean projection", default=False, update=_bool_changed,
+                                  description="Use the Boolean union of connected cavities (Fluid Cavity objects) as an extra collision / fill region and show it as an overlay")
+    bool_cut_joints: BoolProperty(name="Cut joints", default=False, update=_cut_changed,
+                                  description="Add Boolean difference modifiers so the shared cavity is cut out of the walls at every joint")
+    bool_solver: EnumProperty(name="Boolean solver", items=[('AUTO', "Auto", "Manifold when every operand is a closed manifold, otherwise Exact"),
+                                                            ('EXACT', "Exact", "Robust, slower"), ('MANIFOLD', "Manifold", "Fast, needs closed manifold operands")], default='AUTO')
+    bool_detail: IntProperty(name="Cavity mesh detail", default=48, min=16, max=160, description="Resolution of the cavity meshes rebuilt from the field (solid bodies, open shells)")
+    bool_overlay: BoolProperty(name="Show overlay", default=True, update=_bool_changed)
     max_substeps: IntProperty(name="Max substeps", default=6, min=1, max=32)
     # timeline
     use_scene_range: BoolProperty(name="Use scene frame range", default=True)
@@ -274,7 +379,51 @@ class AF_Scene(PropertyGroup):
     ui_math: BoolProperty(default=True)
 
 
-CLASSES = (AF_FluidItem, AF_PhysicsCard, AF_MathTerm, AF_MathGroup, AF_MathCard, AF_ObjectProps, AF_Env, AF_Scene)
+CLASSES = (AF_FluidItem, AF_PhysicsCard, AF_MathTerm, AF_MathGroup, AF_MathCard, AF_ObjectProps, AF_GasComponent, AF_Env, AF_Scene)
+
+
+# renamed in 0.2.0 (LOTCBP -> LOTBCBP): carry values saved by 0.1.x over to the new property ids
+_LEGACY = {'lotcbp': 'lotbcbp', 'lotcbp_level': 'lotbcbp_level'}
+
+
+def legacy_group(idblock):
+    """The raw stored 'arc_flow' group: a plain ID property up to Blender 4.x, a system property from 5.0 on."""
+    for getter in (lambda: idblock.bl_system_properties_get(), lambda: idblock):
+        try:
+            g = getter()
+            if g is not None and 'arc_flow' in g.keys():
+                return g['arc_flow']
+        except Exception:
+            continue
+    return None
+
+
+def migrate_legacy(idblock):
+    """Move old (unregistered) ID properties 'lotcbp*' to the new names.  Safe to call repeatedly."""
+    grp = legacy_group(idblock)
+    if grp is None:
+        return 0
+    n = 0
+    for old, new in _LEGACY.items():
+        try:
+            if old in grp:
+                val = grp[old]
+                del grp[old]
+                if hasattr(idblock.arc_flow, new):
+                    setattr(idblock.arc_flow, new, type(getattr(idblock.arc_flow, new))(val))
+                    n += 1
+        except Exception:
+            pass
+    return n
+
+
+def migrate_all():
+    n = 0
+    for sc in bpy.data.scenes:
+        n += migrate_legacy(sc)
+    for o in bpy.data.objects:
+        n += migrate_legacy(o)
+    return n
 
 
 def register():
@@ -282,6 +431,10 @@ def register():
         bpy.utils.register_class(c)
     bpy.types.Scene.arc_flow = PointerProperty(type=AF_Scene)
     bpy.types.Object.arc_flow = PointerProperty(type=AF_ObjectProps)
+    try:
+        migrate_all()
+    except Exception:
+        pass
 
 
 def unregister():

@@ -240,3 +240,25 @@ def bind_blend_driver(mat, obj, key_name="AF_ColorBlend"):
     var.targets[0].id_type = 'KEY'
     var.targets[0].id = sk
     var.targets[0].data_path = 'key_blocks["%s"].value' % key_name
+
+
+def cavity_material():
+    """Translucent cyan overlay for the Boolean 'Fluid Cavity' objects."""
+    m, nt, fresh = _mat("AF_FluidCavity")
+    if not fresh:
+        return m
+    m['af_fresh'] = False
+    set_blended(m)
+    m.diffuse_color = (0.1, 0.8, 0.9, 0.25)
+    nt.nodes.clear()
+    b = Builder(nt)
+    emit = b.node('ShaderNodeEmission', y=100)
+    emit.inputs['Color'].default_value = (0.1, 0.8, 0.9, 1.0)
+    emit.inputs['Strength'].default_value = 0.6
+    tr = b.node('ShaderNodeBsdfTransparent', y=-50)
+    ms = b.node('ShaderNodeMixShader', y=0)
+    ms.inputs[0].default_value = 0.2
+    b.link(out(tr, 'BSDF'), ms.inputs[1]); b.link(out(emit, 'Emission'), ms.inputs[2])
+    o = b.node('ShaderNodeOutputMaterial', y=0)
+    b.link(out(ms, 'Shader'), inp(o, 'Surface'))
+    return m

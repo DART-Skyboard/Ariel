@@ -1,4 +1,4 @@
-"""Arc Flow solver: LOTCBP collision composition, sealed-joint detection, container drain,
+"""Arc Flow solver: LOTBCBP collision composition, sealed-joint detection, container drain,
 channel flow, free flight, emitters, thermal/stress state.  Pure NumPy."""
 import math
 import numpy as np
@@ -26,9 +26,12 @@ class PartSpec:
 
 
 class Env:
+    """Ambient state.  density / viscosity / gamma normally come from core.atmosphere.state() (gas mix) so that gas drag,
+    spills against the ambient pressure and exhaust expansion follow the chosen atmosphere."""
     def __init__(self, pressure=F.P_ATM, gravity=(0, 0, -9.81), wind=(0, 0, 0), temp=293.15, density=1.225,
-                 atmo_fluid=None, ground_z=None, ground_on=True):
+                 atmo_fluid=None, ground_z=None, ground_on=True, mu=1.8e-5, gamma=1.4, molar=0.02896):
         self.pressure, self.temp, self.density = pressure, temp, density
+        self.mu, self.gamma, self.molar = mu, gamma, molar
         self.gravity = np.asarray(gravity, float)
         self.wind = np.asarray(wind, float)
         self.atmo_fluid = atmo_fluid        # dict fluid spec or None
@@ -38,7 +41,7 @@ class Env:
 class Params:
     def __init__(self, continuous=True, net_res=40, vmax=60.0, max_sub=6, refine_budget=12,
                  flight_factor=2.0, spill_life=25.0, radius_scale=1.0, ignition_gain=1.0,
-                 ignition=None, seed=1, lotcbp=True, cd=0.8, t_lo=273.15):
+                 ignition=None, seed=1, lotbcbp=True, cd=0.8, t_lo=273.15):
         self.__dict__.update(locals()); del self.__dict__['self']
 
 
@@ -49,7 +52,9 @@ class World:
         self.env = env or Env()
         self.p = params or Params()
         self.rng = np.random.default_rng(self.p.seed)
-        self.active = [i for i, q in enumerate(parts) if q.role in ('CONTAINER', 'TRANSPORT', 'CHAMBER', 'COLLIDER')]
+        # CAVITY = the Boolean-projected union of connected cavities (LOTBCBP): extra legal region, never an owner / opening source
+        self.active = [i for i, q in enumerate(parts) if q.role in ('CONTAINER', 'TRANSPORT', 'CHAMBER', 'COLLIDER', 'CAVITY')]
+        self.on_moved = None                # optional callable(world) run after parts moved, before the network is rebuilt
         self.time = 0.0
         self.frame_dp = {}
         self._mats_key = None
@@ -90,6 +95,8 @@ class World:
         for q, m in zip(self.parts, mats):
             q.matrix = m
         self._setup_transforms()
+        if self.on_moved is not None:
+            self.on_moved(self)
         self._build_network(force=True)
         return True
 
@@ -103,17 +110,23 @@ class World:
             c, m = q.field.fields(self.to_local(i, P), bricks)
             if q.role == 'COLLIDER':
                 c = np.full(len(P), 1e9)
+            elif q.role == 'CAVITY':
+                m = np.full(len(P), 1e9)        # the union region has no wall of its own; the parts' walls are cut out of it
             cavs[k] = c * self.scale[i]
             mats[k] = m * self.scale[i]
         return cavs, mats
 
-    @staticmethod
-    def _compose(cavs, mats):
+    def _compose(self, cavs, mats):
         n = cavs.shape[0]
         cavU = cavs.min(axis=0)
+        # the Boolean union region widens the legal volume but must not cancel the parts' own wall bands
+        wc = cavs
+        cav_rows = [k for k, i in enumerate(self.active) if self.parts[i].role == 'CAVITY']
+        if cav_rows:
+            wc = cavs.copy(); wc[cav_rows] = 1e9
         if n > 1:
-            two = np.partition(cavs, 1, axis=0)[:2]
-            others = np.where(cavs == two[0][None], two[1][None], two[0][None])
+            two = np.partition(wc, 1, axis=0)[:2]
+            others = np.where(wc == two[0][None], two[1][None], two[0][None])
         else:
             others = np.full_like(cavs, 1e9)
         matU = np.maximum(mats, -others).min(axis=0)
@@ -123,7 +136,12 @@ class World:
     def query(self, P, bricks=True):
         cavs, mats = self._eval_parts(P, bricks)
         legal, matU, cavU = self._compose(cavs, mats)
-        owner = np.asarray(self.active)[np.argmin(cavs, axis=0)]
+        oc = cavs
+        cav_rows = [k for k, i in enumerate(self.active) if self.parts[i].role == 'CAVITY']
+        if cav_rows and len(cav_rows) < len(self.active):
+            oc = cavs.copy()
+            oc[cav_rows] = 1e9                  # the union never owns a point: ownership stays with the real parts
+        owner = np.asarray(self.active)[np.argmin(oc, axis=0)]
         return legal, matU, cavU, owner, cavs
 
     def _grad(self, fn, P, eps):
@@ -162,12 +180,14 @@ class World:
         legal, matU, _c, owner, _cs = self.query(pts, bricks=False)
         legal = legal.reshape(dims); matU = matU.reshape(dims)
         mask = legal < 0.0
+        # per-part cavity occupancy on the network grid: the raw material of the joint / Boolean-union classification
+        self.part_in = {i: (_cs[k] < 0.0).reshape(dims) for k, i in enumerate(self.active)}
         self.h_ref = h
         # --- classify openings
         ops = []
         for i in self.active:
             q = self.parts[i]
-            if q.role == 'COLLIDER':
+            if q.role in ('COLLIDER', 'CAVITY'):
                 continue
             R = q.matrix[:3, :3] / self.scale[i]
             for o in q.field.openings:
@@ -176,13 +196,19 @@ class World:
                 r = o['radius'] * self.scale[i]
                 probes = np.array([c + n * d * h for d in (0.4, 0.9, 1.6)])
                 lg, mu, _cu, _ow, _cv = self.query(probes, bricks=False)
+                partner = -1
                 if lg[2] < 0.0 and lg[1] < 0.0:
                     state = CONNECTED
+                    # the neighbouring part whose cavity the mouth opens into (used for joint / assembly grouping)
+                    best = 0.0
+                    for kk, jj in enumerate(self.active):
+                        if jj != i and self.parts[jj].role not in ('COLLIDER', 'CAVITY') and _cv[kk, 2] < best:
+                            best, partner = float(_cv[kk, 2]), jj
                 elif np.any(mu < 0.0):
                     state = PLUGGED
                 else:
                     state = OPEN
-                ops.append(dict(part=i, centre=c, normal=n, radius=r, state=state))
+                ops.append(dict(part=i, centre=c, normal=n, radius=r, state=state, partner=partner))
         self.openings = ops
         # --- path-length field to the open exits (geodesic through the merged cavity)
         INF = 1e9
@@ -251,6 +277,11 @@ class World:
         return _trilerp(arr, i0, gc - i0)
 
     # ------------------------------------------------------------------ particle pool
+    def _gamma(self, fi):
+        sp = self.fluids[fi]['spec']
+        cv = sp['cp'] - F.R_GAS / max(sp['molar'], 1e-6)
+        return float(sp['cp'] / cv) if cv > 1.0 else 1.4
+
     def _fluid_rho(self, fi, pressure=None):
         sp = self.fluids[fi]['spec']
         return F.density_at(sp, pressure or F.P_ATM, self.fluids[fi]['temp'])
@@ -373,6 +404,7 @@ class World:
         self.life[slots] = self.p.spill_life
         self.pin[slots] = s['part'] if has_cavity else -1
         s['pv'] = pv
+        s['r0'] = float(self.rad[slots[0]]) if len(slots) else 0.0
         s['has_cavity'] = has_cavity
 
     def _refill(self, si, dt, ninside):
@@ -507,7 +539,7 @@ class World:
         for _ in range(nsub):
             self._substep(h)
         self.time += dt
-        if p.lotcbp:
+        if p.lotbcbp:
             al = np.flatnonzero(self.state > 0)
             if len(al):
                 samp = al if len(al) <= 3000 else self.rng.choice(al, 3000, replace=False)
@@ -592,7 +624,9 @@ class World:
                     o = self.openings[oi]
                     sel = vi[vent_o[vi] == oi]
                     gs = con[sel]
-                    spread = 0.30
+                    # under-expanded jets (exit pressure >> ambient) fan out; in a vacuum chamber the plume is wide
+                    pj = dp_s[self.psrc[gs]] + env.pressure
+                    spread = float(np.clip(0.30 * (1.0 + 0.6 * np.log10(np.maximum(pj / max(env.pressure, 1.0), 1.0)).mean()), 0.30, 1.0))
                     jd = o['normal'][None] + (self.rng.random((len(gs), 3)) - 0.5) * spread * 2
                     jd /= np.linalg.norm(jd, axis=1, keepdims=True)
                     sps = np.linalg.norm(self.vel[gs], axis=1)
@@ -611,7 +645,19 @@ class World:
             geff = g[None] * (1.0 - rho_a / np.maximum(rho_p, 1e-3))[:, None]
             u = v - env.wind
             sp = np.linalg.norm(u, axis=1)
-            v = (v + (geff + (coef * sp)[:, None] * env.wind) * h) / (1.0 + coef * sp * h)[:, None]
+            klin = 4.5 * env.mu / (rho_p * rp * rp)             # Stokes drag of the ambient gas (viscosity of the mix at T)
+            cd_eff = coef * sp + klin
+            v = (v + (geff + cd_eff[:, None] * env.wind) * h) / (1.0 + cd_eff * h)[:, None]
+            # gas exhaust expansion: a gas particle expands isentropically from its source pressure to the ambient pressure
+            gas_f = np.array([self.fluids[f]['spec']['kind'] == 'GAS' for f in range(len(self.fluids))])[self.pfluid[fre]]
+            if gas_f.any():
+                r0 = np.array([s.get('r0', 0.0) for s in self.sources])[self.psrc[fre]]
+                Pj = np.array([s.get('P', env.pressure) for s in self.sources])[self.psrc[fre]]
+                gam = np.array([self._gamma(f) for f in range(len(self.fluids))])[self.pfluid[fre]]
+                ratio = np.clip((Pj / max(env.pressure, 1.0)) ** (1.0 / (3.0 * gam)), 1.0, 5.0)
+                tgt = r0 * ratio
+                grow = gas_f & (r0 > 0)
+                self.rad[fre] = np.where(grow, self.rad[fre] + (tgt - self.rad[fre]) * (1.0 - math.exp(-h / 0.3)), self.rad[fre])
             # gas-like jets spread
             x = x + v * h
             self.age[fre] += h
@@ -645,7 +691,7 @@ class World:
         return float(lo[2])
 
     def _refine(self, xw, cavs):
-        """LOTCBP: request virtual-tessellation bricks wherever particles interact with a surface."""
+        """LOTBCBP: request virtual-tessellation bricks wherever particles interact with a surface."""
         budget = self.p.refine_budget
         for k, i in enumerate(self.active):
             q = self.parts[i]
@@ -686,6 +732,8 @@ class World:
         # part lumped thermal model
         for k, i in enumerate(self.active):
             q = self.parts[i]
+            if q.role == 'CAVITY':
+                continue
             contact = np.abs(cavs[k]) < np.maximum(2.5 * self.rad[al], 0.5 * q.field.h * self.scale[i])
             n = int(contact.sum())
             m = q.material

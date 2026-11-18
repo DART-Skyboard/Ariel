@@ -2,6 +2,7 @@ import bpy
 from bpy.types import Panel
 
 from . import runtime
+from .core import atmosphere as ATM
 from .core import mathcards as MC
 
 RT = runtime.RT
@@ -22,7 +23,7 @@ def _status_line(layout, af):
 
 class AF_PT_main(_Base, Panel):
     bl_idname = "AF_PT_main"
-    bl_label = "Arc Flow  |  LOTCBP"
+    bl_label = "Arc Flow  |  LOTBCBP"
 
     def draw(self, ctx):
         l = self.layout
@@ -78,7 +79,7 @@ def draw_part(l, ctx):
         col = l.column(align=True)
         col.prop(p, "cavity_mode")
         col.prop(p, "resolution")
-        col.prop(p, "lotcbp_level")
+        col.prop(p, "lotbcbp_level")
     if p.role == 'CONTAINER':
         b = l.box()
         b.label(text="Fluid fill", icon='MOD_FLUIDSIM')
@@ -285,9 +286,37 @@ class AF_PT_env(_Base, Panel):
         l.prop(e, "source", expand=True)
         if e.source == 'OBJECT':
             l.prop(e, "obj")
+        b = l.box()
+        b.label(text="Atmosphere", icon='WORLD')
+        r = b.row(align=True)
+        r.prop(e, "preset", text="")
+        r.operator("arcflow.env_apply_preset", text="", icon='FILE_REFRESH')
         col = l.column(align=True)
-        col.prop(e, "pressure"); col.prop(e, "temperature"); col.prop(e, "density")
+        col.prop(e, "pressure"); col.prop(e, "temperature")
+        r = col.row(align=True)
+        r.enabled = not e.use_mix
+        r.prop(e, "density")
         col.prop(e, "atmo_fluid")
+        b = l.box()
+        r = b.row()
+        r.prop(e, "use_mix")
+        if e.use_mix or len(e.mix):
+            for i, c in enumerate(e.mix):
+                r = b.row(align=True)
+                r.prop(c, "compound", text="")
+                r.prop(c, "fraction", text="")
+                r.operator("arcflow.env_remove_compound", text="", icon='X').index = i
+            r = b.row(align=True)
+            r.operator("arcflow.env_add_compound", icon='ADD')
+            r.operator("arcflow.env_normalise", text="Normalise")
+            mix = {c.compound: c.fraction for c in e.mix}
+            if mix:
+                g = abs(e.gravity[2]) if not e.use_scene_gravity else (abs(ctx.scene.gravity[2]) or 9.80665)
+                st = ATM.state(mix, e.pressure, e.temperature, g)
+                b.label(text="M %.2f g/mol | gamma %.3f | mu %.2e Pa s" % (st['molar'] * 1e3, st['gamma'], st['mu']), icon='DOT')
+                b.label(text="rho %.4g kg/m3 | sound %.0f m/s | H %.1f km" % (st['rho'], st['sound'], st['scale_height'] / 1e3), icon='DOT')
+        else:
+            b.label(text="Off: density above is used as is", icon='DOT')
         col = l.column(align=True)
         col.prop(e, "use_scene_gravity")
         if not e.use_scene_gravity:
@@ -299,6 +328,11 @@ class AF_PT_env(_Base, Panel):
             r.prop(e, "ground_auto")
             if not e.ground_auto:
                 l.prop(e, "ground_z")
+        b = l.box()
+        b.label(text="Environment asset look (render only)", icon='SHADING_RENDERED')
+        b.prop(e, "look_world")
+        b.prop(e, "look_ground")
+        b.operator("arcflow.env_apply_look", icon='CHECKMARK')
 
 
 class AF_PT_xray(_Base, Panel):
@@ -326,15 +360,28 @@ class AF_PT_xray(_Base, Panel):
 
 class AF_PT_solver(_Base, Panel):
     bl_idname = "AF_PT_solver"
-    bl_label = "Solver (LOTCBP)"
+    bl_label = "Solver (LOTBCBP)"
     bl_parent_id = "AF_PT_main"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, ctx):
         af = ctx.scene.arc_flow
         col = self.layout.column(align=True)
-        for k in ("lotcbp", "net_res", "vmax", "radius_scale", "max_substeps", "seed"):
+        for k in ("lotbcbp", "net_res", "vmax", "radius_scale", "max_substeps", "seed"):
             col.prop(af, k)
+        b = self.layout.box()
+        b.label(text="Collision: Boolean projection", icon='MOD_BOOLEAN')
+        b.prop(af, "bool_projection")
+        col = b.column(align=True)
+        r = col.row(align=True)
+        r.operator("arcflow.build_cavities", icon='MOD_BOOLEAN')
+        r.operator("arcflow.clear_cavities", text="", icon='X')
+        col.prop(af, "bool_cut_joints")
+        col.prop(af, "bool_overlay")
+        col.prop(af, "bool_solver")
+        col.prop(af, "bool_detail")
+        from . import cavitybool
+        b.label(text=cavitybool.status_text(ctx.scene), icon='LINKED')
         w = RT.world
         if w is not None:
             ref = sum(q.field.n_refined for q in w.parts)
