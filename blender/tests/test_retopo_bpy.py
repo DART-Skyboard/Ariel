@@ -1,0 +1,385 @@
+"""Quad Remesh (LOTBCBP) bpy tests.  Run:  blender -b --factory-startup --python blender/tests/test_retopo_bpy.py"""
+import math, os, sys, time
+import bpy, bmesh
+import numpy as np
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..'))
+from arc_flow import retopo_ops as RO
+from arc_flow.core import retopo as R
+
+FAIL = 0
+
+
+def ok(c, msg):
+    global FAIL
+    print(("PASS " if c else "FAIL ") + msg)
+    if not c:
+        FAIL += 1
+
+
+def reset():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
+
+def make(kind):
+    reset()
+    if kind == 'cube':
+        bpy.ops.mesh.primitive_cube_add(size=2)
+        ob = bpy.context.active_object
+        md = ob.modifiers.new('s', 'SUBSURF'); md.subdivision_type = 'SIMPLE'; md.levels = 3
+    elif kind == 'sphere':
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=1.0)
+        ob = bpy.context.active_object
+    else:
+        bpy.ops.mesh.primitive_monkey_add(size=2)
+        ob = bpy.context.active_object
+        md = ob.modifiers.new('s', 'SUBSURF'); md.levels = 2
+    bpy.ops.object.modifier_apply(modifier=ob.modifiers[0].name) if ob.modifiers else None
+    me = ob.data
+    bm = bmesh.new(); bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(me); bm.free()
+    return ob
+
+
+def arrays(ob):
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    V, F = R.bm_arrays(bm)
+    bm.free()
+    return V, F
+
+
+def hausdorff(ob_a, ob_b):
+    """symmetric vertex-to-surface max distance (fraction of bbox diag)."""
+    def bvh(o):
+        bm = bmesh.new(); bm.from_mesh(o.data)
+        t = BVHTree.FromBMesh(bm); return t, bm
+    ta, ba = bvh(ob_a); tb, bb = bvh(ob_b)
+    d = 0.0
+    for v in ob_a.data.vertices:
+        d = max(d, (tb.find_nearest(v.co)[0] - v.co).length)
+    for v in ob_b.data.vertices:
+        d = max(d, (ta.find_nearest(v.co)[0] - v.co).length)
+    V, _ = arrays(ob_a)
+    ba.free(); bb.free()
+    return d / R._bbox_diag(V)
+
+
+def run(ob, **kw):
+    st = R.RemeshSettings(**kw)
+    t = time.time()
+    new, rep = RO.remesh_object(ob, st)
+    return new, rep, time.time() - t
+
+
+def test_odd_detect():
+    reset()
+    me = bpy.data.meshes.new("odd")
+    vs = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0), (2, 1, 0), (3, .5, 0), (3, 2, 0), (1.5, 2.5, 0)]
+    fs = [(0, 1, 2, 3), (1, 4, 5, 2), (4, 6, 5), (3, 2, 5, 7, 8)]
+    me.from_pydata(vs, [], fs)
+    ob = bpy.data.objects.new("odd", me); bpy.context.scene.collection.objects.link(ob)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.select_all(action='DESELECT'); ob.select_set(True)
+    RO.register()
+    try:
+        an = RO.analyse_object(ob, bpy.context.scene.arc_flow_retopo)
+        ok(an.counts["tris"] == 1 and an.counts["odd_ngons"] == 1 and an.counts["quads"] == 2, "odd n-gon detection counts %s" % an.counts)
+        sel = [p.select for p in ob.data.polygons]
+        ok(sel == [False, False, True, True], "tri + pentagon selected %s" % sel)
+        ok(ob.data.attributes["af_odd_face"].data[3].value and ob.data.attributes.get("af_crease") is not None and
+           ob.vertex_groups.get("AF_Crease") is not None, "attributes + vertex group written")
+        r = bpy.ops.arcflow.quad_analyse()
+        ok('FINISHED' in r and "tri" in bpy.context.scene.arc_flow_retopo.report_text, "analyse operator")
+    finally:
+        RO.unregister()
+
+
+def check_quad(rep, name, thr=0.98):
+    o = rep["output"]
+    ok(o["quad_ratio"] >= thr, "%s quad ratio %.3f (tris %d, odd ngons %d, faces %d)" % (name, o["quad_ratio"], o["tris"], o["odd_ngons"], o["faces"]))
+
+
+def test_cube():
+    ob = make('cube')
+    n0 = len(ob.data.polygons)
+    new, rep, t = run(ob, use_symmetry=False, crease_density=0.0)
+    check_quad(rep, "cube(tri %d)" % n0)
+    h = hausdorff(ob, new)
+    ok(h < 0.005, "cube shape deviation %.5f" % h)
+    # sharp edges survive: all verts of the cube lie on faces and corners kept
+    V, _ = arrays(new)
+    ok(np.abs(V).max() <= 1.0 + 1e-4 and np.isclose(np.abs(V).max(), 1.0, atol=1e-4), "cube corners preserved")
+    print("   cube", t, "s", rep["method"], rep["after_join"])
+
+
+def test_sphere_sym():
+    ob = make('sphere')
+    new, rep, t = run(ob, use_symmetry=True, axis='X', crease_density=0.0)
+    check_quad(rep, "sphere sym")
+    V, _ = arrays(new)
+    mx, mn, fr = R.mirror_error(V, 0, 1e-4)
+    d = R._bbox_diag(V)
+    ok(mx / d < 1e-4, "sphere mirror error max %.2e (frac of diag)" % (mx / d))
+    h = hausdorff(ob, new)
+    ok(h < 0.02, "sphere Hausdorff %.5f" % h)
+    # non-manifold check
+    bm = bmesh.new(); bm.from_mesh(new.data)
+    nm = sum(1 for e in bm.edges if len(e.link_faces) != 2)
+    ok(nm == 0, "sphere result is closed manifold (bad edges %d)" % nm)
+    bm.free()
+    print("   sphere", t, "s", rep["after_join"])
+    for ax in 'YZ':
+        new, rep, t = run(ob, use_symmetry=True, axis=ax, crease_density=0.0)
+        V, _ = arrays(new)
+        mx, _, _ = R.mirror_error(V, 'XYZ'.index(ax), 1e-4)
+        ok(mx / R._bbox_diag(V) < 1e-4, "sphere mirror %s error %.2e" % (ax, mx / R._bbox_diag(V)))
+
+
+def density(ob_src, new, crease_angle):
+    Vs, Fs = arrays(ob_src)
+    an = R.analyse(Vs, Fs, crease_angle, math.radians(50), 2)
+    Vo, Fo = arrays(new)
+    return R.face_density_probe(Vo, Fo, Vs, Fs, an.density_v), an
+
+
+def test_suzanne():
+    ob = make('monkey')
+    ca = math.radians(30)
+    new0, rep0, _ = run(ob, use_symmetry=True, axis='X', crease_density=0.0, crease_angle=ca)
+    new1, rep1, t = run(ob, use_symmetry=True, axis='X', crease_density=10.0, crease_angle=ca, relax_iterations=40)
+    check_quad(rep0, "suzanne base")
+    check_quad(rep1, "suzanne crease")
+    (b0, f0, r0), an = density(ob, new0, ca)
+    (b1, f1, r1), _ = density(ob, new1, ca)
+    print("   suzanne faces in/out", len(ob.data.polygons), len(new1.data.polygons), "time %.1fs" % t,
+          "band/flat density ratio: no-crease %.2f, crease %.2f" % (r0, r1))
+    ok(r1 > 1.25 * r0, "suzanne crease bands denser than flat (ratio %.2f vs %.2f baseline)" % (r1, r0))
+    V, _ = arrays(new1)
+    mx, _, _ = R.mirror_error(V, 0, 1e-4)
+    ok(mx / R._bbox_diag(V) < 1e-4, "suzanne mirror error %.2e" % (mx / R._bbox_diag(V)))
+    h = hausdorff(ob, new1)
+    ok(h < 0.02, "suzanne Hausdorff %.5f" % h)
+    ok(rep1["quality"]["max_deviation"] < 0.01, "suzanne reported max deviation %.5f" % rep1["quality"]["max_deviation"])
+    bm = bmesh.new(); bm.from_mesh(new1.data)
+    flipped = sum(1 for p in bm.faces if p.calc_area() < 1e-10)
+    ok(flipped == 0, "no degenerate faces")
+    bm.free()
+    return ob, new1
+
+
+def test_auto_projection():
+    """Default (automatic) settings: symmetry axis + crease angle detected, deviation measured against the projection."""
+    ob = make('monkey')
+    new, rep, t = run(ob)                       # everything automatic
+    q = rep["quality"]
+    print("   auto:", rep["auto"], {k: (round(v, 5) if isinstance(v, float) else v) for k, v in q.items()}, "%.1fs" % t)
+    ok(rep["auto"].get("symmetry_axis_detected") == "X", "auto detects Suzanne X symmetry")
+    ok("crease_angle_deg" in rep["auto"], "auto crease angle %s" % rep["auto"].get("crease_angle_deg"))
+    ok(rep["output"]["quad_ratio"] >= 0.98, "auto quad ratio %.3f" % rep["output"]["quad_ratio"])
+    ok(q["max_deviation"] <= q["deviation_tol"], "auto deviation %.5f <= tol %.4f" % (q["max_deviation"], q["deviation_tol"]))
+    ok(q["symmetry_error"] < 1e-4, "auto symmetry error %.2e" % q["symmetry_error"])
+    ok(q["bad_quads"] <= 0.02 * rep["output"]["faces"], "bad quads %d" % q["bad_quads"])
+    # mechanical-style part: torus with a hard-edged boss (non-organic), automatic
+    reset()
+    bpy.ops.mesh.primitive_torus_add(major_radius=1.0, minor_radius=0.3, major_segments=24, minor_segments=12)
+    tor = bpy.context.active_object
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.25, depth=0.8, location=(1.0, 0, 0), vertices=16)
+    cyl = bpy.context.active_object
+    bpy.ops.object.select_all(action='DESELECT'); tor.select_set(True); cyl.select_set(True)
+    bpy.context.view_layer.objects.active = tor
+    bpy.ops.object.join()
+    bm = bmesh.new(); bm.from_mesh(tor.data); bmesh.ops.triangulate(bm, faces=bm.faces[:]); bm.to_mesh(tor.data); bm.free()
+    new, rep, t = run(tor)
+    q = rep["quality"]
+    ok(rep["output"]["quad_ratio"] >= 0.98, "mechanical part quad ratio %.3f" % rep["output"]["quad_ratio"])
+    ok(q["max_deviation"] <= 0.01, "mechanical part deviation %.5f (tol %.4f, within=%s)" % (q["max_deviation"], q["deviation_tol"], q["within_tolerance"]))
+
+
+def monkey_quads(sub=1):
+    reset()
+    bpy.ops.mesh.primitive_monkey_add(size=2)
+    ob = bpy.context.active_object
+    md = ob.modifiers.new('s', 'SUBSURF'); md.levels = sub
+    bpy.ops.object.modifier_apply(modifier=md.name)
+    return ob
+
+
+def test_resolution():
+    ob = monkey_quads(1)
+    q0 = len(ob.data.polygons)
+    print("   input quads", q0)
+    for res in (0.25, 0.5, 1.0, 2.0):
+        new, rep, t = run(ob, resolution=res)
+        n = len(new.data.polygons)
+        want = q0 * res
+        ok(abs(n - want) / want <= 0.35, "resolution %.2f: %d faces (target %d, method %s, %.1fs)" % (res, n, want, rep["method"], t))
+        ok(rep["predicted_faces"] in (None, int(round(want))), "predicted face count reported %s" % rep["predicted_faces"])
+        ok(rep["output"]["quad_ratio"] >= 0.98 or rep["method"] == 'QUADRIFLOW', "res %.2f quad ratio %.3f" % (res, rep["output"]["quad_ratio"]))
+    ok(RO.predicted_faces(ob, 0.5) == int(round(q0 * 0.5)), "UI prediction matches quad-equivalents x resolution")
+    p = bpy.props.__dict__
+    RO.register()
+    try:
+        s = bpy.context.scene.arc_flow_retopo
+        s.resolution = 100.0 if False else 12.0
+        try:
+            s.resolution = 50.0
+        except Exception:
+            pass
+        ok(s.resolution <= 12.0, "resolution capped at 12 (%.1f)" % s.resolution)
+        s.resolution = 0.0
+        ok(s.resolution >= 0.0099, "resolution minimum %.2f" % s.resolution)
+    finally:
+        RO.unregister()
+
+
+def hausdorff_mesh(me_a, ob_b):
+    bm = bmesh.new(); bm.from_mesh(ob_b.data); tb = BVHTree.FromBMesh(bm)
+    d = max((tb.find_nearest(v.co)[0] - v.co).length for v in me_a.vertices)
+    bm.free()
+    return d
+
+
+def test_modifier_stacks():
+    results = {}
+    stacks = {
+        "mirror_top": [('MIRROR', {}), ('SUBSURF', {'levels': 1}), ('SOLIDIFY', {'thickness': 0.05})],
+        "subsurf_mid": [('SOLIDIFY', {'thickness': 0.05}), ('SUBSURF', {'levels': 1}), ('MIRROR', {})],
+        "solidify_bottom": [('SUBSURF', {'levels': 1}), ('MIRROR', {}), ('SOLIDIFY', {'thickness': 0.05})],
+        "mixed": [('MIRROR', {}), ('SOLIDIFY', {'thickness': 0.04}), ('SUBSURF', {'levels': 1}), ('BEVEL', {'width': 0.01, 'segments': 1})],
+    }
+    for name, stack in stacks.items():
+        reset()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=12, radius=1.0)
+        ob = bpy.context.active_object
+        bm = bmesh.new(); bm.from_mesh(ob.data)
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.x < -1e-6], context='VERTS')
+        bm.to_mesh(ob.data); bm.free()
+        # materials, vertex group, shape key
+        ob.data.materials.append(bpy.data.materials.new("m1"))
+        vg = ob.vertex_groups.new(name="grp"); vg.add(list(range(len(ob.data.vertices))), 0.5, 'REPLACE')
+        ob.shape_key_add(name="Basis"); k = ob.shape_key_add(name="Key1"); k.value = 0.3
+        for v in k.data:
+            v.co.z *= 1.1
+        for typ, kw in stack:
+            md = ob.modifiers.new(typ, typ)
+            for a, b in kw.items():
+                setattr(md, a, b)
+        if stack[0][0] == 'MIRROR':
+            ob.modifiers[0].use_axis[0] = True
+        else:
+            [setattr(m, 'use_axis', (True, False, False)) for m in ob.modifiers if m.type == 'MIRROR']
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = ob.evaluated_get(dg)
+        ref = bpy.data.meshes.new_from_object(ev)
+        nmods = len(ob.modifiers)
+        new, rep, t = run(ob, use_symmetry=False, crease_density=0.0)
+        ok(len(ob.modifiers) == nmods, "%s: original stack untouched (%d modifiers)" % (name, nmods))
+        ok(len(new.modifiers) == 0 and new is not ob, "%s: result has no modifiers" % name)
+        ok(rep["output"]["quad_ratio"] >= 0.95, "%s quad ratio %.3f" % (name, rep["output"]["quad_ratio"]))
+        diag = R._bbox_diag(np.array([v.co[:] for v in ref.vertices]))
+        h = hausdorff_mesh(new.data, bpy.data.objects.new("r", ref))
+        ok(h / diag < 0.01, "%s: result follows the evaluated mesh (dev %.5f of diag)" % (name, h / diag))
+        ok(len(new.material_slots) == 1 and new.vertex_groups.get("grp") is not None, "%s: material + vertex group kept" % name)
+        results[name] = (len(new.data.polygons), h / diag)
+        # base mode ignores the stack
+        newb, repb, _ = run_src(ob, 'BASE')
+        ok(len(newb.data.polygons) != len(new.data.polygons) or name == "x", "%s: base mode differs from evaluated" % name)
+    print("   stacks:", results)
+    fc = [v[0] for v in results.values()]
+
+
+def run_src(ob, mode):
+    st = R.RemeshSettings(use_symmetry=False, crease_density=0.0)
+    new, rep = RO.remesh_object(ob, st, apply_modifiers=(mode == 'EVALUATED'))
+    return new, rep, 0
+
+
+def test_recalc_normals_op():
+    reset()
+    import random
+    random.seed(3)
+    for kind in ('cube', 'sphere'):
+        if kind == 'cube':
+            bpy.ops.mesh.primitive_cube_add(size=2)
+        else:
+            bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=12)
+        ob = bpy.context.active_object
+        me = ob.data
+        uv_before = [tuple(l.uv) for l in me.uv_layers.active.data]
+        bm = bmesh.new(); bm.from_mesh(me)
+        flipped = [f for f in bm.faces if random.random() < 0.5]
+        bmesh.ops.reverse_faces(bm, faces=flipped)
+        bm.to_mesh(me); bm.free()
+        RO.register()
+        try:
+            bpy.ops.object.select_all(action='DESELECT'); ob.select_set(True); bpy.context.view_layer.objects.active = ob
+            bpy.ops.arcflow.recalc_normals_outside()
+        finally:
+            RO.unregister()
+        me.update()
+        out = all((p.normal.dot(p.center)) > 0 for p in me.polygons)
+        ok(out, "%s: random flips -> all outward (%d flipped before)" % (kind, len(flipped)))
+        ok(me.uv_layers.active is not None and len(me.uv_layers.active.data) == len(me.loops), "%s: UV layer survives the flip" % kind)
+    # two components
+    reset()
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0)); a = bpy.context.active_object
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(4, 0, 0)); b = bpy.context.active_object
+    bpy.ops.object.select_all(action='DESELECT'); a.select_set(True); b.select_set(True)
+    bpy.context.view_layer.objects.active = a
+    bpy.ops.object.join()
+    me = a.data
+    bm = bmesh.new(); bm.from_mesh(me)
+    bmesh.ops.reverse_faces(bm, faces=[f for f in bm.faces if f.calc_center_median().x > 2])   # second cube inside out
+    bm.faces.ensure_lookup_table(); bmesh.ops.reverse_faces(bm, faces=[bm.faces[0]])
+    bm.to_mesh(me); bm.free()
+    info = RO.recalc_normals_mesh(me)
+    me.update()
+    cen = lambda p: p.center - (Vector((4, 0, 0)) if p.center.x > 2 else Vector((0, 0, 0)))
+    ok(info["components"] == 2 and all(p.normal.dot(cen(p)) > 0 for p in me.polygons), "two components fixed independently: %s" % info)
+
+
+def test_fix_and_replace():
+    ob = make('sphere')
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    bmesh.ops.duplicate(bm, geom=bm.faces[:3])   # doubled faces + loose-ish
+    bm.verts.new((9, 9, 9))
+    bm.to_mesh(ob.data); bm.free()
+    RO.register()
+    try:
+        bpy.context.view_layer.objects.active = ob
+        n = len(ob.data.vertices)
+        bpy.ops.arcflow.quad_fix()
+        ok(len(ob.data.vertices) < n, "quick fix removed loose/duplicate verts (%d -> %d)" % (n, len(ob.data.vertices)))
+    finally:
+        RO.unregister()
+    new, rep, _ = run(ob, use_symmetry=False, crease_density=0.0)
+    ok(new is not ob and new.name.endswith("_quad"), "non-destructive: new object %s" % new.name)
+    new2, _ = RO.remesh_object(ob, R.RemeshSettings(crease_density=0.0), replace=True)
+    ok(new2 is ob and all(len(p.vertices) == 4 for p in ob.data.polygons[:50]), "replace mode")
+
+
+def test_quadriflow():
+    ob = make('monkey')
+    new, rep, t = run(ob, method='QUADRIFLOW', target_faces=800, use_symmetry=True, crease_density=0.0)
+    print("   quadriflow:", rep.get("output"), rep.get("quadriflow_failed"), "%.1fs" % t)
+    ok("output" in rep and rep["output"]["quad_ratio"] > 0.9, "quadriflow path produces quads (or falls back) ratio=%.3f" % rep["output"]["quad_ratio"])
+
+
+if __name__ == "__main__":
+    print("Blender", bpy.app.version_string)
+    test_odd_detect()
+    test_cube()
+    test_sphere_sym()
+    ob, new = test_suzanne()
+    test_auto_projection()
+    test_resolution()
+    test_modifier_stacks()
+    test_recalc_normals_op()
+    test_fix_and_replace()
+    test_quadriflow()
+    print("FAILURES:", FAIL)
+    sys.exit(1 if FAIL else 0)

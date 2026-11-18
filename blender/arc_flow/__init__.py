@@ -4,6 +4,7 @@ LOTBCBP = Level Of Tessellation Boolean Collision Body Projection: collision bod
 field plus virtual tessellation bricks that are generated on demand where fluid touches a surface, so the
 interaction resolution can exceed both the modelled mesh and the fluid's own particle spacing."""
 from . import ops, panels, props, runtime
+from . import retopo_ops, retopo_panel  # Quad Remesh (LOTBCBP)
 
 
 def register():
@@ -11,9 +12,11 @@ def register():
     ops.register()
     panels.register()
     runtime.register()
+    retopo_ops.register(); retopo_panel.register()
 
 
 def unregister():
+    retopo_panel.unregister(); retopo_ops.unregister()
     runtime.unregister()
     panels.unregister()
     ops.unregister()
