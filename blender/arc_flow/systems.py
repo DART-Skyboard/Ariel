@@ -427,6 +427,7 @@ def _near(o, asset):
 def scan_context(scene):
     """Detect interactive physics: environment card, other collision bodies, animated / rigid-body / mechanical bodies and fluids
     passing through them.  Auto-initialises the affected assets (moving bodies become colliders).  Cheap: runs on Build and Re-detect."""
+    bpy.context.view_layer.update()
     af = scene.arc_flow
     e = af.env
     assets = [o for o in scene.objects if o.type == 'MESH' and (o.arc_flow.role in ('CONTAINER', 'TRANSPORT', 'CHAMBER') or o.arc_flow.is_emitter)

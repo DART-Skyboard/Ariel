@@ -32,6 +32,40 @@ Sidebar tab "Arc Flow" in the 3D viewport. Click "Add Demo Rig", then Build.
   `AF_Ground` plane with a surface material (render only, off by default, never rewrites a world you built yourself).
 - X-ray + thermal / stress tint, cache (.npz), bake (new versions), record, pack into .blend, PLY / Alembic export.
 
+## Systems, crossfeed outcomes and demos (Tessera Projection / LOTBCBP)
+**Systems panel** (sidebar, under the main panel). Every connected set of parts is a self-initialising *system*; nothing has to be set up by hand.
+- *Detection*: parts are joined when their cavities overlap (the same notion as the Boolean projection joints). Connected components
+  are the independent systems ("Engine A", "Engine B", ordered by position). Roles come from the part's Container / Transport / Chamber setting; parts
+  without a role can be given one from geometry with **Auto roles** (closed volume = container, thin open channel = transport, tapered open part
+  and the compact part it feeds = nozzle and chamber). Fuel / oxidizer for each container comes from its fluid's role, then the name (`fuel`, `lox`, `ox`),
+  then the container order; the per-part **Propellant role** override is shown in the Part panel. The panel lists, per system: status (idle / running /
+  enhanced / failed), tank / line / chamber counts, requirements (O/F against the optimum for the fuel, chamber pressure, thrust estimate from the feed
+  pressures) and warnings (no oxidizer source, no chamber, empty tank, tank not connected, no throat). Detection re-runs on **Re-detect** and on Build; moving
+  or editing a part only marks the list stale (no per-frame handler).
+- *Linked systems*: a Transport part whose removal splits the graph into two complete engines (chamber plus both propellants) is a **crossfeed link**;
+  it belongs to neither engine and the two engines are shown as a *linked group*. Adding or deleting the pipe merges / splits the group on the next detection.
+- **Crossfeed outcomes** (`core/systems.py`). A lumped, deterministic *simplified tracer model, not CFD*: orifice flow in the feed lines and the crossfeed pipe
+  (flow follows the pressure gradient), an injector drop, a choked nozzle (c* from flame temperature, parabolic O/F efficiency around the fuel's optimum), ideal-expansion
+  thrust, first-order "visual" time constants for tank pressurisation and wall heating, and the thin-wall hoop-stress check with the temperature-derated
+  yield strength of the part's material preset and wall thickness (`core/materials.py`). Outcomes: *Enhanced* when the link raises thrust by 5 % or more, moves O/F toward the
+  optimum and everything stays inside the wall limits; *Failed* (latched, with the reason) when a wall exceeds its derated hoop limit, hot gas has been flowing
+  back into a propellant tank for 0.4 s, or fuel and oxidizer mix in one tank. The rupture fires a *breach event*: the wall is marked failed, a jet emitter
+  at the breach sprays the tank's fluid (or hot exhaust gas) through the normal particle solver, a glowing breach disc appears and a flash light decays. The status
+  history is computed from the frame number, so scrubbing the timeline stays consistent. The donor engine of a crossfeed is not starved in the status model
+  (tank pressure is treated as regulated), and the particle solver is not coupled back to the status model except through ignition and the breach emitter.
+- **Interactive physics context.** The extension also scans for anything that makes a scene interactive and lists it as *Interactive physics context*,
+  marking the affected assets "auto-initialised: <reason>": an Environment card / atmosphere preset (*environment physics*), animated or driven transforms near an
+  asset (*moving collision body*, which is given the Collider role automatically), rigid bodies (*rigid-body rig*), objects with constraints (*mechanical rig*) and static
+  collision bodies. The scan runs on Build and **Re-detect** only. This release only detects and initialises; the surface velocity of moving colliders is handled by the fluid
+  solver work, not here.
+- **Demos** (buttons at the top of the Systems panel): **Load Demo: Single Engine** builds two tanks, two pipes, a chamber and a nozzle from Blender's own primitives
+  (UV spheres, cone / cylinder with Solidify, torus flanges). **Load Demo: Twin Engines + Crossfeed** builds two of them side by side (engine A on a 20 bar feed, engine B
+  on 6 bar, because hot gas can only flow back into a tank that sits at a lower pressure) and a straight crossfeed pipe, with a *Crossfeed* toggle and a variant: **Good**
+  (engine A's oxidizer tank into engine B's chamber: B is fuel-rich, the extra oxidizer moves O/F toward the optimum, status Enhanced) or **Bad** (engine A's hot chamber into
+  engine B's fuel tank: status Failed, rupture at the tank). Press Build / Play. Limits: the crossfeed pipe carries a metering orifice (about 2 % of the area) so the
+  model numbers stay sensible; geometric pipe radii of thin parts below the field resolution are taken from design values stored on the demo parts; thrust figures are relative, not
+  engineering values.
+
 ## Not in this release
 Phase changes and chemical reactions (boiling, condensation, combustion chemistry beyond the flame-temperature model), buoyancy
 vehicles, multi-stage thrust, per-voxel temperature in the ray-march volume, particle-particle interaction (the solver is a
@@ -40,6 +74,7 @@ every frame they move (slow for large cavities). See `docs/ROADMAP.md`.
 
 ## Tests
 - `python3 blender/tests/test_solver.py` (pure NumPy: solver, atmosphere presets, cavity union / joint classification, surface nets).
+- `python3 blender/tests/test_systems.py` (pure Python: system grouping, linking, role detection, outcome classification) and `blender --factory-startup -b --python blender/tests/test_systems_bpy.py` (both demos, timeline status transitions, rupture visuals, interactive physics detection).
 - `blender --factory-startup -b --python blender/tests/test_blender.py` (headless Blender; add `-- --installed` for an installed extension).
 - `blender --factory-startup -b --python blender/tests/test_render.py` (Cycles CPU render of Points / Ray-march / Splat).
 
