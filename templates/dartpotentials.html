@@ -455,14 +455,31 @@
             const ui = document.getElementById('ui-container');
             const header = document.getElementById('ui-header');
             let isDragging = false; let startX, startY, origX, origY;
-            const end = (e) => { if (e && e.cancelable) e.preventDefault(); if (!isDragging) ui.classList.toggle('collapsed'); };
-            const start = (cx, cy) => { isDragging = false; startX = cx; startY = cy; origX = ui.offsetLeft; origY = ui.offsetTop; };
-            const move = (cx, cy) => { 
-                if (Math.abs(cx - startX) > 5 || Math.abs(cy - startY) > 5) isDragging = true; 
-                if (isDragging) { ui.style.left = (origX + cx - startX) + 'px'; ui.style.top = (origY + cy - startY) + 'px'; }
+            // Pointer events scoped to the header only: a tap on the header toggles collapse,
+            // a drag moves the panel. Nothing is attached to document, so taps elsewhere
+            // (menu body or the scene) never toggle the menu.
+            let activeId = null;
+            header.style.touchAction = 'none';
+            header.addEventListener('pointerdown', (e) => {
+                if (activeId !== null) return;
+                activeId = e.pointerId; isDragging = false;
+                startX = e.clientX; startY = e.clientY; origX = ui.offsetLeft; origY = ui.offsetTop;
+                try { header.setPointerCapture(e.pointerId); } catch (_) {}
+            });
+            header.addEventListener('pointermove', (e) => {
+                if (e.pointerId !== activeId) return;
+                if (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5) isDragging = true;
+                if (isDragging) { ui.style.left = (origX + e.clientX - startX) + 'px'; ui.style.top = (origY + e.clientY - startY) + 'px'; }
+            });
+            const finish = (e, allowToggle) => {
+                if (e.pointerId !== activeId) return;
+                activeId = null;
+                try { header.releasePointerCapture(e.pointerId); } catch (_) {}
+                if (allowToggle && !isDragging) ui.classList.toggle('collapsed');
+                isDragging = false;
             };
-            header.onmousedown = e => { start(e.clientX, e.clientY); document.onmousemove = mv => move(mv.clientX, mv.clientY); document.onmouseup = (u) => { document.onmousemove = null; end(u); }; };
-            header.ontouchstart = e => { start(e.touches[0].clientX, e.touches[0].clientY); document.ontouchmove = mv => { move(mv.touches[0].clientX, mv.touches[0].clientY); if (mv.cancelable) mv.preventDefault(); }; document.ontouchend = (u) => { document.ontouchmove = null; end(u); }; };
+            header.addEventListener('pointerup', (e) => finish(e, true));
+            header.addEventListener('pointercancel', (e) => finish(e, false));
             window.onresize = () => { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); };
         }
 
