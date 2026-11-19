@@ -2,6 +2,8 @@
 
 # Tessera Projection for Blender
 
+> Development moved to https://github.com/DART-Skyboard/tessera-projection (this copy is kept for history).
+
 Collision, Boolean and quad-remesh projection for any mesh, plus the Arc Flow fluid simulation built on it.
 
 **LOTBCBP = Level Of Tessellation Boolean Collision Body Projection** (called LOTCBP before 0.2.0).
