@@ -342,6 +342,106 @@ def test_recalc_normals_op():
     ok(info["components"] == 2 and all(p.normal.dot(cen(p)) > 0 for p in me.polygons), "two components fixed independently: %s" % info)
 
 
+def src_uv_at(bm_src, bvh, c):
+    import mathutils
+    hit = bvh.find_nearest(c)
+    bm_src.faces.ensure_lookup_table()
+    f = bm_src.faces[hit[2]]
+    uvl = bm_src.loops.layers.uv.active
+    w = mathutils.interpolate.poly_3d_calc([v.co for v in f.verts], hit[0])
+    u = sum((l[uvl].uv * wi for l, wi in zip(f.loops, w)), Vector((0, 0)))
+    return u
+
+
+def uv_sphere_obj(udim=False):
+    reset()
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=12, radius=1.0)
+    ob = bpy.context.active_object
+    if udim:
+        bm = bmesh.new(); bm.from_mesh(ob.data)
+        uvl = bm.loops.layers.uv.active
+        for f in bm.faces:
+            if f.calc_center_median().x > 0:
+                for l in f.loops:
+                    l[uvl].uv.x += 1.0
+        bm.to_mesh(ob.data); bm.free()
+    return ob
+
+
+def check_uv(ob, new, tag, udim=False):
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    bvh = BVHTree.FromBMesh(bm)
+    nm = new.data
+    ok([l.name for l in nm.uv_layers][:len(ob.data.uv_layers)] == [l.name for l in ob.data.uv_layers], "%s: original UV map names/order kept %s" % (tag, [l.name for l in nm.uv_layers]))
+    uv = nm.uv_layers[0].data
+    bad = 0; span_bad = 0; straddle = 0
+    for p in nm.polygons:
+        us = [uv[i].uv.copy() for i in p.loop_indices]
+        cen = sum((u for u in us), Vector((0, 0))) / len(us)
+        ref = src_uv_at(bm, bvh, p.center)
+        if (cen - ref).length > 0.08:
+            bad += 1
+        if max((a - b).length for a in us for b in us) > 0.5:
+            span_bad += 1
+        if udim and (min(u.x for u in us) < 1.0 < max(u.x for u in us)):
+            straddle += 1
+    n = len(nm.polygons)
+    ok(bad <= 0.03 * n, "%s: UVs within tolerance of the source at %d/%d face centres" % (tag, n - bad, n))
+    ok(span_bad == 0, "%s: no cross-seam stretched faces (%d)" % (tag, span_bad))
+    if udim:
+        xs = [uv[i].uv.x for i in range(len(uv))]
+        ok(straddle == 0 and max(xs) > 1.5 and min(xs) < 0.5, "%s: UDIM tiles kept (u range %.2f..%.2f, tile-straddling faces %d)" % (tag, min(xs), max(xs), straddle))
+    bm.free()
+
+
+def test_uv_transfer():
+    ob = uv_sphere_obj()
+    for res in (1.0, 4.0, 8.0, 0.25):
+        new, rep, t = run(ob, resolution=res, use_symmetry=False, crease_density=0.0)
+        tr = rep["transfer"]
+        print("   uv res %.2f: faces %d, method %s, %s, %.1fs" % (res, len(new.data.polygons), rep["method"], {k: tr[k] for k in ("uv_maps_found", "uv_maps_transferred", "uv_max_deviation")}, t))
+        if tr.get("skipped"):
+            print("   skipped:", tr["skipped"])
+        ok(tr["uv_maps_found"] == 1 and tr["uv_maps_transferred"] == 1, "res %.2f: UV report found/transferred %s/%s" % (res, tr["uv_maps_found"], tr["uv_maps_transferred"]))
+        check_uv(ob, new, "res %.2f" % res)
+    # UDIM
+    obu = uv_sphere_obj(udim=True)
+    new, rep, t = run(obu, use_symmetry=False, crease_density=0.0)
+    check_uv(obu, new, "udim", udim=True)
+    # option (b): extra generated map
+    ob = uv_sphere_obj()
+    new, rep, t = run(ob, use_symmetry=False, crease_density=0.0, uv_mode='KEEP_NEW')
+    names = [l.name for l in new.data.uv_layers]
+    ok(names[0] == ob.data.uv_layers[0].name and "UVMap_Tessera" in names, "UV option (b): original kept + UVMap_Tessera %s" % names)
+    new, rep, t = run(ob, use_symmetry=False, crease_density=0.0, uv_mode='SKIP')
+    ok(len(new.data.uv_layers) == 0, "UV option (d): skipped")
+
+
+def test_color_attributes():
+    ob = uv_sphere_obj()
+    me = ob.data
+    ca = me.color_attributes.new("PaintF", 'FLOAT_COLOR', 'POINT')
+    for i, v in enumerate(me.vertices):
+        ca.data[i].color = (v.co.x * 0.5 + 0.5, v.co.y * 0.5 + 0.5, v.co.z * 0.5 + 0.5, 1.0)
+    cb = me.color_attributes.new("PaintB", 'BYTE_COLOR', 'CORNER')
+    for i, l in enumerate(me.loops):
+        co = me.vertices[l.vertex_index].co
+        cb.data[i].color = (co.z * 0.5 + 0.5, 0.2, 0.3, 1.0)
+    me.color_attributes.active_color = me.color_attributes["PaintB"]
+    gi = me.attributes.new("faceint", 'INT', 'FACE')
+    for i in range(len(me.polygons)):
+        gi.data[i].value = 7 if me.polygons[i].center.z > 0 else 3
+    new, rep, t = run(ob, use_symmetry=False, crease_density=0.0, resolution=4.0)
+    nm = new.data
+    a = nm.attributes.get("PaintF"); b = nm.attributes.get("PaintB"); g = nm.attributes.get("faceint")
+    ok(a is not None and a.data_type == 'FLOAT_COLOR' and a.domain == 'POINT', "FLOAT_COLOR point attribute transferred with name/type/domain")
+    ok(b is not None and b.data_type == 'BYTE_COLOR' and b.domain == 'CORNER', "BYTE_COLOR corner attribute transferred with name/type/domain")
+    ok(g is not None and g.domain == 'FACE' and set(x.value for x in g.data) <= {3, 7}, "int face attribute transferred by nearest (values %s)" % sorted(set(x.value for x in g.data)))
+    err = max(abs(a.data[i].color[0] - (nm.vertices[i].co.x * 0.5 + 0.5)) for i in range(len(nm.vertices)))
+    ok(err < 0.08, "point colour interpolated by projection (max error %.3f)" % err)
+    ok(nm.color_attributes.active_color_name == "PaintB", "active colour attribute carried over (%s)" % nm.color_attributes.active_color_name)
+
+
 def test_fix_and_replace():
     ob = make('sphere')
     bm = bmesh.new(); bm.from_mesh(ob.data)
@@ -376,6 +476,8 @@ if __name__ == "__main__":
     test_sphere_sym()
     ob, new = test_suzanne()
     test_auto_projection()
+    test_uv_transfer()
+    test_color_attributes()
     test_resolution()
     test_modifier_stacks()
     test_recalc_normals_op()

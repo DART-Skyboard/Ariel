@@ -58,6 +58,11 @@ class AFRetopoProps(PropertyGroup):
                               description="Output face count relative to the input (1.0 = one-to-one, 0.5 = half, "
                               "2.0 = double). The density field still decides where the faces go. Cap 12: run again "
                               "on the result for more")
+    uv_mode: EnumProperty(name="UV Handling", items=[
+        ('KEEP', "Keep + transfer all", "Transfer every UV map (and colour/attributes) by projection, same names"),
+        ('KEEP_NEW', "Transfer + new UV", "Transfer, and add a freshly unwrapped 'UVMap_Tessera' (angle-based)"),
+        ('NEW', "New UV only", "Only a freshly unwrapped 'UVMap_Tessera'"),
+        ('SKIP', "Skip UVs", "No UV maps on the result")], default='KEEP')
     recalc_before: BoolProperty(name="Normals Outside (before)", default=True,
                                 description="Make normals consistent and outward before building the projection")
     recalc_after: BoolProperty(name="Normals Outside (after)", default=True,
@@ -76,7 +81,7 @@ def _settings(p):
         keep_positive_side=p.keep_positive, crease_angle=(None if p.auto else p.crease_angle), sharp_angle=p.sharp_angle,
         threshold_mode=p.threshold_mode, manual_threshold=p.manual_threshold, target_faces=p.target_faces,
         crease_density=p.crease_density, band_rings=p.band_rings, relax_iterations=p.relax_iterations,
-        preserve_sharp=p.preserve_sharp, preserve_boundary=p.preserve_boundary, resolution=p.resolution,
+        preserve_sharp=p.preserve_sharp, preserve_boundary=p.preserve_boundary, resolution=p.resolution, uv_mode=p.uv_mode,
         recalc_before=p.recalc_before, recalc_after=p.recalc_after)
 
 
@@ -221,6 +226,50 @@ class AF_OT_quad_fix(Operator):
         return {'FINISHED'}
 
 
+def _carry_selection(src, tgt, st, rep):
+    """Active / render UV map and active / render colour attribute carry over by name; optional new unwrap."""
+    try:
+        sm, tm = src.data, tgt.data
+        if sm.uv_layers.active and tm.uv_layers.get(sm.uv_layers.active.name):
+            tm.uv_layers.active = tm.uv_layers[sm.uv_layers.active.name]
+        for l in sm.uv_layers:
+            if l.active_render and tm.uv_layers.get(l.name):
+                tm.uv_layers[l.name].active_render = True
+        ac = sm.color_attributes.active_color_name
+        if ac and ac in tm.color_attributes:
+            tm.color_attributes.active_color = tm.color_attributes[ac]
+        rc = sm.color_attributes.render_color_index
+        if 0 <= rc < len(sm.color_attributes) and sm.color_attributes[rc].name in tm.color_attributes:
+            tm.color_attributes.render_color_index = list(tm.color_attributes.keys()).index(sm.color_attributes[rc].name)
+    except Exception as e:
+        rep.setdefault("transfer", {}).setdefault("skipped", []).append("active selection (%s)" % e)
+    if st.uv_mode in ("KEEP_NEW", "NEW"):
+        try:
+            if st.uv_mode == "NEW":
+                while tgt.data.uv_layers:
+                    tgt.data.uv_layers.remove(tgt.data.uv_layers[0])
+            keep_active = tgt.data.uv_layers.active.name if tgt.data.uv_layers.active else None
+            nl = tgt.data.uv_layers.new(name="UVMap_Tessera")
+            tgt.data.uv_layers.active = nl
+            for o in bpy.context.view_layer.objects:
+                o.select_set(False)
+            bpy.context.view_layer.objects.active = tgt
+            tgt.select_set(True)
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.uv.smart_project(angle_limit=math.radians(66.0), island_margin=0.003)
+            bpy.ops.object.mode_set(mode='OBJECT')
+            if keep_active:
+                tgt.data.uv_layers.active = tgt.data.uv_layers[keep_active]
+            rep.setdefault("transfer", {})["new_uv"] = "UVMap_Tessera (smart project, angle-based)"
+        except Exception as e:
+            rep.setdefault("transfer", {}).setdefault("skipped", []).append("new UV (%s)" % e)
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+
+
 def remesh_object(obj, st, apply_modifiers=True, replace=False, suffix="_quad"):
     """Programmatic entry (also used by tests). Returns (object, report)."""
     src = source_bmesh(obj, apply_modifiers)
@@ -248,6 +297,7 @@ def remesh_object(obj, st, apply_modifiers=True, replace=False, suffix="_quad"):
             tgt.vertex_groups.new(name=g.name)
     out.to_mesh(me)
     out.free()
+    _carry_selection(obj, tgt, st, rep)
     for poly in me.polygons:
         poly.use_smooth = True
     me.update()
