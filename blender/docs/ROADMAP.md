@@ -14,3 +14,7 @@ Remaining:
 
 Smaller follow-ups: incremental update of the Fluid Cavity field for moving assemblies, an atmosphere altitude profile (scale height is
 already reported), EEVEE render check.
+
+## Next (0.3.0)
+- Fluid mode: volumetric particle-based fluid dynamics for general fluids (mixing, lava-lamp convection, free gas, fluids without containers, moving colliders, Environment-driven buoyancy and gravity, Geometry Nodes groups). In progress; not part of 0.2.0.
+- Projection Remesh: curvature-aligned quad layout, exact symmetry in the large-mesh fast path, shape-key transfer, Geometry Nodes exposure.
