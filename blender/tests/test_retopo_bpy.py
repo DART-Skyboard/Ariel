@@ -525,6 +525,85 @@ def test_asymmetric_not_forced():
     ok(rep["output"]["quad_ratio"] >= 0.98, "asymmetric mesh still remeshed to quads (%.3f)" % rep["output"]["quad_ratio"])
 
 
+def run_fast(ob, **kw):
+    from arc_flow import retopo_fast_ops as FO
+    st = R.RemeshSettings(**kw)
+    gen = FO.fast_stages(ob, st, evaluated=True)
+    stages = []
+    try:
+        while True:
+            stages.append(next(gen))
+    except StopIteration as e:
+        new, rep = e.value
+    return new, rep, stages
+
+
+def test_fast_path():
+    ob = monkey_tri(2)                       # 15.7k tris, has the default Suzanne UV map
+    vg = ob.vertex_groups.new(name="fastgrp")
+    vg.add([i for i in range(len(ob.data.vertices)) if ob.data.vertices[i].co.z > 0], 0.75, 'REPLACE')
+    ob.data.materials.append(bpy.data.materials.new("fm"))
+    nf = len(ob.data.polygons)
+    try:
+        fs = ob.data.attributes.new(".sculpt_face_set", 'INT', 'FACE')
+        fs.data.foreach_set("value", np.where(np.array([p.center.z for p in ob.data.polygons]) > 0, 5, 2).astype(np.int32))
+        ce = ob.data.attributes.new("crease_edge", 'FLOAT', 'EDGE')
+        ce.data.foreach_set("value", np.where(np.array([(ob.data.vertices[e.vertices[0]].co.z) for e in ob.data.edges]) > 0, 1.0, 0.0).astype(np.float32))
+        have_extra = True
+    except Exception as e:
+        print("   (sculpt/crease attribute creation not possible:", e, ")")
+        have_extra = False
+    new, rep, stages = run_fast(ob)
+    if have_extra:
+        a = new.data.attributes.get(".sculpt_face_set"); b = new.data.attributes.get("crease_edge")
+        ok(a is not None and set(x.value for x in a.data) <= {2, 5}, "fast: sculpt face sets transferred")
+        ok(b is not None and max(x.value for x in b.data) > 0.5, "fast: crease weights (edge) transferred")
+    ok(new is not None and rep["method"] == "PAIR", "fast PAIR: %d -> %d faces, %s, total %.2fs" % (nf, len(new.data.polygons), rep["method"], rep["timing"]["total"]))
+    ok(rep["output"]["quad_ratio"] >= 0.90, "fast quad ratio %.3f" % rep["output"]["quad_ratio"])
+    ok(len(stages) >= 6 and stages[0][0] == 0.0 and stages[-1][0] == 1.0, "progress stages reported (%d)" % len(stages))
+    ok(rep["quality"]["max_deviation"] < 0.005, "fast deviation (sampled) %.5f" % rep["quality"]["max_deviation"])
+    ok(rep["symmetry"].get("class") in ("symmetric", "near-symmetric"), "fast: mirror plane detected %s" % rep["symmetry"].get("class"))
+    check_uv_fast = [l.name for l in new.data.uv_layers] == [l.name for l in ob.data.uv_layers]
+    ok(check_uv_fast, "fast: UV names kept %s" % [l.name for l in new.data.uv_layers])
+    # UVs are carried by loop index map: the UV at each new corner equals the UV of the source corner at the same vertex+face region
+    bm = bmesh.new(); bm.from_mesh(ob.data); bvh = BVHTree.FromBMesh(bm)
+    uv = new.data.uv_layers[0].data
+    worst = 0.0
+    for p in list(new.data.polygons)[::50]:
+        cen = sum((uv[i].uv.copy() for i in p.loop_indices), Vector((0, 0))) / len(p.loop_indices)
+        worst = max(worst, (cen - src_uv_at(bm, bvh, p.center)).length)
+    bm.free()
+    ok(worst < 0.08, "fast: UVs match the source at sampled face centres (max %.4f)" % worst)
+    ok(len(new.material_slots) == 1 and new.data.polygons[0].material_index == 0, "fast: materials kept")
+    w = [(i, g.weight) for i, v in enumerate(new.data.vertices) for g in v.groups if new.vertex_groups[g.group].name == "fastgrp"]
+    ok(len(w) > 100 and all(abs(x[1] - 0.75) < 1e-4 for x in w), "fast: vertex group weights transferred (%d verts)" % len(w))
+    # reduce mode: much lower resolution -> working mesh + accurate pipeline, projected onto the original
+    new2, rep2, _ = run_fast(ob, resolution=0.2)
+    n2 = len(new2.data.polygons) if new2 else 0
+    ok(new2 is not None and rep2["method"].startswith("REDUCE") and 0.4 * 0.2 * nf / 2 <= n2 <= 4.0 * 0.2 * nf / 2,
+       "fast REDUCE: %d tris -> %d faces (target ~%d), method %s, %.1fs" % (nf, n2, int(0.2 * nf / 2), rep2["method"], rep2["timing"]["total"]))
+    q2 = rep2["quality"]
+    ok(q2["max_deviation"] < 0.15 and q2["symmetry_error"] is not None and q2["symmetry_error"] < 1e-3, "REDUCE: deviation to ORIGINAL %.5f, symmetry error %.2e" % (q2["max_deviation"], q2["symmetry_error"]))
+    # too large a target for the fast path is refused with a message
+    new3, rep3, _ = run_fast(ob, resolution=3.0)
+    ok(new3 is None and "error" in rep3, "fast: unsupported resolution refused clearly")
+    # cancel: closing the generator mid-way is safe
+    from arc_flow import retopo_fast_ops as FO
+    g = FO.fast_stages(ob, R.RemeshSettings(), evaluated=True)
+    next(g); next(g); g.close()
+    ok(True, "generator cancel (close) is safe")
+    # operator (execute path, synchronous) with the fast path forced on
+    RO.register()
+    try:
+        s = bpy.context.scene.arc_flow_retopo
+        s.fast_path = 'ON'
+        bpy.ops.object.select_all(action='DESELECT'); ob.select_set(True); bpy.context.view_layer.objects.active = ob
+        r = bpy.ops.arcflow.quad_remesh()
+        ok('FINISHED' in r and "_quad" in bpy.context.active_object.name and "PAIR" in s.report_text, "operator runs the fast path: %s" % s.report_text[:110])
+    finally:
+        RO.unregister()
+
+
 def test_fix_and_replace():
     ob = make('sphere')
     bm = bmesh.new(); bm.from_mesh(ob.data)
@@ -563,6 +642,7 @@ if __name__ == "__main__":
     test_asym_triangulation()
     test_asymmetric_not_forced()
     test_uv_transfer()
+    test_fast_path()
     test_color_attributes()
     test_resolution()
     test_modifier_stacks()

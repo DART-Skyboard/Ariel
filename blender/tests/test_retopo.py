@@ -261,7 +261,40 @@ def test_detect_symmetry_numpy():
     ok(np.allclose(Rr @ det["point"] + t, 0) and np.isclose(np.linalg.det(Rr), 1.0), "plane_frame is a proper rigid map")
 
 
+def test_fast_numpy():
+    from core import retopo_fast as RF
+    V, F = uv_sphere(1.0, 60, 30)
+    # triangulate
+    T = []
+    for f in F:
+        for k in range(1, len(f) - 1):
+            T.append([f[0], f[k], f[k + 1]])
+    T = [list(t) for t in T]
+    l, st, sz = R.pack_faces(T)
+    an = R.analyse_packed(V, l, st, sz, per_region=False)
+    pr = RF.pair_triangles(V, l, st, sz, an)
+    n_out = len(pr["out_size"])
+    quads = int((pr["out_size"] == 4).sum())
+    ok(quads / n_out > 0.9 and pr["n_pairs"] * 2 + (pr["out_size"] == 3).sum() == len(T), "pairing: %d tris -> %d quads + %d tris (ratio %.3f)" % (len(T), quads, int((pr["out_size"] == 3).sum()), quads / n_out))
+    ost = np.concatenate([[0], np.cumsum(pr["out_size"])[:-1]])
+    nrm0, a0, _ = R.face_geometry(V, l, st, sz)
+    nrm1, a1, c1 = R.face_geometry(V, pr["out_loops"], ost, pr["out_size"])
+    ok(abs(a1.sum() - a0.sum()) < 1e-9 * a0.sum() and (nrm1 * c1).sum(1).min() > 0, "pairing keeps area and orientation (outward)")
+    ok(set(np.unique(pr["out_loops"])) <= set(range(len(V))) and len(pr["loop_src"]) == len(pr["out_loops"]), "loop maps consistent")
+    # clustering decimation
+    Vc, tc = RF.cluster_decimate(V, l, sz, 400)
+    ok(0.5 * 400 < len(tc) < 1.8 * 400 and tc.max() < len(Vc), "cluster decimation %d -> %d tris" % (len(T), len(tc)))
+    # relax stays on tangent plane
+    vn = R.vertex_normals(V, l, st, sz, len(V))
+    E, _, _ = R.build_edges(pr["out_loops"], ost, pr["out_size"])
+    dens = np.where(V[:, 2] > 0.5, 1.0, 0.0)
+    P, na = RF.relax_active(V, vn, E, dens, np.zeros(len(V), bool), 6, 6.0)
+    dev = np.abs(np.linalg.norm(P, axis=1) - 1.0).max()
+    ok(na > 0 and dev < 0.02, "tangent relaxation keeps points near the surface (dev %.4f, %d active)" % (dev, na))
+
+
 if __name__ == "__main__":
+    test_fast_numpy()
     test_detect_symmetry_numpy()
     test_orient()
     test_arcedge(); test_curvature(); test_grade(); test_virtual_subdivision_and_sparse()

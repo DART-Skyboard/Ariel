@@ -63,6 +63,12 @@ class AFRetopoProps(PropertyGroup):
         ('KEEP_NEW', "Transfer + new UV", "Transfer, and add a freshly unwrapped 'UVMap_Tessera' (angle-based)"),
         ('NEW', "New UV only", "Only a freshly unwrapped 'UVMap_Tessera'"),
         ('SKIP', "Skip UVs", "No UV maps on the result")], default='KEEP')
+    fast_path: EnumProperty(name="Large Meshes", items=[
+        ('AUTO', "Auto", "Use the vectorised fast path above the face threshold"),
+        ('ON', "Always fast", "Always use the vectorised fast path"),
+        ('OFF', "Never", "Always use the accurate (bmesh) path")], default='AUTO')
+    fast_threshold: IntProperty(name="Fast Path Above", default=200000, min=1000,
+                                description="Face count above which the fast path is chosen automatically")
     recalc_before: BoolProperty(name="Normals Outside (before)", default=True,
                                 description="Make normals consistent and outward before building the projection")
     recalc_after: BoolProperty(name="Normals Outside (after)", default=True,
@@ -138,8 +144,12 @@ def _fmt(rep):
             o["faces"], 100 * o["quad_ratio"], o["tris"], o["odd_ngons"])
     q = rep.get("quality")
     if q:
-        s += "; max dev %.3f%%, sym err %.1e, poles %d" % (100 * q["max_deviation"], q["symmetry_error"],
-                                                          q["poles_valence3"] + q["poles_valence5plus"])
+        se = q.get("symmetry_error")
+        s += "; max dev %.3f%%%s" % (100 * q["max_deviation"], (", sym err %.1e" % se) if se is not None else "")
+        if "poles_valence3" in q:
+            s += ", poles %d" % (q["poles_valence3"] + q["poles_valence5plus"])
+    if rep.get("method"):
+        s += " [%s%s]" % (rep["method"], ", %.1fs" % rep["timing"]["total"] if rep.get("timing") else "")
     return s
 
 
@@ -307,31 +317,109 @@ def remesh_object(obj, st, apply_modifiers=True, replace=False, suffix="_quad"):
 class AF_OT_quad_remesh(Operator):
     bl_idname = "arcflow.quad_remesh"
     bl_label = "Projection Remesh"
-    bl_description = "Balanced quad retopology with crease-weighted density, optional exact mirror symmetry"
+    bl_description = ("Balanced quad retopology with crease-weighted density and symmetry detection. Large meshes use "
+                      "a vectorised fast path with progress (Esc cancels between stages)")
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, ctx):
         return ctx.active_object is not None and ctx.active_object.type == 'MESH'
 
+    def _use_fast(self, ctx, obj, p):
+        if p.fast_path == 'ON':
+            return True
+        if p.fast_path == 'OFF':
+            return False
+        try:
+            if p.source_mode == 'EVALUATED':
+                n = len(obj.evaluated_get(ctx.evaluated_depsgraph_get()).data.polygons)
+            else:
+                n = len(obj.data.polygons)
+        except Exception:
+            n = len(obj.data.polygons)
+        return n > p.fast_threshold
+
+    def _finish(self, ctx, obj, p, new, rep):
+        if new is None:
+            p.report_text = rep.get("error", "failed")[:200]
+            self.report({'ERROR'}, p.report_text)
+            return {'CANCELLED'}
+        p.report_text = _fmt(rep)
+        for o in ctx.selected_objects:
+            o.select_set(False)
+        new.select_set(True)
+        ctx.view_layer.objects.active = new
+        self.report({'INFO'}, p.report_text)
+        return {'FINISHED'}
+
     def execute(self, ctx):
         obj = ctx.active_object
         if obj.mode == 'EDIT':
             bpy.ops.object.mode_set(mode='OBJECT')
         p = ctx.scene.arc_flow_retopo
+        st = _settings(p)
+        wm = ctx.window_manager
         try:
-            new, rep = remesh_object(obj, _settings(p), p.source_mode == 'EVALUATED', p.replace)
+            if self._use_fast(ctx, obj, p):
+                from . import retopo_fast_ops as FO
+                gen = FO.fast_stages(obj, st, p.source_mode == 'EVALUATED')
+                wm.progress_begin(0, 100)
+                new = rep = None
+                try:
+                    while True:
+                        frac, label = next(gen)
+                        wm.progress_update(int(frac * 100))
+                except StopIteration as e:
+                    new, rep = e.value
+                finally:
+                    wm.progress_end()
+            else:
+                new, rep = remesh_object(obj, st, p.source_mode == 'EVALUATED', p.replace)
         except Exception as e:
-            self.report({'ERROR'}, "Quad remesh failed: %s" % e)
+            self.report({'ERROR'}, "Projection remesh failed: %s" % e)
             return {'CANCELLED'}
-        p.report_text = _fmt(rep)
-        if new is not obj:
-            for o in ctx.selected_objects:
-                o.select_set(False)
-            new.select_set(True)
-            ctx.view_layer.objects.active = new
-        self.report({'INFO'}, p.report_text)
-        return {'FINISHED'}
+        return self._finish(ctx, obj, p, new, rep)
+
+    def invoke(self, ctx, event):
+        obj = ctx.active_object
+        p = ctx.scene.arc_flow_retopo
+        if obj.mode == 'EDIT' or not self._use_fast(ctx, obj, p):
+            return self.execute(ctx)
+        from . import retopo_fast_ops as FO
+        self._gen = FO.fast_stages(obj, _settings(p), p.source_mode == 'EVALUATED')
+        wm = ctx.window_manager
+        wm.progress_begin(0, 100)
+        self._timer = wm.event_timer_add(0.05, window=ctx.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _end(self, ctx):
+        wm = ctx.window_manager
+        wm.event_timer_remove(self._timer)
+        wm.progress_end()
+        ctx.workspace.status_text_set(None)
+
+    def modal(self, ctx, event):
+        p = ctx.scene.arc_flow_retopo
+        if event.type == 'ESC':
+            self._gen.close()
+            self._end(ctx)
+            self.report({'WARNING'}, "Projection remesh cancelled")
+            return {'CANCELLED'}
+        if event.type == 'TIMER':
+            try:
+                frac, label = next(self._gen)
+                ctx.window_manager.progress_update(int(frac * 100))
+                ctx.workspace.status_text_set("Projection Remesh: %s (%d%%)  -  Esc to cancel" % (label, int(frac * 100)))
+            except StopIteration as e:
+                self._end(ctx)
+                new, rep = e.value
+                return self._finish(ctx, ctx.active_object, p, new, rep)
+            except Exception as e:
+                self._end(ctx)
+                self.report({'ERROR'}, "Projection remesh failed: %s" % e)
+                return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
 
 
 def predicted_faces(obj, resolution, evaluated=True):

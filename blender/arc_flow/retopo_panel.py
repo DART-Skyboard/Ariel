@@ -31,6 +31,9 @@ class AF_PT_retopo(Panel):
         col.prop(p, "deviation_tol")
         col.prop(p, "method")
         col.prop(p, "target_faces")
+        r3 = col.row(align=True)
+        r3.prop(p, "fast_path", text="Large")
+        r3.prop(p, "fast_threshold", text="Above")
         col.prop(p, "source_mode")
         col.prop(p, "resolution")
         if ctx.active_object and ctx.active_object.type == 'MESH':

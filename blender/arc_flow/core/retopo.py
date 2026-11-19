@@ -544,6 +544,8 @@ class Analysis:
     arc_size: np.ndarray = None     # graded Arc Edge size scale per vertex
     virt_pts: np.ndarray = None     # extra density sample points from virtual subdivision of oversize faces
     virt_dens: np.ndarray = None
+    edge_loops: np.ndarray = None   # (E,2) first two loop uses of each edge
+    edge_count: np.ndarray = None   # (E,) faces per edge
 
 
 def analyse(V, faces, *a, **kw):
@@ -563,7 +565,7 @@ def analyse_packed(V, loops, start, size, crease_angle=math.radians(25.0), sharp
     nf = len(size)
     counts = count_report(size)
     nrm, area, cen = face_geometry(V, loops, start, size)
-    E, ef, ecnt = build_edges(loops, start, size)
+    E, ef, ecnt, eloops = build_edges2(loops, start, size)
     dih = edge_dihedral(nrm, ef)
     crease_e = np.clip(dih / max(crease_angle, 1e-6), 0.0, 1.0)
     sharp_e = dih >= sharp_angle
@@ -661,7 +663,7 @@ def analyse_packed(V, loops, start, size, crease_angle=math.radians(25.0), sharp
                     density_v=density, face_size=fsize, small_mask=small,
                     threshold=float(math.exp(gthr)) if np.isfinite(gthr) else 0.0,
                     region_threshold=rthr, regions=regions, nonmanifold_edges=nonman,
-                    k1=k1, k2=k2, kdir1=kdir, arc_size=s_arc, virt_pts=vpts, virt_dens=vden,
+                    k1=k1, k2=k2, kdir1=kdir, arc_size=s_arc, virt_pts=vpts, virt_dens=vden, edge_loops=eloops, edge_count=ecnt,
                     info={"oversize_faces": int(oversize.sum()), "median_face_size": med, "regions": nreg, "otsu_separability": gsep,
                           "small_faces": int(small.sum())})
 
@@ -997,7 +999,7 @@ def final_quality(bm, bvh_ref, ref_V, st, ax):
             vd = max(vd, (loc[0] - v.co).length)
     out_bvh = BVHTree.FromBMesh(bm, epsilon=0.0)
     rd = 0.0
-    for p in ref_V:
+    for p in ref_V[:: max(1, len(ref_V) // 20000)]:
         loc = out_bvh.find_nearest(mathutils.Vector(p))
         if loc and loc[0] is not None:
             rd = max(rd, (loc[0] - mathutils.Vector(p)).length)
@@ -1064,8 +1066,11 @@ def _symmetry_setup(work, st, diag):
     return rep, M.inverted()
 
 
-def remesh_bmesh(src_bm, st, quadriflow_fn=None):
-    """Quad-remesh `src_bm` (left untouched) per RemeshSettings; returns (new_bm, report dict)."""
+def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None, density_samples=None):
+    """Quad-remesh `src_bm` (left untouched) per RemeshSettings; returns (new_bm, report dict).
+    Large-mesh 'reduce' mode: src_bm is a decimated working mesh; `ref_bvh` is the BVH of the ORIGINAL full-resolution
+    surface (projection + deviation reference), `ref_sample_V` a sample of its vertices, `density_samples` =
+    (points, density) from the full-resolution analysis."""
     import bmesh
     import mathutils
     from mathutils.bvhtree import BVHTree
@@ -1083,7 +1088,7 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
     # density comes from it, every new vertex is projected onto it, the result is measured against it.
     ref = work.copy()
     ref.calc_loop_triangles()
-    bvh = BVHTree.FromBMesh(ref, epsilon=0.0)
+    bvh = ref_bvh if ref_bvh is not None else BVHTree.FromBMesh(ref, epsilon=0.0)
     Vr, Fr = bm_arrays(ref)
     st, auto_info = resolve_auto(st, Vr, (Vr, Fr))
     rep["auto"] = auto_info
@@ -1091,6 +1096,8 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
     tol = st.sym_tolerance * diag
     an = analyse(Vr, Fr, st.crease_angle, st.sharp_angle, st.band_rings, threshold_mode=st.threshold_mode,
                  manual_threshold=st.manual_threshold)
+    if density_samples is not None:
+        an.virt_pts, an.virt_dens = density_samples
     rep["analysis"] = {"counts": an.counts, "small_faces": an.info["small_faces"], "threshold": an.threshold,
                        "regions": an.info["regions"], "nonmanifold_edges": an.nonmanifold_edges}
     if st.use_symmetry:
@@ -1121,7 +1128,7 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
             _project_all(out, bvh, an, st, ref_kind=None, pin_sharp=False, symmetric=False, ax=ax)
             rep["output"] = bm_report(out)
             rep["output"]["quadriflow"] = True
-            rep["quality"] = final_quality(out, bvh, Vr, st, ax)
+            rep["quality"] = final_quality(out, bvh, ref_sample_V if ref_sample_V is not None else Vr, st, ax)
             _finish_data(out, ref, bvh, st, rep)
             if M_inv is not None:
                 out.transform(M_inv); out.normal_update()
@@ -1182,7 +1189,7 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
     if half:
         _mirror_half(bm, ax, tol)
     rep["output"] = bm_report(bm)
-    q = final_quality(bm, bvh, Vr, st, ax)
+    q = final_quality(bm, bvh, ref_sample_V if ref_sample_V is not None else Vr, st, ax)
     q["refine_passes_used"] = passes
     q["bad_quads_before_fix"] = bad_before
     rep["quality"] = q
