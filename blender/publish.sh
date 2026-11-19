@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Upload a built Arc Flow zip as a NEW VERSION of the already-approved extension "arc_flow" on extensions.blender.org.
 #
-#   BLENDER_EXT_TOKEN=...  blender/publish.sh [-n] [-f release_notes.md] [path/to/arc_flow-X.Y.Z.zip]
+#   BLENDER_EXT_TOKEN=...  blender/publish.sh [-n] [-f release_notes.md] [path/to/tessera_projection-X.Y.Z.zip]
 #
 # The token comes only from the environment variable BLENDER_EXT_TOKEN (create one at
 # https://extensions.blender.org/settings/tokens/).  It is never written to a file, never echoed, and is passed to curl on

@@ -11,7 +11,7 @@ RT = runtime.RT
 class _Base:
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Arc Flow"
+    bl_category = "Tessera"
 
 
 def _status_line(layout, af):
@@ -23,7 +23,7 @@ def _status_line(layout, af):
 
 class AF_PT_main(_Base, Panel):
     bl_idname = "AF_PT_main"
-    bl_label = "Arc Flow  |  LOTBCBP"
+    bl_label = "Tessera Projection"
 
     def draw(self, ctx):
         l = self.layout
@@ -420,7 +420,7 @@ class AF_PT_cache(_Base, Panel):
 
 class AF_PT_object_tab(Panel):
     bl_idname = "AF_PT_object_tab"
-    bl_label = "Arc Flow"
+    bl_label = "Tessera Projection"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
     bl_context = "object"

@@ -49,7 +49,7 @@ class AF_OT_systems_autoroles(Operator):
 class AF_PT_systems(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Arc Flow"
+    bl_category = "Tessera"
     bl_idname = "AF_PT_systems"
     bl_label = "Systems (Tessera Projection)"
     bl_parent_id = "AF_PT_main"

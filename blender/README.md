@@ -1,16 +1,21 @@
-# Arc Flow for Blender (LOTBCBP fluid simulation)
+<p align="center"><img src="branding/tessera_256.png" width="128" alt="Tessera Projection logo"></p>
+
+# Tessera Projection for Blender
+
+Collision, Boolean and quad-remesh projection for any mesh, plus the Arc Flow fluid simulation built on it.
 
 **LOTBCBP = Level Of Tessellation Boolean Collision Body Projection** (called LOTCBP before 0.2.0).
 Collision bodies are resolved by a base signed-distance field plus virtual tessellation bricks that are generated on demand
 where fluid touches a surface, and the connected cavities of an assembly can be projected into one real Boolean union.
+The same projection is reused for **Projection Remesh**: a mesh is projected against itself to decide where its quads go.
 
 Blender extension, v0.2.0. Tested on Blender 5.2.3 LTS and 5.3.0 (headless; Cycles CPU render smoke test of all three render paths); `blender_version_min` is 5.2.3.
-Sidebar tab "Arc Flow" in the 3D viewport. Click "Add Demo Rig", then Build.
+Sidebar tab "Tessera" in the 3D viewport. For fluids: click "Add Demo Rig", then Build. For topology: select a mesh, open "Projection Remesh".
 
 ## Install
-- Build: `blender/build.sh` (validates and writes `blender/dist/arc_flow-0.2.0.zip`).
+- Build: `blender/build.sh` (validates and writes `blender/dist/tessera_projection-0.2.0.zip`).
 - Install: Preferences > Get Extensions > (v) > Install from Disk, pick the zip. Or
-  `blender --command extension install-file -r user_default --enable blender/dist/arc_flow-0.2.0.zip`.
+  `blender --command extension install-file -r user_default --enable blender/dist/tessera_projection-0.2.0.zip`.
 - Publishing to extensions.blender.org: `blender/PUBLISHING.md`. Never commit a token; use the env var `BLENDER_EXT_TOKEN`.
 - Files saved with 0.1.x keep working: the renamed properties (`lotcbp*` -> `lotbcbp*`) are migrated when the file loads. Operator ids (`arcflow.*`) did not change.
 
@@ -85,7 +90,7 @@ Not done / unverified: EEVEE render check, interactive UI testing, per-voxel vol
 Publishing: never commit a token; use env var BLENDER_EXT_TOKEN with the Blender Extensions web upload.
 
 ## Projection Remesh (Tessera Projection / LOTBCBP quad remesh)
-Sidebar > Arc Flow > "Projection Remesh". The remesh is a projection of the object against itself: the object's own nearest-surface projection (BVH, the same idea as the LOTBCBP collision body) is the reference for the density field, for projecting every new vertex, and for measuring the result.
+Sidebar > Tessera > "Projection Remesh". The remesh is a projection of the object against itself: the object's own nearest-surface projection (BVH, the same idea as the LOTBCBP collision body) is the reference for the density field, for projecting every new vertex, and for measuring the result.
 Operators: **Analyse Topology** (counts tris / odd n-gons, selects them, writes `af_odd_face`, `af_tri_face`, `af_small_face`, `af_crease` + vertex group `AF_Crease`), **Projection Remesh** (new object `<name>_quad`, or "Replace Original"), **Quick Topology Fix** (weld, degenerate/loose removal, normals), **Recalculate Normals (Outside)** (standalone, vectorised, per connected component).
 
 What is automatic (default "Automatic"): the mirror plane (see Symmetry below), crease angle (85th percentile of dihedrals, 15..40 deg), small/large threshold (Otsu on log face size, per crease-bounded region), refinement passes toward the deviation tolerance, bad-quad smoothing, normals before/after. Manual overrides stay available.

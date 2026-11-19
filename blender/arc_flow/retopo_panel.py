@@ -7,7 +7,7 @@ class AF_PT_retopo(Panel):
     bl_label = "Projection Remesh"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Arc Flow"
+    bl_category = "Tessera"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, ctx):

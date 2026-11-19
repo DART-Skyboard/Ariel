@@ -5,7 +5,7 @@ Never commit, paste or log an API token. The scripts read it from the environmen
 ## 1. Build and verify
 
 ```
-blender/build.sh                     # validate + build blender/dist/arc_flow-<version>.zip (needs Blender 5.2.3+)
+blender/build.sh                     # validate + build blender/dist/tessera_projection-<version>.zip (needs Blender 5.2.3+)
 blender --command extension validate blender/arc_flow
 python3 blender/tests/test_solver.py                                  # pure NumPy solver tests
 blender --factory-startup -b --python blender/tests/test_blender.py   # headless Blender test (add-on from source)
@@ -15,7 +15,7 @@ To test the zip itself in a clean config (what a reviewer does):
 
 ```
 export BLENDER_USER_CONFIG=$(mktemp -d) BLENDER_USER_SCRIPTS=$(mktemp -d) BLENDER_USER_EXTENSIONS=$(mktemp -d)
-blender -b --command extension install-file -r user_default --enable blender/dist/arc_flow-0.2.0.zip
+blender -b --command extension install-file -r user_default --enable blender/dist/tessera_projection-0.2.0.zip
 blender -b --python blender/tests/test_blender.py -- --installed
 ```
 
@@ -54,7 +54,7 @@ extension that already exists on the platform**.
 export BLENDER_EXT_TOKEN=...        # in your shell / CI secret store, never in a file in the repo
 blender/build.sh
 blender/publish.sh -n               # dry run: shows extension id, version, zip and endpoint, sends nothing
-blender/publish.sh -f notes.md      # uploads dist/arc_flow-<version>.zip with the notes
+blender/publish.sh -f notes.md      # uploads dist/tessera_projection-<version>.zip with the notes
 ```
 
 `publish.sh` passes the token to curl on stdin (not on the command line) and refuses to run without it. An uploaded
