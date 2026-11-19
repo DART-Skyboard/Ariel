@@ -230,7 +230,39 @@ def test_orient():
     ok(abs(nrm[:, 2].sum()) == 16 and info["open_heuristic"] == 1, "open patch made consistent (open shell reported)")
 
 
+def test_detect_symmetry_numpy():
+    V, F = uv_sphere(1.0, 40, 20)
+    # shape symmetric about x=0 only: elongated in z, bump on +y side, wobble even in x
+    r = 1 + 0.3 * V[:, 1] + 0.2 * V[:, 0] ** 2 + 0.25 * V[:, 2] ** 2
+    V = V * r[:, None] * np.array([1.0, 1.0, 1.6])
+    rng = np.random.default_rng(4)
+    q = rng.normal(size=4); q /= np.linalg.norm(q)
+    w, x, y, z = q
+    Rm = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                   [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                   [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    shift = np.array([7.0, -3.0, 11.0])
+    Vt = 2.2 * (V @ Rm.T) + shift
+    l, st, sz = R.pack_faces(F)
+    P, cen, area = R.surface_sample_points(Vt, l, st, sz)
+    dense = np.concatenate([Vt, cen])
+    diag = R._bbox_diag(Vt)
+    det = R.detect_symmetry(P, (cen * area[:, None]).sum(0) / area.sum(), lambda Q: R.nearest_distance(Q, dense), diag)
+    true_n = Rm[:, 0]; true_p = 2.2 * 0 + shift
+    ok(abs(det["normal"] @ true_n) > math.cos(math.radians(2)) and abs((det["point"] - true_p) @ true_n) < 0.02 * diag and det["cls"] != "asymmetric",
+       "numpy: mirror plane of a rotated/shifted/scaled shape found (dot %.4f, %s)" % (abs(det["normal"] @ true_n), det["cls"]))
+    # asymmetric shape
+    Va = V + 0.4 * np.sin(3 * V[:, [1, 2, 0]] + 1.0)
+    P2, cen2, area2 = R.surface_sample_points(Va, l, st, sz)
+    dense2 = np.concatenate([Va, cen2])
+    det2 = R.detect_symmetry(P2, (cen2 * area2[:, None]).sum(0) / area2.sum(), lambda Q: R.nearest_distance(Q, dense2), R._bbox_diag(Va))
+    ok(det2["cls"] == "asymmetric", "numpy: asymmetric shape classified %s (mean %.4f)" % (det2["cls"], det2["mean"]))
+    Rr, t = R.plane_frame(det["normal"], det["point"])
+    ok(np.allclose(Rr @ det["point"] + t, 0) and np.isclose(np.linalg.det(Rr), 1.0), "plane_frame is a proper rigid map")
+
+
 if __name__ == "__main__":
+    test_detect_symmetry_numpy()
     test_orient()
     test_arcedge(); test_curvature(); test_grade(); test_virtual_subdivision_and_sparse()
     test_counts(); test_cube_creases(); test_otsu_split(); test_mirror(); test_relax_moves_toward_density(); test_edges()

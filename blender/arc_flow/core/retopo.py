@@ -358,6 +358,116 @@ def flip_packed(loops, start, size, flip):
     return start[fi] + src_rel
 
 
+# ---- automatic mirror-plane detection (no origin / orientation assumption) ----------------------------------------
+
+def surface_sample_points(V, loops, start, size, n=2400):
+    """Deterministic surface samples: vertices and face centroids (strided to ~n points)."""
+    _, area, cen = face_geometry(V, loops, start, size)
+    P = np.concatenate([np.asarray(V, dtype=np.float64), cen])
+    stride = max(1, len(P) // n)
+    return P[::stride], cen, area
+
+
+def reflect(P, p, n):
+    return P - 2.0 * ((P - p) @ n)[:, None] * n[None, :]
+
+
+def _plane_score(P, p, n, dist_fn, diag):
+    d = dist_fn(reflect(P, p, n)) / diag
+    return float(0.5 * d.mean() + 0.5 * np.percentile(d, 95)), d
+
+
+def classify_symmetry(mean, p95, frac_ok):
+    """symmetric / near-symmetric / asymmetric from deviations normalised by the bounding diagonal."""
+    if p95 < 0.003 and mean < 0.001:
+        return "symmetric"
+    if mean < 0.02 and frac_ok >= 0.8:
+        return "near-symmetric"
+    return "asymmetric"
+
+
+def detect_symmetry(P, centroid, dist_fn, diag, force_normal=None, snap=True):
+    """Find the best single mirror plane of a surface using the surface projection itself.
+    P: surface sample points (n,3); dist_fn(Q) -> distance of points Q to the surface (BVH / nearest sample);
+    centroid: area-weighted centroid.  Candidate normals are the three PCA axes of the samples (plus a ring of
+    directions inside a degenerate eigen-plane); the best is refined by coordinate descent on two tilt angles and the
+    offset along the normal.  `force_normal`: only the offset is searched (manual axis).  Deterministic.
+    Returns dict(normal, point, mean, p95, frac_ok, cls, confidence, deviations, candidates)."""
+    P = np.asarray(P, dtype=np.float64)
+    c = np.asarray(centroid, dtype=np.float64)
+    sub = P[:: max(1, len(P) // 500)]
+    cov = np.cov((P - c).T)
+    w, ax = np.linalg.eigh(cov)
+    ax = ax[:, ::-1]; w = w[::-1]
+    cands = [ax[:, i] for i in range(3)]
+    for i, j in ((0, 1), (1, 2)):
+        if w[j] > 0 and w[i] / max(w[j], 1e-300) < 1.15:           # degenerate pair: any direction in the plane
+            for a in np.linspace(0, math.pi, 12, endpoint=False):
+                cands.append(math.cos(a) * ax[:, i] + math.sin(a) * ax[:, j])
+    if force_normal is not None:
+        cands = [np.asarray(force_normal, dtype=np.float64)]
+    scored = []
+    for n in cands:
+        n = n / np.linalg.norm(n)
+        sc, _ = _plane_score(sub, c, n, dist_fn, diag)
+        scored.append((sc, tuple(n)))
+    scored.sort(key=lambda t: t[0])
+    best_s, n = scored[0][0], np.array(scored[0][1])
+    p = c.copy()
+
+    def frame(n):
+        r = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
+        u = np.cross(n, r); u /= np.linalg.norm(u)
+        return u, np.cross(n, u)
+    steps = [math.radians(2.0), math.radians(2.0), 0.01 * diag]
+    if force_normal is not None:
+        steps[0] = steps[1] = 0.0
+        sc0, d0 = _plane_score(P, p, n, dist_fn, diag)
+        if classify_symmetry(float(d0.mean()), float(np.percentile(d0, 95)), float((d0 < 0.02).mean())) == "symmetric":
+            steps[2] = 0.0                                          # already exact about the given plane through c
+    for _ in range(5):
+        for k in range(3):
+            if steps[k] == 0.0:
+                continue
+            for sgn in (1, -1):
+                u, v = frame(n)
+                nn, pp = n, p
+                if k == 0:
+                    nn = n * math.cos(sgn * steps[0]) + u * math.sin(sgn * steps[0])
+                elif k == 1:
+                    nn = n * math.cos(sgn * steps[1]) + v * math.sin(sgn * steps[1])
+                else:
+                    pp = p + sgn * steps[2] * n
+                nn = nn / np.linalg.norm(nn)
+                sc, _ = _plane_score(sub, pp, nn, dist_fn, diag)
+                if sc < best_s - 1e-12:
+                    best_s, n, p = sc, nn, pp
+                    break
+        steps = [x * 0.5 for x in steps]
+    sc, d = _plane_score(P, p, n, dist_fn, diag)
+    mean, p95, frac = float(d.mean()), float(np.percentile(d, 95)), float((d < 0.02).mean())
+    if snap:                                                         # snap to a local axis through the origin when it is that
+        for i in range(3):
+            e = np.zeros(3); e[i] = 1.0
+            if abs(float(n @ e)) > math.cos(math.radians(0.5)) and abs(float(p @ e)) < 1e-3 * diag:
+                n = e * np.sign(float(n @ e)); p = p - (p @ e) * e
+                break
+    cls = classify_symmetry(mean, p95, frac)
+    return {"normal": n, "point": p, "mean": mean, "p95": p95, "frac_ok": frac, "cls": cls,
+            "confidence": float(max(0.0, 1.0 - mean / 0.02)), "deviations": d, "samples": P,
+            "candidate_scores": [round(t[0], 6) for t in scored[:6]]}
+
+
+def plane_frame(n, p):
+    """Rigid transform (R (3,3), t (3,)) with x' = R x + t mapping the plane (point p, normal n) to x' = 0, n -> +X."""
+    n = np.asarray(n, dtype=np.float64); n = n / np.linalg.norm(n)
+    r = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
+    u = np.cross(n, r); u /= np.linalg.norm(u)
+    w = np.cross(n, u)
+    R = np.stack([n, u, w])
+    return R, -R @ np.asarray(p, dtype=np.float64)
+
+
 def otsu_threshold(x, bins=64):
     """Otsu threshold of a 1-D sample; returns (threshold, separability 0..1)."""
     x = np.asarray(x, dtype=np.float64)
@@ -794,15 +904,6 @@ def resolve_auto(st, Vr, an_fn):
         info["crease_angle_deg"] = round(math.degrees(st.crease_angle), 1)
     if st.use_symmetry is None:
         st.use_symmetry = False
-        if st.auto:
-            best = None
-            for a in "XYZ":
-                mx, mn, fr = source_symmetry(Vr, a, st.sym_tolerance)
-                if mx <= 10 * st.sym_tolerance and (best is None or mx < best[1]):
-                    best = (a, mx)
-            if best is not None:
-                st.use_symmetry, st.axis = True, best[0]
-                info["symmetry_axis_detected"] = best[0]
     return st, info
 
 
@@ -912,6 +1013,57 @@ def final_quality(bm, bvh_ref, ref_V, st, ax):
     return q
 
 
+def _symmetry_setup(work, st, diag):
+    """Decide / detect the mirror plane on the cleaned source `work`, move `work` into the plane frame (plane = x=0)
+    and update `st` (copy).  Returns (report dict, inverse transform Matrix or None)."""
+    import mathutils
+    from mathutils import Matrix
+    from mathutils.bvhtree import BVHTree
+    rep = {"mode": "OFF" if st.use_symmetry is False else ("AXIS" if st.use_symmetry else "AUTO")}
+    if st.use_symmetry is False or not len(work.faces):
+        return rep, None
+    tmp = BVHTree.FromBMesh(work, epsilon=0.0)
+
+    def dist_fn(Q):
+        out = np.empty(len(Q))
+        for i, q in enumerate(Q):
+            hit = tmp.find_nearest(mathutils.Vector(q))
+            out[i] = hit[3] if hit and hit[3] is not None else 1e9
+        return out
+    V, F = bm_arrays(work)
+    loops, start, size = pack_faces(F)
+    P, cen, area = surface_sample_points(V, loops, start, size)
+    c = (cen * area[:, None]).sum(0) / max(area.sum(), 1e-300)
+    force = None
+    if rep["mode"] == "AXIS":
+        force = np.zeros(3); force[AXES[st.axis]] = 1.0
+    det = detect_symmetry(P, c, dist_fn, diag, force_normal=force)
+    rep.update({"class": det["cls"], "confidence": det["confidence"], "mean_dev": det["mean"], "p95_dev": det["p95"],
+                "normal": tuple(float(x) for x in det["normal"]), "point": tuple(float(x) for x in det["point"]),
+                "asymmetric_fraction": 1.0 - det["frac_ok"], "candidate_scores": det["candidate_scores"]})
+    enforce = det["cls"] in ("symmetric", "near-symmetric") or (rep["mode"] == "AXIS")
+    rep["enforced"] = bool(enforce)
+    if not enforce:
+        st.use_symmetry = False
+        rep["note"] = "asymmetric: not mirrored"
+        return rep, None
+    R, t = plane_frame(det["normal"], det["point"])
+    M = Matrix([[*R[0], t[0]], [*R[1], t[1]], [*R[2], t[2]], [0, 0, 0, 1]])
+    work.transform(M)
+    work.normal_update()
+    st.use_symmetry = True
+    st.axis = "X"
+    # keep the half with more surface area (deterministic); the other half is replaced by the mirrored copy
+    V2, F2 = bm_arrays(work)
+    l2, s2, z2 = pack_faces(F2)
+    _, a2, c2 = face_geometry(V2, l2, s2, z2)
+    pos = float(a2[c2[:, 0] > 0].sum()); neg = float(a2[c2[:, 0] < 0].sum())
+    st.keep_positive_side = pos >= neg
+    rep["kept_side"] = "+" if st.keep_positive_side else "-"
+    rep["area_ratio_sides"] = min(pos, neg) / max(max(pos, neg), 1e-300)
+    return rep, M.inverted()
+
+
 def remesh_bmesh(src_bm, st, quadriflow_fn=None):
     """Quad-remesh `src_bm` (left untouched) per RemeshSettings; returns (new_bm, report dict)."""
     import bmesh
@@ -923,6 +1075,10 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
     work = src_bm.copy()
     rep["cleanup"] = cleanup_bmesh(work, st.weld_distance * diag, recalc_normals=st.recalc_before)
     work.verts.ensure_lookup_table()
+    import copy as _copy
+    st = _copy.copy(st)
+    sym_rep, M_inv = _symmetry_setup(work, st, diag)
+    rep["symmetry"] = sym_rep
     # The object's own projection (nearest-surface BVH, the same one LOTBCBP collision uses) is the reference:
     # density comes from it, every new vertex is projected onto it, the result is measured against it.
     ref = work.copy()
@@ -967,6 +1123,8 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
             rep["output"]["quadriflow"] = True
             rep["quality"] = final_quality(out, bvh, Vr, st, ax)
             _finish_data(out, ref, bvh, st, rep)
+            if M_inv is not None:
+                out.transform(M_inv); out.normal_update()
             ref.free(); work.free()
             return out, rep
         rep["quadriflow_failed"] = True
@@ -1037,6 +1195,8 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None):
             bmesh.ops.reverse_faces(bm, faces=[bm.faces[i] for i in np.nonzero(flip)[0]])
         rep["normals_after"] = oi
     _finish_data(bm, ref, bvh, st, rep)
+    if M_inv is not None:
+        bm.transform(M_inv); bm.normal_update()
     ref.free()
     return bm, rep
 

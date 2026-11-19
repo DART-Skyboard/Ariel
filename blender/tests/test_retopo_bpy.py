@@ -177,7 +177,8 @@ def test_auto_projection():
     new, rep, t = run(ob)                       # everything automatic
     q = rep["quality"]
     print("   auto:", rep["auto"], {k: (round(v, 5) if isinstance(v, float) else v) for k, v in q.items()}, "%.1fs" % t)
-    ok(rep["auto"].get("symmetry_axis_detected") == "X", "auto detects Suzanne X symmetry")
+    sy = rep["symmetry"]
+    ok(sy["enforced"] and sy["class"] in ("symmetric", "near-symmetric") and abs(sy["normal"][0]) > 0.999, "auto detects Suzanne X mirror plane (%s, conf %.2f)" % (sy["class"], sy["confidence"]))
     ok("crease_angle_deg" in rep["auto"], "auto crease angle %s" % rep["auto"].get("crease_angle_deg"))
     ok(rep["output"]["quad_ratio"] >= 0.98, "auto quad ratio %.3f" % rep["output"]["quad_ratio"])
     ok(q["max_deviation"] <= q["deviation_tol"], "auto deviation %.5f <= tol %.4f" % (q["max_deviation"], q["deviation_tol"]))
@@ -442,6 +443,88 @@ def test_color_attributes():
     ok(nm.color_attributes.active_color_name == "PaintB", "active colour attribute carried over (%s)" % nm.color_attributes.active_color_name)
 
 
+def monkey_tri(sub=1):
+    reset()
+    bpy.ops.mesh.primitive_monkey_add(size=2)
+    ob = bpy.context.active_object
+    md = ob.modifiers.new('s', 'SUBSURF'); md.levels = sub
+    bpy.ops.object.modifier_apply(modifier=md.name)
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(ob.data); bm.free()
+    return ob
+
+
+def mirror_err_plane(ob, n, p):
+    V = np.array([v.co[:] for v in ob.data.vertices])
+    n = np.array(n) / np.linalg.norm(n)
+    Q = V - 2.0 * ((V - np.array(p)) @ n)[:, None] * n[None, :]
+    return float(R._kd_nearest(Q, V).max() / R._bbox_diag(V))
+
+
+def test_symmetry_detection():
+    import random
+    from mathutils import Matrix
+    base = monkey_tri(1)
+    new0, rep0, _ = run(base)
+    n0 = len(new0.data.polygons)
+    ok(rep0["symmetry"]["enforced"], "untransformed: plane detected %s" % rep0["symmetry"]["class"])
+    for seed in (1, 2):
+        rnd = random.Random(seed)
+        ax = Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1), rnd.uniform(-1, 1))).normalized()
+        ang = rnd.uniform(0.3, 3.0)
+        sc = rnd.uniform(0.5, 3.0)
+        tr = Vector((rnd.uniform(-20, 20), rnd.uniform(-20, 20), rnd.uniform(-20, 20)))
+        M = Matrix.Translation(tr) @ Matrix.Rotation(ang, 4, ax) @ Matrix.Scale(sc, 4)
+        ob = monkey_tri(1)
+        ob.data.transform(M)
+        ob.data.update()
+        new, rep, t = run(ob)
+        sy = rep["symmetry"]
+        true_n = (M.to_3x3() @ Vector((1, 0, 0))).normalized()
+        true_p = M @ Vector((0, 0, 0))
+        dn = abs(Vector(sy["normal"]).dot(true_n))
+        dp = abs((Vector(sy["point"]) - true_p).dot(true_n))
+        diag = R._bbox_diag(np.array([v.co[:] for v in ob.data.vertices]))
+        ok(sy["enforced"] and dn > math.cos(math.radians(2.0)) and dp < 0.01 * diag,
+           "seed %d (rot %.1f deg, scale %.2f, shift %.1f): plane found, normal dot %.5f, offset err %.5f of diag, %s, %.1fs" % (seed, math.degrees(ang), sc, tr.length, dn, dp / diag, sy["class"], t))
+        e = mirror_err_plane(new, sy["normal"], sy["point"])
+        ok(e < 3e-4, "seed %d: result topology symmetric about the detected plane (err %.2e of diag)" % (seed, e))
+        n1 = len(new.data.polygons)
+        ok(abs(n1 - n0) / n0 < 0.10, "seed %d: face count %d vs untransformed %d" % (seed, n1, n0))
+        ok(rep["output"]["quad_ratio"] >= 0.98 and rep["quality"]["max_deviation"] < 0.01, "seed %d: quad ratio %.3f, deviation %.5f" % (seed, rep["output"]["quad_ratio"], rep["quality"]["max_deviation"]))
+
+
+def test_asym_triangulation():
+    ob = monkey_tri(1)
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    rnd = __import__("random").Random(7)
+    edges = [e for e in bm.edges if len(e.link_faces) == 2 and rnd.random() < 0.35]
+    bmesh.ops.rotate_edges(bm, edges=edges, use_ccw=False)
+    bm.to_mesh(ob.data); bm.free()
+    V = np.array([v.co[:] for v in ob.data.vertices])
+    new, rep, t = run(ob)
+    sy = rep["symmetry"]
+    ok(sy["enforced"] and sy["class"] in ("symmetric", "near-symmetric"), "random diagonal flips: still detected %s (mean dev %.2e)" % (sy["class"], sy["mean_dev"]))
+    e = mirror_err_plane(new, sy["normal"], sy["point"])
+    ok(e < 3e-4 and rep["output"]["quad_ratio"] >= 0.98, "flipped-diagonal mesh becomes symmetric all-quad (err %.2e, quads %.3f)" % (e, rep["output"]["quad_ratio"]))
+
+
+def test_asymmetric_not_forced():
+    reset()
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=1.0)
+    ob = bpy.context.active_object
+    for v in ob.data.vertices:
+        c = v.co
+        v.co = c * (1.0 + 0.7 * math.sin(2.3 * c.x + 1.1 * c.y + 0.7) * math.cos(1.7 * c.z + 0.4 * c.x) + 0.6 * c.x * c.y + 0.3 * c.z * c.z * c.x)
+    ob.data.update()
+    new, rep, t = run(ob)
+    sy = rep["symmetry"]
+    print("   asymmetric:", sy["class"], "mean %.4f p95 %.4f" % (sy["mean_dev"], sy["p95_dev"]))
+    ok(sy["class"] == "asymmetric" and not sy["enforced"], "asymmetric mesh reported as such and not mirrored")
+    ok(rep["output"]["quad_ratio"] >= 0.98, "asymmetric mesh still remeshed to quads (%.3f)" % rep["output"]["quad_ratio"])
+
+
 def test_fix_and_replace():
     ob = make('sphere')
     bm = bmesh.new(); bm.from_mesh(ob.data)
@@ -476,6 +559,9 @@ if __name__ == "__main__":
     test_sphere_sym()
     ob, new = test_suzanne()
     test_auto_projection()
+    test_symmetry_detection()
+    test_asym_triangulation()
+    test_asymmetric_not_forced()
     test_uv_transfer()
     test_color_attributes()
     test_resolution()
