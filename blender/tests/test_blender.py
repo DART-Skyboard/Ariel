@@ -26,7 +26,9 @@ if '--installed' not in sys.argv:
     pkg = 'arc_flow'
 else:
     import addon_utils
-    pkg = [m.__name__ for m in addon_utils.modules() if m.__name__.endswith('arc_flow')][0]
+    pkg = [m.__name__ for m in addon_utils.modules() if m.__name__.endswith(('tessera_projection', 'arc_flow'))][0]
+    if pkg not in bpy.context.preferences.addons:
+        addon_utils.enable(pkg, default_set=True, persistent=False)   # headless runs do not persist the --enable flag
     ok(pkg in bpy.context.preferences.addons, "extension enabled: %s" % pkg)
     arc_flow = importlib.import_module(pkg)
 
