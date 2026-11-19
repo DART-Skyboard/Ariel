@@ -40,7 +40,7 @@ def stage(center, dist, elev, azim, lens=40):
         ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.color = col; ld.size = sz
         lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
         lo.rotation_euler = (c - lo.location).to_track_quat('-Z', 'Y').to_euler()
-    bpy.ops.mesh.primitive_plane_add(size=80, location=(c.x, c.y, -1.9))
+    bpy.ops.mesh.primitive_plane_add(size=80, location=(c.x, c.y, -3.55))
     fl = bpy.context.object; fl.name = "Studio_Floor"
     m = bpy.data.materials.new("floor"); m.use_nodes = True
     b = m.node_tree.nodes['Principled BSDF']; b.inputs['Base Color'].default_value = (0.03, 0.035, 0.045, 1); b.inputs['Roughness'].default_value = 0.35; b.inputs['Metallic'].default_value = 0.2
@@ -48,8 +48,8 @@ def stage(center, dist, elev, azim, lens=40):
 
 
 def glow(o, rgb, s=4.0):
-    m = o.data.materials[0]
-    b = m.node_tree.nodes['Principled BSDF']
+    m = bpy.data.materials[o['af_look']]
+    b = next(n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
     for k in ('Emission Color', 'Emission'):
         if k in b.inputs:
             b.inputs[k].default_value = (*rgb, 1.0); break
@@ -71,7 +71,7 @@ def finish(name, frame):
     runtime.apply_xray(sc)
     for fl in af.fluids:
         fl.render_mode = 'POINTS'
-        fl.pt_scale = 1.0
+        fl.pt_scale = 0.5
     runtime.mark_dirty(); runtime.ensure_world(sc, force=False)
     sc.frame_set(frame)
     sc.render.filepath = os.path.join(OUT, name)
@@ -105,5 +105,5 @@ elif case == 'failure':
     bpy.ops.arcflow.demo_twin()
     stage((6.2, 1.5, 0.6), 26.0, 0.42, 0.25, lens=38)
     glow(bpy.data.objects['AF_Crossfeed'], (1.0, 0.45, 0.05), 4.0)
-    sim_to(34)
-    finish("multi_twin_failure.png", 34)
+    sim_to(31)
+    finish("multi_twin_failure.png", 31)
