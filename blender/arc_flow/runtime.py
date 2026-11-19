@@ -220,7 +220,7 @@ def build_world(scene):
             if cv is not None:
                 sp = cv
             emit = dict(mode=p.emit_mode, rate=p.emit_rate, speed=sp, fluid=ef, radius=p.emit_radius, inward=p.emit_inward,
-                        particle_volume=p.emit_volume, cap=int(min(max(p.emit_rate * 25.0, 500), 40000)),
+                        particle_volume=p.emit_volume, cap=int(o.get('af_emit_cap', min(max(p.emit_rate * 25.0, 500), 40000))),
                         faces=_emit_faces(o, v, t) if p.emit_mode == 'FACES' else None)
         parts.append(W.PartSpec(o.name, fld, np.array(o.matrix_world), role, fluid=fi, fill_mode=fill_mode, fill_value=fill_val,
                                 pressure=(p.pressure or None), n_particles=p.particles, mat_custom=p.material_dict(),
@@ -621,11 +621,28 @@ def sim_frame(scene, frame):
         if world.set_matrices([np.array(o.matrix_world) for o in RT.parts]):
             update_joints()
         _eval_math(scene, world)
+        _sys_pre_step(scene, world, RT.last_frame + 1)
         world.step(dt)
         RT.last_frame += 1
         cache.put(RT.last_frame, world.snapshot())
         stepped = True
     return stepped
+
+
+def _sys_pre_step(scene, world, frame):
+    try:
+        from . import systems
+        systems.pre_step(scene, world, frame)
+    except Exception as ex:
+        RT.msg = "Systems: %s" % ex
+
+
+def _sys_visual(scene, frame):
+    try:
+        from . import systems
+        systems.apply_visuals(scene, frame)
+    except Exception as ex:
+        RT.msg = "Systems: %s" % ex
 
 
 def flush_cache(scene, force=False):
@@ -662,6 +679,7 @@ def on_frame_change(scene, *args):
             cache = RT.rec_cache if RT.recording else RT.cache
             snap = cache.get(frame) if cache else None
             apply_state(scene, RT.world, snap)
+            _sys_visual(scene, frame)
             flush_cache(scene)
             af.status = ("Recording " if RT.recording else "Simulating ") + "frame %d" % frame
         else:
@@ -671,6 +689,7 @@ def on_frame_change(scene, *args):
             snap = c.get(frame) if c else None
             if snap is not None and RT.fl_slots and snap['pos'].shape[0] == (RT.world.N if RT.world else -1):
                 apply_state(scene, RT.world, snap)
+                _sys_visual(scene, frame)
     except Exception as ex:   # never break the timeline
         RT.msg = "Arc Flow: %s" % ex
         af.status = RT.msg
@@ -699,6 +718,11 @@ def start(scene, record=False, play=True):
         from . import cavitybool
         if not cavitybool.cavity_objects(scene):
             cavitybool.build_from_scene(scene)      # first run with Boolean projection on: create the Fluid Cavity objects
+    try:
+        from . import systems
+        systems.on_build(scene)            # scan interactive physics + detect systems (auto-initialise) before the world is built
+    except Exception as ex:
+        RT.msg = "Systems: %s" % ex
     ensure_world(scene, force=True)
     RT.recording = bool(record)
     if record:

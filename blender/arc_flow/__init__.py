@@ -5,6 +5,7 @@ field plus virtual tessellation bricks that are generated on demand where fluid 
 interaction resolution can exceed both the modelled mesh and the fluid's own particle spacing."""
 from . import ops, panels, props, runtime
 from . import retopo_ops, retopo_panel  # Quad Remesh (LOTBCBP)
+from . import systems_ops  # Systems, crossfeed demos (Tessera Projection)
 
 
 def register():
@@ -13,9 +14,11 @@ def register():
     panels.register()
     runtime.register()
     retopo_ops.register(); retopo_panel.register()
+    systems_ops.register()
 
 
 def unregister():
+    systems_ops.unregister()
     retopo_panel.unregister(); retopo_ops.unregister()
     runtime.unregister()
     panels.unregister()

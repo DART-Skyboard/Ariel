@@ -35,7 +35,7 @@ T_RAMP = 0.5             # s: chamber pressure ramp
 TAU_LINK = 0.8           # s: pressurisation time constant for 1 m3 ullage and a 0.05 m2 pipe (visual time constant)
 TAU_WALL = 1.2           # s: wall heating time constant
 T_DWELL = 0.4            # s: hot gas inside a propellant tank before it counts as an ignition / rupture event
-WALL_HEAT = {'CHAMBER': 0.10, 'TANK_HOT': 0.25, 'PIPE_HOT': 0.20}   # fraction of (T_gas - 300 K) seen by the wall
+WALL_HEAT = {'CHAMBER': 0.10, 'TANK_HOT': 0.25, 'PIPE_HOT': 0.10}   # fraction of (T_gas - 300 K) seen by the wall
 INJ_K = 0.02             # injector orifice area per propellant stream, as a fraction of the throat area (in series with the feed line)
 ENHANCE_GAIN = 1.05      # thrust ratio (with links / without) from which a system counts as Enhanced
 

@@ -503,41 +503,13 @@ class AF_OT_assign_feedback(Operator):
 
 class AF_OT_demo(Operator):
     bl_idname = "arcflow.demo"
-    bl_label = "Add Demo Rig"
-    bl_description = "Pressurised RP-1 tank + pipe (cavities intersect) + chamber with a LOX tank, ready to Build"
+    bl_label = "Load Demo: Single Engine"
+    bl_description = "Single rocket engine from Blender primitives: RP-1 and LOX tanks, two pipes, chamber and nozzle, ready to Build"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, ctx):
-        sc = ctx.scene
-        af = sc.arc_flow
-        if not af.fluids:
-            _add_fluid(sc, 'RP1'); _add_fluid(sc, 'LOX')
-        fu, ox = af.fluids[0].name, af.fluids[min(1, len(af.fluids) - 1)].name
-
-        def mk(name, vt, loc, role, **kw):
-            v, t = vt
-            me = bpy.data.meshes.new(name)
-            me.from_pydata(np.asarray(v, float).tolist(), [], np.asarray(t, int).tolist())
-            me.update()
-            o = bpy.data.objects.new(name, me)
-            ctx.collection.objects.link(o)
-            o.location = loc
-            for k, val in kw.items():
-                setattr(o.arc_flow, k, val)
-            o.arc_flow.role = role
-            return o
-        mk("AF_FuelTank", PR.uvsphere(r=1.0), (-3.5, 0, 1.2), 'CONTAINER', cavity_mode='SHELL', fluid=fu, pressure=6.0e5, fill_percent=75.0, material='ALUMINUM')
-        mk("AF_OxTank", PR.uvsphere(r=1.0), (2.2, 4.0, 1.2), 'CONTAINER', cavity_mode='SHELL', fluid=ox, pressure=6.0e5, fill_percent=75.0, material='ALUMINUM')
-        mk("AF_FuelLine", PR.tube(n=24, r0=0.3, r1=0.22, L=4.4), (-0.6, 0, 1.2), 'TRANSPORT', cavity_mode='SOLID', material='STAINLESS_STEEL')
-        mk("AF_OxLine", PR.tube(n=24, r0=0.3, r1=0.22, L=4.4, axis='y'), (2.2, 2.0, 1.2), 'TRANSPORT', cavity_mode='SOLID', material='STAINLESS_STEEL')
-        c = mk("AF_Chamber", PR.uvsphere(r=1.0), (2.2, 0.0, 1.2), 'CHAMBER', cavity_mode='SHELL', material='INCONEL')
-        c.scale = (1.0, 1.2, 1.0)
-        mk("AF_Nozzle", PR.tube(n=24, r0=0.45, r1=0.35, L=3.0, axis='z'), (2.2, 0.0, -0.2), 'CHAMBER', cavity_mode='SOLID', material='COPPER')
-        af.env.ground_auto = False
-        af.env.ground_z = -3.5
-        af.xray = True
-        runtime.mark_dirty()
-        self.report({'INFO'}, "Demo rig added (pipe ends already enter the tanks and the chamber). Press Build.")
+        from . import demos
+        self.report({'INFO'}, demos.build_single(ctx.scene))
         return {'FINISHED'}
 
 

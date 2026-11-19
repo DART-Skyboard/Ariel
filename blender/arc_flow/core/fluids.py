@@ -28,6 +28,8 @@ FLUIDS = {
                visc=2.0e-5, temp=293.15, flame_t=293.15, color=(0.9, 0.8, 0.95), role='GENERIC'),
     'AIR': dict(label="Air", kind='GAS', density=1.225, bulk=0.0, molar=0.02896, cp=1005.0,
                 visc=1.8e-5, temp=288.15, flame_t=293.15, color=(0.85, 0.9, 1.0), role='GENERIC'),
+    'EXHAUST': dict(label="Combustion gas (hot exhaust)", kind='GAS', density=0.3, bulk=0.0, molar=0.024, cp=2200.0,
+                    visc=4.0e-5, temp=2600.0, flame_t=293.15, color=(1.0, 0.55, 0.2), role='GENERIC'),
     'CUSTOM': dict(label="Custom", kind='LIQUID', density=1000.0, bulk=2.0e9, molar=0.03, cp=2000.0,
                    visc=1.0e-3, temp=293.15, flame_t=2500.0, color=(0.5, 0.8, 0.9), role='GENERIC'),
 }

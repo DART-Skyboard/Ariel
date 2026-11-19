@@ -53,6 +53,14 @@ def _xray_changed(self, context):
         pass
 
 
+def _sys_changed(self, context, what):
+    try:
+        from . import systems
+        systems.on_demo_option(self.id_data if isinstance(self.id_data, bpy.types.Scene) else context.scene, what)
+    except Exception:
+        pass
+
+
 def _bool_changed(self, context):
     try:
         from . import cavitybool, runtime
@@ -278,6 +286,11 @@ class AF_ObjectProps(PropertyGroup):
     emit_inward: BoolProperty(name="Inward", default=False, update=_update_sync)
     emit_volume: FloatProperty(name="Particle volume", default=2e-5, min=1e-9, precision=7, description="m3 per emitted particle", update=_update_sync)
     emit_faces_assigned: BoolProperty(name="Faces assigned", default=False)
+    # Systems (Tessera Projection / LOTBCBP): propellant role override and crossfeed pipe metering orifice
+    sys_fluid_role: EnumProperty(name="Propellant role", items=[('AUTO', "Auto", "Detected from the fluid, the name or the container order"),
+                                                                ('FUEL', "Fuel", "Treat this container as a fuel source"),
+                                                                ('OXIDIZER', "Oxidizer", "Treat this container as an oxidizer source")], default='AUTO', update=_update_sync)
+    sys_orifice: FloatProperty(name="Orifice area", default=1.0, min=0.001, max=1.0, description="Fraction of the pipe cross-section open (crossfeed metering orifice) used by the outcome model", update=_update_sync)
     # live results
     temp_now: FloatProperty(name="Temperature", default=293.15, precision=1)
     stress_now: FloatProperty(name="Stress / yield", default=0.0, precision=3)
@@ -373,6 +386,11 @@ class AF_Scene(PropertyGroup):
     feedback_obj: PointerProperty(name="Feedback asset", type=bpy.types.Object)
     feedback_mode: EnumProperty(name="Feedback shows", items=[('TEMPERATURE', "Chamber temperature", ""), ('IGNITION', "Ignition", ""),
                                                               ('PRESSURE', "Pressure", ""), ('STRESS', "Stress / yield", "")], default='TEMPERATURE')
+    # Systems / crossfeed demos
+    sys_variant: EnumProperty(name="Crossfeed variant", items=[('GOOD', "Good: oxidizer into chamber", "Engine A's oxidizer tank feeds engine B's chamber manifold"),
+                                                               ('BAD', "Bad: hot chamber into fuel tank", "Engine A's hot chamber is connected to engine B's fuel tank")],
+                              default='GOOD', update=lambda s, c: _sys_changed(s, c, 'variant'))
+    sys_crossfeed: BoolProperty(name="Crossfeed", default=True, description="Crossfeed pipe on / off", update=lambda s, c: _sys_changed(s, c, 'toggle'))
     # runtime flags (not meant to be edited)
     status: StringProperty(default="Idle")
     ui_physics: BoolProperty(default=True)
