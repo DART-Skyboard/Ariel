@@ -110,7 +110,7 @@
   </div>
   <div class="scroll" id="pane-i">
     <h2>Six sealed habitats</h2>
-    <p class="note">Each wall is its own PTP habitat. One orients gravity. The others keep the gas spread. Click a wall. Turn on blend to share the pull. Seals stay shut.</p>
+    <p class="note">The engine sculpt sits in the gap. This is not a combustion circuit. Enzyme equalization and the gravity-side pressure travel the cavity and come back on the contour. The loop is the energy. Nothing is exhausted.</p>
     <div class="net" id="net"></div>
     <label class="switch"><span>Blend walls</span><input id="blend" type="checkbox" /></label>
     <div class="row"><span>Pressure orientation</span><b id="g-label">1.00</b></div>
@@ -170,7 +170,7 @@
   </div>
   <div class="scroll doc" id="pane-o" hidden>
     <h3>The torus is designed just right</h3>
-    <p>Passive Taurus Pressure is not a pump bolted to a tank, and it is not a station you spin. The torus, taken from the AJ10C chamber, is shaped so four things are the same object. It is a closed container, which pressure requires. Its two-and-two counter-spirals are a passive machine: streams meet, and the meeting is the pressure. That meeting is also the buoyancy. And the proportion of that meeting is both the gravity pull on the assigned wall and the equalization of the container. Get the shape right and you do not add a second system to do the rest.</p>
+    <p>Passive Taurus Pressure for Gravity is not a pump bolted to a tank, and it is not a station you spin. The body is the AJ10C chamber, but it is not being asked to burn. Combustion uses that contour as an intake and an output. Here the same contour and the same cavity are a closed passive path. Enzyme proportion, equalization, and the gravity pull on the cabin air travel through the cavity and return along the contour. The shape keeps the energy in the loop. Get the path right and you do not add a second system to do the rest.</p>
     <h3>Buoyancy in three orders</h3>
     <p>First is aerospace buoyancy. Outside the hull is vacuum, the root. A container holding sea-level air against that root is already buoyant, the way a hull is buoyant in water, except the outside fluid is nothing. Because aerospace buoyancy reaches the vacuum, it can operate the orders under it.</p>
     <p>Second is maritime buoyancy. Fluid against fluid. On the walls that are not making gravity, a pendulum rides the torus contour, the opposed paths of the AJ10C chamber. Two bobs swing and return against each other, so the energy stays symmetric. That is the Reflex Potentials gear, run without a motor: aerospace pulls toward the median, maritime lifts, geometric holds the mass. The swing keeps the cabin air spread and points the pressure at the gravity wall. It does not pile the air there.</p>
@@ -198,6 +198,7 @@
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const FACES = [
   { id: "bottom", name: "Deck", i: "01", n: [0, -1, 0], cls: "f-bottom" },
@@ -366,6 +367,66 @@ function cellSpec(face) {
   return { size: [CABIN.x * 2 - gutter * 2, CABIN.y * 2 - gutter * 2, t], center: new THREE.Vector3(0, 0, n.z * (CABIN.z + GAP * 0.5)) };
 }
 
+let taurusTemplate = null;
+
+function makeCavityFlow() {
+  const n = 40;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  const pts = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({ size: 0.055, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false }),
+  );
+  pts.userData.seeds = Array.from({ length: n }, () => Math.random());
+  return pts;
+}
+
+function writeCavityFlow(pts, grav, match, drive) {
+  const pos = pts.geometry.attributes.position;
+  const col = pts.geometry.attributes.color;
+  const seeds = pts.userData.seeds;
+  const time = performance.now() * 0.001;
+  for (let i = 0; i < pos.count; i++) {
+    const dir = i % 2 ? 1 : -1;
+    const u = (seeds[i] + time * (0.08 + drive * 0.22)) % 1;
+    let y;
+    let rad;
+    let ang;
+    if (u < 0.5) {
+      const k = u / 0.5;
+      y = -0.32 + k * 0.64;
+      rad = 0.045 + (1 - match) * 0.14;
+      ang = dir * k * 0.5;
+    } else {
+      const k = (u - 0.5) / 0.5;
+      y = 0.32 - k * 0.64;
+      rad = 0.2 + (1 - match) * 0.08;
+      ang = dir * (0.5 + k * Math.PI * 2);
+    }
+    pos.setXYZ(i, Math.cos(ang) * rad, y, Math.sin(ang) * rad);
+    if (grav) col.setXYZ(i, 0.9, 0.72, 0.28);
+    else col.setXYZ(i, 0.45, 0.86, 0.9);
+  }
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
+}
+
+function prepareTaurus(root) {
+  const box = new THREE.Box3().setFromObject(root);
+  root.position.sub(box.getCenter(new THREE.Vector3()));
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material.metalness = 0.7;
+    o.material.roughness = 0.38;
+    if (o.geometry.getAttribute("color")) o.material.vertexColors = true;
+  });
+  const wrap = new THREE.Group();
+  wrap.add(root);
+  taurusTemplate = wrap;
+  buildHabitat();
+}
+
 function buildHabitat() {
   while (assembly.children.length) assembly.remove(assembly.children[0]);
   if (vacuum) scene.remove(vacuum);
@@ -403,21 +464,39 @@ function buildHabitat() {
     if (Math.abs(face.normal.y) > 0.5) tangents.push(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1));
     else if (Math.abs(face.normal.x) > 0.5) tangents.push(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1));
     else tangents.push(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), face.normal);
+    const qRing = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), face.normal);
+    const qThroat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), face.normal);
+    const chambers = [];
+    const flows = [];
     for (let i = 0; i < 2; i++) {
       for (let j = 0; j < 2; j++) {
-        const m = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.026, 10, 22), torusMat);
-        m.quaternion.copy(q);
-        m.position.copy(tangents[0]).multiplyScalar((i - 0.5) * 0.34).add(tangents[1].clone().multiplyScalar((j - 0.5) * 0.34));
-        group.add(m);
-        toruses.push(m);
+        const at = tangents[0].clone().multiplyScalar((i - 0.5) * 0.4).add(tangents[1].clone().multiplyScalar((j - 0.5) * 0.4));
+        if (taurusTemplate) {
+          const inst = taurusTemplate.clone(true);
+          inst.scale.setScalar(0.32);
+          inst.quaternion.copy(qThroat);
+          inst.position.copy(at);
+          const flow = makeCavityFlow();
+          inst.add(flow);
+          group.add(inst);
+          chambers.push(inst);
+          flows.push(flow);
+        } else {
+          const m = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.026, 10, 22), torusMat);
+          m.quaternion.copy(qRing);
+          m.position.copy(at);
+          group.add(m);
+          toruses.push(m);
+        }
       }
     }
     const spins = new THREE.Group();
-    spins.add(helix(1, 0, 0xe2b34a), helix(1, Math.PI, 0xe2b34a), helix(-1, Math.PI / 2, 0x7fd7ea), helix(-1, -Math.PI / 2, 0x7fd7ea));
-    toruses[0].add(spins);
+    if (!taurusTemplate && toruses[0]) {
+      spins.add(helix(1, 0, 0xe2b34a), helix(1, Math.PI, 0xe2b34a), helix(-1, Math.PI / 2, 0x7fd7ea), helix(-1, -Math.PI / 2, 0x7fd7ea));
+      toruses[0].add(spins);
+    }
     const pendulum = makePendulum(fanMat, bobMat);
-    pendulum.quaternion.copy(q);
+    pendulum.quaternion.copy(qRing);
     group.add(pendulum);
     const tag = labelSprite(face.i + "  " + face.name);
     tag.position.copy(face.normal).multiplyScalar(0.02);
@@ -435,7 +514,7 @@ function buildHabitat() {
     group.add(conduit);
     group.position.copy(spec.center);
     assembly.add(group);
-    cells.push({ face, group, glass, glassMat, rim, torusMat, spins, pendulum, tag, conduit, center: spec.center.clone() });
+    cells.push({ face, group, glass, glassMat, rim, torusMat, spins, pendulum, tag, conduit, flows, center: spec.center.clone() });
   }
 
   const sheathMat = new THREE.MeshStandardMaterial({ color: 0x8fe0b4, transparent: true, opacity: 0.18, emissive: 0x145c38, depthWrite: false });
@@ -518,6 +597,7 @@ function buildHabitat() {
 
 let crew, arrows, gas, gasGeo, vacuum, bead, reflex;
 buildHabitat();
+new GLTFLoader().load("/ptp-taurus.glb", (gltf) => prepareTaurus(gltf.scene));
 
 const net = document.getElementById("net");
 for (const f of FACES) {
@@ -694,13 +774,14 @@ function frame() {
     cell.rim.material.color.set(grav ? 0xe2b34a : 0x7ec8d4);
     cell.torusMat.emissiveIntensity = grav ? 0.7 : 0.15;
     cell.torusMat.color.set(grav ? 0xe2b34a : 0x8a7344);
-    cell.spins.visible = grav;
-    if (!reduced && grav) cell.spins.rotation.z += dt * (0.35 + (S.enhance ? 0.9 : 0) + S.fAero / 400);
+    cell.spins.visible = grav && !taurusTemplate;
+    if (!reduced && cell.spins.visible) cell.spins.rotation.z += dt * (0.35 + (S.enhance ? 0.9 : 0) + S.fAero / 400);
     cell.pendulum.visible = !grav && showMar;
     if (cell.pendulum.visible && !reduced) {
       cell.pendulum.userData.a.rotation.z = swing;
       cell.pendulum.userData.b.rotation.z = -swing;
     }
+    for (const flow of cell.flows) writeCavityFlow(flow, grav, d.match, drive);
     cell.conduit.visible = S.medium === "weave" || S.medium === "mana";
     cell.tag.visible = S.shape === "module";
   }
