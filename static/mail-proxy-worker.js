@@ -1,61 +1,92 @@
 /**
- * DART Mail Proxy Worker
- * Talks to the existing GoDaddy / Microsoft mailbox via IMAP.
- * Credentials come from environment variables — never hard-code them.
+ * DART Mail Proxy — Microsoft Graph edition
+ * Credentials via secrets only.
  *
- * Required secrets (set in Cloudflare Workers dashboard or wrangler):
- *   IMAP_HOST     (e.g. imap.secureserver.net or outlook.office365.com)
- *   IMAP_PORT     (usually 993)
- *   IMAP_USER     (justin@dartmeadow.com)
- *   IMAP_PASS     (set as secret)
+ * Required secrets:
+ *   GRAPH_TENANT_ID
+ *   GRAPH_CLIENT_ID
+ *   GRAPH_CLIENT_SECRET
+ *   MAILBOX_USER   (justin@dartmeadow.com)
  *
- * Endpoints:
+ * Endpoints match the custom UI:
  *   GET  /mail/messages
- *   POST /mail/delete    { ids: [...] }
- *   POST /mail/archive   { ids: [...] }
- *   POST /mail/restore   { ids: [...] }
+ *   POST /mail/delete
+ *   POST /mail/archive
+ *   POST /mail/restore
  */
+
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+
+async function getToken(env) {
+  const body = new URLSearchParams({
+    client_id: env.GRAPH_CLIENT_ID,
+    client_secret: env.GRAPH_CLIENT_SECRET,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials'
+  });
+  const res = await fetch(`https://login.microsoftonline.com/${env.GRAPH_TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST',
+    body
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error('Token failed');
+  return data.access_token;
+}
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith('/mail')) {
-      return new Response('Not found', { status: 404 });
-    }
-
-    // Simple CORS for the custom UI
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type'
     };
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
+    if (!url.pathname.startsWith('/mail')) return new Response('Not found', { status: 404 });
 
-    // Placeholder implementation.
-    // Real IMAP requires a TCP connection which Cloudflare Workers cannot do natively.
-    // Options:
-    //   1. Use Microsoft Graph API instead (preferred) with an app registration.
-    //   2. Run this proxy on a small Node server / VPS that can open IMAP sockets.
-    //   3. Use a service that bridges Workers to IMAP.
-    //
-    // For now this returns a clear message so the UI can be tested.
+    try {
+      const token = await getToken(env);
+      const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const user = env.MAILBOX_USER || 'justin@dartmeadow.com';
 
-    const body = request.method === 'POST' ? await request.json().catch(() => ({})) : {};
+      if (url.pathname === '/mail/messages' && request.method === 'GET') {
+        const r = await fetch(`${GRAPH}/users/${user}/messages?$top=50&$select=id,subject,from,receivedDateTime,isRead`, { headers });
+        const data = await r.json();
+        const messages = (data.value || []).map(m => ({
+          id: m.id,
+          from: m.from?.emailAddress?.name || m.from?.emailAddress?.address,
+          subject: m.subject,
+          date: m.receivedDateTime
+        }));
+        return Response.json(messages, { headers: cors });
+      }
 
-    if (url.pathname === '/mail/messages' && request.method === 'GET') {
-      return Response.json({
-        note: 'IMAP proxy ready. Supply IMAP_USER / IMAP_PASS as secrets and run on a host that supports TCP, or switch to Microsoft Graph.',
-        messages: []
-      }, { headers: cors });
-    }
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        const ids = body.ids || [];
+        const action = url.pathname.split('/').pop();
 
-    if (['/mail/delete', '/mail/archive', '/mail/restore'].includes(url.pathname) && request.method === 'POST') {
-      return Response.json({
-        ok: true,
-        action: url.pathname.split('/').pop(),
-        ids: body.ids || [],
-        note: 'Action received. Real mailbox update requires Graph or an IMAP-capable host.'
-      }, { headers: cors });
+        for (const id of ids) {
+          if (action === 'delete') {
+            await fetch(`${GRAPH}/users/${user}/messages/${id}`, { method: 'DELETE', headers });
+          } else if (action === 'archive') {
+            await fetch(`${GRAPH}/users/${user}/messages/${id}/move`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ destinationId: 'archive' })
+            });
+          } else if (action === 'restore') {
+            await fetch(`${GRAPH}/users/${user}/messages/${id}/move`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ destinationId: 'inbox' })
+            });
+          }
+        }
+        return Response.json({ ok: true, action, count: ids.length }, { headers: cors });
+      }
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 500, headers: cors });
     }
 
     return new Response('Method not allowed', { status: 405, headers: cors });
