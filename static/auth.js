@@ -16,7 +16,7 @@ const DART_AUTH = (() => {
   'use strict';
 
   /* ── Constants ──────────────────────────────────────────── */
-  const GH_CLIENT_ID  = 'YOUR_GITHUB_CLIENT_ID';   // ← replace
+  const GH_CLIENT_ID  = 'Ov23li2K0njEqO1WTSdD';   // ← replace
   const PROXY_URL     = 'https://auth.radicaldeepscale.com/oauth/token';
   const ASH_REPO      = 'autumn-ash';
   const GH_SCOPES     = 'repo user:email read:user';
