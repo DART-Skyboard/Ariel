@@ -3,33 +3,29 @@
  * Credentials via secrets only.
  *
  * Required secrets:
- *   f6fa7320-6098-4258-a6e0-dd01d975e4bc
- *   8c887fd1-9ef7-4de7-88ba-6eff9992c843
- *   GRAPH_CLIENT_SECRET
- *   MAILBOX_USER   (justin@dartmeadow.com)
- *
- * Endpoints match the custom UI:
- *   GET  /mail/messages
- *   POST /mail/delete
- *   POST /mail/archive
- *   POST /mail/restore
+ *   GRAPH_TENANT_ID     = f6fa7320-6098-4258-a6e0-dd01d975e4bc
+ *   GRAPH_CLIENT_ID     = 8c887fd1-9ef7-4de7-88ba-6eff9992c843
+ *   GRAPH_CLIENT_SECRET = (set as secret)
+ *   MAILBOX_USER        = justin@dartmeadow.com
  */
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
+const TENANT = 'f6fa7320-6098-4258-a6e0-dd01d975e4bc';
+const CLIENT_ID = '8c887fd1-9ef7-4de7-88ba-6eff9992c843';
 
 async function getToken(env) {
   const body = new URLSearchParams({
-    client_id: env.8c887fd1-9ef7-4de7-88ba-6eff9992c843,
+    client_id: CLIENT_ID,
     client_secret: env.GRAPH_CLIENT_SECRET,
     scope: 'https://graph.microsoft.com/.default',
     grant_type: 'client_credentials'
   });
-  const res = await fetch(`https://login.microsoftonline.com/${env.f6fa7320-6098-4258-a6e0-dd01d975e4bc}/oauth2/v2.0/token`, {
+  const res = await fetch(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`, {
     method: 'POST',
     body
   });
   const data = await res.json();
-  if (!data.access_token) throw new Error('Token failed');
+  if (!data.access_token) throw new Error(data.error_description || 'Token failed');
   return data.access_token;
 }
 
@@ -50,7 +46,7 @@ export default {
       const user = env.MAILBOX_USER || 'justin@dartmeadow.com';
 
       if (url.pathname === '/mail/messages' && request.method === 'GET') {
-        const r = await fetch(`${GRAPH}/users/${user}/messages?$top=50&$select=id,subject,from,receivedDateTime,isRead`, { headers });
+        const r = await fetch(`${GRAPH}/users/${user}/messages?$top=50&$select=id,subject,from,receivedDateTime`, { headers });
         const data = await r.json();
         const messages = (data.value || []).map(m => ({
           id: m.id,
@@ -71,14 +67,12 @@ export default {
             await fetch(`${GRAPH}/users/${user}/messages/${id}`, { method: 'DELETE', headers });
           } else if (action === 'archive') {
             await fetch(`${GRAPH}/users/${user}/messages/${id}/move`, {
-              method: 'POST',
-              headers,
+              method: 'POST', headers,
               body: JSON.stringify({ destinationId: 'archive' })
             });
           } else if (action === 'restore') {
             await fetch(`${GRAPH}/users/${user}/messages/${id}/move`, {
-              method: 'POST',
-              headers,
+              method: 'POST', headers,
               body: JSON.stringify({ destinationId: 'inbox' })
             });
           }
@@ -88,7 +82,6 @@ export default {
     } catch (e) {
       return Response.json({ error: e.message }, { status: 500, headers: cors });
     }
-
     return new Response('Method not allowed', { status: 405, headers: cors });
   }
 };
