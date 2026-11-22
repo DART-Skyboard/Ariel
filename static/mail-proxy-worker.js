@@ -3,8 +3,8 @@
  * Credentials via secrets only.
  *
  * Required secrets:
- *   GRAPH_TENANT_ID
- *   GRAPH_CLIENT_ID
+ *   f6fa7320-6098-4258-a6e0-dd01d975e4bc
+ *   8c887fd1-9ef7-4de7-88ba-6eff9992c843
  *   GRAPH_CLIENT_SECRET
  *   MAILBOX_USER   (justin@dartmeadow.com)
  *
@@ -19,12 +19,12 @@ const GRAPH = 'https://graph.microsoft.com/v1.0';
 
 async function getToken(env) {
   const body = new URLSearchParams({
-    client_id: env.GRAPH_CLIENT_ID,
+    client_id: env.8c887fd1-9ef7-4de7-88ba-6eff9992c843,
     client_secret: env.GRAPH_CLIENT_SECRET,
     scope: 'https://graph.microsoft.com/.default',
     grant_type: 'client_credentials'
   });
-  const res = await fetch(`https://login.microsoftonline.com/${env.GRAPH_TENANT_ID}/oauth2/v2.0/token`, {
+  const res = await fetch(`https://login.microsoftonline.com/${env.f6fa7320-6098-4258-a6e0-dd01d975e4bc}/oauth2/v2.0/token`, {
     method: 'POST',
     body
   });
