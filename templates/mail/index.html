@@ -11,11 +11,11 @@
   #list { list-style:none; padding:0; margin:0; }
   .msg { position:relative; display:flex; align-items:center; padding:14px 16px; border-bottom:1px solid #21262d; background:#0f1419; overflow:hidden; touch-action:pan-y; }
   .msg.selected { background:#1c2128; }
-  .swipe-bg { position:absolute; inset:0; display:flex; align-items:center; justify-content:flex-end; padding:0 20px; color:#fff; font-weight:600; pointer-events:none; }
-  .swipe-bg.left { background:#da3633; justify-content:flex-end; }
+  .swipe-bg { position:absolute; inset:0; display:flex; align-items:center; justify-content:flex-end; padding:0 20px; color:#fff; font-weight:600; pointer-events:none; opacity:0; transition:opacity .15s; }
+  .swipe-bg.left { background:#da3633; }
   .swipe-bg.right { background:#238636; justify-content:flex-start; }
   .msg-content { position:relative; z-index:1; flex:1; }
-  .actions { display:flex; gap:8px; margin-top:8px; }
+  .actions { display:flex; gap:8px; margin:12px 16px; }
   button.action { background:#21262d; color:#c9d1d9; border:1px solid #30363d; padding:6px 10px; border-radius:4px; cursor:pointer; }
 </style>
 </head>
@@ -25,18 +25,37 @@
   <button id="selectAllBtn">Select All</button>
 </header>
 <ul id="list"></ul>
-<div class="actions" style="padding:12px 16px">
+<div class="actions">
   <button class="action" id="bulkDelete">Delete selected</button>
   <button class="action" id="bulkArchive">Archive selected</button>
   <button class="action" id="bulkRestore">Restore selected</button>
 </div>
 <script>
-const messages = [
-  {id:1, from:'GoDaddy', subject:'Security Alert: OTP 906662', date:'1:40 PM'},
-  {id:2, from:'GoDaddy', subject:'Security Alert: OTP 684670', date:'1:35 PM'},
-  {id:3, from:'GoDaddy', subject:'New Sign-In detected', date:'1:35 PM'}
-];
+// Proxy endpoint that talks to Microsoft Graph / GoDaddy IMAP.
+// Set this to your Cloudflare Worker or Ariel backend once deployed.
+const MAIL_PROXY = 'https://auth.radicaldeepscale.com/mail';
+
+let messages = [];
 let selected = new Set();
+
+async function loadMessages() {
+  try {
+    const res = await fetch(MAIL_PROXY + '/messages', { credentials: 'include' });
+    if (res.ok) messages = await res.json();
+    else messages = []; // fallback empty
+  } catch (e) { messages = []; }
+  render();
+}
+
+async function mailAction(ids, action) {
+  await fetch(MAIL_PROXY + '/' + action, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: Array.isArray(ids) ? ids : [ids] })
+  });
+  await loadMessages(); // refresh from server
+}
 
 function render() {
   const list = document.getElementById('list');
@@ -49,8 +68,8 @@ function render() {
       <div class="swipe-bg left">Delete</div>
       <div class="swipe-bg right">Archive</div>
       <div class="msg-content">
-        <strong>${m.from}</strong> · ${m.date}<br>
-        ${m.subject}
+        <strong>${m.from || m.sender || 'Unknown'}</strong> · ${m.date || ''}<br>
+        ${m.subject || '(no subject)'}
       </div>`;
     list.appendChild(li);
     attachGestures(li, m.id);
@@ -61,41 +80,45 @@ function attachGestures(el, id) {
   let startX = 0, currentX = 0, longPressTimer;
   el.addEventListener('touchstart', e => {
     startX = e.touches[0].clientX;
-    longPressTimer = setTimeout(() => el.classList.add('reveal-delete'), 600);
+    longPressTimer = setTimeout(() => {
+      el.querySelector('.swipe-bg.left').style.opacity = '1';
+    }, 500);
   });
   el.addEventListener('touchmove', e => {
     clearTimeout(longPressTimer);
     currentX = e.touches[0].clientX - startX;
-    el.style.transform = `translateX(${currentX}px)`;
-    const bg = el.querySelector('.swipe-bg');
-    if (currentX < -40) bg.className = 'swipe-bg left';
-    else if (currentX > 40) bg.className = 'swipe-bg right';
+    el.style.transform = `translateX(${Math.max(-160, Math.min(160, currentX))}px)`;
+    const left = el.querySelector('.swipe-bg.left');
+    const right = el.querySelector('.swipe-bg.right');
+    if (currentX < -30) { left.style.opacity = '1'; right.style.opacity = '0'; }
+    else if (currentX > 30) { right.style.opacity = '1'; left.style.opacity = '0'; }
+    else { left.style.opacity = '0'; right.style.opacity = '0'; }
   });
   el.addEventListener('touchend', () => {
     clearTimeout(longPressTimer);
-    if (currentX < -120) deleteMsg(id);
-    else if (currentX > 120) archiveMsg(id);
+    if (currentX < -100) mailAction(id, 'delete');
+    else if (currentX > 100) mailAction(id, 'archive');
     el.style.transform = '';
+    el.querySelectorAll('.swipe-bg').forEach(b => b.style.opacity = '0');
     currentX = 0;
   });
-  el.addEventListener('click', () => {
+  el.addEventListener('click', e => {
+    if (e.target.closest('.swipe-bg')) return;
     if (selected.has(id)) selected.delete(id); else selected.add(id);
     render();
   });
 }
 
-function deleteMsg(id) { /* TODO: IMAP/Graph MOVE to Trash */ messages.splice(messages.findIndex(m=>m.id===id),1); render(); }
-function archiveMsg(id) { /* TODO: IMAP/Graph MOVE to Archive */ console.log('archive', id); }
 document.getElementById('selectAllBtn').onclick = () => {
   if (selected.size === messages.length) selected.clear();
   else messages.forEach(m => selected.add(m.id));
   render();
 };
-document.getElementById('bulkDelete').onclick = () => { selected.forEach(deleteMsg); selected.clear(); };
-document.getElementById('bulkArchive').onclick = () => { selected.forEach(archiveMsg); selected.clear(); };
-document.getElementById('bulkRestore').onclick = () => { /* TODO */ };
+document.getElementById('bulkDelete').onclick = () => mailAction([...selected], 'delete').then(() => selected.clear());
+document.getElementById('bulkArchive').onclick = () => mailAction([...selected], 'archive').then(() => selected.clear());
+document.getElementById('bulkRestore').onclick = () => mailAction([...selected], 'restore').then(() => selected.clear());
 
-render();
+loadMessages();
 </script>
 </body>
 </html>
