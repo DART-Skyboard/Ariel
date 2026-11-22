@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DART Mail</title>
+<style>
+  body { margin:0; font-family: system-ui, sans-serif; background:#0f1419; color:#e0e0e0; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; background:#161b22; border-bottom:1px solid #30363d; }
+  #selectAllBtn { background:#21262d; color:#c9d1d9; border:1px solid #30363d; padding:6px 12px; border-radius:6px; cursor:pointer; }
+  #list { list-style:none; padding:0; margin:0; }
+  .msg { position:relative; display:flex; align-items:center; padding:14px 16px; border-bottom:1px solid #21262d; background:#0f1419; overflow:hidden; touch-action:pan-y; }
+  .msg.selected { background:#1c2128; }
+  .swipe-bg { position:absolute; inset:0; display:flex; align-items:center; justify-content:flex-end; padding:0 20px; color:#fff; font-weight:600; pointer-events:none; }
+  .swipe-bg.left { background:#da3633; justify-content:flex-end; }
+  .swipe-bg.right { background:#238636; justify-content:flex-start; }
+  .msg-content { position:relative; z-index:1; flex:1; }
+  .actions { display:flex; gap:8px; margin-top:8px; }
+  button.action { background:#21262d; color:#c9d1d9; border:1px solid #30363d; padding:6px 10px; border-radius:4px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h2 style="margin:0">DART Mail</h2>
+  <button id="selectAllBtn">Select All</button>
+</header>
+<ul id="list"></ul>
+<div class="actions" style="padding:12px 16px">
+  <button class="action" id="bulkDelete">Delete selected</button>
+  <button class="action" id="bulkArchive">Archive selected</button>
+  <button class="action" id="bulkRestore">Restore selected</button>
+</div>
+<script>
+const messages = [
+  {id:1, from:'GoDaddy', subject:'Security Alert: OTP 906662', date:'1:40 PM'},
+  {id:2, from:'GoDaddy', subject:'Security Alert: OTP 684670', date:'1:35 PM'},
+  {id:3, from:'GoDaddy', subject:'New Sign-In detected', date:'1:35 PM'}
+];
+let selected = new Set();
+
+function render() {
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  messages.forEach(m => {
+    const li = document.createElement('li');
+    li.className = 'msg' + (selected.has(m.id) ? ' selected' : '');
+    li.dataset.id = m.id;
+    li.innerHTML = `
+      <div class="swipe-bg left">Delete</div>
+      <div class="swipe-bg right">Archive</div>
+      <div class="msg-content">
+        <strong>${m.from}</strong> · ${m.date}<br>
+        ${m.subject}
+      </div>`;
+    list.appendChild(li);
+    attachGestures(li, m.id);
+  });
+}
+
+function attachGestures(el, id) {
+  let startX = 0, currentX = 0, longPressTimer;
+  el.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    longPressTimer = setTimeout(() => el.classList.add('reveal-delete'), 600);
+  });
+  el.addEventListener('touchmove', e => {
+    clearTimeout(longPressTimer);
+    currentX = e.touches[0].clientX - startX;
+    el.style.transform = `translateX(${currentX}px)`;
+    const bg = el.querySelector('.swipe-bg');
+    if (currentX < -40) bg.className = 'swipe-bg left';
+    else if (currentX > 40) bg.className = 'swipe-bg right';
+  });
+  el.addEventListener('touchend', () => {
+    clearTimeout(longPressTimer);
+    if (currentX < -120) deleteMsg(id);
+    else if (currentX > 120) archiveMsg(id);
+    el.style.transform = '';
+    currentX = 0;
+  });
+  el.addEventListener('click', () => {
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    render();
+  });
+}
+
+function deleteMsg(id) { /* TODO: IMAP/Graph MOVE to Trash */ messages.splice(messages.findIndex(m=>m.id===id),1); render(); }
+function archiveMsg(id) { /* TODO: IMAP/Graph MOVE to Archive */ console.log('archive', id); }
+document.getElementById('selectAllBtn').onclick = () => {
+  if (selected.size === messages.length) selected.clear();
+  else messages.forEach(m => selected.add(m.id));
+  render();
+};
+document.getElementById('bulkDelete').onclick = () => { selected.forEach(deleteMsg); selected.clear(); };
+document.getElementById('bulkArchive').onclick = () => { selected.forEach(archiveMsg); selected.clear(); };
+document.getElementById('bulkRestore').onclick = () => { /* TODO */ };
+
+render();
+</script>
+</body>
+</html>
